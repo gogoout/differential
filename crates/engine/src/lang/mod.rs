@@ -34,9 +34,17 @@ pub trait Language: Send + Sync {
         generic::normalize_line(line)
     }
 
-    // Ordering-stage hooks (symbol definitions / references per hunk) are added
-    // here later, with generic defaults — kept out until the ordering milestone
-    // actually consumes them.
+    /// Symbol names this line DEFINES (declaration heuristics). Feeds the
+    /// ordering stage's definition → use edges; precision is allowed to be low
+    /// (ADR 0007: a wrong edge misorders, it never hides content).
+    fn symbol_definitions(&self, line: &[u8]) -> Vec<Vec<u8>> {
+        generic::symbol_definitions(line)
+    }
+
+    /// Identifiers this line REFERENCES.
+    fn symbol_references(&self, line: &[u8]) -> Vec<Vec<u8>> {
+        generic::symbol_references(line)
+    }
 }
 
 /// The generic fallback: claims every file, uses the default normaliser.

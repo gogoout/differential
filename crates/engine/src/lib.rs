@@ -14,6 +14,7 @@ pub mod grouping;
 pub mod invariants;
 pub mod lang;
 pub mod model;
+pub mod ordering;
 pub mod parse;
 pub mod paths;
 pub mod pipeline;

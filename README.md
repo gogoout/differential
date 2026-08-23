@@ -51,8 +51,8 @@ Three consumers are planned as views over the document:
 | Language abstraction (per-language normalisation, generic default) | ✅ seam in place |
 | LLM backend abstraction (`differential-llm`) | ✅ seam in place |
 | Grouping stage (LLM merge/label + coverage audit + pinning cache) | ✅ [`spec/grouping.md`](spec/grouping.md) |
-| Ordering (foundation-first group DAG) | ⏳ next |
-| Consumers: shadow branch, TUI (`dfr`), forge | planned |
+| Ordering (foundation-first group DAG, roles, dependency edges) | ✅ [`spec/ordering.md`](spec/ordering.md) |
+| Consumers: shadow branch (⏳ next), TUI (`dfr`), forge | planned |
 
 `run_pipeline` emits the core document (`groups: null`); `run_grouped_pipeline` adds the
 grouping stage — labelled close/skim/noise groups, a reading plan, and the coverage audit —

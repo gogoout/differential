@@ -147,7 +147,10 @@ fn happy_path_fills_groups_plan_and_audit() {
     });
     let d = grouped(&r, &base, &head, &backend);
 
-    assert_eq!(d.generator.stages, ["enumerate", "classify", "group"]);
+    assert_eq!(
+        d.generator.stages,
+        ["enumerate", "classify", "group", "order"]
+    );
     let groups = d.groups.as_ref().unwrap();
     assert_eq!(groups.len(), 2);
     assert_eq!(groups[0].effort, Effort::Close);
@@ -485,4 +488,92 @@ fn skim_group_without_remainder_has_no_skip_step() {
     assert_eq!(actions, [ReadAction::Exemplars]);
     assert_eq!(d.audit.read_hunks, Some(1));
     assert_eq!(d.audit.skipped_hunks, Some(0));
+}
+
+// ---------------------------------------------------------------- ordering
+
+/// Definition file + consumer file, model puts the consumer group FIRST;
+/// ordering must put the foundation first with real edges and roles.
+fn def_use_repo() -> (TestRepo, String, String) {
+    let r = TestRepo::new();
+    r.write("src/a_core.txt", b"placeholder\n");
+    r.write("src/b_user.txt", b"placeholder\n");
+    let base = r.commit_all("base");
+    r.write(
+        "src/a_core.txt",
+        b"placeholder\npub struct WidgetCore { pub retries: u32 }\n",
+    );
+    r.write(
+        "src/b_user.txt",
+        b"placeholder\nlet core = WidgetCore { retries: 3 };\n",
+    );
+    let head = r.commit_all("head");
+    (r, base, head)
+}
+
+#[test]
+fn foundation_is_ordered_before_its_consumer() {
+    let (r, base, head) = def_use_repo();
+    // C0 = a_core class, C1 = b_user class (equal size, first-seen order).
+    // The model answers in the WRONG order: consumer first.
+    let backend = FakeBackend::new("fake", |ids| {
+        format!(
+            r#"{{"groups": [{}, {}]}}"#,
+            json_group("Use the widget", "close", &[&ids[1]]),
+            json_group("Introduce the widget", "close", &[&ids[0]])
+        )
+    });
+    let d = grouped(&r, &base, &head, &backend);
+    let groups = d.groups.as_ref().unwrap();
+
+    assert_eq!(groups[0].label, "Introduce the widget");
+    assert_eq!(groups[0].role, Some(differential_schema::Role::Foundation));
+    assert_eq!(groups[0].rank, 0);
+    assert_eq!(groups[1].label, "Use the widget");
+    assert_eq!(groups[1].role, Some(differential_schema::Role::Consumer));
+    assert_eq!(groups[1].depends_on, vec![groups[0].id.clone()]);
+    assert!(groups[0].depends_on.is_empty());
+
+    // The reading plan follows the new order.
+    let plan = d.reading_plan.as_ref().unwrap();
+    assert_eq!(plan[0].group, groups[0].id);
+    assert_eq!(plan[1].group, groups[1].id);
+
+    // Round-trips with ordering fields filled.
+    let re = PlanDocument::from_json(&d.to_json_pretty().unwrap()).unwrap();
+    assert_eq!(re, d);
+}
+
+#[test]
+fn skim_groups_get_the_mechanical_role_and_stay_after_close() {
+    let (r, base, head) = two_class_repo();
+    let backend = FakeBackend::new("fake", |ids| {
+        format!(
+            r#"{{"groups": [{}, {}]}}"#,
+            json_group("Rename sweep", "skim", &[&ids[0]]),
+            json_group("Behaviour", "close", &[&ids[1]])
+        )
+    });
+    let d = grouped(&r, &base, &head, &backend);
+    let groups = d.groups.as_ref().unwrap();
+    assert_eq!(groups[0].effort, Effort::Close);
+    assert_eq!(groups[1].effort, Effort::Skim);
+    assert_eq!(groups[1].role, Some(differential_schema::Role::Mechanical));
+}
+
+#[test]
+fn backfill_stays_trailing_even_when_everything_is_close() {
+    let (r, base, head) = two_class_repo();
+    // Model claims only the SMALL class; the 3-hunk class is back-filled and,
+    // despite being larger, must not be reordered ahead of triaged groups.
+    let backend = FakeBackend::new("fake", |ids| {
+        format!(
+            r#"{{"groups": [{}]}}"#,
+            json_group("Only one", "close", &[&ids[1]])
+        )
+    });
+    let d = grouped(&r, &base, &head, &backend);
+    let groups = d.groups.as_ref().unwrap();
+    assert!(groups.last().unwrap().label.contains("no group"));
+    assert_eq!(groups.last().unwrap().rank as usize, groups.len() - 1);
 }

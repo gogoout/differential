@@ -97,13 +97,15 @@ pub fn run_grouped_pipeline(
                 &built
             }
         };
-        let grouped = crate::grouping::run(
+        let mut grouped = crate::grouping::run(
             core_doc,
             &view,
             backend,
             grouping.cache_dir,
             &langs.fingerprint(),
         )?;
+        // Ordering is deterministic and model-free: always runs after grouping.
+        crate::ordering::apply(&mut grouped, &view, langs);
         out.document = Some(grouped);
     }
     Ok(out)

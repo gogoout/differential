@@ -73,9 +73,9 @@ deletion-only hunks are never pure.
 
 - `effort`: `close` (read every hunk) | `skim` (one exemplar per shape class) | `noise`
   (generated content, folded entirely — no exemplars).
-- `role`: `foundation | consumer | mechanical | noise` — `null` until the ordering stage
-  runs (the grouping stage sets it only on the mechanical noise group); `depends_on` edges
-  form the group DAG (empty until ordering); `rank` is the reading-order position.
+- `role`: `foundation | consumer | mechanical | noise` — filled by the ordering stage
+  ([ordering.md](ordering.md)); isolated close groups and the back-fill stay `null`.
+  `depends_on` edges form the group DAG; `rank` is the final reading-order position.
 - `reading_plan` actions: `read`, `exemplars`, `skip`, `fold`.
 - Any class the model omitted lands in a trailing back-filled group with `effort: close`.
   Nothing is ever dropped. Full stage semantics: [grouping.md](grouping.md).
