@@ -22,12 +22,20 @@ fn fixture_is_internally_consistent() {
     let mut seen = 0usize;
     for f in &doc.files {
         for hid in &f.hunk_ids {
-            let h = doc.hunks.iter().find(|h| &h.id == hid).expect("dangling hunk id");
+            let h = doc
+                .hunks
+                .iter()
+                .find(|h| &h.id == hid)
+                .expect("dangling hunk id");
             assert_eq!(h.file, f.path);
             seen += 1;
         }
     }
-    assert_eq!(seen, doc.hunks.len(), "every hunk belongs to exactly one file");
+    assert_eq!(
+        seen,
+        doc.hunks.len(),
+        "every hunk belongs to exactly one file"
+    );
 
     // Class partition covers every hunk exactly once.
     let mut covered: Vec<&str> = doc

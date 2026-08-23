@@ -1,0 +1,20 @@
+# Shape of the local fixture config for the real-corpus parity test.
+#
+# Copy to e.g. `fixtures.local.toml` (gitignored — keep private repo details out
+# of the tracked tree), fill in real values, then run:
+#
+#   DIFFERENTIAL_FIXTURE_CONFIG=fixtures.local.toml cargo test -- --ignored
+#
+# Add as many [[fixture]] entries as you have regression cases.
+
+[[fixture]]
+repo_path = "~/path/to/repo"
+base = "base commit sha"
+head = "head commit sha"
+
+[fixture.expect]
+files = 0          # changed files in the canonical (--no-renames) view
+hunks = 0          # canonical -U0 hunks
+classes = 0        # shape classes
+applier = "0/0"    # byte-exact reconstructions, "ok/total"
+recount = 0        # independent @@ recount
