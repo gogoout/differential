@@ -10,6 +10,7 @@
 //! is language-independent and deliberately identical to the validated
 //! prototype, so class populations stay comparable with its recorded outputs.
 
+use std::cmp::Reverse;
 use std::collections::HashMap;
 
 use sha1::{Digest, Sha1};
@@ -48,8 +49,7 @@ pub fn shape_hash(hunk: &Hunk, disposition_letter: u8, lang: &dyn Language) -> S
     }
     hasher.update(b"|");
     hasher.update([disposition_letter]);
-    let hex = hex_string(&hasher.finalize());
-    hex[..12].to_string()
+    hex::encode(hasher.finalize())[..12].to_string()
 }
 
 /// Exact content digest — NOT normalised and NOT language-dependent. The stable
@@ -68,7 +68,7 @@ pub fn hunk_digest(hunk: &Hunk) -> String {
         hasher.update(b"\n");
     }
     hasher.update([hunk.nonl_old as u8, hunk.nonl_new as u8]);
-    hex_string(&hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 /// True iff, after erasing identifiers and literals, removed and added lines
@@ -108,7 +108,7 @@ pub fn partition(view: &DiffView, langs: &LanguageRegistry) -> Partition {
     }
 
     let mut keys: Vec<&String> = by_hash.keys().collect();
-    keys.sort_by_key(|k| (usize::MAX - by_hash[*k].len(), first_seen[*k]));
+    keys.sort_by_key(|k| (Reverse(by_hash[*k].len()), first_seen[*k]));
 
     let mut classes = Vec::with_capacity(keys.len());
     let mut class_of = vec![0usize; view.hunks.len()];
@@ -128,14 +128,6 @@ pub fn partition(view: &DiffView, langs: &LanguageRegistry) -> Partition {
         class_of,
         pure,
     }
-}
-
-fn hex_string(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
 }
 
 #[cfg(test)]

@@ -90,19 +90,16 @@ impl LlmBackend for CommandBackend {
     }
 
     fn complete(&self, prompt: &str) -> Result<String, LlmError> {
-        let cmd_name = self.name.clone();
-        let spawn_err = |source| LlmError::Spawn {
-            command: cmd_name.clone(),
-            source,
-        };
-
         let mut child = Command::new(&self.argv[0])
             .args(&self.argv[1..])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(spawn_err)?;
+            .map_err(|source| LlmError::Spawn {
+                command: self.name.clone(),
+                source,
+            })?;
 
         // Prompt in and output out run on their own threads: a large prompt
         // must not deadlock against a child that writes before it finishes

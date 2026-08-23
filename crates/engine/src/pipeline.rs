@@ -87,14 +87,7 @@ pub fn run_pipeline(
     let records = parse_raw_z(&raw)?;
     let dispositions = records
         .iter()
-        .map(|r| {
-            let d = match r.status {
-                b'A' => crate::model::Disposition::Added,
-                b'D' => crate::model::Disposition::Deleted,
-                _ => crate::model::Disposition::Modified,
-            };
-            (r.path.clone(), d)
-        })
+        .map(|r| (r.path.clone(), r.disposition()))
         .collect();
 
     // Canonical enumeration: every file, no exclusions (ADR 0005).

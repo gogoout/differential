@@ -25,6 +25,16 @@ pub struct RawRecord {
 
 const ZERO_OID: &str = "0000000000000000000000000000000000000000";
 
+impl RawRecord {
+    pub fn disposition(&self) -> Disposition {
+        match self.status {
+            b'A' => Disposition::Added,
+            b'D' => Disposition::Deleted,
+            _ => Disposition::Modified,
+        }
+    }
+}
+
 /// Parse `:100644 100755 <old> <new> M\0path\0` records.
 pub fn parse_raw_z(raw: &[u8]) -> Result<Vec<RawRecord>, EngineError> {
     let mut out = Vec::new();
@@ -74,11 +84,7 @@ pub fn merge_raw(view: &mut DiffView, records: &[RawRecord]) -> Result<(), Engin
                 String::from_utf8_lossy(&f.path)
             )));
         };
-        f.disposition = match r.status {
-            b'A' => Disposition::Added,
-            b'D' => Disposition::Deleted,
-            _ => Disposition::Modified,
-        };
+        f.disposition = r.disposition();
         if r.old_mode != "000000" {
             f.old_mode = Some(r.old_mode.clone());
         }

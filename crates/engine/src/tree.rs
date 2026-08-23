@@ -27,7 +27,7 @@ pub fn build_tree(repo: &Repo, base: &str, view: &DiffView) -> Result<String, En
     // One bulk `update-index -z --index-info` feed: quoting-proof and fast.
     let mut feed: Vec<u8> = Vec::new();
     for f in &view.files {
-        let entry = staging_entry(repo, base, view, f.path.as_slice(), f)?;
+        let entry = staging_entry(repo, base, view, f)?;
         feed.extend_from_slice(&entry);
         feed.push(0);
     }
@@ -41,9 +41,9 @@ fn staging_entry(
     repo: &Repo,
     base: &str,
     view: &DiffView,
-    path: &[u8],
     f: &crate::model::FileChange,
 ) -> Result<Vec<u8>, EngineError> {
+    let path = f.path.as_slice();
     let mut line: Vec<u8>;
 
     if f.disposition == Disposition::Deleted {
@@ -74,7 +74,7 @@ fn staging_entry(
             })?
     } else if f.binary {
         // The one documented tautology: binary files carry zero hunks, so the
-        // head oid is the only available content. `dfr check` reports this.
+        // head oid is the only available content. the invariant report says so.
         f.new_oid.clone().ok_or_else(|| {
             EngineError::Invariant(format!(
                 "binary file {} has no recorded oid",

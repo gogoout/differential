@@ -177,19 +177,15 @@ pub fn parse_canonical(
                 nonl_new,
             });
             continue; // i already advanced past the body
-        } else if line.is_empty() && i == lines.len() {
-            // unreachable; kept for clarity
         } else if line.is_empty() {
-            // Blank separator lines do not occur in -U0 patch output; treat as
-            // end-of-input noise only if nothing follows.
-            if lines[i + 1..].iter().all(|l| l.is_empty()) {
-                i += 1;
-                continue;
+            // Blank separator lines do not occur in -U0 patch output; tolerate
+            // them only as trailing end-of-input noise.
+            if lines[i + 1..].iter().any(|l| !l.is_empty()) {
+                return Err(EngineError::Parse {
+                    line: i + 1,
+                    msg: "unexpected blank line inside patch".into(),
+                });
             }
-            return Err(EngineError::Parse {
-                line: i + 1,
-                msg: "unexpected blank line inside patch".into(),
-            });
         } else {
             return Err(EngineError::Parse {
                 line: i + 1,
@@ -222,32 +218,31 @@ fn finalise(
     // old side from the first, new side from the second.
     let mut merged: Vec<FileChange> = Vec::with_capacity(files.len());
     for f in files.into_iter() {
-        let last_idx = merged.len().wrapping_sub(1);
-        match merged.last_mut() {
-            Some(prev) if prev.path == f.path => {
-                if f.new_mode.is_some() {
-                    prev.new_mode = f.new_mode;
-                }
-                if prev.old_mode.is_none() {
-                    prev.old_mode = f.old_mode;
-                }
-                prev.binary |= f.binary;
-                prev.disposition = dispositions
-                    .get(&prev.path)
-                    .copied()
-                    .unwrap_or(Disposition::Modified);
-                for h in &f.hunks {
-                    hunks[*h].file = last_idx;
-                    prev.hunks.push(*h);
-                }
+        let continues_previous = merged.last().is_some_and(|prev| prev.path == f.path);
+        if continues_previous {
+            let idx = merged.len() - 1;
+            let prev = &mut merged[idx];
+            if f.new_mode.is_some() {
+                prev.new_mode = f.new_mode;
             }
-            _ => {
-                let idx = merged.len();
-                for h in &f.hunks {
-                    hunks[*h].file = idx;
-                }
-                merged.push(f);
+            if prev.old_mode.is_none() {
+                prev.old_mode = f.old_mode;
             }
+            prev.binary |= f.binary;
+            prev.disposition = dispositions
+                .get(&prev.path)
+                .copied()
+                .unwrap_or(Disposition::Modified);
+            for h in &f.hunks {
+                hunks[*h].file = idx;
+                prev.hunks.push(*h);
+            }
+        } else {
+            let idx = merged.len();
+            for h in &f.hunks {
+                hunks[*h].file = idx;
+            }
+            merged.push(f);
         }
     }
 
