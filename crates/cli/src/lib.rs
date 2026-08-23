@@ -46,6 +46,33 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Open the terminal reviewer over the grouped reading plan.
+    Review {
+        #[command(flatten)]
+        common: Common,
+        /// Bypass the grouping cache (forces a fresh LLM call).
+        #[arg(long)]
+        no_cache: bool,
+    },
+    /// Print the review's findings as JSON (re-anchored to the current plan).
+    Findings {
+        #[command(flatten)]
+        common: Common,
+        /// Bypass the grouping cache (forces a fresh LLM call).
+        #[arg(long)]
+        no_cache: bool,
+    },
+}
+
+impl Command {
+    fn common(&self) -> &Common {
+        match self {
+            Command::Stack { common, .. }
+            | Command::Check { common, .. }
+            | Command::Review { common, .. }
+            | Command::Findings { common, .. } => common,
+        }
+    }
 }
 
 #[derive(Args)]
@@ -74,9 +101,7 @@ pub fn main_impl() -> ExitCode {
 }
 
 fn run(cli: Cli) -> anyhow::Result<ExitCode> {
-    let common = match &cli.command {
-        Command::Stack { common, .. } | Command::Check { common, .. } => common,
-    };
+    let common = cli.command.common();
 
     let dir = common
         .repo
@@ -90,6 +115,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Ok(c) => c,
         Err(e) => return usage_error(&e.to_string()),
     };
+    let common_range: Vec<String> = common.range.clone();
     let spec: Vec<&str> = common.range.iter().map(String::as_str).collect();
     let (base, head, kind) = match resolve_range(&repo, &spec) {
         Ok(t) => t,
@@ -155,6 +181,29 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             );
             Ok(ExitCode::SUCCESS)
         }
+        Command::Review { no_cache, .. } => {
+            let out = grouped(&repo, &base, &head, kind, &config, &langs, no_cache)?;
+            let head_spec = head_spec_of(&common_range);
+            tui::run_review(&repo, out, &head_spec)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Findings { no_cache, .. } => {
+            let out = grouped(&repo, &base, &head, kind, &config, &langs, no_cache)?;
+            let doc = out
+                .document
+                .context("invariants failed; no plan available")?;
+            let store = differential_engine::review_state::ReviewStore::open(
+                &repo,
+                &out.base,
+                &head_spec_of(&common_range),
+            )?;
+            let plan_hash = store.save_plan(&doc)?;
+            let mut findings = store.load_findings()?;
+            differential_engine::review_state::reanchor(&mut findings, &doc, &out.view, &plan_hash);
+            store.save_findings(&findings)?;
+            println!("{}", serde_json::to_string_pretty(&findings)?);
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Check { json, .. } => {
             let out = run_pipeline(&repo, &base, &head, kind, &config, &langs)
                 .context("pipeline failed")?;
@@ -217,4 +266,53 @@ fn print_report(report: &InvariantReport, base: &str, head: &str) {
         if report.recount_ok { "PASS" } else { "FAIL" }
     );
     println!("note: tree building writes unreferenced loose objects into the odb (gc-able)");
+}
+
+/// Grouped pipeline with the on-disk cache (unless bypassed).
+fn grouped(
+    repo: &Repo,
+    base: &str,
+    head: &str,
+    kind: differential_schema::SourceKind,
+    config: &Config,
+    langs: &LanguageRegistry,
+    no_cache: bool,
+) -> anyhow::Result<differential_engine::PipelineOutput> {
+    let cache_dir = if no_cache {
+        None
+    } else {
+        Some(
+            repo.common_dir()?
+                .join("differential")
+                .join("cache")
+                .join("grouping"),
+        )
+    };
+    differential_engine::run_grouped_pipeline(
+        repo,
+        base,
+        head,
+        kind,
+        config,
+        langs,
+        &GroupingOptions {
+            backend: None,
+            cache_dir: cache_dir.as_deref(),
+        },
+    )
+    .context("grouped pipeline failed")
+}
+
+/// The head endpoint AS TYPED — a branch name keeps the review's identity
+/// stable while its tip moves.
+fn head_spec_of(range: &[String]) -> String {
+    match range {
+        [one] => one
+            .split_once("...")
+            .or_else(|| one.split_once(".."))
+            .map(|(_, b)| b.to_string())
+            .unwrap_or_else(|| one.clone()),
+        [_, b] => b.clone(),
+        _ => String::new(),
+    }
 }

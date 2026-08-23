@@ -146,8 +146,7 @@ impl ReviewStore {
         if !path.exists() {
             std::fs::write(&path, &json).map_err(|e| io_err(&path, e))?;
         }
-        std::fs::write(self.dir.join("current"), &hash)
-            .map_err(|e| io_err(&self.dir, e))?;
+        std::fs::write(self.dir.join("current"), &hash).map_err(|e| io_err(&self.dir, e))?;
         Ok(hash)
     }
 
@@ -197,8 +196,12 @@ impl ReviewStore {
             .append(true)
             .open(&path)
             .map_err(|e| io_err(&path, e))?;
-        writeln!(file, "{}", serde_json::to_string(finding).expect("serialises"))
-            .map_err(|e| io_err(&path, e))
+        writeln!(
+            file,
+            "{}",
+            serde_json::to_string(finding).expect("serialises")
+        )
+        .map_err(|e| io_err(&path, e))
     }
 
     /// Rewrite the whole findings file (status changes, deletions, re-anchor
@@ -218,7 +221,12 @@ impl ReviewStore {
 /// exact digest → reattach (position refreshed); same-file content match →
 /// reattach flagged `moved`; otherwise `orphaned` (revived automatically if a
 /// later plan matches again).
-pub fn reanchor(findings: &mut [Finding], doc: &schema::PlanDocument, view: &DiffView, plan_hash: &str) {
+pub fn reanchor(
+    findings: &mut [Finding],
+    doc: &schema::PlanDocument,
+    view: &DiffView,
+    plan_hash: &str,
+) {
     for f in findings.iter_mut() {
         if f.plan_hash == plan_hash {
             continue; // written against this exact plan

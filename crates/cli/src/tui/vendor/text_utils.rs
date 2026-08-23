@@ -265,7 +265,7 @@ pub fn apply_search_highlight_spans(
         .collect()
 }
 
-fn split_pairs_at_ranges(
+pub fn split_pairs_at_ranges(
     pairs: &[(Style, String)],
     ranges: Vec<(usize, usize)>,
     highlight: Style,

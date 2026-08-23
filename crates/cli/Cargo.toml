@@ -18,8 +18,12 @@ similar = { version = "2", features = ["unicode", "inline"] }
 syntect = "5"
 two-face = { version = "0.5", default-features = false, features = ["syntect-default-fancy"] }
 unicode-width = "0.2"
-tui-textarea = "0.7"
+tui-textarea = { package = "tui-textarea-2", version = "0.13" }
 arboard = "3"
+
+[dev-dependencies]
+differential-llm = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

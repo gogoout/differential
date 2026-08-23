@@ -9,10 +9,14 @@ renderer is its first occupant, and the TUI joins it later.
 ## The renderer binary
 
 ```sh
+dfr review [--repo <path>] [--config <path>] [--no-cache] <range>
 dfr stack [--repo <path>] [--config <path>] [--ref <name>] [--no-cache] <range>
+dfr findings [--repo <path>] [--config <path>] [--no-cache] <range>
 dfr check [--repo <path>] [--config <path>] [--json] <range>
 ```
 
+- `review` opens the terminal reviewer ([tui.md](tui.md)); `findings` prints the review's
+  findings as re-anchored JSON.
 - `stack` builds and lands the review commit stack ([stack.md](stack.md)), printing the
   commit list and the `git log` line to review with. The grouping backend comes from
   `[grouping].command` (default: the tools-denied claude invocation); the pinning cache

@@ -134,11 +134,6 @@ impl SyntaxHighlighter {
         Some(self.highlight_lines_with(syntax, lines))
     }
 
-    /// Highlight a review comment body (`\n`-separated) as Markdown, returning
-    /// one entry per line. Colors come from the active syntect theme, matching
-    /// code highlighting.
-    ///
-
     /// Run syntect line-by-line against a resolved syntax, converting to
     /// ratatui spans. Shared by file and markdown highlighting.
     fn highlight_lines_with(

@@ -1,0 +1,545 @@
+//! The single row builder (tuicr's lesson applied): the row-kind array IS the
+//! output of the builder that renders the lines, so navigation and drawing can
+//! never disagree about what a row is.
+
+use std::collections::HashMap;
+
+use differential_engine::gitio::Repo;
+use differential_engine::review_state::Finding;
+use differential_schema as schema;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+
+use super::theme::{THEME, highlighter};
+use super::vendor::LineOrigin;
+use super::vendor::diff_algo::compute_side_by_side;
+use super::vendor::diff_types::{ChangeType, DiffLine, InlineSegment, expand_tabs};
+use super::vendor::syntax::HighlightedLines;
+use super::vendor::text_utils::split_pairs_at_ranges;
+
+const CONTEXT: usize = 3;
+const TAB_WIDTH: usize = 4;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RowKind {
+    GroupHeader,
+    FileHeader,
+    /// Canonical hunk index.
+    HunkHeader(usize),
+    /// A diff content row belonging to a hunk.
+    Diff(usize),
+    /// A finding attached to a hunk: (finding id, hunk index).
+    Finding(String, usize),
+    /// Collapsed remainder / noise: press z to unfold.
+    Fold,
+    Blank,
+}
+
+impl RowKind {
+    pub fn selectable(&self) -> bool {
+        matches!(
+            self,
+            RowKind::HunkHeader(_) | RowKind::Diff(_) | RowKind::Finding(_, _) | RowKind::Fold
+        )
+    }
+
+    pub fn hunk(&self) -> Option<usize> {
+        match self {
+            RowKind::HunkHeader(h) | RowKind::Diff(h) | RowKind::Finding(_, h) => Some(*h),
+            _ => None,
+        }
+    }
+}
+
+pub struct Row {
+    pub kind: RowKind,
+    pub line: Line<'static>,
+}
+
+/// Per-file computed rows + pre-baked syntax highlighting, cached across
+/// group switches.
+pub struct FileRows {
+    rows: Vec<DiffLine>,
+    old_hl: Option<HighlightedLines>,
+    new_hl: Option<HighlightedLines>,
+}
+
+pub struct RowFactory {
+    repo: Repo,
+    base: String,
+    head: String,
+    cache: HashMap<String, FileRows>,
+}
+
+impl RowFactory {
+    pub fn new(repo: Repo, base: String, head: String) -> Self {
+        RowFactory {
+            repo,
+            base,
+            head,
+            cache: HashMap::new(),
+        }
+    }
+
+    fn file_rows(&mut self, path: &str) -> &FileRows {
+        if !self.cache.contains_key(path) {
+            let old = self
+                .repo
+                .blob(&self.base, path.as_bytes())
+                .ok()
+                .flatten()
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+                .unwrap_or_default();
+            let new = self
+                .repo
+                .blob(&self.head, path.as_bytes())
+                .ok()
+                .flatten()
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+                .unwrap_or_default();
+            let rows = compute_side_by_side(&old, &new, TAB_WIDTH);
+            let hl = highlighter();
+            let expand =
+                |s: &str| -> Vec<String> { s.lines().map(|l| expand_tabs(l, TAB_WIDTH)).collect() };
+            let p = std::path::Path::new(path);
+            let old_hl = hl.highlight_file_lines(p, &expand(&old));
+            let new_hl = hl.highlight_file_lines(p, &expand(&new));
+            self.cache.insert(
+                path.to_string(),
+                FileRows {
+                    rows,
+                    old_hl,
+                    new_hl,
+                },
+            );
+        }
+        &self.cache[path]
+    }
+}
+
+/// Everything the builder needs to know about the selected group.
+pub struct GroupContext<'a> {
+    pub doc: &'a schema::PlanDocument,
+    pub group: &'a schema::Group,
+    /// Group id -> label, for rendering depends_on legibly.
+    pub labels: &'a HashMap<String, String>,
+    pub findings: &'a [Finding],
+    /// Hunk indices whose class is marked reviewed.
+    pub reviewed: &'a std::collections::HashSet<usize>,
+    pub fold_open: bool,
+}
+
+/// Build the right-pane rows for one group.
+pub fn build_group_rows(factory: &mut RowFactory, ctx: &GroupContext) -> Vec<Row> {
+    let mut rows = Vec::new();
+    header_rows(ctx, &mut rows);
+
+    let class_by_id: HashMap<&str, &schema::ClassEntry> =
+        ctx.doc.classes.iter().map(|c| (c.id.as_str(), c)).collect();
+    let hunk_idx = |hid: &str| -> usize { hid[1..].parse().expect("hunk ids are h<N>") };
+
+    // Which hunks to show expanded vs behind the fold.
+    let (shown, hidden): (Vec<usize>, Vec<usize>) = match ctx.group.effort {
+        schema::Effort::Skim if !ctx.fold_open => {
+            let ex: Vec<usize> = ctx
+                .group
+                .class_ids
+                .iter()
+                .map(|c| hunk_idx(&class_by_id[c.as_str()].exemplar))
+                .collect();
+            let rest: Vec<usize> = ctx
+                .group
+                .class_ids
+                .iter()
+                .flat_map(|c| {
+                    let class = class_by_id[c.as_str()];
+                    class
+                        .hunk_ids
+                        .iter()
+                        .filter(|h| **h != class.exemplar)
+                        .map(|h| hunk_idx(h))
+                })
+                .collect();
+            (ex, rest)
+        }
+        schema::Effort::Noise if !ctx.fold_open => {
+            let all: Vec<usize> = ctx
+                .group
+                .class_ids
+                .iter()
+                .flat_map(|c| class_by_id[c.as_str()].hunk_ids.iter().map(|h| hunk_idx(h)))
+                .collect();
+            (Vec::new(), all)
+        }
+        _ => {
+            let all: Vec<usize> = ctx
+                .group
+                .class_ids
+                .iter()
+                .flat_map(|c| class_by_id[c.as_str()].hunk_ids.iter().map(|h| hunk_idx(h)))
+                .collect();
+            (all, Vec::new())
+        }
+    };
+
+    // File-grouped presentation: sort by (file, new_start).
+    let mut ordered = shown;
+    ordered.sort_by(|&a, &b| {
+        let (ha, hb) = (&ctx.doc.hunks[a], &ctx.doc.hunks[b]);
+        (ha.file.as_str(), ha.new_start).cmp(&(hb.file.as_str(), hb.new_start))
+    });
+
+    let mut current_file: Option<&str> = None;
+    for hi in ordered {
+        let hunk = &ctx.doc.hunks[hi];
+        if current_file != Some(hunk.file.as_str()) {
+            current_file = Some(hunk.file.as_str());
+            rows.push(file_header_row(ctx, hunk));
+        }
+        hunk_rows(factory, ctx, hi, &mut rows);
+    }
+
+    if !hidden.is_empty() {
+        let what = match ctx.group.effort {
+            schema::Effort::Noise => "folded generated hunks",
+            _ => "remaining hunks, same shapes as the exemplars above",
+        };
+        rows.push(Row {
+            kind: RowKind::Fold,
+            line: Line::from(Span::styled(
+                format!("  ── {} {what} — press z to unfold ──", hidden.len()),
+                Style::default().fg(THEME.noise_fg),
+            )),
+        });
+    }
+    rows
+}
+
+fn header_rows(ctx: &GroupContext, rows: &mut Vec<Row>) {
+    let g = ctx.group;
+    let tier = match g.effort {
+        schema::Effort::Close => "close",
+        schema::Effort::Skim => "skim",
+        schema::Effort::Noise => "noise",
+    };
+    let role = g
+        .role
+        .map(|r| match r {
+            schema::Role::Foundation => " · foundation",
+            schema::Role::Consumer => " · consumer",
+            schema::Role::Mechanical => " · mechanical",
+            schema::Role::Noise => " · noise",
+        })
+        .unwrap_or("");
+    rows.push(Row {
+        kind: RowKind::GroupHeader,
+        line: Line::from(vec![
+            Span::styled(
+                format!("[{tier}] "),
+                THEME.effort_style(g.effort).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                g.label.clone(),
+                Style::default()
+                    .fg(THEME.header_fg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(role.to_string(), Style::default().fg(THEME.gutter_fg)),
+        ]),
+    });
+    if !g.description.is_empty() {
+        rows.push(Row {
+            kind: RowKind::GroupHeader,
+            line: Line::from(Span::styled(
+                format!("  {}", g.description),
+                Style::default().fg(THEME.context_fg),
+            )),
+        });
+    }
+    if !g.depends_on.is_empty() {
+        let deps: Vec<String> = g
+            .depends_on
+            .iter()
+            .map(|id| {
+                ctx.labels
+                    .get(id)
+                    .map(|l| format!("{id} ({l})"))
+                    .unwrap_or_else(|| id.clone())
+            })
+            .collect();
+        rows.push(Row {
+            kind: RowKind::GroupHeader,
+            line: Line::from(Span::styled(
+                format!("  depends on: {}", deps.join(", ")),
+                Style::default().fg(THEME.gutter_fg),
+            )),
+        });
+    }
+    rows.push(Row {
+        kind: RowKind::Blank,
+        line: Line::default(),
+    });
+}
+
+fn file_header_row(ctx: &GroupContext, hunk: &schema::HunkEntry) -> Row {
+    let entry = ctx.doc.files.iter().find(|f| f.path == hunk.file);
+    let mut text = format!("▍{}", hunk.file);
+    if let Some(f) = entry {
+        if let Some(old) = &f.old_path {
+            let sim = f
+                .rename_similarity
+                .map(|s| format!(", {s}% similar"))
+                .unwrap_or_default();
+            text.push_str(&format!("  (renamed from {old}{sim})"));
+        }
+        if f.generated {
+            text.push_str("  [generated]");
+        }
+    }
+    Row {
+        kind: RowKind::FileHeader,
+        line: Line::from(Span::styled(
+            text,
+            Style::default()
+                .fg(THEME.header_fg)
+                .add_modifier(Modifier::BOLD),
+        )),
+    }
+}
+
+fn hunk_rows(factory: &mut RowFactory, ctx: &GroupContext, hi: usize, rows: &mut Vec<Row>) {
+    let hunk = &ctx.doc.hunks[hi];
+    let reviewed = ctx.reviewed.contains(&hi);
+    let check = if reviewed { " ✓ reviewed" } else { "" };
+    let n_findings = ctx
+        .findings
+        .iter()
+        .filter(|f| f.anchor.hunk_digest == hunk.digest)
+        .count();
+    let notes = if n_findings > 0 {
+        format!("  ◆ {n_findings} finding(s)")
+    } else {
+        String::new()
+    };
+    let header_style = if reviewed {
+        Style::default().fg(THEME.reviewed_fg)
+    } else {
+        Style::default().fg(THEME.skim_fg)
+    };
+    rows.push(Row {
+        kind: RowKind::HunkHeader(hi),
+        line: Line::from(vec![
+            Span::styled(
+                format!(
+                    "@@ -{},{} +{},{} @@  {}{check}",
+                    hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count, hunk.class
+                ),
+                header_style,
+            ),
+            Span::styled(notes, Style::default().fg(THEME.finding_fg)),
+        ]),
+    });
+
+    // Findings under the header.
+    for f in ctx
+        .findings
+        .iter()
+        .filter(|f| f.anchor.hunk_digest == hunk.digest)
+    {
+        let moved = if f.moved { " (moved)" } else { "" };
+        rows.push(Row {
+            kind: RowKind::Finding(f.id.clone(), hi),
+            line: Line::from(Span::styled(
+                format!("  ◆ {}{moved}", f.body.lines().next().unwrap_or("")),
+                Style::default().fg(THEME.finding_fg),
+            )),
+        });
+    }
+
+    // Binary / submodule files carry no reconstructable text rows.
+    let file_entry = ctx.doc.files.iter().find(|f| f.path == hunk.file);
+    if file_entry.is_some_and(|f| f.binary || f.submodule.is_some()) {
+        rows.push(Row {
+            kind: RowKind::Diff(hi),
+            line: Line::from(Span::styled(
+                "  (binary or submodule change)",
+                Style::default().fg(THEME.noise_fg),
+            )),
+        });
+        return;
+    }
+
+    let file_rows = factory.file_rows(&hunk.file);
+    let range = hunk_row_range(&file_rows.rows, hunk);
+    let Some((start, end)) = range else {
+        rows.push(Row {
+            kind: RowKind::Diff(hi),
+            line: Line::from(Span::styled(
+                "  (content unavailable)",
+                Style::default().fg(THEME.noise_fg),
+            )),
+        });
+        return;
+    };
+    let from = start.saturating_sub(CONTEXT);
+    let to = (end + CONTEXT + 1).min(file_rows.rows.len());
+    for row in &file_rows.rows[from..to] {
+        for line in render_diff_row(row, file_rows) {
+            rows.push(Row {
+                kind: RowKind::Diff(hi),
+                line,
+            });
+        }
+    }
+    rows.push(Row {
+        kind: RowKind::Blank,
+        line: Line::default(),
+    });
+}
+
+/// Locate the row span covered by a canonical -U0 hunk.
+fn hunk_row_range(rows: &[DiffLine], hunk: &schema::HunkEntry) -> Option<(usize, usize)> {
+    let in_new = |n: usize| {
+        hunk.new_count > 0
+            && n >= hunk.new_start as usize
+            && n < (hunk.new_start + hunk.new_count) as usize
+    };
+    let in_old = |n: usize| {
+        hunk.old_count > 0
+            && n >= hunk.old_start as usize
+            && n < (hunk.old_start + hunk.old_count) as usize
+    };
+    let mut first = None;
+    let mut last = None;
+    for (i, r) in rows.iter().enumerate() {
+        let hit = !matches!(r.change_type, ChangeType::Equal)
+            && (r.new_line.as_ref().is_some_and(|(n, _)| in_new(*n))
+                || r.old_line.as_ref().is_some_and(|(n, _)| in_old(*n)));
+        if hit {
+            if first.is_none() {
+                first = Some(i);
+            }
+            last = Some(i);
+        }
+    }
+    first.zip(last)
+}
+
+/// One lumen row → one or two unified ratatui lines (Modified → `-` then `+`).
+fn render_diff_row(row: &DiffLine, file: &FileRows) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    match row.change_type {
+        ChangeType::Equal => {
+            if let Some((n, text)) = &row.new_line {
+                let old_n = row.old_line.as_ref().map(|(o, _)| *o).unwrap_or(0);
+                out.push(side_line(
+                    Some(old_n),
+                    Some(*n),
+                    ' ',
+                    text,
+                    LineOrigin::Context,
+                    file.new_hl.as_ref(),
+                    *n,
+                    None,
+                ));
+            }
+        }
+        ChangeType::Delete | ChangeType::Modified => {
+            if let Some((n, text)) = &row.old_line {
+                out.push(side_line(
+                    Some(*n),
+                    None,
+                    '-',
+                    text,
+                    LineOrigin::Deletion,
+                    file.old_hl.as_ref(),
+                    *n,
+                    row.old_segments.as_deref(),
+                ));
+            }
+            if matches!(row.change_type, ChangeType::Modified)
+                && let Some((n, text)) = &row.new_line
+            {
+                out.push(side_line(
+                    None,
+                    Some(*n),
+                    '+',
+                    text,
+                    LineOrigin::Addition,
+                    file.new_hl.as_ref(),
+                    *n,
+                    row.new_segments.as_deref(),
+                ));
+            }
+        }
+        ChangeType::Insert => {
+            if let Some((n, text)) = &row.new_line {
+                out.push(side_line(
+                    None,
+                    Some(*n),
+                    '+',
+                    text,
+                    LineOrigin::Addition,
+                    file.new_hl.as_ref(),
+                    *n,
+                    row.new_segments.as_deref(),
+                ));
+            }
+        }
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn side_line(
+    old_n: Option<usize>,
+    new_n: Option<usize>,
+    marker: char,
+    text: &str,
+    origin: LineOrigin,
+    hl: Option<&HighlightedLines>,
+    lineno: usize,
+    segments: Option<&[InlineSegment]>,
+) -> Line<'static> {
+    let gutter = format!(
+        "{:>4} {:>4} {marker} ",
+        old_n.map(|n| n.to_string()).unwrap_or_default(),
+        new_n.map(|n| n.to_string()).unwrap_or_default(),
+    );
+
+    // Syntax spans for this line, else plain.
+    let mut pairs: Vec<(Style, String)> = hl
+        .and_then(|lines| lines.get(lineno.saturating_sub(1)).cloned().flatten())
+        .unwrap_or_else(|| vec![(Style::default().fg(THEME.context_fg), text.to_string())]);
+
+    // Line background per side.
+    pairs = highlighter_bg(pairs, origin);
+
+    // Word-level emphasis over the changed segments.
+    if let Some(segs) = segments {
+        let mut ranges = Vec::new();
+        let mut off = 0usize;
+        for s in segs {
+            let end = off + s.text.len();
+            if s.emphasized {
+                ranges.push((off, end));
+            }
+            off = end;
+        }
+        if !ranges.is_empty() {
+            pairs = split_pairs_at_ranges(
+                &pairs,
+                ranges,
+                THEME.word_emphasis(matches!(origin, LineOrigin::Addition)),
+            );
+        }
+    }
+
+    let mut spans = vec![Span::styled(gutter, Style::default().fg(THEME.gutter_fg))];
+    spans.extend(pairs.into_iter().map(|(s, t)| Span::styled(t, s)));
+    Line::from(spans)
+}
+
+fn highlighter_bg(pairs: Vec<(Style, String)>, origin: LineOrigin) -> Vec<(Style, String)> {
+    super::theme::highlighter().apply_diff_background(pairs, origin)
+}

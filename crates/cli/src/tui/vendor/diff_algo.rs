@@ -2,7 +2,7 @@
 // MIT License — Copyright (c) 2024 Sahaj Jain. See LICENSE-MIT.
 use similar::{ChangeTag, TextDiff};
 
-use super::diff_types::{expand_tabs, ChangeType, DiffLine, InlineSegment};
+use super::diff_types::{ChangeType, DiffLine, InlineSegment, expand_tabs};
 
 /// Check if a string contains meaningful (non-whitespace) content.
 fn has_meaningful_content(s: &str) -> bool {

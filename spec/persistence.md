@@ -63,8 +63,9 @@ back-fill: detection and preservation, not silent loss.
 Review progress (`state.json`) carries "reviewed" marks keyed by class/group **content
 hash**: a group whose content is unchanged stays reviewed; anything that changed resets.
 
-## Milestone status
+## Status
 
-Milestone 1 ships the enablers: this spec, `hunks[].digest` in the schema, and the state-dir
-convention. The `review-state` crate (comment store + re-anchoring) lands with the TUI; the
-forge consumer publishes from the same store.
+Implemented in `engine::review_state` and consumed by the TUI ([tui.md](tui.md)):
+content-addressed immutable plans, reviewed marks keyed on class content, findings
+anchored by hunk digest with exact → content-match → orphaned re-anchoring (orphans revive
+on a later match). The forge consumer will publish from the same store.
