@@ -29,3 +29,22 @@ A `Language` trait (`engine::lang`) with a `LanguageRegistry`:
 - Adding a language is additive: implement `claims` + overrides, register, done.
 - The generic normaliser in `lang/generic.rs` is frozen; improvements land as plugins with
   their own ids, never as in-place edits.
+
+## Note: no SCIP — heuristics first, an indexer only if measured necessary
+
+The original validation brief framed "do we need SCIP?" as the key build decision. The
+validated architecture answered no: coverage is structural (shape classes) and needs zero
+reference resolution, and the causal collapse model that SCIP would have powered was
+measured and rejected (ADR 0007).
+
+The one place symbol knowledge will matter is the ordering stage's definition → use edges,
+and there the bar is low by design: ordering needs only a partial order, and a wrong edge
+misorders — it can never hide content. Crude per-language declaration heuristics measured
+~30% precision, which killed them for collapse but is survivable for ordering. A SCIP-backed
+pipeline would buy precision at the cost of a working indexer per language, run against a
+checkout of the right revision, to feed a stage that tolerates noise.
+
+Plan of record: the ordering hooks on this trait are implemented as lightweight per-language
+heuristics first. If ordering quality on real MRs is measured to be insufficient, a
+SCIP-backed `Language` implementation can slot in behind the same trait without touching the
+engine or the schema — that is what this seam is for.
