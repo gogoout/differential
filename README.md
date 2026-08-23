@@ -1,138 +1,138 @@
 # differential
 
-**Grouped, ordered reading plans for large diffs.**
+**Review large diffs as an ordered, honest reading plan.**
 
-A 100-file merge request is not 100 files of work. Most of it is one decision echoing through
-the codebase: a signature change cascading through call sites, a rename sweeping across
-imports, a lockfile regenerating itself. A reviewer's real job is to find the handful of
-changes that deserve close reading — and to *safely* skip the rest.
+`differential` looks at a big merge request, works out which changes are the same edit
+repeated (a rename sweeping through imports, a signature change echoing through call
+sites), which are generated noise, and which few genuinely need close reading — then
+renders the result as a **review commit stack** you read natively in your IDE, `tig`, or
+plain `git log`. Coverage is guaranteed structurally: every hunk is accounted for, audited,
+and byte-exactly reconstructible, so skipping what it says to skip is safe.
 
-`differential` does that mechanically. It turns a diff into **one JSON document** describing
-what to read closely, what can be verified from a single exemplar, and what is generated
-noise — with 100% hunk coverage guaranteed structurally, never by trusting a model.
+## Requirements
 
-## How it works
+- `git` on PATH (all repository access shells out to real git)
+- Rust (stable, pinned in `rust-toolchain.toml`) to build
+- an LLM CLI for the grouping step — by default [`claude`](https://claude.com/claude-code),
+  invoked headless with tools denied; any prompt-in/text-out command works (see
+  Configuration)
 
-The load-bearing idea: **coverage is structural, judgement is delegated.**
-
-1. **Mechanical partition.** Every hunk is assigned a *shape class* — a hash of its diff text
-   with identifiers and literals normalised away, on both the removed and added sides. Hunks
-   in one class are the same edit wearing different names. Coverage is 100% by construction:
-   no model, no parser of semantics, no file ever excluded.
-2. **An LLM merges and labels class ids — never hunks.** Asking a model to partition hunks
-   directly fails silently: on large refactors, measured coverage dropped as low as ~27%
-   while reporting success, because an omitted hunk index is indistinguishable from one that
-   never existed. Here the model can only group *class ids*; anything it omits is detected
-   against the known id set and back-filled into a must-read group. It still earns its keep —
-   merging twenty textually-different shape classes into one "path and import swaps" group is
-   exactly what hashing can't do.
-3. **Structural audits.** Before any document is emitted: every changed file must reconstruct
-   **byte-exactly** from base + hunks; the final tree is rebuilt *from applied hunks* (never
-   copied) and must equal the real head tree; and an independent, deliberately dumb recount
-   over git's own output must match. Each audit caught a real bug during validation
-   ([`spec/invariants.md`](spec/invariants.md)).
-
-The report is honest about the saving: skim exemplars still get read, so documents track
-*read hunks* and *skipped hunks* separately — only the latter is time saved.
-
-Three consumers are planned as views over the document:
-
-- **Shadow branch** — the diff rewritten as a synthetic commit stack, reviewed natively in
-  your IDE or `tig`; `git log --oneline` alone shows the shape of the change.
-- **TUI** — a dedicated reviewer emitting structured findings keyed by hunk.
-- **Forge review** — grouped comments posted to a GitLab MR / GitHub PR.
-
-## Status
-
-| stage | state |
-|---|---|
-| Frozen JSON contract (`schema_version: 1`) | ✅ [`spec/json-contract.md`](spec/json-contract.md) |
-| Core engine: enumeration, shape classes, applier, invariants | ✅ |
-| Language abstraction (per-language normalisation, generic default) | ✅ seam in place |
-| LLM backend abstraction (`differential-llm`) | ✅ seam in place |
-| Grouping stage (LLM merge/label + coverage audit + pinning cache) | ✅ [`spec/grouping.md`](spec/grouping.md) |
-| Ordering (foundation-first group DAG, roles, dependency edges) | ✅ [`spec/ordering.md`](spec/ordering.md) |
-| Shadow-branch renderer (review the stack in your IDE or `tig`) | ✅ [`spec/stack.md`](spec/stack.md) |
-| Consumers: TUI (`dfr`), forge review | planned |
-
-`run_pipeline` emits the core document (`groups: null`); `run_grouped_pipeline` adds the
-grouping stage — labelled close/skim/noise groups, a reading plan, and the coverage audit —
-behind any `LlmBackend`, pinned by a content-hash cache so a review never reshuffles.
-
-## Usage
-
-The core is a **library** (ADR 0014): renderers link it directly and receive the document
-in-process. The `dfr` binary is the renderer surface — today that is the shadow branch:
+## Install
 
 ```sh
-dfr stack main..feature        # build the review stack on refs/review/…/stack
-git log --oneline main..refs/review/<base7>-<head7>/stack   # the reading plan
-dfr check main..feature        # run invariants 1–4 (CI entry point)
+cargo install --path crates/cli
 ```
 
-The library surface behind it, for renderers linking the engine directly:
+This installs `dfr` (and `differential`, the long name).
+
+## Quick start
+
+```sh
+cd your-repo
+dfr stack main..feature
+```
+
+First run on a range calls the LLM once (a minute or two on a big MR); the grouping is then
+cached, so re-runs are instant and stable. Output:
+
+```
+refs/review/1a2b3c4-5d6e7f8/stack  (14 commits, 187 hunks, recount 187)
+  ...
+review with: git log --oneline 1a2b3c4d5e6f..refs/review/1a2b3c4-5d6e7f8/stack
+```
+
+Then review the stack like any branch:
+
+```
+$ git log --oneline 1a2b3c4d5e6f..refs/review/1a2b3c4-5d6e7f8/stack
+f00dfee  [unclassified] 1 hunks carried by no group
+0ddba11  [noise] Lockfiles and generated artefacts — folded, 21 hunks
+cafe007  [skim 2/2] Import swaps for the renamed module — 38 further hunks, same shapes
+beefed5  [skim 1/2] Import swaps for the renamed module — 28 exemplars
+add1c7e  [close] Rework retry handling in the client
+decade0  [close] Introduce the storage backend trait and its implementations
+```
+
+Read bottom-up: `[close]` commits first (ordered so definitions precede their consumers),
+then one exemplar per shape in `[skim 1/2]`, and skip `[skim 2/2]` and `[noise]` on their
+subject lines alone — every hunk in them is a repeat of a shape you already verified.
+
+### Commands
+
+```sh
+dfr stack [--ref <name>] [--no-cache] <range>   # build + land the review stack
+dfr check [--json] <range>                      # run the structural invariants (CI-friendly)
+```
+
+- `<range>`: `base..head`, `a...b` (base = merge-base, i.e. what an MR/PR diff is), or two
+  revs.
+- `--repo <path>` / `--config <path>` work on every command; the repo defaults to the one
+  containing your cwd.
+- `dfr stack --ref refs/review/my-review/stack` picks the ref; default is
+  `refs/review/<base7>-<head7>/stack`. Re-running moves the ref.
+- `--no-cache` forces a fresh LLM grouping.
+- Exit codes: 0 success, 1 invariant/pipeline failure, 2 usage or config error.
+
+The stack never touches your worktree, index, or branches — it is built entirely with git
+plumbing and only lands a ref.
+
+## Configuration (optional)
+
+Drop a `.differential.toml` at the repo root:
+
+```toml
+[classify]
+# Extra globs to mark as generated (folded as noise in the reading plan).
+generated = ["**/__snapshots__/**", "migrations/**"]
+# Never mark these generated, even if a builtin rule says so.
+not_generated = ["important.lock"]
+# gitattributes names honoured as "generated" declarations.
+attributes = ["linguist-generated"]
+
+[grouping]
+# Any prompt-on-stdin / text-on-stdout command. Default shown.
+command = ["claude", "-p", "--output-format", "text", "--allowed-tools", ""]
+timeout_secs = 1200
+```
+
+Config can tune classification and the backend — it can never exclude files from analysis.
+
+## Using it as a library
+
+The engine is a library first; the JSON plan document it produces is the contract every
+renderer consumes:
 
 ```rust
 use differential_engine::{gitio::Repo, config::Config, lang::LanguageRegistry,
                           resolve_range, run_pipeline};
 
 let repo = Repo::open(path)?;
-let config = Config::load(repo.root(), None)?;          // .differential.toml or defaults
+let config = Config::load(repo.root(), None)?;
 let (base, head, kind) = resolve_range(&repo, &["main..feature"])?;
 let out = run_pipeline(&repo, &base, &head, kind, &config, &LanguageRegistry::builtin())?;
-
-// out.report:   InvariantReport — always present
-// out.document: Option<PlanDocument> — None iff an invariant failed
 ```
 
-`a...b` resolves the base via merge-base — which is what an MR/PR diff is. Full library
-surface and the per-repo `.differential.toml` config format:
-[`spec/consumers.md`](spec/consumers.md).
+Full surface: [`spec/consumers.md`](spec/consumers.md).
 
-## Guarantees
+## Status
 
-- **Nothing is ever excluded from enumeration.** No extension filters, no path exclusions —
-  not even via config. Manifest and lockfile edits are where refactor cascades live; path
-  filtering was the single worst coverage bug found during validation (ADR 0005, 0012).
-  Config and language plugins tune *classification*, never *what exists*.
-- **A low-similarity rename can never masquerade as a verbatim move.** Renames are annotated
-  with git's similarity score on both halves; below ~95 it is a modification and never
-  skim-eligible (ADR 0003).
-- **Documents are pure functions of `base..head`.** Review state (comments, progress) lives
-  in a sidecar store and re-anchors across regenerations by exact hunk digest — orphaned,
-  listed, never silently dropped ([`spec/persistence.md`](spec/persistence.md)).
+Shipped: the full pipeline (enumeration → shape classes → LLM grouping → foundation-first
+ordering) and the shadow-branch renderer (`dfr stack`). Planned: a review TUI (joining the
+`dfr` binary) and posting grouped review comments to GitLab/GitHub.
 
-## Layout
+## Learn more
 
-| path | what |
-|---|---|
-| [`spec/`](spec/) | what the program does (normative) |
-| [`adr/`](adr/) | why it is this way (decision records 0001–0016) |
-| `crates/schema` | the frozen JSON contract as serde types — the product boundary |
-| `crates/engine` | git io, diff parsing, byte-exact applier, shape classes, language registry, invariants |
-| `crates/llm` | the LLM backend abstraction the grouping stage builds on |
-| `crates/cli` | the `dfr` / `differential` renderer binary (`stack`, `check`) |
-
-Dependency direction is strict: consumers → `engine` → `schema`. The schema crate depends
-only on serde, so future consumers take the contract without the git plumbing.
+- [`docs/architecture.md`](docs/architecture.md) — how it works and why it's built this way
+- [`spec/`](spec/) — normative behaviour (JSON contract, invariants, each pipeline stage)
+- [`adr/`](adr/) — decision records with the measurements behind them
 
 ## Development
 
-Requires stable Rust (pinned in `rust-toolchain.toml`) and a `git` binary on PATH — all git
-access shells out to real git, because the byte-exactness guarantees were validated against
-real git output and nothing else (ADR 0002).
-
 ```sh
-cargo test                     # unit + synthetic-repo integration tests (hermetic temp repos)
-cargo clippy --all-targets
-DIFFERENTIAL_FIXTURE_CONFIG=$PWD/fixtures.local.toml \
-  cargo test -- --ignored      # parity against a real corpus; see fixtures.example.toml
+cargo test                                # unit + hermetic synthetic-repo tests
+cargo clippy --all-targets && cargo fmt
 ```
 
-The synthetic suite covers the byte-level traps: files without trailing newlines (all five
-permutations — some worth exactly one byte), mode-only chmods, symlinks, binary files,
-submodule bumps, typechanges, CRLF round-trips, renames at high and low similarity, and
-deleted lines that begin with `--` (a real prefix-sniffing parser bug).
-
-Before touching `crates/schema` or the invariants, read the ADRs. Every invariant caught a
-real bug during validation; keep them all.
+See [`AGENTS.md`](AGENTS.md) for working rules and
+[`docs/architecture.md`](docs/architecture.md) for the testing philosophy. Before touching
+`crates/schema` or the invariants, read the ADRs — every invariant caught a real bug.
