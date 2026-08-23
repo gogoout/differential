@@ -3,7 +3,8 @@ name = "differential-llm"
 description = "LLM backend abstraction for the grouping stage"
 version.workspace = true
 edition.workspace = true
-publish.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 thiserror = { workspace = true }

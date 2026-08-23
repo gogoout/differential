@@ -51,6 +51,19 @@ code must change together — or the change is wrong.
   render surfaces (`stack`, `check`, later the TUI) and stays presentation-only — pipeline
   logic lives in the engine.
 
+## Process
+
+- **Never push to main.** Every change: branch → PR → CI green → squash merge
+  (`gh pr merge --squash --delete-branch`). Branch protection enforces this (PR + the
+  `test` check, admins included).
+- CI (`.github/workflows/ci.yml`) runs fmt, clippy `-D warnings`, tests and a release
+  build on every PR and on main after merge — the done-criteria below are exactly what CI
+  checks, so run them before pushing.
+- Releases: bump `[workspace.package].version` AND the version fields on the three
+  internal path deps in `[workspace.dependencies]` in a PR, merge, then manually dispatch
+  the Publish workflow from main (`gh workflow run publish.yml`). It runs
+  `cargo publish --workspace` and needs the `CARGO_REGISTRY_TOKEN` repository secret.
+
 ## Commands
 
 ```sh

@@ -3,7 +3,8 @@ name = "differential-engine"
 description = "Core engine: git io, diff parsing, byte-exact apply, shape classes, invariants"
 version.workspace = true
 edition.workspace = true
-publish.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 differential-schema = { workspace = true }
