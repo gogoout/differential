@@ -18,8 +18,8 @@ The core ships as a library (ADR 0014): consumers link the engine and receive th
 in-process — see [consumers.md](consumers.md). Consumers are views over this document and
 must not influence its shape:
 
-1. **Shadow branch** — the diff rewritten as a synthetic commit stack, reviewed natively in an
-   IDE or `tig`. `git log --oneline` alone shows the shape of the change.
+1. **Shadow branch** ([stack.md](stack.md)) — the diff rewritten as a synthetic commit stack,
+   reviewed natively in an IDE or `tig`. `git log --oneline` alone shows the shape of the change.
 2. **TUI** — a dedicated reviewer emitting structured findings keyed by hunk.
 3. **Forge review** — grouped comments posted to a GitLab MR / GitHub PR.
 

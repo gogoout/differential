@@ -38,6 +38,7 @@ The invariant runner is an example, not a product:
 ```sh
 cargo run -p differential-engine --example check -- [--repo <path>] [--config <path>] <base>..<head>
 cargo run -p differential-engine --example group -- [--repo <path>] [--no-cache] [-o <file>] <base>..<head>
+cargo run -p differential-engine --example stack -- [--repo <path>] [--no-cache] [--ref <name>] <base>..<head>
 ```
 
 Exit codes: 0 all invariants pass, 1 violation or error, 2 usage/config error.

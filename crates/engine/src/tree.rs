@@ -15,7 +15,19 @@ use crate::apply::apply_hunks;
 use crate::gitio::Repo;
 use crate::model::{DiffView, Disposition, Hunk};
 
-const ZERO_OID: &str = "0000000000000000000000000000000000000000";
+pub(crate) const ZERO_OID: &str = "0000000000000000000000000000000000000000";
+
+/// One `update-index -z --index-info` record: `<mode> <oid>\t<path>`.
+pub(crate) fn index_entry(mode: &str, oid: &str, path: &[u8]) -> Vec<u8> {
+    let mut line = format!("{mode} {oid}\t").into_bytes();
+    line.extend_from_slice(path);
+    line
+}
+
+/// Removal record (mode 0).
+pub(crate) fn removal_entry(path: &[u8]) -> Vec<u8> {
+    index_entry("0", ZERO_OID, path)
+}
 
 /// Stage every file's final state on top of `base` and return the written tree.
 pub fn build_tree(repo: &Repo, base: &str, view: &DiffView) -> Result<String, EngineError> {
@@ -44,12 +56,9 @@ fn staging_entry(
     f: &crate::model::FileChange,
 ) -> Result<Vec<u8>, EngineError> {
     let path = f.path.as_slice();
-    let mut line: Vec<u8>;
 
     if f.disposition == Disposition::Deleted {
-        line = format!("0 {ZERO_OID}\t").into_bytes();
-        line.extend_from_slice(path);
-        return Ok(line);
+        return Ok(removal_entry(path));
     }
 
     let mode = f.new_mode.as_deref().ok_or_else(|| {
@@ -89,7 +98,5 @@ fn staging_entry(
         String::from_utf8_lossy(&out).trim().to_string()
     };
 
-    line = format!("{mode} {oid}\t").into_bytes();
-    line.extend_from_slice(path);
-    Ok(line)
+    Ok(index_entry(mode, &oid, path))
 }

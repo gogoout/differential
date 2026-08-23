@@ -52,7 +52,8 @@ Three consumers are planned as views over the document:
 | LLM backend abstraction (`differential-llm`) | ✅ seam in place |
 | Grouping stage (LLM merge/label + coverage audit + pinning cache) | ✅ [`spec/grouping.md`](spec/grouping.md) |
 | Ordering (foundation-first group DAG, roles, dependency edges) | ✅ [`spec/ordering.md`](spec/ordering.md) |
-| Consumers: shadow branch (⏳ next), TUI (`dfr`), forge | planned |
+| Shadow-branch renderer (review the stack in your IDE or `tig`) | ✅ [`spec/stack.md`](spec/stack.md) |
+| Consumers: TUI (`dfr`), forge review | planned |
 
 `run_pipeline` emits the core document (`groups: null`); `run_grouped_pipeline` adds the
 grouping stage — labelled close/skim/noise groups, a reading plan, and the coverage audit —

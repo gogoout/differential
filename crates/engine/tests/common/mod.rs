@@ -94,3 +94,111 @@ pub fn assert_all_ok(out: &PipelineOutput) {
 pub fn doc(out: &PipelineOutput) -> &differential_schema::PlanDocument {
     out.document.as_ref().unwrap()
 }
+
+// ---------------------------------------------------------------- fake LLM
+
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use differential_engine::grouping::GroupingOptions;
+use differential_engine::pipeline::run_grouped_pipeline;
+use differential_llm::{LlmBackend, LlmError};
+use differential_schema::PlanDocument;
+
+pub type Responder = Box<dyn Fn(&[String]) -> String + Send + Sync>;
+
+/// Programmable backend: captures prompts, counts calls, and builds its
+/// response from the class ids it actually sees (so tests never hardcode
+/// partition-dependent ids).
+pub struct FakeBackend {
+    name: String,
+    calls: AtomicUsize,
+    prompts: Mutex<Vec<String>>,
+    respond: Responder,
+}
+
+impl FakeBackend {
+    pub fn new(name: &str, respond: impl Fn(&[String]) -> String + Send + Sync + 'static) -> Self {
+        FakeBackend {
+            name: name.to_string(),
+            calls: AtomicUsize::new(0),
+            prompts: Mutex::new(Vec::new()),
+            respond: Box::new(respond),
+        }
+    }
+
+    pub fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+
+    pub fn last_prompt(&self) -> String {
+        self.prompts
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+impl LlmBackend for FakeBackend {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn complete(&self, prompt: &str) -> Result<String, LlmError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.prompts.lock().unwrap().push(prompt.to_string());
+        Ok((self.respond)(&ids_in_prompt(prompt)))
+    }
+}
+
+/// Class ids as they appear in payload blocks: lines starting `[Cn]`.
+pub fn ids_in_prompt(prompt: &str) -> Vec<String> {
+    prompt
+        .lines()
+        .filter_map(|l| {
+            let rest = l.strip_prefix('[')?;
+            let end = rest.find(']')?;
+            let id = &rest[..end];
+            id.starts_with('C').then(|| id.to_string())
+        })
+        .collect()
+}
+
+pub fn json_group(label: &str, effort: &str, classes: &[&str]) -> String {
+    format!(
+        r#"{{"label": "{label}", "description": "d", "classes": [{}], "effort": "{effort}", "reason": "r"}}"#,
+        classes
+            .iter()
+            .map(|c| format!("\"{c}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+pub fn grouped(r: &TestRepo, base: &str, head: &str, backend: &dyn LlmBackend) -> PlanDocument {
+    grouped_with_cache(r, base, head, backend, None)
+}
+
+pub fn grouped_with_cache(
+    r: &TestRepo,
+    base: &str,
+    head: &str,
+    backend: &dyn LlmBackend,
+    cache_dir: Option<&std::path::Path>,
+) -> PlanDocument {
+    let out = run_grouped_pipeline(
+        &r.repo(),
+        base,
+        head,
+        SourceKind::Range,
+        &Config::default(),
+        &LanguageRegistry::builtin(),
+        &GroupingOptions {
+            backend: Some(backend),
+            cache_dir,
+        },
+    )
+    .unwrap();
+    out.document.expect("grouped document")
+}
