@@ -117,8 +117,9 @@ Full surface: [`spec/consumers.md`](spec/consumers.md).
 ## Status
 
 Shipped: the full pipeline (enumeration → shape classes → LLM grouping → foundation-first
-ordering) and the shadow-branch renderer (`dfr stack`). Planned: a review TUI (joining the
-`dfr` binary) and posting grouped review comments to GitLab/GitHub.
+ordering), the shadow-branch renderer (`dfr stack`), and the review TUI (`dfr review`)
+with persistent, regeneration-surviving findings. Planned: posting grouped review
+comments to GitLab/GitHub.
 
 ## Learn more
 
