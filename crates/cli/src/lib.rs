@@ -2,6 +2,8 @@
 //! surfaces over the engine's document, per ADR 0014. The engine stays the
 //! single producer; this crate is argument parsing and presentation only.
 
+pub mod tui;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 
