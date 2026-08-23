@@ -5,41 +5,27 @@
 //! hashing only added lines collapses every deletion-only hunk into one class,
 //! turning "same shapes, skippable" into a lie).
 //!
-//! The normalisation and hash are deliberately identical to the validated
-//! prototype (sha1, 12 hex chars, same regexes, same ordering), so class
-//! populations can be compared against its recorded outputs when validating the
-//! port.
+//! Line normalisation is pluggable per language (ADR 0015, `crate::lang`); the
+//! framing here — sigil prefixes, sorting, disposition in the key, sha1/12-hex —
+//! is language-independent and deliberately identical to the validated
+//! prototype, so class populations stay comparable with its recorded outputs.
 
 use std::collections::HashMap;
-use std::sync::LazyLock;
 
-use regex::bytes::Regex;
 use sha1::{Digest, Sha1};
 
+use crate::lang::{Language, LanguageRegistry};
 use crate::model::{DiffView, Hunk};
 
-// (?-u): byte-level ASCII classes, matching Python bytes-pattern semantics.
-static STR_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?-u)"[^"]*"|'[^']*'|`[^`]*`"#).unwrap());
-static NUM_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?-u)\b\d+\b").unwrap());
-static IDENT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?-u)[A-Za-z_][A-Za-z0-9_\-]{3,}").unwrap());
-static WS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?-u)\s+").unwrap());
-
-/// Normalise one side's lines: literals → placeholders, whitespace collapsed,
-/// sigil prefixed, sorted.
-pub fn norm_lines(lines: &[Vec<u8>], sigil: u8) -> Vec<Vec<u8>> {
+/// Normalise one side's lines: language normalisation, sigil prefixed, sorted.
+pub fn norm_lines(lines: &[Vec<u8>], sigil: u8, lang: &dyn Language) -> Vec<Vec<u8>> {
     let mut out: Vec<Vec<u8>> = lines
         .iter()
         .map(|l| {
-            let s = STR_RE.replace_all(l, b"\"S\"".as_slice());
-            let s = NUM_RE.replace_all(&s, b"N".as_slice());
-            let s = IDENT_RE.replace_all(&s, b"I".as_slice());
-            let s = WS_RE.replace_all(&s, b" ".as_slice());
-            let trimmed = trim_ascii(&s);
-            let mut v = Vec::with_capacity(trimmed.len() + 1);
+            let norm = lang.normalize_line(l);
+            let mut v = Vec::with_capacity(norm.len() + 1);
             v.push(sigil);
-            v.extend_from_slice(trimmed);
+            v.extend_from_slice(&norm);
             v
         })
         .collect();
@@ -50,9 +36,9 @@ pub fn norm_lines(lines: &[Vec<u8>], sigil: u8) -> Vec<Vec<u8>> {
 /// Shape key: normalised removed + added lines, plus the file disposition — a
 /// whole-file-add hunk and a modification with identical text are different
 /// shapes. Returns the 12-hex sha1 used as the class key.
-pub fn shape_hash(hunk: &Hunk, disposition_letter: u8) -> String {
-    let mut parts = norm_lines(&hunk.removed, b'-');
-    parts.extend(norm_lines(&hunk.added, b'+'));
+pub fn shape_hash(hunk: &Hunk, disposition_letter: u8, lang: &dyn Language) -> String {
+    let mut parts = norm_lines(&hunk.removed, b'-', lang);
+    parts.extend(norm_lines(&hunk.added, b'+', lang));
     let mut hasher = Sha1::new();
     for (i, p) in parts.iter().enumerate() {
         if i > 0 {
@@ -66,8 +52,9 @@ pub fn shape_hash(hunk: &Hunk, disposition_letter: u8) -> String {
     hex[..12].to_string()
 }
 
-/// Exact content digest — NOT normalised. The stable anchor that lets comments
-/// and review state survive regeneration (positional ids do not).
+/// Exact content digest — NOT normalised and NOT language-dependent. The stable
+/// anchor that lets comments and review state survive regeneration (positional
+/// ids do not).
 pub fn hunk_digest(hunk: &Hunk) -> String {
     let mut hasher = Sha1::new();
     for l in &hunk.removed {
@@ -88,31 +75,34 @@ pub fn hunk_digest(hunk: &Hunk) -> String {
 /// match: a structure-free substitution. Insertion-only and deletion-only hunks
 /// are never pure. This is a property of the shape, so it is computed once per
 /// class from the exemplar. Computed, never claimed — there is no setter.
-pub fn pure_substitution(hunk: &Hunk) -> bool {
+pub fn pure_substitution(hunk: &Hunk, lang: &dyn Language) -> bool {
     if hunk.removed.is_empty() || hunk.added.is_empty() {
         return false;
     }
-    // Same normalisation, sigil-free, so the two sides are comparable.
-    norm_lines(&hunk.removed, b' ') == norm_lines(&hunk.added, b' ')
+    // Sigil-free normalisation, so the two sides are comparable.
+    norm_lines(&hunk.removed, b' ', lang) == norm_lines(&hunk.added, b' ', lang)
 }
 
 /// The mechanical partition: every hunk assigned to a shape class.
-/// Returns classes as (members) lists ordered by descending size (ties broken by
-/// first appearance, so the ordering is deterministic); `class_of[i]` is the
-/// class index of canonical hunk `i`. Coverage is total by construction.
+/// Classes are ordered by descending member count (ties broken by first
+/// appearance, so the ordering is deterministic); `class_of[i]` is the class
+/// index of canonical hunk `i`. Coverage is total by construction.
 pub struct Partition {
     /// Hunk indices per class, in canonical order within each class.
     pub classes: Vec<Vec<usize>>,
     /// Canonical hunk index -> class index.
     pub class_of: Vec<usize>,
+    /// Per class: is the exemplar a pure substitution?
+    pub pure: Vec<bool>,
 }
 
-pub fn partition(view: &DiffView) -> Partition {
+pub fn partition(view: &DiffView, langs: &LanguageRegistry) -> Partition {
     let mut by_hash: HashMap<String, Vec<usize>> = HashMap::new();
     let mut first_seen: HashMap<String, usize> = HashMap::new();
     for (i, h) in view.hunks.iter().enumerate() {
-        let letter = view.file_of(h).disposition.letter();
-        let key = shape_hash(h, letter);
+        let file = view.file_of(h);
+        let lang = langs.detect(&file.path);
+        let key = shape_hash(h, file.disposition.letter(), lang);
         first_seen.entry(key.clone()).or_insert(i);
         by_hash.entry(key).or_default().push(i);
     }
@@ -122,26 +112,22 @@ pub fn partition(view: &DiffView) -> Partition {
 
     let mut classes = Vec::with_capacity(keys.len());
     let mut class_of = vec![0usize; view.hunks.len()];
+    let mut pure = Vec::with_capacity(keys.len());
     for (ci, k) in keys.iter().enumerate() {
         let members = by_hash[*k].clone();
         for &hi in &members {
             class_of[hi] = ci;
         }
+        let exemplar = &view.hunks[members[0]];
+        let lang = langs.detect(&view.file_of(exemplar).path);
+        pure.push(pure_substitution(exemplar, lang));
         classes.push(members);
     }
-    Partition { classes, class_of }
-}
-
-fn trim_ascii(s: &[u8]) -> &[u8] {
-    let start = s
-        .iter()
-        .position(|b| !b.is_ascii_whitespace())
-        .unwrap_or(s.len());
-    let end = s
-        .iter()
-        .rposition(|b| !b.is_ascii_whitespace())
-        .map_or(start, |e| e + 1);
-    &s[start..end]
+    Partition {
+        classes,
+        class_of,
+        pure,
+    }
 }
 
 fn hex_string(bytes: &[u8]) -> String {
@@ -155,7 +141,10 @@ fn hex_string(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lang::Generic;
     use crate::model::Hunk;
+
+    const G: &Generic = &Generic;
 
     fn hunk(removed: &[&[u8]], added: &[&[u8]]) -> Hunk {
         Hunk {
@@ -181,7 +170,7 @@ mod tests {
             &[b"  let grand_total = derive_total(rows);"],
             &[b"  let grand_total = derive_result(rows);"],
         );
-        assert_eq!(shape_hash(&a, b'M'), shape_hash(&b, b'M'));
+        assert_eq!(shape_hash(&a, b'M', G), shape_hash(&b, b'M', G));
     }
 
     #[test]
@@ -191,7 +180,7 @@ mod tests {
             &[br#"    retry(9, "linear")"#],
         );
         let b = hunk(&[br#"  retry(12, "other")"#], &[br#"  retry(3, "words")"#]);
-        assert_eq!(shape_hash(&a, b'M'), shape_hash(&b, b'M'));
+        assert_eq!(shape_hash(&a, b'M', G), shape_hash(&b, b'M', G));
     }
 
     #[test]
@@ -199,20 +188,20 @@ mod tests {
         // ADR 0004: both sides contribute; different deletions are not one shape.
         let a = hunk(&[b"fn compute_interest(rate: f64) -> f64 {"], &[]);
         let b = hunk(&[b"const RETRY_LIMIT: usize = 5;"], &[]);
-        assert_ne!(shape_hash(&a, b'M'), shape_hash(&b, b'M'));
+        assert_ne!(shape_hash(&a, b'M', G), shape_hash(&b, b'M', G));
     }
 
     #[test]
     fn disposition_is_part_of_the_key() {
         let a = hunk(&[], &[b"content line here"]);
-        assert_ne!(shape_hash(&a, b'A'), shape_hash(&a, b'M'));
+        assert_ne!(shape_hash(&a, b'A', G), shape_hash(&a, b'M', G));
     }
 
     #[test]
     fn crlf_agnostic_normalisation() {
         let unix = hunk(&[b"old_value_name = 1"], &[b"new_value_name = 1"]);
         let dos = hunk(&[b"old_value_name = 1\r"], &[b"new_value_name = 1\r"]);
-        assert_eq!(shape_hash(&unix, b'M'), shape_hash(&dos, b'M'));
+        assert_eq!(shape_hash(&unix, b'M', G), shape_hash(&dos, b'M', G));
     }
 
     #[test]
@@ -220,7 +209,7 @@ mod tests {
         // The identifier regex needs length >= 4; `x` and `y` stay distinct.
         let a = hunk(&[b"x = 1"], &[b"y = 1"]);
         let b = hunk(&[b"y = 1"], &[b"x = 1"]);
-        assert_ne!(shape_hash(&a, b'M'), shape_hash(&b, b'M'));
+        assert_ne!(shape_hash(&a, b'M', G), shape_hash(&b, b'M', G));
     }
 
     #[test]
@@ -229,7 +218,7 @@ mod tests {
             &[b"if !self.mail_service.is_enabled() {"],
             &[b"if !self.system_notifier.is_enabled() {"],
         );
-        assert!(pure_substitution(&h));
+        assert!(pure_substitution(&h, G));
     }
 
     #[test]
@@ -238,13 +227,13 @@ mod tests {
             &[b"send(user_address)"],
             &[b"send(user_address, RetryPolicy::default())"],
         );
-        assert!(!pure_substitution(&h));
+        assert!(!pure_substitution(&h, G));
     }
 
     #[test]
     fn insertion_only_is_never_pure() {
         let h = hunk(&[], &[b"brand_new_line()"]);
-        assert!(!pure_substitution(&h));
+        assert!(!pure_substitution(&h, G));
     }
 
     #[test]
@@ -252,7 +241,7 @@ mod tests {
         let a = hunk(&[b"alpha_name = 1"], &[b"beta_name = 1"]);
         let b = hunk(&[b"gamma_name = 1"], &[b"delta_name = 1"]);
         // Same shape, different digests.
-        assert_eq!(shape_hash(&a, b'M'), shape_hash(&b, b'M'));
+        assert_eq!(shape_hash(&a, b'M', G), shape_hash(&b, b'M', G));
         assert_ne!(hunk_digest(&a), hunk_digest(&b));
     }
 
@@ -261,6 +250,32 @@ mod tests {
         let a = hunk(&[b"line"], &[b"line"]);
         let mut b = a.clone();
         b.nonl_new = true;
+        assert_ne!(hunk_digest(&a), hunk_digest(&b));
+    }
+
+    #[test]
+    fn language_override_changes_classification_but_not_digest() {
+        use crate::lang::Language;
+        struct Flattener;
+        impl Language for Flattener {
+            fn id(&self) -> &'static str {
+                "flatten-v1"
+            }
+            fn claims(&self, _p: &[u8]) -> bool {
+                true
+            }
+            fn normalize_line(&self, _l: &[u8]) -> Vec<u8> {
+                b"X".to_vec()
+            }
+        }
+        let a = hunk(&[b"completely unlike"], &[b"anything else at all"]);
+        let b = hunk(&[b"nothing shared here"], &[b"with the other hunk"]);
+        // Generic: different shapes. Flattener: same shape. Digests: unmoved.
+        assert_ne!(shape_hash(&a, b'M', G), shape_hash(&b, b'M', G));
+        assert_eq!(
+            shape_hash(&a, b'M', &Flattener),
+            shape_hash(&b, b'M', &Flattener)
+        );
         assert_ne!(hunk_digest(&a), hunk_digest(&b));
     }
 }

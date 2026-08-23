@@ -7,6 +7,7 @@ use std::process::Command;
 
 use differential_engine::config::Config;
 use differential_engine::gitio::Repo;
+use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::{PipelineOutput, run_pipeline};
 use differential_schema::{Disposition, GeneratedBy, SourceKind};
 use tempfile::TempDir;
@@ -67,7 +68,15 @@ impl TestRepo {
 
     fn pipeline_with(&self, base: &str, head: &str, config: &Config) -> PipelineOutput {
         let repo = Repo::open(Path::new(&self.root)).unwrap();
-        run_pipeline(&repo, base, head, SourceKind::Range, config).unwrap()
+        run_pipeline(
+            &repo,
+            base,
+            head,
+            SourceKind::Range,
+            config,
+            &LanguageRegistry::builtin(),
+        )
+        .unwrap()
     }
 }
 

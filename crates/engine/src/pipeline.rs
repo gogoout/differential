@@ -9,6 +9,7 @@ use crate::config::Config;
 use crate::document::{SourceInfo, assemble, mark_generated};
 use crate::gitio::Repo;
 use crate::invariants::{InvariantReport, check_all};
+use crate::lang::LanguageRegistry;
 use crate::parse::parse_canonical;
 use crate::rename_view::{merge_raw, merge_renames, parse_raw_z, parse_renames_z};
 use crate::shape::partition;
@@ -21,16 +22,50 @@ pub struct PipelineOutput {
     pub document: Option<schema::PlanDocument>,
 }
 
-/// Run the milestone-1 pipeline (stages: enumerate, classify) over `base..head`.
+/// Resolve a revision-range spec into fully qualified endpoints.
+/// Accepts `a..b`, `a...b` (base = merge-base, what an MR/PR diff is), or two
+/// separate revs.
+pub fn resolve_range(
+    repo: &Repo,
+    spec: &[&str],
+) -> Result<(String, String, schema::SourceKind), EngineError> {
+    match spec {
+        [one] => {
+            if let Some((a, b)) = one.split_once("...") {
+                let base = repo.merge_base(a, b)?;
+                Ok((base, b.to_string(), schema::SourceKind::Range))
+            } else if let Some((a, b)) = one.split_once("..") {
+                Ok((a.to_string(), b.to_string(), schema::SourceKind::Range))
+            } else {
+                Err(EngineError::Range(format!(
+                    "single argument must be <base>..<head> or <a>...<b>, got {one:?}"
+                )))
+            }
+        }
+        [a, b] => Ok((
+            (*a).to_string(),
+            (*b).to_string(),
+            schema::SourceKind::Range,
+        )),
+        other => Err(EngineError::Range(format!(
+            "expected one range or two revs, got {} arguments",
+            other.len()
+        ))),
+    }
+}
+
+/// Run the core pipeline (stages: enumerate, classify) over `base..head`.
 ///
 /// Config is consulted ONLY for classification hints; enumeration is total and
-/// runs before config is even looked at (ADR 0012).
+/// runs before config is even looked at (ADR 0012). Languages (ADR 0015) only
+/// influence classification, never enumeration.
 pub fn run_pipeline(
     repo: &Repo,
     base_rev: &str,
     head_rev: &str,
     kind: schema::SourceKind,
     config: &Config,
+    langs: &LanguageRegistry,
 ) -> Result<PipelineOutput, EngineError> {
     let base = repo.rev_parse(base_rev)?;
     let head = repo.rev_parse(head_rev)?;
@@ -91,7 +126,7 @@ pub fn run_pipeline(
     mark_generated(&mut view, config, &attr_marked);
 
     // Mechanical partition: 100% coverage by construction.
-    let part = partition(&view);
+    let part = partition(&view, langs);
 
     // Invariants 1–4; no document on violation.
     let report = check_all(repo, &base, &head, &view)?;

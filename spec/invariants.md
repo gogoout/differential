@@ -25,7 +25,7 @@ The final tree is computed by **applying hunks**, never by copying head blobs. T
 holds by construction and proves nothing.
 
 One documented exception: binary files are staged from the head object id — for them alone
-the assertion is tautological, and `dfr check` says so.
+the assertion is tautological, and the invariant report says so.
 
 What this invariant does NOT catch: classification bugs. A wrong shape hash can produce
 correct content in the correct order and still pass. Classification is validated separately

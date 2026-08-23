@@ -8,7 +8,7 @@ use crate::EngineError;
 use crate::config::Config;
 use crate::invariants::InvariantReport;
 use crate::model::{DiffView, Disposition, GeneratedBy};
-use crate::shape::{Partition, hunk_digest, pure_substitution};
+use crate::shape::{Partition, hunk_digest};
 
 /// Built-in generated-artefact detection: lockfiles and minified/snapshot
 /// artefacts nobody reviews line by line. A hint only — never affects
@@ -135,7 +135,7 @@ pub fn assemble(
             id: format!("C{ci}"),
             hunk_ids: members.iter().map(|i| format!("h{i}")).collect(),
             exemplar: format!("h{}", members[0]),
-            pure_substitution: pure_substitution(&view.hunks[members[0]]),
+            pure_substitution: partition.pure[ci],
         })
         .collect::<Vec<_>>();
 

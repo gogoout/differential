@@ -11,6 +11,7 @@ pub mod config;
 pub mod document;
 pub mod gitio;
 pub mod invariants;
+pub mod lang;
 pub mod model;
 pub mod parse;
 pub mod paths;
@@ -19,7 +20,7 @@ pub mod rename_view;
 pub mod shape;
 pub mod tree;
 
-pub use pipeline::{PipelineOutput, run_pipeline};
+pub use pipeline::{PipelineOutput, resolve_range, run_pipeline};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -50,6 +51,9 @@ pub enum EngineError {
 
     #[error("config error in {path}: {msg}")]
     Config { path: String, msg: String },
+
+    #[error("bad revision range: {0}")]
+    Range(String),
 
     #[error("schema error: {0}")]
     Schema(#[from] differential_schema::SchemaError),

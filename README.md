@@ -27,21 +27,34 @@ invariants 1–4. No LLM stage yet: documents carry `groups: null` and
 
 ## Usage
 
-```sh
-dfr plan  <base>..<head> --pretty      # emit the JSON plan document
-dfr check <base>..<head>               # run the pipeline, report the invariants
+The core is a library; renderers (the TUI, shadow-branch builder, forge poster) link it
+directly, and the `dfr` binary arrives with the TUI:
+
+```rust
+let repo = Repo::open(path)?;
+let (base, head, kind) = resolve_range(&repo, &["main..feature"])?;
+let out = run_pipeline(&repo, &base, &head, kind,
+                       &Config::load(repo.root(), None)?,
+                       &LanguageRegistry::builtin())?;
 ```
 
-`<a>...<b>` resolves the base via merge-base (what an MR/PR diff is). Details and the
-per-repo `.differential.toml` config format: [`spec/cli.md`](spec/cli.md).
+`<a>...<b>` resolves the base via merge-base (what an MR/PR diff is). Full surface and the
+per-repo `.differential.toml` config format: [`spec/consumers.md`](spec/consumers.md).
+
+Dev/CI invariant runner:
+
+```sh
+cargo run -p differential-engine --example check -- <base>..<head>
+```
 
 ## Layout
 
 - [`spec/`](spec/) — what the program does (normative).
 - [`adr/`](adr/) — why it is this way (decision records).
 - `crates/schema` — the frozen JSON contract as serde types. The product boundary.
-- `crates/engine` — git io, diff parsing, applier, shape classes, invariants.
-- `crates/cli` — the `differential` and `dfr` binaries.
+- `crates/engine` — git io, diff parsing, applier, shape classes, language registry,
+  invariants.
+- `crates/llm` — the LLM backend abstraction the grouping stage builds on.
 
 ## Development
 

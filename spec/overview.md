@@ -14,7 +14,9 @@ The product is **one JSON document** (see [json-contract.md](json-contract.md)) 
   `noise`,
 - a **reading plan**: groups ordered foundation-first, with dependency edges.
 
-Consumers are views over this document and must not influence its shape:
+The core ships as a library (ADR 0014): consumers link the engine and receive the document
+in-process — see [consumers.md](consumers.md). Consumers are views over this document and
+must not influence its shape:
 
 1. **Shadow branch** — the diff rewritten as a synthetic commit stack, reviewed natively in an
    IDE or `tig`. `git log --oneline` alone shows the shape of the change.
