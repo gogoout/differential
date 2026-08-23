@@ -3,7 +3,23 @@
 The core is a **library** (ADR 0014). Consumers — the TUI, the shadow-branch builder, the
 forge poster — link `differential-engine` and `differential-schema` directly; the JSON form
 of the document is for export and persistence, not inter-process plumbing. The binary
-namespace (`dfr`) is reserved for renderers and arrives with the TUI crate.
+namespace (`dfr`, also installed as `differential`) belongs to renderers; the shadow-branch
+renderer is its first occupant, and the TUI joins it later.
+
+## The renderer binary
+
+```sh
+dfr stack [--repo <path>] [--config <path>] [--ref <name>] [--no-cache] <range>
+dfr check [--repo <path>] [--config <path>] [--json] <range>
+```
+
+- `stack` builds and lands the review commit stack ([stack.md](stack.md)), printing the
+  commit list and the `git log` line to review with. The grouping backend comes from
+  `[grouping].command` (default: the tools-denied claude invocation); the pinning cache
+  lives under `<git-common-dir>/differential/cache/grouping` unless `--no-cache`.
+- `check` runs the core pipeline and reports invariants 1–4 — the self-test and CI entry
+  point.
+- Exit codes: 0 success/all pass, 1 invariant or pipeline failure, 2 usage/config error.
 
 ## Library surface
 
@@ -31,17 +47,13 @@ let out = run_pipeline(&repo, &base, &head, kind, &config, &LanguageRegistry::bu
   by the consumer; `LanguageRegistry::builtin()` and `CommandBackend::claude_cli()` are the
   defaults.
 
-## Dev/CI entry point
+## Dev entry point
 
-The invariant runner is an example, not a product:
+One example remains for debugging the grouped document itself (JSON to stdout):
 
 ```sh
-cargo run -p differential-engine --example check -- [--repo <path>] [--config <path>] <base>..<head>
 cargo run -p differential-engine --example group -- [--repo <path>] [--no-cache] [-o <file>] <base>..<head>
-cargo run -p differential-engine --example stack -- [--repo <path>] [--no-cache] [--ref <name>] <base>..<head>
 ```
-
-Exit codes: 0 all invariants pass, 1 violation or error, 2 usage/config error.
 
 ## Config: `.differential.toml`
 

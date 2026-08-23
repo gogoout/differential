@@ -62,7 +62,15 @@ behind any `LlmBackend`, pinned by a content-hash cache so a review never reshuf
 ## Usage
 
 The core is a **library** (ADR 0014): renderers link it directly and receive the document
-in-process. The `dfr` binary arrives with the TUI.
+in-process. The `dfr` binary is the renderer surface — today that is the shadow branch:
+
+```sh
+dfr stack main..feature        # build the review stack on refs/review/…/stack
+git log --oneline main..refs/review/<base7>-<head7>/stack   # the reading plan
+dfr check main..feature        # run invariants 1–4 (CI entry point)
+```
+
+The library surface behind it, for renderers linking the engine directly:
 
 ```rust
 use differential_engine::{gitio::Repo, config::Config, lang::LanguageRegistry,
@@ -80,12 +88,6 @@ let out = run_pipeline(&repo, &base, &head, kind, &config, &LanguageRegistry::bu
 `a...b` resolves the base via merge-base — which is what an MR/PR diff is. Full library
 surface and the per-repo `.differential.toml` config format:
 [`spec/consumers.md`](spec/consumers.md).
-
-Dev/CI invariant runner (an example, not a product):
-
-```sh
-cargo run -p differential-engine --example check -- [--repo <path>] <base>..<head>
-```
 
 ## Guarantees
 
@@ -109,6 +111,7 @@ cargo run -p differential-engine --example check -- [--repo <path>] <base>..<hea
 | `crates/schema` | the frozen JSON contract as serde types — the product boundary |
 | `crates/engine` | git io, diff parsing, byte-exact applier, shape classes, language registry, invariants |
 | `crates/llm` | the LLM backend abstraction the grouping stage builds on |
+| `crates/cli` | the `dfr` / `differential` renderer binary (`stack`, `check`) |
 
 Dependency direction is strict: consumers → `engine` → `schema`. The schema crate depends
 only on serde, so future consumers take the contract without the git plumbing.

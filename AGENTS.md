@@ -47,15 +47,18 @@ code must change together — or the change is wrong.
   (ADR 0015). The real-corpus parity test's exact class count is the guard.
 - **Git access shells out to real git, plumbing commands only** (ADR 0002, 0011). Bytes
   in/out; UTF-8 only at display boundaries.
-- **The core is a library** (ADR 0014). No product CLI; binaries belong to renderers.
+- **The core is a library** (ADR 0014). Binaries belong to renderers: `dfr` carries the
+  render surfaces (`stack`, `check`, later the TUI) and stays presentation-only — pipeline
+  logic lives in the engine.
 
 ## Commands
 
 ```sh
 cargo test                                  # unit + synthetic-repo integration tests
 cargo clippy --all-targets && cargo fmt     # keep both clean
-cargo run -p differential-engine --example check -- <base>..<head>   # invariant runner
-cargo run -p differential-engine --example group -- <base>..<head>   # grouped pipeline (needs an LLM CLI)
+cargo run -q --bin dfr -- check <base>..<head>    # invariant runner
+cargo run -q --bin dfr -- stack <base>..<head>    # review stack (needs an LLM CLI on a cache miss)
+cargo run -p differential-engine --example group -- <base>..<head>   # grouped document JSON (dev)
 DIFFERENTIAL_FIXTURE_CONFIG=$PWD/fixtures.local.toml cargo test -- --ignored  # parity (local)
 ```
 
