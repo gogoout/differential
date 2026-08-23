@@ -62,7 +62,8 @@ code must change together — or the change is wrong.
 - Releases: bump `[workspace.package].version` AND the version fields on the three
   internal path deps in `[workspace.dependencies]` in a PR, merge, then manually dispatch
   the Publish workflow from main (`gh workflow run publish.yml`). It runs
-  `cargo publish --workspace` and needs the `CARGO_REGISTRY_TOKEN` repository secret.
+  `cargo publish --workspace`; the `CARGO_REGISTRY_TOKEN` lives as a secret on the
+  `crates-io` environment (restricted to main).
 
 ## Commands
 
