@@ -1,0 +1,244 @@
+{
+  "schema_version": 1,
+  "generator": {
+    "tool": "differential",
+    "version": "0.1.0",
+    "stages": ["enumerate", "classify"]
+  },
+  "source": {
+    "kind": "range",
+    "base": "1111111111111111111111111111111111111111",
+    "head": "2222222222222222222222222222222222222222",
+    "remote": null
+  },
+  "stats": {
+    "files": 7,
+    "hunks": 7,
+    "classes": 6,
+    "binary_files": 1,
+    "submodules": 1
+  },
+  "files": [
+    {
+      "path": "src/token/lexer.rs",
+      "disposition": "A",
+      "mode": "100644",
+      "old_mode": null,
+      "old_path": "src/lexer.rs",
+      "new_path": null,
+      "rename_similarity": 62,
+      "binary": false,
+      "submodule": null,
+      "generated": false,
+      "generated_by": null,
+      "hunk_ids": ["h0", "h1"]
+    },
+    {
+      "path": "src/lexer.rs",
+      "disposition": "D",
+      "mode": null,
+      "old_mode": "100644",
+      "old_path": null,
+      "new_path": "src/token/lexer.rs",
+      "rename_similarity": 62,
+      "binary": false,
+      "submodule": null,
+      "generated": false,
+      "generated_by": null,
+      "hunk_ids": ["h2"]
+    },
+    {
+      "path": "src/main.rs",
+      "disposition": "M",
+      "mode": "100644",
+      "old_mode": null,
+      "old_path": null,
+      "new_path": null,
+      "rename_similarity": null,
+      "binary": false,
+      "submodule": null,
+      "generated": false,
+      "generated_by": null,
+      "hunk_ids": ["h3"]
+    },
+    {
+      "path": "assets/logo.png",
+      "disposition": "A",
+      "mode": "100644",
+      "old_mode": null,
+      "old_path": null,
+      "new_path": null,
+      "rename_similarity": null,
+      "binary": true,
+      "submodule": null,
+      "generated": false,
+      "generated_by": null,
+      "hunk_ids": []
+    },
+    {
+      "path": "deps/parser-corpus",
+      "disposition": "M",
+      "mode": "160000",
+      "old_mode": null,
+      "old_path": null,
+      "new_path": null,
+      "rename_similarity": null,
+      "binary": false,
+      "submodule": {
+        "old": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "new": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "generated": false,
+      "generated_by": null,
+      "hunk_ids": ["h4"]
+    },
+    {
+      "path": "package-lock.json",
+      "disposition": "M",
+      "mode": "100644",
+      "old_mode": null,
+      "old_path": null,
+      "new_path": null,
+      "rename_similarity": null,
+      "binary": false,
+      "submodule": null,
+      "generated": true,
+      "generated_by": "builtin",
+      "hunk_ids": ["h5"]
+    },
+    {
+      "path": "tools/run.sh",
+      "disposition": "M",
+      "mode": "100755",
+      "old_mode": "100644",
+      "old_path": null,
+      "new_path": null,
+      "rename_similarity": null,
+      "binary": false,
+      "submodule": null,
+      "generated": false,
+      "generated_by": null,
+      "hunk_ids": ["h6"]
+    }
+  ],
+  "hunks": [
+    {
+      "id": "h0",
+      "file": "src/token/lexer.rs",
+      "old_start": 0,
+      "old_count": 0,
+      "new_start": 1,
+      "new_count": 120,
+      "class": "C0",
+      "digest": "d000000000000000000000000000000000000000",
+      "nonl_old": false,
+      "nonl_new": false,
+      "forge_position": { "new_line": 1, "old_line": null }
+    },
+    {
+      "id": "h1",
+      "file": "src/token/lexer.rs",
+      "old_start": 0,
+      "old_count": 0,
+      "new_start": 121,
+      "new_count": 30,
+      "class": "C0",
+      "digest": "d111111111111111111111111111111111111111",
+      "nonl_old": false,
+      "nonl_new": false,
+      "forge_position": { "new_line": 121, "old_line": null }
+    },
+    {
+      "id": "h2",
+      "file": "src/lexer.rs",
+      "old_start": 1,
+      "old_count": 140,
+      "new_start": 0,
+      "new_count": 0,
+      "class": "C1",
+      "digest": "d222222222222222222222222222222222222222",
+      "nonl_old": false,
+      "nonl_new": false,
+      "forge_position": { "new_line": null, "old_line": 1 }
+    },
+    {
+      "id": "h3",
+      "file": "src/main.rs",
+      "old_start": 42,
+      "old_count": 1,
+      "new_start": 42,
+      "new_count": 2,
+      "class": "C2",
+      "digest": "d333333333333333333333333333333333333333",
+      "nonl_old": false,
+      "nonl_new": true,
+      "forge_position": { "new_line": 42, "old_line": 42 }
+    },
+    {
+      "id": "h4",
+      "file": "deps/parser-corpus",
+      "old_start": 1,
+      "old_count": 1,
+      "new_start": 1,
+      "new_count": 1,
+      "class": "C3",
+      "digest": "d444444444444444444444444444444444444444",
+      "nonl_old": false,
+      "nonl_new": false,
+      "forge_position": { "new_line": 1, "old_line": 1 }
+    },
+    {
+      "id": "h5",
+      "file": "package-lock.json",
+      "old_start": 10,
+      "old_count": 6,
+      "new_start": 10,
+      "new_count": 9,
+      "class": "C4",
+      "digest": "d555555555555555555555555555555555555555",
+      "nonl_old": false,
+      "nonl_new": false,
+      "forge_position": { "new_line": 10, "old_line": 10 }
+    },
+    {
+      "id": "h6",
+      "file": "tools/run.sh",
+      "old_start": 3,
+      "old_count": 1,
+      "new_start": 3,
+      "new_count": 1,
+      "class": "C5",
+      "digest": "d666666666666666666666666666666666666666",
+      "nonl_old": true,
+      "nonl_new": false,
+      "forge_position": { "new_line": 3, "old_line": 3 }
+    }
+  ],
+  "classes": [
+    {
+      "id": "C0",
+      "hunk_ids": ["h0", "h1"],
+      "exemplar": "h0",
+      "pure_substitution": false
+    },
+    { "id": "C1", "hunk_ids": ["h2"], "exemplar": "h2", "pure_substitution": false },
+    { "id": "C2", "hunk_ids": ["h3"], "exemplar": "h3", "pure_substitution": false },
+    { "id": "C3", "hunk_ids": ["h4"], "exemplar": "h4", "pure_substitution": false },
+    { "id": "C4", "hunk_ids": ["h5"], "exemplar": "h5", "pure_substitution": false },
+    { "id": "C5", "hunk_ids": ["h6"], "exemplar": "h6", "pure_substitution": true }
+  ],
+  "groups": null,
+  "reading_plan": null,
+  "audit": {
+    "applier_exact": "7/7",
+    "tree_assertion": "pass",
+    "hunks_carried": 7,
+    "recount": 7,
+    "coverage": null,
+    "classes_missing": null,
+    "classes_duplicated": null,
+    "classes_hallucinated": null,
+    "read_hunks": null,
+    "skipped_hunks": null
+  }
+}
