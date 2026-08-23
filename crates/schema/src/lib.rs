@@ -184,7 +184,8 @@ pub struct Group {
     pub description: String,
     pub reason: String,
     pub effort: Effort,
-    pub role: Role,
+    /// `None` until the ordering stage runs — role is an ordering-stage output.
+    pub role: Option<Role>,
     pub class_ids: Vec<String>,
     /// Group ids this group depends on (it consumes what they define).
     pub depends_on: Vec<String>,

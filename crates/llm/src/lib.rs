@@ -65,6 +65,11 @@ impl CommandBackend {
         }
     }
 
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
     /// The validated default (ADR 0010): headless, text output, tools denied.
     pub fn claude_cli() -> Self {
         Self::new(

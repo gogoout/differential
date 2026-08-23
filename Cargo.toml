@@ -10,6 +10,7 @@ publish = false
 [workspace.dependencies]
 differential-schema = { path = "crates/schema" }
 differential-engine = { path = "crates/engine" }
+differential-llm = { path = "crates/llm" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

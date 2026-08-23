@@ -19,13 +19,25 @@ pub const CONFIG_FILE_NAME: &str = ".differential.toml";
 struct RawConfig {
     #[serde(default)]
     classify: RawClassify,
-    // Reserved for later milestones; accepted so the file format is stable.
     #[serde(default)]
-    grouping: toml::Table,
+    grouping: GroupingConfig,
+    // Reserved for later milestones; accepted so the file format is stable.
     #[serde(default)]
     ordering: toml::Table,
     #[serde(default)]
     stack: toml::Table,
+}
+
+/// `[grouping]` — pure data; the pipeline turns it into an LLM backend.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GroupingConfig {
+    /// Backend argv (prompt on stdin, completion on stdout). Default: the
+    /// validated tools-denied claude invocation.
+    #[serde(default)]
+    pub command: Option<Vec<String>>,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -47,6 +59,7 @@ pub struct Config {
     pub not_generated: GlobSet,
     /// gitattributes attribute names honoured as "generated" declarations.
     pub attributes: Vec<String>,
+    pub grouping: GroupingConfig,
 }
 
 impl Default for Config {
@@ -55,6 +68,7 @@ impl Default for Config {
             generated: GlobSet::empty(),
             not_generated: GlobSet::empty(),
             attributes: vec!["linguist-generated".to_string()],
+            grouping: GroupingConfig::default(),
         }
     }
 }
@@ -86,7 +100,7 @@ impl Config {
             path: origin.to_string(),
             msg: e.to_string(),
         })?;
-        let _ = (&raw.grouping, &raw.ordering, &raw.stack); // reserved
+        let _ = (&raw.ordering, &raw.stack); // reserved
         Ok(Config {
             generated: build_globs(&raw.classify.generated, origin)?,
             not_generated: build_globs(&raw.classify.not_generated, origin)?,
@@ -94,6 +108,7 @@ impl Config {
                 .classify
                 .attributes
                 .unwrap_or_else(|| vec!["linguist-generated".to_string()]),
+            grouping: raw.grouping,
         })
     }
 }
@@ -151,6 +166,22 @@ attributes = ["linguist-generated", "custom-generated"]
 
     #[test]
     fn reserved_sections_are_accepted() {
-        Config::parse("[grouping]\nmodel = \"x\"\n[stack]\nns = \"y\"", "test").unwrap();
+        Config::parse("[ordering]\nfuture = 1\n[stack]\nns = \"y\"", "test").unwrap();
+    }
+
+    #[test]
+    fn grouping_section_parses() {
+        let c = Config::parse(
+            "[grouping]\ncommand = [\"my-llm\", \"--flag\"]\ntimeout_secs = 60",
+            "test",
+        )
+        .unwrap();
+        assert_eq!(
+            c.grouping.command.as_deref(),
+            Some(&["my-llm".to_string(), "--flag".to_string()][..])
+        );
+        assert_eq!(c.grouping.timeout_secs, Some(60));
+        // Unknown grouping keys are hard errors now that the section is real.
+        assert!(Config::parse("[grouping]\nmodel = \"x\"", "test").is_err());
     }
 }

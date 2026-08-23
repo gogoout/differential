@@ -23,9 +23,13 @@ let out = run_pipeline(&repo, &base, &head, kind, &config, &LanguageRegistry::bu
   two revs.
 - `run_pipeline` runs all invariants before emitting anything; on a violation there is no
   document, only the report saying what failed.
-- Language plugins (ADR 0015) and, later, LLM backends (`differential-llm`, ADR 0016) are
-  injected by the consumer; `LanguageRegistry::builtin()` and
-  `CommandBackend::claude_cli()` are the defaults.
+- `run_grouped_pipeline(…, &GroupingOptions { backend, cache_dir })` additionally runs the
+  grouping stage ([grouping.md](grouping.md)): `backend: None` builds one from
+  `[grouping].command` (default: the tools-denied claude invocation), and the cache
+  directory is conventionally `repo.common_dir()?/differential/cache/grouping`.
+- Language plugins (ADR 0015) and LLM backends (`differential-llm`, ADR 0016) are injected
+  by the consumer; `LanguageRegistry::builtin()` and `CommandBackend::claude_cli()` are the
+  defaults.
 
 ## Dev/CI entry point
 
@@ -33,6 +37,7 @@ The invariant runner is an example, not a product:
 
 ```sh
 cargo run -p differential-engine --example check -- [--repo <path>] [--config <path>] <base>..<head>
+cargo run -p differential-engine --example group -- [--repo <path>] [--no-cache] [-o <file>] <base>..<head>
 ```
 
 Exit codes: 0 all invariants pass, 1 violation or error, 2 usage/config error.
@@ -56,5 +61,13 @@ attributes = ["linguist-generated"]
 is total, always — every invariant depends on it (ADR 0012). Config tunes classification
 hints and tool behaviour only.
 
+```toml
+[grouping]
+# Backend argv: prompt on stdin, completion on stdout. Default: the validated
+# tools-denied claude invocation. Timeout default: 1200s.
+command = ["claude", "-p", "--output-format", "text", "--allowed-tools", ""]
+timeout_secs = 1200
+```
+
 Sections reserved for later milestones (documented so the file format is stable):
-`[grouping]` (backend command, cache), `[ordering]`, `[stack]` (ref namespace).
+`[ordering]`, `[stack]` (ref namespace).

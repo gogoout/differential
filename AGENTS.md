@@ -55,6 +55,7 @@ code must change together — or the change is wrong.
 cargo test                                  # unit + synthetic-repo integration tests
 cargo clippy --all-targets && cargo fmt     # keep both clean
 cargo run -p differential-engine --example check -- <base>..<head>   # invariant runner
+cargo run -p differential-engine --example group -- <base>..<head>   # grouped pipeline (needs an LLM CLI)
 DIFFERENTIAL_FIXTURE_CONFIG=$PWD/fixtures.local.toml cargo test -- --ignored  # parity (local)
 ```
 

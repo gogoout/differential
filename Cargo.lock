@@ -65,6 +65,7 @@ dependencies = [
 name = "differential-engine"
 version = "0.1.0"
 dependencies = [
+ "differential-llm",
  "differential-schema",
  "globset",
  "hex",

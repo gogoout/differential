@@ -2,95 +2,11 @@
 //! (enumerate → annotate → classify → invariants → document) against a real
 //! temporary git repository built with plumbing-adjacent commands.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+mod common;
 
+use common::{TestRepo, assert_all_ok, doc};
 use differential_engine::config::Config;
-use differential_engine::gitio::Repo;
-use differential_engine::lang::LanguageRegistry;
-use differential_engine::pipeline::{PipelineOutput, run_pipeline};
-use differential_schema::{Disposition, GeneratedBy, SourceKind};
-use tempfile::TempDir;
-
-struct TestRepo {
-    _tmp: TempDir,
-    root: PathBuf,
-}
-
-impl TestRepo {
-    fn new() -> Self {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path().to_path_buf();
-        let r = TestRepo { _tmp: tmp, root };
-        r.git(&["init", "-q", "-b", "main"]);
-        r
-    }
-
-    fn git(&self, args: &[&str]) -> String {
-        let out = Command::new("git")
-            .arg("-c")
-            .arg("core.autocrlf=false")
-            .arg("-c")
-            .arg("user.name=test")
-            .arg("-c")
-            .arg("user.email=test@example.invalid")
-            .args(args)
-            .current_dir(&self.root)
-            .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
-            .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    }
-
-    fn write(&self, path: &str, content: &[u8]) {
-        let p = self.root.join(path);
-        if let Some(parent) = p.parent() {
-            std::fs::create_dir_all(parent).unwrap();
-        }
-        std::fs::write(p, content).unwrap();
-    }
-
-    fn commit_all(&self, msg: &str) -> String {
-        self.git(&["add", "-A"]);
-        self.git(&["commit", "-q", "--allow-empty", "-m", msg]);
-        self.git(&["rev-parse", "HEAD"])
-    }
-
-    fn pipeline(&self, base: &str, head: &str) -> PipelineOutput {
-        self.pipeline_with(base, head, &Config::default())
-    }
-
-    fn pipeline_with(&self, base: &str, head: &str, config: &Config) -> PipelineOutput {
-        let repo = Repo::open(Path::new(&self.root)).unwrap();
-        run_pipeline(
-            &repo,
-            base,
-            head,
-            SourceKind::Range,
-            config,
-            &LanguageRegistry::builtin(),
-        )
-        .unwrap()
-    }
-}
-
-fn assert_all_ok(out: &PipelineOutput) {
-    assert!(out.report.all_ok(), "invariants failed: {:#?}", out.report);
-    assert!(
-        out.document.is_some(),
-        "no document despite passing invariants"
-    );
-}
-
-fn doc(out: &PipelineOutput) -> &differential_schema::PlanDocument {
-    out.document.as_ref().unwrap()
-}
+use differential_schema::{Disposition, GeneratedBy};
 
 // ---------------------------------------------------------------- newlines
 

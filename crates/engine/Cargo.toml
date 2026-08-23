@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 differential-schema = { workspace = true }
+differential-llm = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

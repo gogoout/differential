@@ -50,12 +50,13 @@ Three consumers are planned as views over the document:
 | Core engine: enumeration, shape classes, applier, invariants | ✅ |
 | Language abstraction (per-language normalisation, generic default) | ✅ seam in place |
 | LLM backend abstraction (`differential-llm`) | ✅ seam in place |
-| Grouping stage (LLM merge/label + coverage audit) | ⏳ next |
-| Ordering (foundation-first group DAG) | planned |
+| Grouping stage (LLM merge/label + coverage audit + pinning cache) | ✅ [`spec/grouping.md`](spec/grouping.md) |
+| Ordering (foundation-first group DAG) | ⏳ next |
 | Consumers: shadow branch, TUI (`dfr`), forge | planned |
 
-Documents currently carry `groups: null` and `generator.stages = ["enumerate", "classify"]` —
-a complete, classified, audited enumeration awaiting the grouping stage.
+`run_pipeline` emits the core document (`groups: null`); `run_grouped_pipeline` adds the
+grouping stage — labelled close/skim/noise groups, a reading plan, and the coverage audit —
+behind any `LlmBackend`, pinned by a content-hash cache so a review never reshuffles.
 
 ## Usage
 

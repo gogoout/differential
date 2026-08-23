@@ -21,8 +21,9 @@ guessing from field presence.
 
 `null` means the grouping stage has not run: the document is a complete, classified
 enumeration and a consumer should treat every hunk as `close` in canonical order.
-`[]` would mean "grouping ran and produced no groups" — that is a bug, never a valid state.
-The same rule applies to `reading_plan`.
+`[]` means the stage ran and there was nothing to group — valid **only** for an empty diff
+(zero hunks); on a non-empty diff an empty list is a bug, because the audit back-fills
+everything the model drops. The same rule applies to `reading_plan`.
 
 ## `files[]`
 
@@ -72,11 +73,12 @@ deletion-only hunks are never pure.
 
 - `effort`: `close` (read every hunk) | `skim` (one exemplar per shape class) | `noise`
   (generated content, folded entirely — no exemplars).
-- `role`: `foundation | consumer | mechanical | noise`; `depends_on` edges form the group
-  DAG; `rank` is the foundation-first position.
+- `role`: `foundation | consumer | mechanical | noise` — `null` until the ordering stage
+  runs (the grouping stage sets it only on the mechanical noise group); `depends_on` edges
+  form the group DAG (empty until ordering); `rank` is the reading-order position.
 - `reading_plan` actions: `read`, `exemplars`, `skip`, `fold`.
 - Any class the model omitted lands in a trailing back-filled group with `effort: close`.
-  Nothing is ever dropped.
+  Nothing is ever dropped. Full stage semantics: [grouping.md](grouping.md).
 
 ## `audit`
 

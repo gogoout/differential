@@ -10,6 +10,7 @@ pub mod apply;
 pub mod config;
 pub mod document;
 pub mod gitio;
+pub mod grouping;
 pub mod invariants;
 pub mod lang;
 pub mod model;
@@ -20,7 +21,8 @@ pub mod rename_view;
 pub mod shape;
 pub mod tree;
 
-pub use pipeline::{PipelineOutput, resolve_range, run_pipeline};
+pub use grouping::GroupingOptions;
+pub use pipeline::{PipelineOutput, resolve_range, run_grouped_pipeline, run_pipeline};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -54,6 +56,19 @@ pub enum EngineError {
 
     #[error("bad revision range: {0}")]
     Range(String),
+
+    #[error("grouping backend failed: {0}")]
+    Llm(#[from] differential_llm::LlmError),
+
+    #[error("grouping response unusable: {msg}; response sample: {sample}")]
+    GroupingParse { msg: String, sample: String },
+
+    #[error("grouping cache error at {path}: {source}")]
+    Cache {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("schema error: {0}")]
     Schema(#[from] differential_schema::SchemaError),

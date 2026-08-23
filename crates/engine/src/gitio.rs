@@ -132,6 +132,18 @@ impl Repo {
         let out = self.run(["merge-base", a, b], None)?;
         Ok(String::from_utf8_lossy(trim_newline(&out)).into_owned())
     }
+
+    /// The shared git directory (worktree-safe). Per-repo state such as the
+    /// grouping cache lives under `<common-dir>/differential/`.
+    pub fn common_dir(&self) -> Result<PathBuf, EngineError> {
+        let out = self.run(["rev-parse", "--git-common-dir"], None)?;
+        let p = PathBuf::from(String::from_utf8_lossy(trim_newline(&out)).into_owned());
+        Ok(if p.is_absolute() {
+            p
+        } else {
+            self.root.join(p)
+        })
+    }
 }
 
 pub(crate) fn spec_os(rev: &str, path: &[u8]) -> std::ffi::OsString {
