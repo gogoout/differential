@@ -253,6 +253,68 @@ fn quit_saves_cursor() {
 }
 
 #[test]
+fn split_view_toggles_and_keeps_cursor_on_hunk() {
+    use differential::tui::rows::RowContent;
+    let (r, mut app) = make_app();
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert!(
+        !app.rows
+            .iter()
+            .any(|row| matches!(row.content, RowContent::Split { .. }))
+    );
+    let unified_diff_rows = app
+        .rows
+        .iter()
+        .filter(|row| matches!(row.kind, RowKind::Diff(_)))
+        .count();
+
+    let hunk_before = app.rows[app.cursor].kind.hunk();
+    app.handle_key(key('s'));
+
+    // Split rows exist, the layout persisted, and a Modified line now takes
+    // one row instead of two.
+    assert!(
+        app.rows
+            .iter()
+            .any(|row| matches!(row.content, RowContent::Split { .. }))
+    );
+    let split_diff_rows = app
+        .rows
+        .iter()
+        .filter(|row| matches!(row.kind, RowKind::Diff(_)))
+        .count();
+    assert!(split_diff_rows < unified_diff_rows);
+    assert_eq!(app.rows[app.cursor].kind.hunk(), hunk_before);
+    let store =
+        differential_engine::review_state::ReviewStore::open_at(r.root.join(".dfr-test-store"))
+            .unwrap();
+    assert!(store.load_state().unwrap().split_diff);
+
+    // Toggling back restores the unified layout.
+    app.handle_key(key('s'));
+    assert!(
+        !app.rows
+            .iter()
+            .any(|row| matches!(row.content, RowContent::Split { .. }))
+    );
+    assert!(!store.load_state().unwrap().split_diff);
+}
+
+#[test]
+fn split_view_draw_smoke_shows_separator() {
+    let (_r, mut app) = make_app();
+    app.handle_key(key('s'));
+    for width in [100u16, 60] {
+        let backend = ratatui::backend::TestBackend::new(width, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("│"), "no separator at width {width}");
+    }
+}
+
+#[test]
 fn draw_smoke_test_renders_group_label() {
     let (_r, mut app) = make_app();
     let backend = ratatui::backend::TestBackend::new(100, 30);

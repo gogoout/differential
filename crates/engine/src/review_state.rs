@@ -47,9 +47,13 @@ pub struct ReviewState {
     /// Class content keys marked reviewed.
     #[serde(default)]
     pub reviewed_classes: BTreeSet<String>,
-    /// Resume position: (group id, row offset) in the last-open plan.
+    /// Resume position: (group id or file path, row offset) in the last-open
+    /// plan — a group id in the semantic view, a file path in the file view.
     #[serde(default)]
     pub cursor: Option<(String, usize)>,
+    /// Side-by-side diff layout (default: unified).
+    #[serde(default)]
+    pub split_diff: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

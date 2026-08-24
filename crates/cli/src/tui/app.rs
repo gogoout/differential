@@ -17,8 +17,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use tui_textarea::TextArea;
 
-use super::rows::{GroupContext, Row, RowFactory, RowKind, build_group_rows};
+use super::rows::{DiffMode, GroupContext, Row, RowContent, RowFactory, RowKind, build_group_rows};
 use super::theme::THEME;
+use super::vendor::text_utils::truncate_or_pad_spans;
 
 const SCROLL_MARGIN: usize = 3;
 
@@ -145,10 +146,10 @@ impl App {
             return;
         };
         if groups.is_empty() {
-            self.rows = vec![Row {
-                kind: RowKind::Blank,
-                line: Line::from("nothing to review — empty diff"),
-            }];
+            self.rows = vec![Row::full(
+                RowKind::Blank,
+                Line::from("nothing to review — empty diff"),
+            )];
             return;
         }
         let g = &groups[self.selected_group.min(groups.len() - 1)];
@@ -160,6 +161,7 @@ impl App {
             findings: self.session.findings(),
             reviewed: &reviewed,
             fold_open: self.folds_open.contains(&g.id),
+            mode: self.diff_mode(),
         };
         self.rows = build_group_rows(&mut self.factory, &ctx);
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
@@ -216,6 +218,33 @@ impl App {
 
     fn current_hunk(&self) -> Option<usize> {
         self.rows.get(self.cursor).and_then(|r| r.kind.hunk())
+    }
+
+    fn diff_mode(&self) -> DiffMode {
+        if self.session.split_diff() {
+            DiffMode::Split
+        } else {
+            DiffMode::Unified
+        }
+    }
+
+    /// Toggle unified/split. Row counts differ between the modes, so keep the
+    /// reviewer's place by re-anchoring the cursor to the current hunk.
+    fn toggle_split(&mut self) {
+        let hunk = self.current_hunk();
+        let on = !self.session.split_diff();
+        if let Err(e) = self.session.set_split_diff(on) {
+            self.status = format!("save failed: {e:#}");
+            return;
+        }
+        self.rebuild_rows();
+        if let Some(h) = hunk
+            && let Some(pos) = self.rows.iter().position(|r| r.kind.hunk() == Some(h))
+        {
+            self.cursor = pos;
+            self.follow_cursor();
+        }
+        self.status = if on { "split diff" } else { "unified diff" }.into();
     }
 
     /// Persist the resume position through the session; surface failures in
@@ -324,6 +353,7 @@ impl App {
                     self.rebuild_rows();
                 }
             }
+            (KeyCode::Char('s'), KeyModifiers::NONE) => self.toggle_split(),
             (KeyCode::Char(' '), _) => self.toggle_reviewed(),
             (KeyCode::Char('c'), KeyModifiers::NONE) => {
                 if let Some(h) = self.current_hunk() {
@@ -513,6 +543,7 @@ impl App {
         let inner_h = area.height.saturating_sub(2) as usize;
         self.viewport_hint = inner_h;
         self.follow_cursor();
+        let inner_w = area.width.saturating_sub(2) as usize;
         let lines: Vec<Line> = self
             .rows
             .iter()
@@ -520,7 +551,7 @@ impl App {
             .skip(self.scroll)
             .take(inner_h)
             .map(|(i, r)| {
-                let mut line = r.line.clone();
+                let mut line = compose_row(&r.content, inner_w);
                 if i == self.cursor && self.focus == Focus::Diff && r.kind.selectable() {
                     line = line.style(Style::default().bg(THEME.cursor_bg));
                 }
@@ -548,13 +579,29 @@ impl App {
             .filter(|f| f.status == FindingStatus::Open)
             .count();
         let text = format!(
-            " {done}/{total} classes reviewed · {open} finding(s) · {} · j/k J/K nav · space reviewed · c finding · z fold · y yank · ? help · q quit",
+            " {done}/{total} classes reviewed · {open} finding(s) · {} · j/k J/K nav · space reviewed · c finding · s split · z fold · y yank · ? help · q quit",
             self.status
         );
         frame.render_widget(
             Paragraph::new(text).style(Style::default().bg(THEME.status_bg)),
             area,
         );
+    }
+}
+
+/// Render a row at the given pane width. Split rows compose their two halves
+/// here — width is a draw-time concern, so resizes never rebuild rows.
+fn compose_row(content: &RowContent, width: usize) -> Line<'static> {
+    match content {
+        RowContent::Full(line) => line.clone(),
+        RowContent::Split { old, new } => {
+            let lw = width.saturating_sub(1) / 2;
+            let rw = width.saturating_sub(1).saturating_sub(lw);
+            let mut spans = truncate_or_pad_spans(old, lw, Style::default());
+            spans.push(Span::styled("│", Style::default().fg(THEME.gutter_fg)));
+            spans.extend(truncate_or_pad_spans(new, rw, Style::default()));
+            Line::from(spans)
+        }
     }
 }
 
@@ -589,6 +636,7 @@ fn help_paragraph() -> Paragraph<'static> {
         Line::from("  ctrl-d/u   half page"),
         Line::from("  g/G        top / bottom"),
         Line::from("  z          unfold skim remainder / noise"),
+        Line::from("  s          toggle unified / split diff"),
         Line::from("  space      toggle class reviewed"),
         Line::from("  c          add finding on current hunk"),
         Line::from("  dd         delete finding under cursor"),

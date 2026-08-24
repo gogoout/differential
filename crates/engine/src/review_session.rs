@@ -141,6 +141,10 @@ impl ReviewSession {
         self.state.cursor.as_ref()
     }
 
+    pub fn split_diff(&self) -> bool {
+        self.state.split_diff
+    }
+
     // ---------------------------- mutations (each persists before returning)
 
     /// Toggle the reviewed mark of the class owning `hunk`. Returns the new
@@ -158,6 +162,12 @@ impl ReviewSession {
     /// Persist the resume position: (group id or file path, row offset).
     pub fn save_cursor(&mut self, id: String, row: usize) -> Result<(), EngineError> {
         self.state.cursor = Some((id, row));
+        self.store.save_state(&self.state)
+    }
+
+    /// Persist the diff layout (unified / side-by-side).
+    pub fn set_split_diff(&mut self, on: bool) -> Result<(), EngineError> {
+        self.state.split_diff = on;
         self.store.save_state(&self.state)
     }
 

@@ -51,9 +51,36 @@ impl RowKind {
     }
 }
 
+/// Diff-pane layout. Split rows carry BOTH sides as style/text pairs; the
+/// columns are composed at draw time from the pane width (row counts never
+/// depend on width, so resizes never rebuild).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffMode {
+    Unified,
+    Split,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RowContent {
+    Full(Line<'static>),
+    Split {
+        old: Vec<(Style, String)>,
+        new: Vec<(Style, String)>,
+    },
+}
+
 pub struct Row {
     pub kind: RowKind,
-    pub line: Line<'static>,
+    pub content: RowContent,
+}
+
+impl Row {
+    pub fn full(kind: RowKind, line: Line<'static>) -> Self {
+        Row {
+            kind,
+            content: RowContent::Full(line),
+        }
+    }
 }
 
 /// Per-file computed rows + pre-baked syntax highlighting, cached across
@@ -127,6 +154,7 @@ pub struct GroupContext<'a> {
     /// Hunk indices whose class is marked reviewed.
     pub reviewed: &'a std::collections::HashSet<usize>,
     pub fold_open: bool,
+    pub mode: DiffMode,
 }
 
 /// Build the right-pane rows for one group.
@@ -204,13 +232,13 @@ pub fn build_group_rows(factory: &mut RowFactory, ctx: &GroupContext) -> Vec<Row
             schema::Effort::Noise => "folded generated hunks",
             _ => "remaining hunks, same shapes as the exemplars above",
         };
-        rows.push(Row {
-            kind: RowKind::Fold,
-            line: Line::from(Span::styled(
+        rows.push(Row::full(
+            RowKind::Fold,
+            Line::from(Span::styled(
                 format!("  ── {} {what} — press z to unfold ──", hidden.len()),
                 Style::default().fg(THEME.noise_fg),
             )),
-        });
+        ));
     }
     rows
 }
@@ -231,9 +259,9 @@ fn header_rows(ctx: &GroupContext, rows: &mut Vec<Row>) {
             schema::Role::Noise => " · noise",
         })
         .unwrap_or("");
-    rows.push(Row {
-        kind: RowKind::GroupHeader,
-        line: Line::from(vec![
+    rows.push(Row::full(
+        RowKind::GroupHeader,
+        Line::from(vec![
             Span::styled(
                 format!("[{tier}] "),
                 THEME.effort_style(g.effort).add_modifier(Modifier::BOLD),
@@ -246,15 +274,15 @@ fn header_rows(ctx: &GroupContext, rows: &mut Vec<Row>) {
             ),
             Span::styled(role.to_string(), Style::default().fg(THEME.gutter_fg)),
         ]),
-    });
+    ));
     if !g.description.is_empty() {
-        rows.push(Row {
-            kind: RowKind::GroupHeader,
-            line: Line::from(Span::styled(
+        rows.push(Row::full(
+            RowKind::GroupHeader,
+            Line::from(Span::styled(
                 format!("  {}", g.description),
                 Style::default().fg(THEME.context_fg),
             )),
-        });
+        ));
     }
     if !g.depends_on.is_empty() {
         let deps: Vec<String> = g
@@ -267,18 +295,15 @@ fn header_rows(ctx: &GroupContext, rows: &mut Vec<Row>) {
                     .unwrap_or_else(|| id.clone())
             })
             .collect();
-        rows.push(Row {
-            kind: RowKind::GroupHeader,
-            line: Line::from(Span::styled(
+        rows.push(Row::full(
+            RowKind::GroupHeader,
+            Line::from(Span::styled(
                 format!("  depends on: {}", deps.join(", ")),
                 Style::default().fg(THEME.gutter_fg),
             )),
-        });
+        ));
     }
-    rows.push(Row {
-        kind: RowKind::Blank,
-        line: Line::default(),
-    });
+    rows.push(Row::full(RowKind::Blank, Line::default()));
 }
 
 fn file_header_row(ctx: &GroupContext, hunk: &schema::HunkEntry) -> Row {
@@ -296,15 +321,15 @@ fn file_header_row(ctx: &GroupContext, hunk: &schema::HunkEntry) -> Row {
             text.push_str("  [generated]");
         }
     }
-    Row {
-        kind: RowKind::FileHeader,
-        line: Line::from(Span::styled(
+    Row::full(
+        RowKind::FileHeader,
+        Line::from(Span::styled(
             text,
             Style::default()
                 .fg(THEME.header_fg)
                 .add_modifier(Modifier::BOLD),
         )),
-    }
+    )
 }
 
 fn hunk_rows(factory: &mut RowFactory, ctx: &GroupContext, hi: usize, rows: &mut Vec<Row>) {
@@ -326,9 +351,9 @@ fn hunk_rows(factory: &mut RowFactory, ctx: &GroupContext, hi: usize, rows: &mut
     } else {
         Style::default().fg(THEME.skim_fg)
     };
-    rows.push(Row {
-        kind: RowKind::HunkHeader(hi),
-        line: Line::from(vec![
+    rows.push(Row::full(
+        RowKind::HunkHeader(hi),
+        Line::from(vec![
             Span::styled(
                 format!(
                     "@@ -{},{} +{},{} @@  {}{check}",
@@ -338,7 +363,7 @@ fn hunk_rows(factory: &mut RowFactory, ctx: &GroupContext, hi: usize, rows: &mut
             ),
             Span::styled(notes, Style::default().fg(THEME.finding_fg)),
         ]),
-    });
+    ));
 
     // Findings under the header.
     for f in ctx
@@ -347,54 +372,51 @@ fn hunk_rows(factory: &mut RowFactory, ctx: &GroupContext, hi: usize, rows: &mut
         .filter(|f| f.anchor.hunk_digest == hunk.digest)
     {
         let moved = if f.moved { " (moved)" } else { "" };
-        rows.push(Row {
-            kind: RowKind::Finding(f.id.clone(), hi),
-            line: Line::from(Span::styled(
+        rows.push(Row::full(
+            RowKind::Finding(f.id.clone(), hi),
+            Line::from(Span::styled(
                 format!("  ◆ {}{moved}", f.body.lines().next().unwrap_or("")),
                 Style::default().fg(THEME.finding_fg),
             )),
-        });
+        ));
     }
 
     // Binary / submodule files carry no reconstructable text rows.
     let file_entry = ctx.doc.files.iter().find(|f| f.path == hunk.file);
     if file_entry.is_some_and(|f| f.binary || f.submodule.is_some()) {
-        rows.push(Row {
-            kind: RowKind::Diff(hi),
-            line: Line::from(Span::styled(
+        rows.push(Row::full(
+            RowKind::Diff(hi),
+            Line::from(Span::styled(
                 "  (binary or submodule change)",
                 Style::default().fg(THEME.noise_fg),
             )),
-        });
+        ));
         return;
     }
 
     let file_rows = factory.file_rows(&hunk.file);
     let range = hunk_row_range(&file_rows.rows, hunk);
     let Some((start, end)) = range else {
-        rows.push(Row {
-            kind: RowKind::Diff(hi),
-            line: Line::from(Span::styled(
+        rows.push(Row::full(
+            RowKind::Diff(hi),
+            Line::from(Span::styled(
                 "  (content unavailable)",
                 Style::default().fg(THEME.noise_fg),
             )),
-        });
+        ));
         return;
     };
     let from = start.saturating_sub(CONTEXT);
     let to = (end + CONTEXT + 1).min(file_rows.rows.len());
     for row in &file_rows.rows[from..to] {
-        for line in render_diff_row(row, file_rows) {
+        for content in render_diff_row(row, file_rows, ctx.mode) {
             rows.push(Row {
                 kind: RowKind::Diff(hi),
-                line,
+                content,
             });
         }
     }
-    rows.push(Row {
-        kind: RowKind::Blank,
-        line: Line::default(),
-    });
+    rows.push(Row::full(RowKind::Blank, Line::default()));
 }
 
 /// Locate the row span covered by a canonical -U0 hunk.
@@ -425,14 +447,18 @@ fn hunk_row_range(rows: &[DiffLine], hunk: &schema::HunkEntry) -> Option<(usize,
     first.zip(last)
 }
 
-/// One lumen row → one or two unified ratatui lines (Modified → `-` then `+`).
-fn render_diff_row(row: &DiffLine, file: &FileRows) -> Vec<Line<'static>> {
+/// One lumen row → row contents. Unified: one or two full lines (Modified →
+/// `-` then `+`). Split: exactly one row carrying both sides.
+fn render_diff_row(row: &DiffLine, file: &FileRows, mode: DiffMode) -> Vec<RowContent> {
+    if mode == DiffMode::Split {
+        return vec![split_row(row, file)];
+    }
     let mut out = Vec::new();
     match row.change_type {
         ChangeType::Equal => {
             if let Some((n, text)) = &row.new_line {
                 let old_n = row.old_line.as_ref().map(|(o, _)| *o).unwrap_or(0);
-                out.push(side_line(
+                out.push(RowContent::Full(side_line(
                     Some(old_n),
                     Some(*n),
                     ' ',
@@ -441,12 +467,12 @@ fn render_diff_row(row: &DiffLine, file: &FileRows) -> Vec<Line<'static>> {
                     file.new_hl.as_ref(),
                     *n,
                     None,
-                ));
+                )));
             }
         }
         ChangeType::Delete | ChangeType::Modified => {
             if let Some((n, text)) = &row.old_line {
-                out.push(side_line(
+                out.push(RowContent::Full(side_line(
                     Some(*n),
                     None,
                     '-',
@@ -455,12 +481,12 @@ fn render_diff_row(row: &DiffLine, file: &FileRows) -> Vec<Line<'static>> {
                     file.old_hl.as_ref(),
                     *n,
                     row.old_segments.as_deref(),
-                ));
+                )));
             }
             if matches!(row.change_type, ChangeType::Modified)
                 && let Some((n, text)) = &row.new_line
             {
-                out.push(side_line(
+                out.push(RowContent::Full(side_line(
                     None,
                     Some(*n),
                     '+',
@@ -469,12 +495,12 @@ fn render_diff_row(row: &DiffLine, file: &FileRows) -> Vec<Line<'static>> {
                     file.new_hl.as_ref(),
                     *n,
                     row.new_segments.as_deref(),
-                ));
+                )));
             }
         }
         ChangeType::Insert => {
             if let Some((n, text)) = &row.new_line {
-                out.push(side_line(
+                out.push(RowContent::Full(side_line(
                     None,
                     Some(*n),
                     '+',
@@ -483,11 +509,34 @@ fn render_diff_row(row: &DiffLine, file: &FileRows) -> Vec<Line<'static>> {
                     file.new_hl.as_ref(),
                     *n,
                     row.new_segments.as_deref(),
-                ));
+                )));
             }
         }
     }
     out
+}
+
+/// One lumen row → one split row: old on the left, new on the right, either
+/// half blank when the row only exists on one side.
+fn split_row(row: &DiffLine, file: &FileRows) -> RowContent {
+    let old = row.old_line.as_ref().map(|(n, text)| {
+        let (marker, origin, segments) = match row.change_type {
+            ChangeType::Equal => (' ', LineOrigin::Context, None),
+            _ => ('-', LineOrigin::Deletion, row.old_segments.as_deref()),
+        };
+        half_pairs(*n, marker, text, origin, file.old_hl.as_ref(), segments)
+    });
+    let new = row.new_line.as_ref().map(|(n, text)| {
+        let (marker, origin, segments) = match row.change_type {
+            ChangeType::Equal => (' ', LineOrigin::Context, None),
+            _ => ('+', LineOrigin::Addition, row.new_segments.as_deref()),
+        };
+        half_pairs(*n, marker, text, origin, file.new_hl.as_ref(), segments)
+    });
+    RowContent::Split {
+        old: old.unwrap_or_default(),
+        new: new.unwrap_or_default(),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -506,7 +555,38 @@ fn side_line(
         old_n.map(|n| n.to_string()).unwrap_or_default(),
         new_n.map(|n| n.to_string()).unwrap_or_default(),
     );
+    let pairs = content_pairs(text, origin, hl, lineno, segments);
+    let mut spans = vec![Span::styled(gutter, Style::default().fg(THEME.gutter_fg))];
+    spans.extend(pairs.into_iter().map(|(s, t)| Span::styled(t, s)));
+    Line::from(spans)
+}
 
+/// One half of a split row: single-number gutter + the line's content pairs.
+fn half_pairs(
+    lineno: usize,
+    marker: char,
+    text: &str,
+    origin: LineOrigin,
+    hl: Option<&HighlightedLines>,
+    segments: Option<&[InlineSegment]>,
+) -> Vec<(Style, String)> {
+    let mut pairs = vec![(
+        Style::default().fg(THEME.gutter_fg),
+        format!("{lineno:>4} {marker} "),
+    )];
+    pairs.extend(content_pairs(text, origin, hl, lineno, segments));
+    pairs
+}
+
+/// Syntax pairs for one line with the per-side background and word-level
+/// emphasis applied.
+fn content_pairs(
+    text: &str,
+    origin: LineOrigin,
+    hl: Option<&HighlightedLines>,
+    lineno: usize,
+    segments: Option<&[InlineSegment]>,
+) -> Vec<(Style, String)> {
     // Syntax spans for this line, else plain.
     let mut pairs: Vec<(Style, String)> = hl
         .and_then(|lines| lines.get(lineno.saturating_sub(1)).cloned().flatten())
@@ -534,10 +614,7 @@ fn side_line(
             );
         }
     }
-
-    let mut spans = vec![Span::styled(gutter, Style::default().fg(THEME.gutter_fg))];
-    spans.extend(pairs.into_iter().map(|(s, t)| Span::styled(t, s)));
-    Line::from(spans)
+    pairs
 }
 
 fn highlighter_bg(pairs: Vec<(Style, String)>, origin: LineOrigin) -> Vec<(Style, String)> {
