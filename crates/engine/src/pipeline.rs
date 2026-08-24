@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use differential_schema as schema;
+use crate::schema;
 
 use crate::EngineError;
 use crate::config::Config;
@@ -94,7 +94,7 @@ pub fn run_grouped_pipeline(
     if let Some(core_doc) = &out.document {
         // Backend: injected, or built from [grouping] config.
         let built;
-        let backend: &dyn differential_llm::LlmBackend = match grouping.backend {
+        let backend: &dyn crate::llm::LlmBackend = match grouping.backend {
             Some(b) => b,
             None => {
                 built = backend_from_config(&config.grouping);
@@ -145,7 +145,7 @@ pub fn run_stack_pipeline(
         });
     };
     let built;
-    let backend: &dyn differential_llm::LlmBackend = match grouping.backend {
+    let backend: &dyn crate::llm::LlmBackend = match grouping.backend {
         Some(b) => b,
         None => {
             built = backend_from_config(&config.grouping);
@@ -168,13 +168,12 @@ pub fn run_stack_pipeline(
     })
 }
 
-fn backend_from_config(cfg: &crate::config::GroupingConfig) -> differential_llm::CommandBackend {
+fn backend_from_config(cfg: &crate::config::GroupingConfig) -> crate::llm::CommandBackend {
     let backend = match &cfg.command {
-        Some(argv) if !argv.is_empty() => differential_llm::CommandBackend::new(
-            argv.clone(),
-            std::time::Duration::from_secs(1200),
-        ),
-        _ => differential_llm::CommandBackend::claude_cli(),
+        Some(argv) if !argv.is_empty() => {
+            crate::llm::CommandBackend::new(argv.clone(), std::time::Duration::from_secs(1200))
+        }
+        _ => crate::llm::CommandBackend::claude_cli(),
     };
     match cfg.timeout_secs {
         Some(s) => backend.with_timeout(std::time::Duration::from_secs(s)),

@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 
-use differential_schema as schema;
+use crate::schema;
 
 use crate::EngineError;
 use crate::gitio::Repo;

@@ -9,7 +9,7 @@ use differential_engine::config::Config;
 use differential_engine::gitio::Repo;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::{PipelineOutput, run_pipeline};
-use differential_schema::SourceKind;
+use differential_engine::schema::SourceKind;
 use tempfile::TempDir;
 
 pub struct TestRepo {
@@ -91,7 +91,7 @@ pub fn assert_all_ok(out: &PipelineOutput) {
     );
 }
 
-pub fn doc(out: &PipelineOutput) -> &differential_schema::PlanDocument {
+pub fn doc(out: &PipelineOutput) -> &differential_engine::schema::PlanDocument {
     out.document.as_ref().unwrap()
 }
 
@@ -101,9 +101,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use differential_engine::grouping::GroupingOptions;
+use differential_engine::llm::{LlmBackend, LlmError};
 use differential_engine::pipeline::run_grouped_pipeline;
-use differential_llm::{LlmBackend, LlmError};
-use differential_schema::PlanDocument;
+use differential_engine::schema::PlanDocument;
 
 pub type Responder = Box<dyn Fn(&[String]) -> String + Send + Sync>;
 

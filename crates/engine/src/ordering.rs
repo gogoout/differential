@@ -12,7 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use differential_schema as schema;
+use crate::schema;
 
 use crate::lang::LanguageRegistry;
 use crate::model::DiffView;

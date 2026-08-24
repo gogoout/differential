@@ -1,8 +1,10 @@
 //! The frozen JSON contract for differential reading plans.
 //!
-//! This crate is the product boundary: every consumer (shadow-branch stack, TUI,
-//! forge review) depends on these types and nothing else. Consumer conveniences
-//! must not leak in here.
+//! This module is the product boundary (ADR 0008, superseded-in-form by ADR
+//! 0018): every consumer (shadow-branch stack, TUI, forge review) depends on
+//! these types and nothing else. It stays serde-only — consumer conveniences
+//! and engine internals must not leak in here; that discipline is enforced in
+//! review now that the crate boundary is gone.
 //!
 //! Contract rules:
 //! - `schema_version` is 1. Readers must reject versions they do not know.

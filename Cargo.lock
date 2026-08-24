@@ -487,8 +487,6 @@ dependencies = [
  "clap",
  "crossterm",
  "differential-engine",
- "differential-llm",
- "differential-schema",
  "ratatui",
  "serde_json",
  "similar",
@@ -503,8 +501,6 @@ dependencies = [
 name = "differential-engine"
 version = "0.2.0"
 dependencies = [
- "differential-llm",
- "differential-schema",
  "globset",
  "hex",
  "regex",
@@ -514,21 +510,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "toml",
-]
-
-[[package]]
-name = "differential-llm"
-version = "0.2.0"
-dependencies = [
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "differential-schema"
-version = "0.2.0"
-dependencies = [
- "serde",
- "serde_json",
 ]
 
 [[package]]

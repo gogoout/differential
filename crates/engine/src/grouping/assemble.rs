@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use differential_schema as schema;
+use crate::schema;
 
 use super::{Audited, ClassInfo, WorkGroup};
 

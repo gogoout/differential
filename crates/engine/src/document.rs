@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use differential_schema as schema;
+use crate::schema;
 
 use crate::EngineError;
 use crate::config::Config;

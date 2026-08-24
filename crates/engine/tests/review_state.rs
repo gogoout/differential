@@ -11,7 +11,7 @@ use differential_engine::pipeline::run_grouped_pipeline;
 use differential_engine::review_state::{
     Anchor, Finding, FindingStatus, ReviewStore, class_content_key, reanchor, review_id,
 };
-use differential_schema::SourceKind;
+use differential_engine::schema::SourceKind;
 
 fn close_all_backend() -> FakeBackend {
     FakeBackend::new("fake", |ids| {
@@ -98,7 +98,7 @@ fn findings_reanchor_across_regeneration() {
     let doc1 = grouped(&r, &base, &head1, &backend);
     let plan1 = "plan1hash";
 
-    let digest_of = |doc: &differential_schema::PlanDocument, file: &str| {
+    let digest_of = |doc: &differential_engine::schema::PlanDocument, file: &str| {
         doc.hunks
             .iter()
             .find(|h| h.file == file)

@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use differential_schema as schema;
+use crate::schema;
 
 use crate::EngineError;
 use crate::gitio::Repo;

@@ -12,9 +12,9 @@ use differential_engine::ReviewSession;
 use differential_engine::config::Config;
 use differential_engine::gitio::Repo;
 use differential_engine::lang::LanguageRegistry;
+use differential_engine::llm::{LlmBackend, LlmError};
 use differential_engine::pipeline::run_grouped_pipeline;
-use differential_llm::{LlmBackend, LlmError};
-use differential_schema::SourceKind;
+use differential_engine::schema::SourceKind;
 use tempfile::TempDir;
 
 // Minimal local copies of the engine's test helpers (test modules are not

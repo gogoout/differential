@@ -68,13 +68,12 @@ The report is honest about the saving: skim exemplars still get read, so documen
 
 | path | what |
 |---|---|
-| `crates/schema` | the frozen JSON contract as serde types — the product boundary |
-| `crates/engine` | git io, diff parsing, byte-exact applier, shape classes, language registry, grouping, ordering, stack renderer, invariants |
-| `crates/llm` | the LLM backend abstraction (one-shot completion, tools denied) |
+| `crates/engine` | the backend: git io, diff parsing, byte-exact applier, shape classes, language registry, grouping, ordering, stack renderer, invariants, review sessions — plus `engine::schema` (the frozen JSON contract, serde-only) and `engine::llm` (the backend abstraction, tools denied) |
 | `crates/cli` | the `dfr` / `differential` renderer binary — presentation only |
 
-Dependency direction is strict: `cli → engine → {schema, llm}`. The schema crate depends
-only on serde, so consumers take the contract without the git plumbing (ADR 0008, 0014).
+Dependency direction is strict: `cli → engine`. The `engine::schema` module remains the
+product boundary — serde types only, no engine internals — as a reviewed module
+discipline rather than a crate boundary (ADR 0008, 0018).
 All git access shells out to real git, plumbing commands only — the byte-exactness
 guarantees were validated against real git output and nothing else (ADR 0002, 0011).
 

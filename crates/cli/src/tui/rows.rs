@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use differential_engine::gitio::Repo;
 use differential_engine::review_state::Finding;
-use differential_schema as schema;
+use differential_engine::schema;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 

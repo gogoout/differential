@@ -1,4 +1,4 @@
-use differential_schema::{PlanDocument, SchemaError};
+use differential_engine::schema::{PlanDocument, SchemaError};
 
 const FIXTURE: &str = include_str!("fixtures/plan-v1.json");
 

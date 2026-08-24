@@ -204,7 +204,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     Some(tui::picker::PickedSource::Commit { sha }) => (
                         sha,
                         "HEAD".to_string(),
-                        differential_schema::SourceKind::Range,
+                        differential_engine::schema::SourceKind::Range,
                         "HEAD".to_string(),
                         None,
                     ),
@@ -214,7 +214,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                         (
                             head_sha.clone(),
                             index,
-                            differential_schema::SourceKind::Staged,
+                            differential_engine::schema::SourceKind::Staged,
                             "INDEX".to_string(),
                             Some(head_sha),
                         )
@@ -226,7 +226,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                         (
                             index,
                             wt,
-                            differential_schema::SourceKind::Worktree,
+                            differential_engine::schema::SourceKind::Worktree,
                             "WORKTREE".to_string(),
                             Some(head_sha),
                         )
@@ -326,7 +326,7 @@ fn grouped(
     repo: &Repo,
     base: &str,
     head: &str,
-    kind: differential_schema::SourceKind,
+    kind: differential_engine::schema::SourceKind,
     config: &Config,
     langs: &LanguageRegistry,
     no_cache: bool,

@@ -17,8 +17,8 @@ mod payload;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use differential_llm::LlmBackend;
-use differential_schema as schema;
+use crate::llm::LlmBackend;
+use crate::schema;
 
 use crate::EngineError;
 use crate::model::DiffView;

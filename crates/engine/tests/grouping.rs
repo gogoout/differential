@@ -3,7 +3,7 @@
 mod common;
 
 use common::{FakeBackend, TestRepo, grouped, grouped_with_cache, ids_in_prompt, json_group};
-use differential_schema::{Effort, PlanDocument, ReadAction};
+use differential_engine::schema::{Effort, PlanDocument, ReadAction};
 
 /// Standard fixture: one 3-hunk rename-shaped class + one behavioural class.
 fn two_class_repo() -> (TestRepo, String, String) {
@@ -191,7 +191,7 @@ fn generated_classes_never_reach_the_model_and_fold_as_noise() {
 
     let groups = d.groups.as_ref().unwrap();
     let noise = groups.iter().find(|g| g.effort == Effort::Noise).unwrap();
-    assert_eq!(noise.role, Some(differential_schema::Role::Noise));
+    assert_eq!(noise.role, Some(differential_engine::schema::Role::Noise));
     let plan = d.reading_plan.as_ref().unwrap();
     assert!(
         plan.iter()
@@ -421,10 +421,16 @@ fn foundation_is_ordered_before_its_consumer() {
     let groups = d.groups.as_ref().unwrap();
 
     assert_eq!(groups[0].label, "Introduce the widget");
-    assert_eq!(groups[0].role, Some(differential_schema::Role::Foundation));
+    assert_eq!(
+        groups[0].role,
+        Some(differential_engine::schema::Role::Foundation)
+    );
     assert_eq!(groups[0].rank, 0);
     assert_eq!(groups[1].label, "Use the widget");
-    assert_eq!(groups[1].role, Some(differential_schema::Role::Consumer));
+    assert_eq!(
+        groups[1].role,
+        Some(differential_engine::schema::Role::Consumer)
+    );
     assert_eq!(groups[1].depends_on, vec![groups[0].id.clone()]);
     assert!(groups[0].depends_on.is_empty());
 
@@ -452,7 +458,10 @@ fn skim_groups_get_the_mechanical_role_and_stay_after_close() {
     let groups = d.groups.as_ref().unwrap();
     assert_eq!(groups[0].effort, Effort::Close);
     assert_eq!(groups[1].effort, Effort::Skim);
-    assert_eq!(groups[1].role, Some(differential_schema::Role::Mechanical));
+    assert_eq!(
+        groups[1].role,
+        Some(differential_engine::schema::Role::Mechanical)
+    );
 }
 
 #[test]

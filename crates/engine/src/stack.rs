@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
 
-use differential_schema as schema;
+use crate::schema;
 
 use crate::EngineError;
 use crate::apply::apply_hunks;

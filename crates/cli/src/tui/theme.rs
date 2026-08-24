@@ -45,11 +45,11 @@ pub const THEME: Theme = Theme {
 };
 
 impl Theme {
-    pub fn effort_style(&self, effort: differential_schema::Effort) -> Style {
+    pub fn effort_style(&self, effort: differential_engine::schema::Effort) -> Style {
         let fg = match effort {
-            differential_schema::Effort::Close => self.close_fg,
-            differential_schema::Effort::Skim => self.skim_fg,
-            differential_schema::Effort::Noise => self.noise_fg,
+            differential_engine::schema::Effort::Close => self.close_fg,
+            differential_engine::schema::Effort::Skim => self.skim_fg,
+            differential_engine::schema::Effort::Noise => self.noise_fg,
         };
         Style::default().fg(fg)
     }

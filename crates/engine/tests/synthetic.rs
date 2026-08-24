@@ -6,7 +6,7 @@ mod common;
 
 use common::{TestRepo, assert_all_ok, doc};
 use differential_engine::config::Config;
-use differential_schema::{Disposition, GeneratedBy};
+use differential_engine::schema::{Disposition, GeneratedBy};
 
 // ---------------------------------------------------------------- newlines
 
@@ -476,6 +476,6 @@ fn identical_edits_share_a_class_and_document_is_consistent() {
     assert!(class.pure_substitution);
     // Round-trip through the frozen schema.
     let json = d.to_json_pretty().unwrap();
-    let re = differential_schema::PlanDocument::from_json(&json).unwrap();
+    let re = differential_engine::schema::PlanDocument::from_json(&json).unwrap();
     assert_eq!(&re, d);
 }

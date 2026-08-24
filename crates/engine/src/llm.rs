@@ -1,4 +1,7 @@
-//! LLM backend abstraction (ADR 0016).
+//! LLM backend abstraction (ADR 0016; an engine module since ADR 0018).
+//!
+//! Nothing else in the engine may reach into subprocess machinery: grouping
+//! and the pipeline consume only `LlmBackend`/`CommandBackend` from here.
 //!
 //! The grouping stage needs exactly one capability from a model: one-shot text
 //! completion — prompt in, raw text out. The contract is deliberately that
