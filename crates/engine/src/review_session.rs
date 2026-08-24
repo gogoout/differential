@@ -145,6 +145,10 @@ impl ReviewSession {
         self.state.split_diff
     }
 
+    pub fn file_view(&self) -> bool {
+        self.state.file_view
+    }
+
     // ---------------------------- mutations (each persists before returning)
 
     /// Toggle the reviewed mark of the class owning `hunk`. Returns the new
@@ -168,6 +172,12 @@ impl ReviewSession {
     /// Persist the diff layout (unified / side-by-side).
     pub fn set_split_diff(&mut self, on: bool) -> Result<(), EngineError> {
         self.state.split_diff = on;
+        self.store.save_state(&self.state)
+    }
+
+    /// Persist the left-pane view (semantic groups / flat file list).
+    pub fn set_file_view(&mut self, on: bool) -> Result<(), EngineError> {
+        self.state.file_view = on;
         self.store.save_state(&self.state)
     }
 

@@ -4,7 +4,11 @@ A dedicated reviewer over the grouped, ordered document. Two panes: the reading 
 (groups in rank order, effort/role tags, per-group progress) and the diff for the selected
 group — unified layout by default, `s` toggles a side-by-side split (the layout choice
 persists per review); syntax highlighting, word-level change emphasis, ±3 context lines
-recomputed from the base/head blobs (canonical `-U0` hunks carry none). Skim groups show
+recomputed from the base/head blobs (canonical `-U0` hunks carry none). `v` flattens the
+left pane into a per-file list (every file in the document, including binary/submodule
+changes the group view cannot surface); the right pane then shows the selected file's
+hunks in position order regardless of grouping, each hunk header carrying its group's
+label. Reviewed marks are shared between the views — they key on class content either way. Skim groups show
 one exemplar per shape class with the remainder folded behind a single line; noise groups
 are folded entirely. Group headers render `depends_on` with labels — the causal chain, not
 just the sequence. Each reading-plan row shows the group's file count and added/removed
@@ -22,6 +26,7 @@ zero, and a rename counts as two files (the canonical view is `--no-renames`).
 | `g`/`G` | top / bottom |
 | `z` | unfold / fold the skim remainder or noise group |
 | `s` | toggle unified / side-by-side diff layout (persisted) |
+| `v` | toggle the left pane: reading plan ↔ flattened file view (persisted) |
 | `space` | toggle the hunk's **class** reviewed (one exemplar verifies the shape) |
 | `c` | add a finding on the current hunk (Ctrl-s save, Esc cancel) |
 | `dd` | delete the finding under the cursor |

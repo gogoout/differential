@@ -62,6 +62,10 @@ back-fill: detection and preservation, not silent loss.
 
 Review progress (`state.json`) carries "reviewed" marks keyed by class/group **content
 hash**: a group whose content is unchanged stays reviewed; anything that changed resets.
+It also carries the resume cursor and the TUI's persisted layout choices (`split_diff`,
+`file_view`) — all additive, defaulted fields. The cursor is `(id, row)` where `id` is a
+group id in the semantic view and a file path in the flattened file view; the `file_view`
+flag disambiguates on load.
 
 ## Status
 

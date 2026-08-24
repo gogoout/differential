@@ -54,6 +54,9 @@ pub struct ReviewState {
     /// Side-by-side diff layout (default: unified).
     #[serde(default)]
     pub split_diff: bool,
+    /// Flattened per-file view instead of semantic groups (default: groups).
+    #[serde(default)]
+    pub file_view: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

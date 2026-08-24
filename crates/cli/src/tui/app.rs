@@ -17,7 +17,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use tui_textarea::TextArea;
 
-use super::rows::{DiffMode, GroupContext, Row, RowContent, RowFactory, RowKind, build_group_rows};
+use super::rows::{
+    DiffMode, GroupContext, Row, RowContent, RowFactory, RowKind, RowsContext, build_file_rows,
+    build_group_rows,
+};
 use super::theme::THEME;
 use super::vendor::text_utils::truncate_or_pad_spans;
 
@@ -57,16 +60,39 @@ pub struct GroupInfo {
     pub dels: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    /// Semantic groups — the reading plan.
+    Groups,
+    /// Flattened per-file list, every hunk in file order.
+    Files,
+}
+
+pub struct FileInfo {
+    pub path: String,
+    /// Canonical hunk indices, position order.
+    pub hunk_idxs: Vec<usize>,
+    pub adds: usize,
+    pub dels: usize,
+}
+
 pub struct App {
     pub session: ReviewSession,
     factory: RowFactory,
 
     pub groups: Vec<GroupInfo>,
     pub labels: HashMap<String, String>,
+    /// Every file in the document (including zero-hunk binary/submodule
+    /// changes the group view cannot surface), document order.
+    pub files: Vec<FileInfo>,
+    /// Hunk index -> owning group label, for file-view hunk headers.
+    hunk_labels: HashMap<usize, String>,
 
     pub focus: Focus,
     pub mode: Mode,
+    pub view_mode: ViewMode,
     pub selected_group: usize,
+    pub selected_file: usize,
     pub rows: Vec<Row>,
     pub cursor: usize,
     pub scroll: usize,
@@ -117,18 +143,73 @@ impl App {
                 }
             })
             .collect();
-        let labels = schema_groups
+        let labels: HashMap<String, String> = schema_groups
             .iter()
             .map(|g| (g.id.clone(), g.label.clone()))
             .collect();
 
-        // Resume position.
-        let (selected_group, resume_row) = match session.cursor() {
-            Some((gid, row)) => (
-                groups.iter().position(|g| &g.id == gid).unwrap_or(0),
-                Some(*row),
-            ),
-            None => (0, None),
+        // Hunk -> owning group label (via the hunk's class).
+        let group_of_class: HashMap<&str, &str> = schema_groups
+            .iter()
+            .flat_map(|g| g.class_ids.iter().map(|c| (c.as_str(), g.label.as_str())))
+            .collect();
+        let mut hunk_labels = HashMap::new();
+        for c in &doc.classes {
+            if let Some(label) = group_of_class.get(c.id.as_str()) {
+                for hid in &c.hunk_ids {
+                    let idx: usize = hid[1..].parse().expect("h<N>");
+                    hunk_labels.insert(idx, label.to_string());
+                }
+            }
+        }
+
+        // Every file, document order — the flat view surfaces zero-hunk
+        // (binary/submodule/mode-only) changes the group view cannot.
+        let files: Vec<FileInfo> = doc
+            .files
+            .iter()
+            .map(|f| {
+                let hunk_idxs: Vec<usize> = f
+                    .hunk_ids
+                    .iter()
+                    .map(|hid| hid[1..].parse().expect("h<N>"))
+                    .collect();
+                FileInfo {
+                    path: f.path.clone(),
+                    adds: hunk_idxs
+                        .iter()
+                        .map(|&i| doc.hunks[i].new_count as usize)
+                        .sum(),
+                    dels: hunk_idxs
+                        .iter()
+                        .map(|&i| doc.hunks[i].old_count as usize)
+                        .sum(),
+                    hunk_idxs,
+                }
+            })
+            .collect();
+
+        // Resume position: the cursor id is a group id in the semantic view,
+        // a file path in the file view (session.file_view() disambiguates).
+        let view_mode = if session.file_view() {
+            ViewMode::Files
+        } else {
+            ViewMode::Groups
+        };
+        let (selected_group, selected_file, resume_row) = match session.cursor() {
+            Some((id, row)) => match view_mode {
+                ViewMode::Groups => (
+                    groups.iter().position(|g| &g.id == id).unwrap_or(0),
+                    0,
+                    Some(*row),
+                ),
+                ViewMode::Files => (
+                    0,
+                    files.iter().position(|f| &f.path == id).unwrap_or(0),
+                    Some(*row),
+                ),
+            },
+            None => (0, 0, None),
         };
 
         let mut app = App {
@@ -136,9 +217,13 @@ impl App {
             factory,
             groups,
             labels,
+            files,
+            hunk_labels,
             focus: Focus::Groups,
             mode: Mode::Normal,
+            view_mode,
             selected_group,
+            selected_file,
             rows: Vec::new(),
             cursor: 0,
             scroll: 0,
@@ -156,29 +241,54 @@ impl App {
     }
 
     pub fn rebuild_rows(&mut self) {
-        let Some(groups) = self.session.doc().groups.as_ref() else {
-            self.rows = Vec::new();
-            return;
-        };
-        if groups.is_empty() {
-            self.rows = vec![Row::full(
-                RowKind::Blank,
-                Line::from("nothing to review — empty diff"),
-            )];
-            return;
-        }
-        let g = &groups[self.selected_group.min(groups.len() - 1)];
         let reviewed = self.session.reviewed_hunks();
-        let ctx = GroupContext {
-            doc: self.session.doc(),
-            group: g,
-            labels: &self.labels,
-            findings: self.session.findings(),
-            reviewed: &reviewed,
-            fold_open: self.folds_open.contains(&g.id),
-            mode: self.diff_mode(),
-        };
-        self.rows = build_group_rows(&mut self.factory, &ctx);
+        match self.view_mode {
+            ViewMode::Groups => {
+                let Some(groups) = self.session.doc().groups.as_ref() else {
+                    self.rows = Vec::new();
+                    return;
+                };
+                if groups.is_empty() {
+                    self.rows = vec![Row::full(
+                        RowKind::Blank,
+                        Line::from("nothing to review — empty diff"),
+                    )];
+                    return;
+                }
+                let g = &groups[self.selected_group.min(groups.len() - 1)];
+                let ctx = GroupContext {
+                    core: RowsContext {
+                        doc: self.session.doc(),
+                        findings: self.session.findings(),
+                        reviewed: &reviewed,
+                        mode: self.diff_mode(),
+                        hunk_labels: None,
+                    },
+                    group: g,
+                    labels: &self.labels,
+                    fold_open: self.folds_open.contains(&g.id),
+                };
+                self.rows = build_group_rows(&mut self.factory, &ctx);
+            }
+            ViewMode::Files => {
+                if self.files.is_empty() {
+                    self.rows = vec![Row::full(
+                        RowKind::Blank,
+                        Line::from("nothing to review — empty diff"),
+                    )];
+                    return;
+                }
+                let f = &self.files[self.selected_file.min(self.files.len() - 1)];
+                let ctx = RowsContext {
+                    doc: self.session.doc(),
+                    findings: self.session.findings(),
+                    reviewed: &reviewed,
+                    mode: self.diff_mode(),
+                    hunk_labels: Some(&self.hunk_labels),
+                };
+                self.rows = build_file_rows(&mut self.factory, &ctx, &f.path, f.hunk_idxs.clone());
+            }
+        }
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
         if !self
             .rows
@@ -221,14 +331,50 @@ impl App {
         }
     }
 
-    fn select_group(&mut self, idx: usize) {
-        if self.groups.is_empty() {
-            return;
+    /// Select the idx-th entry of the left pane (group or file).
+    fn select_entry(&mut self, idx: usize) {
+        match self.view_mode {
+            ViewMode::Groups => {
+                if self.groups.is_empty() {
+                    return;
+                }
+                self.selected_group = idx.min(self.groups.len() - 1);
+            }
+            ViewMode::Files => {
+                if self.files.is_empty() {
+                    return;
+                }
+                self.selected_file = idx.min(self.files.len() - 1);
+            }
         }
-        self.selected_group = idx.min(self.groups.len() - 1);
         self.cursor = 0;
         self.scroll = 0;
         self.rebuild_rows();
+    }
+
+    fn selected_entry(&self) -> usize {
+        match self.view_mode {
+            ViewMode::Groups => self.selected_group,
+            ViewMode::Files => self.selected_file,
+        }
+    }
+
+    /// Toggle semantic groups <-> flat file list; the choice persists.
+    fn toggle_file_view(&mut self) {
+        let on = self.view_mode == ViewMode::Groups;
+        if let Err(e) = self.session.set_file_view(on) {
+            self.status = format!("save failed: {e:#}");
+            return;
+        }
+        self.view_mode = if on {
+            ViewMode::Files
+        } else {
+            ViewMode::Groups
+        };
+        self.cursor = 0;
+        self.scroll = 0;
+        self.rebuild_rows();
+        self.status = if on { "file view" } else { "reading plan view" }.into();
     }
 
     fn current_hunk(&self) -> Option<usize> {
@@ -265,11 +411,18 @@ impl App {
     /// Persist the resume position through the session; surface failures in
     /// the status line rather than tearing the TUI down.
     fn save_cursor(&mut self) {
-        let id = self
-            .groups
-            .get(self.selected_group)
-            .map(|g| g.id.clone())
-            .unwrap_or_default();
+        let id = match self.view_mode {
+            ViewMode::Groups => self
+                .groups
+                .get(self.selected_group)
+                .map(|g| g.id.clone())
+                .unwrap_or_default(),
+            ViewMode::Files => self
+                .files
+                .get(self.selected_file)
+                .map(|f| f.path.clone())
+                .unwrap_or_default(),
+        };
         if let Err(e) = self.session.save_cursor(id, self.cursor) {
             self.status = format!("save failed: {e:#}");
         }
@@ -324,18 +477,18 @@ impl App {
             }
             (KeyCode::Enter, _) if self.focus == Focus::Groups => self.focus = Focus::Diff,
             (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, _) => match self.focus {
-                Focus::Groups => self.select_group(self.selected_group + 1),
+                Focus::Groups => self.select_entry(self.selected_entry() + 1),
                 Focus::Diff => self.move_cursor(1),
             },
             (KeyCode::Char('k'), KeyModifiers::NONE) | (KeyCode::Up, _) => match self.focus {
-                Focus::Groups => self.select_group(self.selected_group.saturating_sub(1)),
+                Focus::Groups => self.select_entry(self.selected_entry().saturating_sub(1)),
                 Focus::Diff => self.move_cursor(-1),
             },
             (KeyCode::Char('J'), _) | (KeyCode::Char('}'), _) => {
-                self.select_group(self.selected_group + 1)
+                self.select_entry(self.selected_entry() + 1)
             }
             (KeyCode::Char('K'), _) | (KeyCode::Char('{'), _) => {
-                self.select_group(self.selected_group.saturating_sub(1))
+                self.select_entry(self.selected_entry().saturating_sub(1))
             }
             (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
                 let h = self.viewport_hint.max(8) / 2;
@@ -360,7 +513,9 @@ impl App {
                 self.follow_cursor();
             }
             (KeyCode::Char('z'), _) => {
-                if let Some(g) = self.groups.get(self.selected_group) {
+                if self.view_mode == ViewMode::Groups
+                    && let Some(g) = self.groups.get(self.selected_group)
+                {
                     let gid = g.id.clone();
                     if !self.folds_open.insert(gid.clone()) {
                         self.folds_open.remove(&gid);
@@ -369,6 +524,7 @@ impl App {
                 }
             }
             (KeyCode::Char('s'), KeyModifiers::NONE) => self.toggle_split(),
+            (KeyCode::Char('v'), KeyModifiers::NONE) => self.toggle_file_view(),
             (KeyCode::Char(' '), _) => self.toggle_reviewed(),
             (KeyCode::Char('c'), KeyModifiers::NONE) => {
                 if let Some(h) = self.current_hunk() {
@@ -502,49 +658,80 @@ impl App {
 
     fn draw_groups(&mut self, frame: &mut Frame, area: Rect) {
         let inner_h = area.height.saturating_sub(2) as usize;
-        if self.selected_group < self.group_scroll {
-            self.group_scroll = self.selected_group;
-        } else if self.selected_group >= self.group_scroll + inner_h {
-            self.group_scroll = self.selected_group + 1 - inner_h;
+        let selected = self.selected_entry();
+        if selected < self.group_scroll {
+            self.group_scroll = selected;
+        } else if selected >= self.group_scroll + inner_h {
+            self.group_scroll = selected + 1 - inner_h;
         }
-        let items: Vec<Line> = self
-            .groups
-            .iter()
-            .enumerate()
-            .skip(self.group_scroll)
-            .take(inner_h)
-            .map(|(i, g)| {
-                let done = g.class_keys.iter().all(|k| self.session.is_reviewed(k))
-                    && !g.class_keys.is_empty();
-                let tier = match g.effort {
-                    schema::Effort::Close => "C",
-                    schema::Effort::Skim => "S",
-                    schema::Effort::Noise => "N",
-                };
-                let mark = if done { "✓" } else { " " };
-                let mut style = THEME.effort_style(g.effort);
-                if i == self.selected_group {
-                    style = style.bg(THEME.selected_bg).add_modifier(Modifier::BOLD);
-                }
-                Line::from(Span::styled(
-                    format!(
-                        "{mark}{tier} {:>2}f +{:<4}-{:<4} {}",
-                        g.n_files, g.adds, g.dels, g.label
-                    ),
-                    style,
-                ))
-            })
-            .collect();
+        let items: Vec<Line> = match self.view_mode {
+            ViewMode::Groups => self
+                .groups
+                .iter()
+                .enumerate()
+                .skip(self.group_scroll)
+                .take(inner_h)
+                .map(|(i, g)| {
+                    let done = g.class_keys.iter().all(|k| self.session.is_reviewed(k))
+                        && !g.class_keys.is_empty();
+                    let tier = match g.effort {
+                        schema::Effort::Close => "C",
+                        schema::Effort::Skim => "S",
+                        schema::Effort::Noise => "N",
+                    };
+                    let mark = if done { "✓" } else { " " };
+                    let mut style = THEME.effort_style(g.effort);
+                    if i == selected {
+                        style = style.bg(THEME.selected_bg).add_modifier(Modifier::BOLD);
+                    }
+                    Line::from(Span::styled(
+                        format!(
+                            "{mark}{tier} {:>2}f +{:<4}-{:<4} {}",
+                            g.n_files, g.adds, g.dels, g.label
+                        ),
+                        style,
+                    ))
+                })
+                .collect(),
+            ViewMode::Files => {
+                let reviewed = self.session.reviewed_hunks();
+                self.files
+                    .iter()
+                    .enumerate()
+                    .skip(self.group_scroll)
+                    .take(inner_h)
+                    .map(|(i, f)| {
+                        let done = !f.hunk_idxs.is_empty()
+                            && f.hunk_idxs.iter().all(|h| reviewed.contains(h));
+                        let mark = if done { "✓" } else { " " };
+                        let counts = if f.hunk_idxs.is_empty() {
+                            "  (bin)   ".to_string()
+                        } else {
+                            format!("+{:<4}-{:<4}", f.adds, f.dels)
+                        };
+                        let mut style = Style::default().fg(THEME.context_fg);
+                        if i == selected {
+                            style = style.bg(THEME.selected_bg).add_modifier(Modifier::BOLD);
+                        }
+                        Line::from(Span::styled(format!("{mark} {counts} {}", f.path), style))
+                    })
+                    .collect()
+            }
+        };
         let orphans = self
             .session
             .findings()
             .iter()
             .filter(|f| f.status == FindingStatus::Orphaned)
             .count();
+        let pane_name = match self.view_mode {
+            ViewMode::Groups => "reading plan",
+            ViewMode::Files => "files",
+        };
         let title = if orphans > 0 {
-            format!(" reading plan · ⚠ {orphans} orphaned finding(s) ")
+            format!(" {pane_name} · ⚠ {orphans} orphaned finding(s) ")
         } else {
-            " reading plan ".to_string()
+            format!(" {pane_name} ")
         };
         let block = Block::default()
             .borders(Borders::ALL)
@@ -597,7 +784,7 @@ impl App {
             .filter(|f| f.status == FindingStatus::Open)
             .count();
         let text = format!(
-            " {done}/{total} classes reviewed · {open} finding(s) · {} · j/k J/K nav · space reviewed · c finding · s split · z fold · y yank · ? help · q quit",
+            " {done}/{total} classes reviewed · {open} finding(s) · {} · j/k J/K nav · space reviewed · c finding · s split · v files · z fold · y yank · ? help · q quit",
             self.status
         );
         frame.render_widget(
@@ -655,6 +842,7 @@ fn help_paragraph() -> Paragraph<'static> {
         Line::from("  g/G        top / bottom"),
         Line::from("  z          unfold skim remainder / noise"),
         Line::from("  s          toggle unified / split diff"),
+        Line::from("  v          toggle reading plan / file view"),
         Line::from("  space      toggle class reviewed"),
         Line::from("  c          add finding on current hunk"),
         Line::from("  dd         delete finding under cursor"),

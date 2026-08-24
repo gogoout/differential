@@ -263,8 +263,11 @@ fn session_persists_every_mutation() {
     assert!(!session.delete_finding("nope").unwrap());
     assert!(reread().load_findings().unwrap().is_empty());
 
-    // set_split_diff round-trips (additive field, defaults to false).
+    // set_split_diff / set_file_view round-trip (additive, default false).
     assert!(!session.split_diff());
     session.set_split_diff(true).unwrap();
     assert!(reread().load_state().unwrap().split_diff);
+    assert!(!session.file_view());
+    session.set_file_view(true).unwrap();
+    assert!(reread().load_state().unwrap().file_view);
 }

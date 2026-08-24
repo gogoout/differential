@@ -86,27 +86,12 @@ impl LlmBackend for FakeBackend {
     }
 }
 
-/// Repo with one behavioural change + a 3-file repeated edit (skim material).
-fn make_app() -> (TestRepo, App) {
-    let r = TestRepo::new();
-    r.write("src/main.txt", "fn main() { run_slowly() }\n");
-    for n in ["a", "b", "c"] {
-        r.write(
-            &format!("src/{n}.txt"),
-            "use old_helper_name;\nother content here\n",
-        );
-    }
-    let base = r.commit_all("base");
-    r.write("src/main.txt", "fn main() { run_with_retries(3) }\n");
-    for n in ["a", "b", "c"] {
-        r.write(
-            &format!("src/{n}.txt"),
-            "use new_helper_name;\nother content here\n",
-        );
-    }
-    let head = r.commit_all("head");
-
+/// Open an App over HEAD~1..HEAD of `r`, with the review store inside the
+/// repo dir — reopening yields a resumed session over the same store.
+fn open_app(r: &TestRepo) -> App {
     let repo = Repo::open(Path::new(&r.root)).unwrap();
+    let base = r.git(&["rev-parse", "HEAD~1"]);
+    let head = r.git(&["rev-parse", "HEAD"]);
     let backend = FakeBackend(Mutex::new(String::new()));
     let out = run_grouped_pipeline(
         &repo,
@@ -128,7 +113,29 @@ fn make_app() -> (TestRepo, App) {
         out.view,
     )
     .unwrap();
-    let app = App::new(session, factory);
+    App::new(session, factory)
+}
+
+/// Repo with one behavioural change + a 3-file repeated edit (skim material).
+fn make_app() -> (TestRepo, App) {
+    let r = TestRepo::new();
+    r.write("src/main.txt", "fn main() { run_slowly() }\n");
+    for n in ["a", "b", "c"] {
+        r.write(
+            &format!("src/{n}.txt"),
+            "use old_helper_name;\nother content here\n",
+        );
+    }
+    r.commit_all("base");
+    r.write("src/main.txt", "fn main() { run_with_retries(3) }\n");
+    for n in ["a", "b", "c"] {
+        r.write(
+            &format!("src/{n}.txt"),
+            "use new_helper_name;\nother content here\n",
+        );
+    }
+    r.commit_all("head");
+    let app = open_app(&r);
     (r, app)
 }
 
@@ -264,6 +271,83 @@ fn group_counts_files_and_line_totals() {
     assert_eq!(dels, 4);
     // The 3-file repeated edit lands in one group.
     assert!(app.groups.iter().any(|g| g.n_files == 3));
+}
+
+#[test]
+fn file_view_lists_all_files_and_shares_review_marks() {
+    use differential::tui::app::ViewMode;
+    let (r, mut app) = make_app();
+    assert_eq!(app.view_mode, ViewMode::Groups);
+
+    app.handle_key(key('v'));
+    assert_eq!(app.view_mode, ViewMode::Files);
+    assert_eq!(app.files.len(), 4);
+    let store =
+        differential_engine::review_state::ReviewStore::open_at(r.root.join(".dfr-test-store"))
+            .unwrap();
+    assert!(store.load_state().unwrap().file_view);
+
+    // The right pane shows the selected file: one header + its hunks.
+    assert!(app.rows.iter().any(|row| row.kind == RowKind::FileHeader));
+    assert!(
+        app.rows
+            .iter()
+            .any(|row| matches!(row.kind, RowKind::HunkHeader(_)))
+    );
+
+    // space in file view marks the class — visible back in group view too.
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(key(' '));
+    assert_eq!(app.session.reviewed_count(), 1);
+    app.handle_key(key('v'));
+    assert_eq!(app.view_mode, ViewMode::Groups);
+    assert!(!store.load_state().unwrap().file_view);
+    assert_eq!(app.session.reviewed_count(), 1);
+}
+
+#[test]
+fn file_view_shows_hunks_across_groups_with_labels() {
+    // One file with two separated edits of different shapes: the two hunks
+    // land in different classes and (per the fake backend) different groups.
+    let r = TestRepo::new();
+    r.write(
+        "src/dual.txt",
+        "first_region = old_alpha\npad1\npad2\npad3\npad4\npad5\nfn second() { call_old_api() }\n",
+    );
+    r.commit_all("base");
+    r.write(
+        "src/dual.txt",
+        "first_region = new_beta_value\npad1\npad2\npad3\npad4\npad5\nfn second() { call_new_api(42) }\n",
+    );
+    r.commit_all("head");
+    let mut app = open_app(&r);
+    assert_eq!(app.groups.len(), 2, "two shapes → two groups");
+
+    app.handle_key(key('v'));
+    let hunk_headers = app
+        .rows
+        .iter()
+        .filter(|row| matches!(row.kind, RowKind::HunkHeader(_)))
+        .count();
+    assert_eq!(
+        hunk_headers, 2,
+        "file view shows the file's hunks from BOTH groups"
+    );
+}
+
+#[test]
+fn file_view_resume_restores_view_and_file() {
+    use differential::tui::app::ViewMode;
+    let (r, mut app) = make_app();
+    app.handle_key(key('v'));
+    app.handle_key(key('J')); // second file
+    let path = app.files[app.selected_file].path.clone();
+    app.handle_key(key('q'));
+    drop(app);
+
+    let app2 = open_app(&r);
+    assert_eq!(app2.view_mode, ViewMode::Files);
+    assert_eq!(app2.files[app2.selected_file].path, path);
 }
 
 #[test]

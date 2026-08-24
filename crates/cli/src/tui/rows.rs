@@ -144,17 +144,25 @@ impl RowFactory {
     }
 }
 
-/// Everything the builder needs to know about the selected group.
-pub struct GroupContext<'a> {
+/// What every hunk-level builder needs, independent of the left-pane view.
+pub struct RowsContext<'a> {
     pub doc: &'a schema::PlanDocument,
-    pub group: &'a schema::Group,
-    /// Group id -> label, for rendering depends_on legibly.
-    pub labels: &'a HashMap<String, String>,
     pub findings: &'a [Finding],
     /// Hunk indices whose class is marked reviewed.
     pub reviewed: &'a std::collections::HashSet<usize>,
-    pub fold_open: bool,
     pub mode: DiffMode,
+    /// Hunk index -> owning group label, shown on hunk headers in the file
+    /// view (where group membership is otherwise invisible).
+    pub hunk_labels: Option<&'a HashMap<usize, String>>,
+}
+
+/// The group view's extras on top of the shared core.
+pub struct GroupContext<'a> {
+    pub core: RowsContext<'a>,
+    pub group: &'a schema::Group,
+    /// Group id -> label, for rendering depends_on legibly.
+    pub labels: &'a HashMap<String, String>,
+    pub fold_open: bool,
 }
 
 /// Build the right-pane rows for one group.
@@ -162,8 +170,13 @@ pub fn build_group_rows(factory: &mut RowFactory, ctx: &GroupContext) -> Vec<Row
     let mut rows = Vec::new();
     header_rows(ctx, &mut rows);
 
-    let class_by_id: HashMap<&str, &schema::ClassEntry> =
-        ctx.doc.classes.iter().map(|c| (c.id.as_str(), c)).collect();
+    let class_by_id: HashMap<&str, &schema::ClassEntry> = ctx
+        .core
+        .doc
+        .classes
+        .iter()
+        .map(|c| (c.id.as_str(), c))
+        .collect();
     let hunk_idx = |hid: &str| -> usize { hid[1..].parse().expect("hunk ids are h<N>") };
 
     // Which hunks to show expanded vs behind the fold.
@@ -210,22 +223,7 @@ pub fn build_group_rows(factory: &mut RowFactory, ctx: &GroupContext) -> Vec<Row
         }
     };
 
-    // File-grouped presentation: sort by (file, new_start).
-    let mut ordered = shown;
-    ordered.sort_by(|&a, &b| {
-        let (ha, hb) = (&ctx.doc.hunks[a], &ctx.doc.hunks[b]);
-        (ha.file.as_str(), ha.new_start).cmp(&(hb.file.as_str(), hb.new_start))
-    });
-
-    let mut current_file: Option<&str> = None;
-    for hi in ordered {
-        let hunk = &ctx.doc.hunks[hi];
-        if current_file != Some(hunk.file.as_str()) {
-            current_file = Some(hunk.file.as_str());
-            rows.push(file_header_row(ctx, hunk));
-        }
-        hunk_rows(factory, ctx, hi, &mut rows);
-    }
+    hunk_list_rows(factory, &ctx.core, shown, &mut rows);
 
     if !hidden.is_empty() {
         let what = match ctx.group.effort {
@@ -240,6 +238,56 @@ pub fn build_group_rows(factory: &mut RowFactory, ctx: &GroupContext) -> Vec<Row
             )),
         ));
     }
+    rows
+}
+
+/// Shared hunk-list emitter: sort by (file, new_start), emit a file header on
+/// every file change, then the hunk's rows. Both views feed through here —
+/// one implementation, never two renderers to keep in sync.
+fn hunk_list_rows(
+    factory: &mut RowFactory,
+    ctx: &RowsContext,
+    mut hunks: Vec<usize>,
+    rows: &mut Vec<Row>,
+) {
+    hunks.sort_by(|&a, &b| {
+        let (ha, hb) = (&ctx.doc.hunks[a], &ctx.doc.hunks[b]);
+        (ha.file.as_str(), ha.new_start).cmp(&(hb.file.as_str(), hb.new_start))
+    });
+    let mut current_file: Option<&str> = None;
+    for hi in hunks {
+        let hunk = &ctx.doc.hunks[hi];
+        if current_file != Some(hunk.file.as_str()) {
+            current_file = Some(hunk.file.as_str());
+            rows.push(file_header_row(ctx.doc, &hunk.file));
+        }
+        hunk_rows(factory, ctx, hi, rows);
+    }
+}
+
+/// Build the right-pane rows for one file (the flattened view): every hunk of
+/// the file in position order, regardless of grouping; no fold logic — the
+/// flat view's whole point is everything, in file order.
+pub fn build_file_rows(
+    factory: &mut RowFactory,
+    ctx: &RowsContext,
+    path: &str,
+    hunks: Vec<usize>,
+) -> Vec<Row> {
+    let mut rows = Vec::new();
+    if hunks.is_empty() {
+        // Binary / submodule / mode-only changes carry no text hunks.
+        rows.push(file_header_row(ctx.doc, path));
+        rows.push(Row::full(
+            RowKind::Blank,
+            Line::from(Span::styled(
+                "  (no text hunks — binary, submodule or mode-only change)",
+                Style::default().fg(THEME.noise_fg),
+            )),
+        ));
+        return rows;
+    }
+    hunk_list_rows(factory, ctx, hunks, &mut rows);
     rows
 }
 
@@ -306,9 +354,9 @@ fn header_rows(ctx: &GroupContext, rows: &mut Vec<Row>) {
     rows.push(Row::full(RowKind::Blank, Line::default()));
 }
 
-fn file_header_row(ctx: &GroupContext, hunk: &schema::HunkEntry) -> Row {
-    let entry = ctx.doc.files.iter().find(|f| f.path == hunk.file);
-    let mut text = format!("▍{}", hunk.file);
+fn file_header_row(doc: &schema::PlanDocument, path: &str) -> Row {
+    let entry = doc.files.iter().find(|f| f.path == path);
+    let mut text = format!("▍{path}");
     if let Some(f) = entry {
         if let Some(old) = &f.old_path {
             let sim = f
@@ -332,10 +380,15 @@ fn file_header_row(ctx: &GroupContext, hunk: &schema::HunkEntry) -> Row {
     )
 }
 
-fn hunk_rows(factory: &mut RowFactory, ctx: &GroupContext, hi: usize, rows: &mut Vec<Row>) {
+fn hunk_rows(factory: &mut RowFactory, ctx: &RowsContext, hi: usize, rows: &mut Vec<Row>) {
     let hunk = &ctx.doc.hunks[hi];
     let reviewed = ctx.reviewed.contains(&hi);
     let check = if reviewed { " ✓ reviewed" } else { "" };
+    let group_label = ctx
+        .hunk_labels
+        .and_then(|m| m.get(&hi))
+        .map(|l| format!("  · {l}"))
+        .unwrap_or_default();
     let n_findings = ctx
         .findings
         .iter()
@@ -356,7 +409,7 @@ fn hunk_rows(factory: &mut RowFactory, ctx: &GroupContext, hi: usize, rows: &mut
         Line::from(vec![
             Span::styled(
                 format!(
-                    "@@ -{},{} +{},{} @@  {}{check}",
+                    "@@ -{},{} +{},{} @@  {}{group_label}{check}",
                     hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count, hunk.class
                 ),
                 header_style,
