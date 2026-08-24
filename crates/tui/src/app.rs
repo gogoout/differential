@@ -72,10 +72,23 @@ pub struct GroupInfo {
     /// Added / removed line totals over the group's hunks.
     pub adds: usize,
     pub dels: usize,
-    /// Labels of the groups this one depends on — ids mean nothing to a
-    /// reader, so the plan shows what it actually follows.
-    pub after: Vec<String>,
+    /// Groups this one depends on: (id, appears later in the plan). A
+    /// dependency listed later means the order could not honour that edge —
+    /// the groups are mutually dependent and the toposort broke the cycle.
+    pub after: Vec<(String, bool)>,
     pub role: Option<schema::Role>,
+}
+
+/// A plan row's relation to the selected group — what the gutter connector
+/// draws. The plan is a DAG (a group can follow several others), not a tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Relation {
+    Selected,
+    /// The selected group follows this one.
+    Dependency,
+    /// This one follows the selected group.
+    Dependent,
+    None,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,9 +164,17 @@ impl App {
             .iter()
             .map(|g| (g.id.clone(), g.label.clone()))
             .collect();
+        // Position in the plan, for spotting dependencies the order could not
+        // satisfy (cycles).
+        let rank_of: HashMap<String, usize> = schema_groups
+            .iter()
+            .enumerate()
+            .map(|(i, g)| (g.id.clone(), i))
+            .collect();
         let groups: Vec<GroupInfo> = schema_groups
             .iter()
-            .map(|g| {
+            .enumerate()
+            .map(|(rank, g)| {
                 let hunks: Vec<&schema::HunkEntry> = g
                     .class_ids
                     .iter()
@@ -173,7 +194,7 @@ impl App {
                     after: g
                         .depends_on
                         .iter()
-                        .map(|id| labels_of.get(id).cloned().unwrap_or_else(|| id.clone()))
+                        .map(|id| (id.clone(), rank_of.get(id).copied().unwrap_or(0) > rank))
                         .collect(),
                     role: g.role,
                     class_keys: g
@@ -1055,9 +1076,56 @@ impl App {
         frame.render_widget(Paragraph::new(items).block(block), area);
     }
 
+    /// How a plan row relates to the selected one — what the connector line
+    /// in the left gutter is drawing.
+    pub fn relation_to_selected(&self, idx: usize) -> Relation {
+        let selected = self.selected_group;
+        if idx == selected {
+            return Relation::Selected;
+        }
+        let Some(sel) = self.groups.get(selected) else {
+            return Relation::None;
+        };
+        if sel.after.iter().any(|(id, _)| *id == self.groups[idx].id) {
+            return Relation::Dependency;
+        }
+        if self.groups[idx].after.iter().any(|(id, _)| *id == sel.id) {
+            return Relation::Dependent;
+        }
+        Relation::None
+    }
+
+    /// Rows spanned by the selected group's edges, so the connector can be
+    /// drawn as one continuous line.
+    fn edge_span(&self) -> (usize, usize) {
+        let mut lo = self.selected_group;
+        let mut hi = self.selected_group;
+        for i in 0..self.groups.len() {
+            if !matches!(self.relation_to_selected(i), Relation::None) {
+                lo = lo.min(i);
+                hi = hi.max(i);
+            }
+        }
+        (lo, hi)
+    }
+
     /// One group as 2–3 lines: title, counts, and what it follows.
     fn group_lines(&self, idx: usize, selected: bool) -> Vec<Line<'static>> {
         let g = &self.groups[idx];
+        let relation = self.relation_to_selected(idx);
+        let (lo, hi) = self.edge_span();
+        // The connector: a line running between the selected group and every
+        // group it links to, so the DAG is visible without reading ids.
+        let (head_glyph, head_style) = match relation {
+            Relation::Selected => ("◆", Style::default().fg(THEME.header_fg)),
+            // Read before the selected group.
+            Relation::Dependency => ("├", Style::default().fg(THEME.reviewed_fg)),
+            // Reads after it.
+            Relation::Dependent => ("├", Style::default().fg(THEME.skim_fg)),
+            Relation::None if idx > lo && idx < hi => ("│", Style::default().fg(THEME.gutter_fg)),
+            Relation::None => (" ", Style::default().fg(THEME.gutter_fg)),
+        };
+        let tail_glyph = if idx >= lo && idx < hi { "│" } else { " " };
         let done =
             g.class_keys.iter().all(|k| self.session.is_reviewed(k)) && !g.class_keys.is_empty();
         let tier = match g.effort {
@@ -1075,8 +1143,14 @@ impl App {
         let dim = bg(Style::default().fg(THEME.gutter_fg));
 
         let mut lines = vec![Line::from(vec![
+            Span::styled(format!("{head_glyph} "), head_style),
             Span::styled(
-                format!("{tier} ",),
+                // The id is what `after:` references, so it has to be visible.
+                format!("{:>3} ", g.id),
+                bg(Style::default().fg(THEME.gutter_fg)),
+            ),
+            Span::styled(
+                format!("{tier} "),
                 bg(THEME.effort_style(g.effort).add_modifier(Modifier::BOLD)),
             ),
             Span::styled(
@@ -1101,6 +1175,10 @@ impl App {
             None => "",
         };
         lines.push(Line::from(vec![
+            Span::styled(
+                format!("{tail_glyph} "),
+                Style::default().fg(THEME.gutter_fg),
+            ),
             Span::styled(format!("   {} files  ", g.n_files), dim),
             Span::styled(
                 format!("+{}", g.adds),
@@ -1114,10 +1192,26 @@ impl App {
             Span::styled(role.to_string(), dim),
         ]));
         if !g.after.is_empty() {
-            lines.push(Line::from(Span::styled(
-                format!("   after: {}", g.after.join(", ")),
-                dim,
-            )));
+            // "↓" marks a dependency that appears LATER in the plan: the two
+            // groups depend on each other, so no order can satisfy both.
+            let mut spans = vec![
+                Span::styled(
+                    format!("{tail_glyph} "),
+                    Style::default().fg(THEME.gutter_fg),
+                ),
+                Span::styled("   after: ".to_string(), dim),
+            ];
+            for (id, later) in &g.after {
+                spans.push(Span::styled(
+                    format!("{id}{} ", if *later { "↓" } else { "" }),
+                    if *later {
+                        bg(Style::default().fg(THEME.skim_fg))
+                    } else {
+                        dim
+                    },
+                ));
+            }
+            lines.push(Line::from(spans));
         }
         lines
     }
@@ -1303,6 +1397,10 @@ fn help_paragraph() -> Paragraph<'static> {
         Line::from("  g/G        top / bottom"),
         Line::from("  z          unfold skim remainder / noise"),
         Line::from("  n/N        next / previous hunk"),
+        Line::from(""),
+        Line::from("  plan rows: <id> <tier> label · after: what it follows"),
+        Line::from("  the line links the selected group to its neighbours;"),
+        Line::from("  ↓ marks a dependency listed later (mutual dependency)"),
         Line::from("  s          toggle unified / split diff"),
         Line::from("  v          toggle reading plan / file view"),
         Line::from("  f          file list of the current view (enter jumps)"),

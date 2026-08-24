@@ -3,10 +3,18 @@
 A dedicated reviewer over the grouped, ordered document. Two panes: the reading plan and
 the diff for the selected entry.
 
-**Reading plan.** Groups in rank order, each a small block: effort tier and label, then
-file count with added/removed line totals (in their own colours), the role, and
-`after: <labels>` naming the groups it follows — dependencies read as labels, never as
-ids the reviewer would have to resolve. Counts derive from hunks, so binary/submodule
+**Reading plan.** Groups in rank order, each a small block: the group **id**, effort tier
+and label, then file count with added/removed line totals (in their own colours), the
+role, and `after: <ids>` naming the groups it follows — the id column is what makes those
+references resolvable.
+
+The plan is a **DAG, not a tree**: a group can follow several others, and the graph can
+even contain cycles (two groups that each define symbols the other uses). The ordering
+stage breaks a cycle deterministically, which means some edge cannot be honoured; the
+plan says so rather than hiding it — a dependency listed **later** than the group that
+follows it is marked `↓`. Selecting a group draws a connector in the left gutter linking
+it (`◆`) to every group it follows and every group that follows it, so the shape of the
+graph is visible without reading ids. Counts derive from hunks, so binary/submodule
 changes contribute zero and a rename counts as two files (the canonical view is
 `--no-renames`). Skim groups show one exemplar per shape class with the remainder folded
 behind a single line; noise groups are folded entirely.

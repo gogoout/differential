@@ -406,29 +406,33 @@ fn draw_smoke_test_renders_group_label() {
 }
 
 #[test]
-fn reading_plan_shows_dependency_labels_not_ids() {
-    // Two groups where the fake backend's order forces a dependency edge:
-    // the ordering stage records depends_on, and the pane must render the
-    // dependency's LABEL — "g0" means nothing to a reader.
+fn reading_plan_shows_ids_and_flags_unsatisfiable_dependencies() {
     let (_r, mut app) = make_app();
-    let with_deps = app.groups.iter().find(|g| !g.after.is_empty());
-    if let Some(g) = with_deps {
-        // Every rendered dependency is a real group label, never an id.
-        for dep in &g.after {
+
+    // Every dependency names a real group id — the id column makes them
+    // resolvable, which is the whole point of showing it.
+    let ids: Vec<&str> = app.groups.iter().map(|g| g.id.as_str()).collect();
+    for g in &app.groups {
+        for (dep, later) in &g.after {
             assert!(
-                app.groups.iter().any(|other| &other.label == dep),
-                "dependency {dep:?} is not a group label"
+                ids.contains(&dep.as_str()),
+                "dependency {dep:?} is not a group id"
             );
-            assert!(
-                !dep.starts_with('g') || dep.contains(' '),
-                "raw id leaked: {dep:?}"
+            // The flag must agree with the plan order: it means "this
+            // dependency appears further down", i.e. a cycle the toposort
+            // had to break.
+            let dep_pos = app.groups.iter().position(|o| &o.id == dep).unwrap();
+            let self_pos = app.groups.iter().position(|o| o.id == g.id).unwrap();
+            assert_eq!(
+                *later,
+                dep_pos > self_pos,
+                "cycle flag disagrees with the order"
             );
         }
     }
 
-    // The pane renders multiple lines per group: counts land on their own
-    // line under the label.
-    let backend = ratatui::backend::TestBackend::new(100, 30);
+    // The pane renders the id, the tier, and the counts.
+    let backend = ratatui::backend::TestBackend::new(100, 40);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|f| app.draw(f)).unwrap();
     let content: String = terminal
@@ -438,6 +442,10 @@ fn reading_plan_shows_dependency_labels_not_ids() {
         .iter()
         .map(|c| c.symbol())
         .collect();
+    assert!(
+        content.contains(&app.groups[0].id),
+        "group id missing from the plan"
+    );
     assert!(content.contains("files"), "per-group file count missing");
     assert!(content.contains("−"), "removed-line count missing");
 }
@@ -553,4 +561,63 @@ fn file_view_is_a_collapsible_tree() {
     );
     app.handle_key(key('z'));
     assert_eq!(files_visible(&app), 4, "unfold restores them");
+}
+
+#[test]
+fn the_plan_gutter_links_the_selected_group_to_its_neighbours() {
+    use differential_tui::app::Relation;
+    let (_r, mut app) = make_app();
+
+    // Land on a group that actually has an edge, so the connector has
+    // something to draw.
+    let with_edge = app
+        .groups
+        .iter()
+        .position(|g| !g.after.is_empty())
+        .or_else(|| {
+            let ids: Vec<String> = app.groups.iter().map(|g| g.id.clone()).collect();
+            ids.iter().position(|id| {
+                app.groups
+                    .iter()
+                    .any(|o| o.after.iter().any(|(d, _)| d == id))
+            })
+        });
+    let Some(target) = with_edge else {
+        return; // no edges in this fixture: nothing to assert
+    };
+    while app.selected_group != target {
+        app.handle_key(key('j'));
+    }
+
+    // The relation model matches depends_on in both directions, and the
+    // selected row is the anchor.
+    assert_eq!(app.relation_to_selected(target), Relation::Selected);
+    for (i, g) in app.groups.iter().enumerate() {
+        match app.relation_to_selected(i) {
+            Relation::Dependency => assert!(
+                app.groups[target].after.iter().any(|(d, _)| *d == g.id),
+                "{} marked as a dependency but the selected group does not follow it",
+                g.id
+            ),
+            Relation::Dependent => assert!(
+                g.after.iter().any(|(d, _)| *d == app.groups[target].id),
+                "{} marked as a dependent but does not follow the selected group",
+                g.id
+            ),
+            _ => {}
+        }
+    }
+
+    // It reaches the screen.
+    let backend = ratatui::backend::TestBackend::new(100, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let content: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(content.contains("◆"), "selected group marker missing");
 }
