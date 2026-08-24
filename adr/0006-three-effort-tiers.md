@@ -1,6 +1,7 @@
 # 0006 — Three effort tiers, and the honest saving
 
-Status: accepted
+Status: accepted (the `close` tier was renamed `focus` in schema v2 — ADR 0019;
+the rationale below is unchanged and uses the original name)
 
 ## Context
 

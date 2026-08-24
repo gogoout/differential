@@ -19,7 +19,7 @@ pub struct RawGroup {
     pub description: String,
     #[serde(default)]
     pub classes: Vec<String>,
-    /// Unknown values fall back to "close" downstream (when in doubt, close).
+    /// Unknown values fall back to "focus" downstream (when in doubt, focus).
     #[serde(default = "default_effort")]
     pub effort: String,
     #[serde(default)]
@@ -27,7 +27,7 @@ pub struct RawGroup {
 }
 
 fn default_effort() -> String {
-    "close".to_string()
+    "focus".to_string()
 }
 
 pub fn parse_response(text: &str) -> Result<RawGroups, EngineError> {
@@ -58,7 +58,7 @@ mod tests {
     fn plain_json_parses() {
         let r = parse_response(r#"{"groups": [{"label": "x", "classes": ["C0"]}]}"#).unwrap();
         assert_eq!(r.groups.len(), 1);
-        assert_eq!(r.groups[0].effort, "close");
+        assert_eq!(r.groups[0].effort, "focus");
     }
 
     #[test]

@@ -186,14 +186,14 @@ fn commit_plan(doc: &schema::PlanDocument) -> Result<Vec<PlannedCommit>, EngineE
         let is_backfill = backfilled && gi == groups.len() - 1;
 
         match g.effort {
-            schema::Effort::Close if is_backfill => plan.push(PlannedCommit {
+            schema::Effort::Focus if is_backfill => plan.push(PlannedCommit {
                 subject: format!("[unclassified] {} hunks carried by no group", all.len()),
                 body,
                 hunks: all,
                 meta_files: Vec::new(),
             }),
-            schema::Effort::Close => plan.push(PlannedCommit {
-                subject: format!("[close] {}", g.label),
+            schema::Effort::Focus => plan.push(PlannedCommit {
+                subject: format!("[focus] {}", g.label),
                 body,
                 hunks: all,
                 meta_files: Vec::new(),

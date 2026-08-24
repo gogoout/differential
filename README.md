@@ -4,7 +4,7 @@
 
 `differential` looks at a big merge request, works out which changes are the same edit
 repeated (a rename sweeping through imports, a signature change echoing through call
-sites), which are generated noise, and which few genuinely need close reading — then
+sites), which are generated noise, and which few genuinely need focus (line-by-line) reading — then
 renders the result as a **review commit stack** you read natively in your IDE, `tig`, or
 plain `git log`. Coverage is guaranteed structurally: every hunk is accounted for, audited,
 and byte-exactly reconstructible, so skipping what it says to skip is safe.
@@ -49,11 +49,11 @@ f00dfee  [unclassified] 1 hunks carried by no group
 0ddba11  [noise] Lockfiles and generated artefacts — folded, 21 hunks
 cafe007  [skim 2/2] Import swaps for the renamed module — 38 further hunks, same shapes
 beefed5  [skim 1/2] Import swaps for the renamed module — 28 exemplars
-add1c7e  [close] Rework retry handling in the client
-decade0  [close] Introduce the storage backend trait and its implementations
+add1c7e  [focus] Rework retry handling in the client
+decade0  [focus] Introduce the storage backend trait and its implementations
 ```
 
-Read bottom-up: `[close]` commits first (ordered so definitions precede their consumers),
+Read bottom-up: `[focus]` commits first (ordered so definitions precede their consumers),
 then one exemplar per shape in `[skim 1/2]`, and skip `[skim 2/2]` and `[noise]` on their
 subject lines alone — every hunk in them is a repeat of a shape you already verified.
 

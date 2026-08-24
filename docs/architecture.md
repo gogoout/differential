@@ -9,7 +9,7 @@ with their evidence live in [`adr/`](../adr/). This page is the narrative tour.
 A 100-file merge request is not 100 files of work. Most of it is one decision echoing
 through the codebase: a signature change cascading through call sites, a rename sweeping
 across imports, a lockfile regenerating itself. A reviewer's real job is to find the
-handful of changes that deserve close reading — and to *safely* skip the rest.
+handful of changes that deserve focus (line-by-line) reading — and to *safely* skip the rest.
 
 ## The load-bearing idea: coverage is structural, judgement is delegated
 
@@ -25,7 +25,7 @@ handful of changes that deserve close reading — and to *safely* skip the rest.
    its keep — merging twenty textually-different shape classes into one "path and import
    swaps" group is exactly what hashing can't do ([ADR 0001](../adr/0001-llm-merges-class-ids-never-hunks.md)).
 3. **Deterministic ordering.** Symbol-definition → symbol-use edges between groups build a
-   dependency DAG; the close section is topologically sorted foundation-first, so the
+   dependency DAG; the focus section is topologically sorted foundation-first, so the
    reviewer meets the abstraction before its consumers
    ([spec/ordering.md](../spec/ordering.md)).
 4. **Structural audits.** Before any document is emitted: every changed file must

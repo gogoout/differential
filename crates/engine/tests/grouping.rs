@@ -35,7 +35,7 @@ fn happy_path_fills_groups_plan_and_audit() {
         assert_eq!(ids.len(), 2);
         format!(
             r#"{{"groups": [{}, {}]}}"#,
-            json_group("Behaviour change", "close", &[&ids[1]]),
+            json_group("Behaviour change", "focus", &[&ids[1]]),
             json_group("Helper rename", "skim", &[&ids[0]])
         )
     });
@@ -47,7 +47,7 @@ fn happy_path_fills_groups_plan_and_audit() {
     );
     let groups = d.groups.as_ref().unwrap();
     assert_eq!(groups.len(), 2);
-    assert_eq!(groups[0].effort, Effort::Close);
+    assert_eq!(groups[0].effort, Effort::Focus);
     assert_eq!(groups[0].label, "Behaviour change");
     assert_eq!(groups[0].rank, 0);
     assert_eq!(groups[0].role, None);
@@ -64,7 +64,7 @@ fn happy_path_fills_groups_plan_and_audit() {
     assert_eq!(d.audit.classes_missing, Some(0));
     assert_eq!(d.audit.classes_duplicated.as_deref(), Some(&[][..]));
     assert_eq!(d.audit.classes_hallucinated.as_deref(), Some(&[][..]));
-    // 1 close hunk + 1 skim exemplar read; 2 skim remainders skipped.
+    // 1 focus hunk + 1 skim exemplar read; 2 skim remainders skipped.
     assert_eq!(d.audit.read_hunks, Some(2));
     assert_eq!(d.audit.skipped_hunks, Some(2));
 
@@ -79,7 +79,7 @@ fn omitted_class_is_backfilled_never_dropped() {
     let backend = FakeBackend::new("fake", |ids| {
         format!(
             r#"{{"groups": [{}]}}"#,
-            json_group("Only one", "close", &[&ids[1]])
+            json_group("Only one", "focus", &[&ids[1]])
         )
     });
     let d = grouped(&r, &base, &head, &backend);
@@ -87,7 +87,7 @@ fn omitted_class_is_backfilled_never_dropped() {
     let groups = d.groups.as_ref().unwrap();
     assert_eq!(groups.len(), 2);
     let backfill = groups.last().unwrap();
-    assert_eq!(backfill.effort, Effort::Close);
+    assert_eq!(backfill.effort, Effort::Focus);
     assert!(backfill.label.contains("no group"));
     assert_eq!(d.audit.classes_missing, Some(1));
     // 3 of 4 hunks unassigned by the model.
@@ -102,7 +102,7 @@ fn omitted_class_is_backfilled_never_dropped() {
     let mut expect: Vec<&str> = d.classes.iter().map(|c| c.id.as_str()).collect();
     expect.sort_unstable();
     assert_eq!(all, expect);
-    // Everything must still be read: back-fill is close.
+    // Everything must still be read: back-fill is focus.
     assert_eq!(d.audit.read_hunks, Some(4));
     assert_eq!(d.audit.skipped_hunks, Some(0));
 }
@@ -113,8 +113,8 @@ fn duplicated_class_kept_by_first_group_only() {
     let backend = FakeBackend::new("fake", |ids| {
         format!(
             r#"{{"groups": [{}, {}]}}"#,
-            json_group("First", "close", &[&ids[0], &ids[1]]),
-            json_group("Second", "close", &[&ids[0]])
+            json_group("First", "focus", &[&ids[0], &ids[1]]),
+            json_group("Second", "focus", &[&ids[0]])
         )
     });
     let d = grouped(&r, &base, &head, &backend);
@@ -132,7 +132,7 @@ fn hallucinated_class_is_dropped_and_recorded() {
     let backend = FakeBackend::new("fake", |ids| {
         format!(
             r#"{{"groups": [{}]}}"#,
-            json_group("All", "close", &[&ids[0], &ids[1], "C999"])
+            json_group("All", "focus", &[&ids[0], &ids[1], "C999"])
         )
     });
     let d = grouped(&r, &base, &head, &backend);
@@ -155,7 +155,7 @@ fn unknown_effort_defaults_to_close() {
         format!(
             r#"{{"groups": [{}, {}]}}"#,
             json_group("A", "medium-ish", &[&ids[0]]),
-            json_group("B", "close", &[&ids[1]])
+            json_group("B", "focus", &[&ids[1]])
         )
     });
     let d = grouped(&r, &base, &head, &backend);
@@ -164,7 +164,7 @@ fn unknown_effort_defaults_to_close() {
             .as_ref()
             .unwrap()
             .iter()
-            .all(|g| g.effort == Effort::Close)
+            .all(|g| g.effort == Effort::Focus)
     );
 }
 
@@ -181,7 +181,7 @@ fn generated_classes_never_reach_the_model_and_fold_as_noise() {
     let backend = FakeBackend::new("fake", |ids| {
         format!(
             r#"{{"groups": [{}]}}"#,
-            json_group("Code", "close", &[&ids[0]])
+            json_group("Code", "focus", &[&ids[0]])
         )
     });
     let d = grouped(&r, &base, &head, &backend);
@@ -216,7 +216,7 @@ fn mixed_generated_class_stays_with_the_model() {
     let backend = FakeBackend::new("fake", |ids| {
         format!(
             r#"{{"groups": [{}]}}"#,
-            json_group("Edit", "close", &[&ids[0]])
+            json_group("Edit", "focus", &[&ids[0]])
         )
     });
     let d = grouped(&r, &base, &head, &backend);
@@ -268,7 +268,7 @@ fn low_similarity_rename_is_extracted_from_skim() {
         .iter()
         .find(|g| g.label == "Modified during move")
         .expect("gate group");
-    assert_eq!(gate.effort, Effort::Close);
+    assert_eq!(gate.effort, Effort::Focus);
     assert_eq!(d.audit.skipped_hunks, Some(0));
 }
 
@@ -303,7 +303,7 @@ fn cache_pins_the_grouping() {
             r#"{{"groups": [{}]}}"#,
             json_group(
                 "All",
-                "close",
+                "focus",
                 &ids.iter().map(String::as_str).collect::<Vec<_>>()
             )
         )
@@ -320,7 +320,7 @@ fn cache_pins_the_grouping() {
             r#"{{"groups": [{}]}}"#,
             json_group(
                 "All",
-                "close",
+                "focus",
                 &ids.iter().map(String::as_str).collect::<Vec<_>>()
             )
         )
@@ -334,7 +334,7 @@ fn cache_pins_the_grouping() {
             r#"{{"groups": [{}]}}"#,
             json_group(
                 "All",
-                "close",
+                "focus",
                 &ids.iter().map(String::as_str).collect::<Vec<_>>()
             )
         )
@@ -413,8 +413,8 @@ fn foundation_is_ordered_before_its_consumer() {
     let backend = FakeBackend::new("fake", |ids| {
         format!(
             r#"{{"groups": [{}, {}]}}"#,
-            json_group("Use the widget", "close", &[&ids[1]]),
-            json_group("Introduce the widget", "close", &[&ids[0]])
+            json_group("Use the widget", "focus", &[&ids[1]]),
+            json_group("Introduce the widget", "focus", &[&ids[0]])
         )
     });
     let d = grouped(&r, &base, &head, &backend);
@@ -451,12 +451,12 @@ fn skim_groups_get_the_mechanical_role_and_stay_after_close() {
         format!(
             r#"{{"groups": [{}, {}]}}"#,
             json_group("Rename sweep", "skim", &[&ids[0]]),
-            json_group("Behaviour", "close", &[&ids[1]])
+            json_group("Behaviour", "focus", &[&ids[1]])
         )
     });
     let d = grouped(&r, &base, &head, &backend);
     let groups = d.groups.as_ref().unwrap();
-    assert_eq!(groups[0].effort, Effort::Close);
+    assert_eq!(groups[0].effort, Effort::Focus);
     assert_eq!(groups[1].effort, Effort::Skim);
     assert_eq!(
         groups[1].role,
@@ -472,7 +472,7 @@ fn backfill_stays_trailing_even_when_everything_is_close() {
     let backend = FakeBackend::new("fake", |ids| {
         format!(
             r#"{{"groups": [{}]}}"#,
-            json_group("Only one", "close", &[&ids[1]])
+            json_group("Only one", "focus", &[&ids[1]])
         )
     });
     let d = grouped(&r, &base, &head, &backend);

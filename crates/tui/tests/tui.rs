@@ -15,14 +15,14 @@ use differential_tui::app::{App, Effect, Focus, Mode};
 use differential_tui::rows::{RowFactory, RowKind};
 
 /// First-listed class (the largest) becomes the skim sweep; the rest are
-/// close work — so the skim group has a foldable remainder.
+/// focus work — so the skim group has a foldable remainder.
 fn skim_first_backend() -> FakeBackend {
     FakeBackend::new("fake", |ids| {
         let skim = ids.first().map(String::as_str).unwrap_or("C0");
-        let closes: Vec<&str> = ids.iter().skip(1).map(String::as_str).collect();
+        let rest: Vec<&str> = ids.iter().skip(1).map(String::as_str).collect();
         let mut groups = vec![json_group("Skim sweep", "skim", &[skim])];
-        if !closes.is_empty() {
-            groups.push(json_group("Close work", "close", &closes));
+        if !rest.is_empty() {
+            groups.push(json_group("Focus work", "focus", &rest));
         }
         format!(r#"{{"groups": [{}]}}"#, groups.join(", "))
     })
@@ -398,7 +398,7 @@ fn draw_smoke_test_renders_group_label() {
     terminal.draw(|f| app.draw(f)).unwrap();
     let buffer = terminal.backend().buffer().clone();
     let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-    assert!(content.contains("Close work"));
+    assert!(content.contains("Focus work"));
     assert!(content.contains("reading plan"));
     assert!(content.contains("classes reviewed"));
 }

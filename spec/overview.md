@@ -10,7 +10,7 @@ The product is **one JSON document** (see [json-contract.md](json-contract.md)) 
 - every changed file and hunk (canonical, complete — nothing is ever filtered out),
 - **shape classes**: hunks that are the same textual edit after normalising away identifiers
   and literals,
-- **groups**: shape classes merged and labelled by intent, each rated `close`, `skim`, or
+- **groups**: shape classes merged and labelled by intent, each rated `focus`, `skim`, or
   `noise`,
 - a **reading plan**: groups ordered foundation-first, with dependency edges.
 
@@ -53,5 +53,5 @@ large refactors it silently dropped up to ~73% of hunks while reporting success.
 ## Honest reporting
 
 `skim` totals overstate the saving: exemplars still get read. Documents report both
-`read_hunks` (close + exemplars) and `skipped_hunks` (skim remainders + folded noise); only
+`read_hunks` (focus + exemplars) and `skipped_hunks` (skim remainders + folded noise); only
 the latter is the genuine saving. Consumers must not present skim totals as time saved.

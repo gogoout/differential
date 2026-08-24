@@ -1,4 +1,4 @@
-//! The ordering stage: foundation-first arrangement of the close section.
+//! The ordering stage: foundation-first arrangement of the focus section.
 //!
 //! The measured failure this fixes: the group introducing the abstraction
 //! everything else consumes landed 9th of 13 in model order, so the reviewer
@@ -17,7 +17,7 @@ use crate::schema;
 use crate::lang::LanguageRegistry;
 use crate::model::DiffView;
 
-/// Reorder the close section foundation-first, fill `depends_on` and `role`,
+/// Reorder the focus section foundation-first, fill `depends_on` and `role`,
 /// rewrite `rank`, regroup the reading plan, and append the `order` stage.
 pub fn apply(doc: &mut schema::PlanDocument, view: &DiffView, langs: &LanguageRegistry) {
     let Some(groups) = doc.groups.take() else {
@@ -80,16 +80,16 @@ pub fn apply(doc: &mut schema::PlanDocument, view: &DiffView, langs: &LanguageRe
         }
     }
 
-    // --- foundation-first reorder of the contiguous close prefix ---------------
+    // --- foundation-first reorder of the contiguous focus prefix ---------------
     // The audit back-fill group is always assembled last and must stay trailing
-    // (untriaged classes are read at the end); when every group is close it
+    // (untriaged classes are read at the end); when every group is focus it
     // would otherwise fall inside the prefix.
-    let mut close_len = groups
+    let mut focus_len = groups
         .iter()
-        .position(|g| g.effort != schema::Effort::Close)
+        .position(|g| g.effort != schema::Effort::Focus)
         .unwrap_or(groups.len());
-    if close_len == groups.len() && doc.audit.classes_missing.unwrap_or(0) > 0 {
-        close_len -= 1;
+    if focus_len == groups.len() && doc.audit.classes_missing.unwrap_or(0) > 0 {
+        focus_len -= 1;
     }
     let hunk_count = |gi: usize| -> usize {
         groups[gi]
@@ -98,10 +98,10 @@ pub fn apply(doc: &mut schema::PlanDocument, view: &DiffView, langs: &LanguageRe
             .map(|c| hunks_of_class[c.as_str()].hunk_ids.len())
             .sum()
     };
-    let order = toposort_prefix(close_len, &deps, &hunk_count);
+    let order = toposort_prefix(focus_len, &deps, &hunk_count);
 
     let mut new_order: Vec<usize> = order;
-    new_order.extend(close_len..groups.len());
+    new_order.extend(focus_len..groups.len());
 
     // --- roles ------------------------------------------------------------------
     let depended_on: HashSet<usize> = deps.iter().flatten().copied().collect();
@@ -110,7 +110,7 @@ pub fn apply(doc: &mut schema::PlanDocument, view: &DiffView, langs: &LanguageRe
         match g.effort {
             schema::Effort::Noise => g.role, // set by grouping
             schema::Effort::Skim => Some(schema::Role::Mechanical),
-            schema::Effort::Close => {
+            schema::Effort::Focus => {
                 if depended_on.contains(&gi) {
                     Some(schema::Role::Foundation)
                 } else if !deps[gi].is_empty() {
@@ -155,7 +155,7 @@ pub fn apply(doc: &mut schema::PlanDocument, view: &DiffView, langs: &LanguageRe
     doc.generator.stages.push("order".to_string());
 }
 
-/// Kahn's algorithm over the close prefix. Ready-node tie-break: descending
+/// Kahn's algorithm over the focus prefix. Ready-node tie-break: descending
 /// hunk count, then original position (stable). Cycle fallback: emit the
 /// largest remaining node — deterministic, and the recorded `depends_on` still
 /// carries the true edges.
@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn edges_outside_the_prefix_do_not_block() {
-        // Group 0 depends on group 3 (a skim group outside the close prefix).
+        // Group 0 depends on group 3 (a skim group outside the focus prefix).
         let deps = vec![set(&[3]), set(&[]), set(&[]), set(&[])];
         let counts = [4usize, 2, 1, 9];
         let order = toposort_prefix(3, &deps, &|i| counts[i]);

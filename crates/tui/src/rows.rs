@@ -295,7 +295,7 @@ pub fn build_file_rows(
 fn header_rows(ctx: &GroupContext, rows: &mut Vec<Row>) {
     let g = ctx.group;
     let tier = match g.effort {
-        schema::Effort::Close => "close",
+        schema::Effort::Focus => "focus",
         schema::Effort::Skim => "skim",
         schema::Effort::Noise => "noise",
     };

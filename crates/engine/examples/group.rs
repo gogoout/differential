@@ -105,7 +105,7 @@ fn main() -> ExitCode {
         };
         for g in groups {
             let tier = match g.effort {
-                Effort::Close => "close",
+                Effort::Focus => "focus",
                 Effort::Skim => "skim ",
                 Effort::Noise => "noise",
             };

@@ -18,7 +18,7 @@ pub struct Theme {
     pub cursor_bg: Color,
     pub selected_bg: Color,
     pub header_fg: Color,
-    pub close_fg: Color,
+    pub focus_fg: Color,
     pub skim_fg: Color,
     pub noise_fg: Color,
     pub reviewed_fg: Color,
@@ -36,7 +36,7 @@ pub const THEME: Theme = Theme {
     cursor_bg: Color::Rgb(48, 52, 70),
     selected_bg: Color::Rgb(40, 44, 58),
     header_fg: Color::Cyan,
-    close_fg: Color::LightRed,
+    focus_fg: Color::LightRed,
     skim_fg: Color::Yellow,
     noise_fg: Color::DarkGray,
     reviewed_fg: Color::Green,
@@ -47,7 +47,7 @@ pub const THEME: Theme = Theme {
 impl Theme {
     pub fn effort_style(&self, effort: differential_engine::schema::Effort) -> Style {
         let fg = match effort {
-            differential_engine::schema::Effort::Close => self.close_fg,
+            differential_engine::schema::Effort::Focus => self.focus_fg,
             differential_engine::schema::Effort::Skim => self.skim_fg,
             differential_engine::schema::Effort::Noise => self.noise_fg,
         };

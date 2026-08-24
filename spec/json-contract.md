@@ -21,7 +21,7 @@ guessing from field presence.
 ## `groups: null` vs `[]`
 
 `null` means the grouping stage has not run: the document is a complete, classified
-enumeration and a consumer should treat every hunk as `close` in canonical order.
+enumeration and a consumer should treat every hunk as `focus` in canonical order.
 `[]` means the stage ran and there was nothing to group — valid **only** for an empty diff
 (zero hunks); on a non-empty diff an empty list is a bug, because the audit back-fills
 everything the model drops. The same rule applies to `reading_plan`.
@@ -72,13 +72,13 @@ deletion-only hunks are never pure.
 
 ## `groups[]` and `reading_plan[]` (grouping stage)
 
-- `effort`: `close` (read every hunk) | `skim` (one exemplar per shape class) | `noise`
+- `effort`: `focus` (read every hunk) | `skim` (one exemplar per shape class) | `noise`
   (generated content, folded entirely — no exemplars).
 - `role`: `foundation | consumer | mechanical | noise` — filled by the ordering stage
-  ([ordering.md](ordering.md)); isolated close groups and the back-fill stay `null`.
+  ([ordering.md](ordering.md)); isolated focus groups and the back-fill stay `null`.
   `depends_on` edges form the group DAG; `rank` is the final reading-order position.
 - `reading_plan` actions: `read`, `exemplars`, `skip`, `fold`.
-- Any class the model omitted lands in a trailing back-filled group with `effort: close`.
+- Any class the model omitted lands in a trailing back-filled group with `effort: focus`.
   Nothing is ever dropped. Full stage semantics: [grouping.md](grouping.md).
 
 ## `audit`

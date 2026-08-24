@@ -11,12 +11,12 @@ use differential_engine::review_state::{
 use differential_engine::schema::SourceKind;
 use differential_testutil::{FakeBackend, TestRepo, grouped, json_group};
 
-fn close_all_backend() -> FakeBackend {
+fn focus_all_backend() -> FakeBackend {
     FakeBackend::new("fake", |ids| {
         let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
         format!(
             r#"{{"groups": [{}]}}"#,
-            json_group("Everything", "close", &refs)
+            json_group("Everything", "focus", &refs)
         )
     })
 }
@@ -43,7 +43,7 @@ fn store_roundtrips_state_plans_and_findings() {
     let base = r.commit_all("base");
     r.write("f.txt", b"alpha_value = 2\n");
     let head = r.commit_all("head");
-    let doc = grouped(&r, &base, &head, &close_all_backend());
+    let doc = grouped(&r, &base, &head, &focus_all_backend());
 
     let tmp = tempfile::TempDir::new().unwrap();
     let store = ReviewStore::open_at(tmp.path().join("rev1")).unwrap();
@@ -92,7 +92,7 @@ fn findings_reanchor_across_regeneration() {
     r.write("b.txt", b"other_content = new_thing\n");
     let head1 = r.commit_all("head1");
 
-    let backend = close_all_backend();
+    let backend = focus_all_backend();
     let doc1 = grouped(&r, &base, &head1, &backend);
     let plan1 = "plan1hash";
 
@@ -145,7 +145,7 @@ fn findings_reanchor_across_regeneration() {
         &Config::default(),
         &LanguageRegistry::builtin(),
         &differential_engine::grouping::GroupingOptions {
-            backend: Some(&close_all_backend()),
+            backend: Some(&focus_all_backend()),
             cache_dir: None,
         },
     )
@@ -181,7 +181,7 @@ fn findings_reanchor_across_regeneration() {
         &Config::default(),
         &LanguageRegistry::builtin(),
         &differential_engine::grouping::GroupingOptions {
-            backend: Some(&close_all_backend()),
+            backend: Some(&focus_all_backend()),
             cache_dir: None,
         },
     )
@@ -215,7 +215,7 @@ fn session_persists_every_mutation() {
         &Config::default(),
         &LanguageRegistry::builtin(),
         &differential_engine::grouping::GroupingOptions {
-            backend: Some(&close_all_backend()),
+            backend: Some(&focus_all_backend()),
             cache_dir: None,
         },
     )

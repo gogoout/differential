@@ -7,7 +7,7 @@
 //! - classes living entirely in generated files are pre-assigned to the noise
 //!   tier and never reach the payload (ADR 0006);
 //! - classes touching a rename below 95% similarity can never stay in a skim
-//!   group — they are extracted into a synthesized close group (ADR 0003).
+//!   group — they are extracted into a synthesized focus group (ADR 0003).
 
 mod assemble;
 mod cache;

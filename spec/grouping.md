@@ -14,7 +14,7 @@ tools-denied claude invocation (ADR 0010), configurable via `[grouping].command`
 - **The relocation gate** (ADR 0003). A class touching a file whose `rename_similarity` is
   below 95 is a modification, not a relocation. The payload announces the rename
   ("renamed from …, N% similar") so the model can judge correctly — and a deterministic
-  post-audit pass extracts any such class out of a skim group into a synthesized close group
+  post-audit pass extracts any such class out of a skim group into a synthesized focus group
   ("Modified during move") regardless of what the model claimed.
 
 ## Payload
@@ -29,19 +29,19 @@ must-read group, so truncation can never lose a hunk.
 
 Against the offered id set: hallucinated ids are removed (and listed), duplicated ids are
 kept by their first group (and listed), missing ids land in a trailing
-`effort: close` back-fill group (invariant 5). `audit.coverage` is the honest pre-back-fill
-number: model-assigned hunks / offered hunks. Unknown effort strings mean `close`
-(when in doubt, close).
+`effort: focus` back-fill group (invariant 5). `audit.coverage` is the honest pre-back-fill
+number: model-assigned hunks / offered hunks. Unknown effort strings mean `focus`
+(when in doubt, focus).
 
 ## Assembly
 
-Group order is presentation only (the foundation-first DAG is the ordering stage): close
+Group order is presentation only (the foundation-first DAG is the ordering stage): focus
 groups in model order (gate group last), skim groups by descending hunk count, the noise
 group, then the back-fill. `role` is `null` except the noise group (`"noise"`);
 `depends_on` is empty until the ordering stage exists.
 
-Reading plan: close → `read`; skim → `exemplars`, plus `skip` only when a remainder exists;
-noise → `fold`. `audit.read_hunks` counts close hunks plus one exemplar per skim class;
+Reading plan: focus → `read`; skim → `exemplars`, plus `skip` only when a remainder exists;
+noise → `fold`. `audit.read_hunks` counts focus hunks plus one exemplar per skim class;
 `audit.skipped_hunks` counts skim remainders plus folded noise — only the latter is the
 genuine saving (ADR 0006).
 

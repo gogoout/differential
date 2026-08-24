@@ -783,7 +783,7 @@ impl App {
                     let done = g.class_keys.iter().all(|k| self.session.is_reviewed(k))
                         && !g.class_keys.is_empty();
                     let tier = match g.effort {
-                        schema::Effort::Close => "C",
+                        schema::Effort::Focus => "F",
                         schema::Effort::Skim => "S",
                         schema::Effort::Noise => "N",
                     };
