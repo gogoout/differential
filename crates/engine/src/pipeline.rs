@@ -115,59 +115,6 @@ pub fn run_grouped_pipeline(
     Ok(out)
 }
 
-pub struct StackOutput {
-    pub pipeline: PipelineOutput,
-    /// `None` iff invariants failed upstream (no document, nothing rendered).
-    pub stack: Option<crate::stack::StackResult>,
-}
-
-/// Full production path for the shadow-branch renderer: core → group → order →
-/// commit stack, sharing one internal diff view.
-// Mirrors run_grouped_pipeline plus the stack options; bundling the two option
-// structs further would be indirection for the lint's sake.
-#[allow(clippy::too_many_arguments)]
-pub fn run_stack_pipeline(
-    repo: &Repo,
-    base_rev: &str,
-    head_rev: &str,
-    kind: schema::SourceKind,
-    config: &Config,
-    langs: &LanguageRegistry,
-    grouping: &crate::grouping::GroupingOptions,
-    stack: &crate::stack::StackOptions,
-) -> Result<StackOutput, EngineError> {
-    let mut out = run_core(repo, base_rev, head_rev, kind, config, langs)?;
-
-    let Some(core_doc) = &out.document else {
-        return Ok(StackOutput {
-            pipeline: out,
-            stack: None,
-        });
-    };
-    let built;
-    let backend: &dyn crate::llm::LlmBackend = match grouping.backend {
-        Some(b) => b,
-        None => {
-            built = backend_from_config(&config.grouping);
-            &built
-        }
-    };
-    let mut doc = crate::grouping::run(
-        core_doc,
-        &out.view,
-        backend,
-        grouping.cache_dir,
-        &langs.fingerprint(),
-    )?;
-    crate::ordering::apply(&mut doc, &out.view, langs);
-    let result = crate::stack::build_stack(repo, &doc, &out.view, stack)?;
-    out.document = Some(doc);
-    Ok(StackOutput {
-        pipeline: out,
-        stack: Some(result),
-    })
-}
-
 fn backend_from_config(cfg: &crate::config::GroupingConfig) -> crate::llm::CommandBackend {
     let backend = match &cfg.command {
         Some(argv) if !argv.is_empty() => {

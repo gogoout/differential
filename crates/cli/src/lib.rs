@@ -14,8 +14,8 @@ use differential_engine::gitio::Repo;
 use differential_engine::grouping::GroupingOptions;
 use differential_engine::invariants::InvariantReport;
 use differential_engine::lang::LanguageRegistry;
-use differential_engine::stack::StackOptions;
-use differential_engine::{resolve_range, run_pipeline, run_stack_pipeline};
+use differential_engine::{resolve_range, run_pipeline};
+use differential_stack::{StackOptions, run_stack_pipeline};
 
 /// Grouped, ordered reading plans for large diffs.
 #[derive(Parser)]

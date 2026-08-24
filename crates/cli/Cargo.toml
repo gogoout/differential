@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 differential-engine = { workspace = true }
+differential-stack = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }

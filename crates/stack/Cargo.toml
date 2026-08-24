@@ -1,0 +1,17 @@
+[package]
+name = "differential-stack"
+description = "Shadow-branch renderer for differential: the diff as a synthetic commit stack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+differential-engine = { workspace = true }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+differential-testutil = { workspace = true }
+
+[lints]
+workspace = true

@@ -5,9 +5,9 @@ use differential_engine::config::Config;
 use differential_engine::grouping::GroupingOptions;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::llm::LlmBackend;
-use differential_engine::pipeline::run_stack_pipeline;
 use differential_engine::schema::SourceKind;
-use differential_engine::stack::{StackOptions, StackResult};
+use differential_stack::run_stack_pipeline;
+use differential_stack::{StackOptions, StackResult};
 use differential_testutil::{FakeBackend, TestRepo, json_group};
 
 fn stacked(r: &TestRepo, base: &str, head: &str, backend: &dyn LlmBackend) -> StackResult {
