@@ -49,7 +49,10 @@ lines recomputed from the base/head blobs (canonical `-U0` hunks carry none).
 **include uncommitted changes (worktree)** — and a list of recent commits from which you
 pick the **base**. The review then runs from that commit to the worktree snapshot (box
 ticked) or to `HEAD` (unticked), which is how "everything on my branch since `main`,
-including what I haven't committed" is expressed. Commits show the branch and tag names
+including what I haven't committed" is expressed. The range is `base..head`, so it
+**excludes the base commit's own changes**: the bar covers the commits above the cursor,
+and the selected row is marked as the boundary. Picking the newest commit with the box
+unticked therefore reviews nothing, and the title says so. Commits show the branch and tag names
 pointing at them (read with `for-each-ref`, plumbing, so no dependence on
 `log.decorate` config), and a leading bar marks every row inside the range as the cursor
 moves, so what is covered is visible while choosing. `HEAD` itself is a valid base: with

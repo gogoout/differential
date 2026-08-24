@@ -172,10 +172,24 @@ struct PickerState {
     scroll: usize,
 }
 
-/// The bar marking rows inside the review: everything newer than the base,
-/// down to and including the base row itself.
+/// The bar marking rows inside the review. `base..head` EXCLUDES the base,
+/// so the bar stops above the selected row; the base itself is the boundary
+/// and gets a marker of its own.
 const IN_RANGE: &str = "▌ ";
 const OUT_RANGE: &str = "  ";
+const AT_BASE: &str = "└ ";
+
+/// Rows strictly newer than the base are reviewed — the base commit's own
+/// changes are not.
+fn in_range(row: usize, base: usize) -> bool {
+    row < base
+}
+
+/// Picking the newest commit as base with uncommitted changes excluded
+/// leaves nothing to review.
+fn is_empty_range(base: usize, include_worktree: bool) -> bool {
+    base == 0 && !include_worktree
+}
 
 fn draw(frame: &mut ratatui::Frame, commits: &[CommitEntry], state: &mut PickerState) {
     let area: Rect = frame.area();
@@ -222,14 +236,20 @@ fn draw(frame: &mut ratatui::Frame, commits: &[CommitEntry], state: &mut PickerS
     }
 
     for (i, c) in commits.iter().enumerate().skip(state.scroll).take(viewport) {
-        // In range: every commit newer than the base, and the base itself.
-        let in_range = i <= state.selected;
+        let at_base = i == state.selected;
         let mut style = Style::default().fg(THEME.context_fg);
-        if i == state.selected {
+        if at_base {
             style = style.bg(THEME.selected_bg).add_modifier(Modifier::BOLD);
         }
+        let gutter = if at_base {
+            AT_BASE
+        } else if in_range(i, state.selected) {
+            IN_RANGE
+        } else {
+            OUT_RANGE
+        };
         let mut spans = vec![
-            Span::styled(if in_range { IN_RANGE } else { OUT_RANGE }, bar),
+            Span::styled(gutter, bar),
             Span::styled(format!("{}  ", c.short), style),
         ];
         if !c.refs.is_empty() {
@@ -245,6 +265,12 @@ fn draw(frame: &mut ratatui::Frame, commits: &[CommitEntry], state: &mut PickerS
             format!("({})", c.author),
             Style::default().fg(THEME.gutter_fg),
         ));
+        if at_base {
+            spans.push(Span::styled(
+                "  ← base, not reviewed",
+                Style::default().fg(THEME.gutter_fg),
+            ));
+        }
         lines.push(Line::from(spans));
     }
 
@@ -263,12 +289,17 @@ fn draw(frame: &mut ratatui::Frame, commits: &[CommitEntry], state: &mut PickerS
         .get(state.selected)
         .map(|c| c.short.as_str())
         .unwrap_or("?");
+    let empty = if is_empty_range(state.selected, state.include_worktree) {
+        " — nothing to review "
+    } else {
+        " "
+    };
     frame.render_widget(Clear, area);
     frame.render_widget(
         Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" dfr review — {base}..{head} ")),
+                .title(format!(" dfr review — {base}..{head}{empty}")),
         ),
         area,
     );
@@ -316,6 +347,28 @@ mod tests {
         assert_eq!(refs.get("bbbb").unwrap(), &vec!["feature".to_string()]);
         // The tag object's own id is never a key.
         assert!(!refs.contains_key("tagobj"));
+    }
+
+    #[test]
+    fn the_range_excludes_the_base_commit() {
+        // base..head is exclusive: with row 3 picked, rows 0-2 (newer
+        // commits) are reviewed and row 3 itself is not.
+        assert!(super::in_range(0, 3));
+        assert!(super::in_range(2, 3));
+        assert!(
+            !super::in_range(3, 3),
+            "the base's own changes are not in the review"
+        );
+        assert!(
+            !super::in_range(4, 3),
+            "older commits are not in the review"
+        );
+        // The newest commit as base reviews nothing on its own...
+        assert!(!super::in_range(0, 0));
+        assert!(super::is_empty_range(0, false));
+        // ...unless uncommitted work is included.
+        assert!(!super::is_empty_range(0, true));
+        assert!(!super::is_empty_range(1, false));
     }
 
     #[test]
