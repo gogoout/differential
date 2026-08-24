@@ -114,6 +114,11 @@ impl ReviewSession {
         &self.findings
     }
 
+    /// Content key of the class owning `hunk`.
+    pub fn hunk_class_key(&self, hunk: usize) -> &str {
+        &self.hunk_key[&hunk]
+    }
+
     /// Content key for a class id (present for every class in the document).
     pub fn class_key(&self, class_id: &str) -> &str {
         &self.class_key[class_id]

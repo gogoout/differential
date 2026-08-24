@@ -440,3 +440,67 @@ fn reading_plan_shows_dependency_labels_not_ids() {
     assert!(content.contains("files"), "per-group file count missing");
     assert!(content.contains("−"), "removed-line count missing");
 }
+
+#[test]
+fn space_in_the_plan_pane_marks_the_whole_group() {
+    let (_r, mut app) = make_app();
+    assert_eq!(app.focus, Focus::Groups);
+    // Pick the group with the most classes so "whole group" is meaningful.
+    let target = app
+        .groups
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, g)| g.class_keys.len())
+        .map(|(i, _)| i)
+        .unwrap();
+    while app.selected_group != target {
+        app.handle_key(key('j'));
+    }
+    let want = app.groups[target].class_keys.len();
+    assert!(want >= 1);
+
+    app.handle_key(key(' '));
+    assert_eq!(
+        app.session.reviewed_count(),
+        want,
+        "whole group should be marked"
+    );
+    // Pressing again clears the whole group (set semantics, not per-class flip).
+    app.handle_key(key(' '));
+    assert_eq!(app.session.reviewed_count(), 0);
+
+    // In the diff pane, space still marks just the class under the cursor.
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(key(' '));
+    assert_eq!(app.session.reviewed_count(), 1);
+}
+
+#[test]
+fn n_and_shift_n_jump_between_hunks() {
+    let (_r, mut app) = make_app();
+    // Move to the skim group (3 hunks of one shape) and unfold its remainder,
+    // so the view holds several hunks to jump between.
+    app.handle_key(key('j'));
+    app.handle_key(key('z'));
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(key('g'));
+    let hunk_rows: Vec<usize> = app
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| matches!(r.kind, RowKind::HunkHeader(_)))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(hunk_rows.len() >= 2, "fixture needs multiple hunks");
+
+    app.handle_key(key('n'));
+    assert!(
+        hunk_rows.contains(&app.cursor),
+        "n should land on a hunk header"
+    );
+    let first = app.cursor;
+    app.handle_key(key('n'));
+    assert!(app.cursor > first);
+    app.handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT));
+    assert_eq!(app.cursor, first, "N goes back");
+}

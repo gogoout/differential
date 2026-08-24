@@ -445,6 +445,26 @@ impl App {
         };
     }
 
+    /// Jump to the next/previous hunk header, so a reviewer can move by
+    /// change instead of by line.
+    fn jump_hunk(&mut self, dir: isize) {
+        let mut i = self.cursor as isize + dir;
+        while i >= 0 && (i as usize) < self.rows.len() {
+            if matches!(self.rows[i as usize].kind, RowKind::HunkHeader(_)) {
+                self.cursor = i as usize;
+                self.focus = Focus::Diff;
+                self.follow_cursor();
+                return;
+            }
+            i += dir;
+        }
+        self.status = if dir > 0 {
+            "last hunk in this view".into()
+        } else {
+            "first hunk in this view".into()
+        };
+    }
+
     fn current_hunk(&self) -> Option<usize> {
         self.rows.get(self.cursor).and_then(|r| r.kind.hunk())
     }
@@ -613,6 +633,8 @@ impl App {
                     self.rebuild_rows();
                 }
             }
+            (KeyCode::Char('n'), KeyModifiers::NONE) => self.jump_hunk(1),
+            (KeyCode::Char('N'), _) => self.jump_hunk(-1),
             (KeyCode::Char('s'), KeyModifiers::NONE) => self.toggle_split(),
             (KeyCode::Char('v'), KeyModifiers::NONE) => self.toggle_file_view(),
             (KeyCode::Char('f'), KeyModifiers::NONE) => self.open_file_list(),
@@ -645,16 +667,54 @@ impl App {
         Vec::new()
     }
 
+    /// Space marks reviewed. In the left pane that means the WHOLE selected
+    /// entry (a group, or a file's classes); in the diff pane it means the
+    /// class under the cursor.
     fn toggle_reviewed(&mut self) {
-        let Some(h) = self.current_hunk() else {
-            return;
+        let outcome = match self.focus {
+            Focus::Groups => self.toggle_selected_entry(),
+            Focus::Diff => match self.current_hunk() {
+                Some(h) => self.session.toggle_reviewed(h).map(|_| ()),
+                None => return,
+            },
         };
-        if let Err(e) = self.session.toggle_reviewed(h) {
+        if let Err(e) = outcome {
             self.status = format!("save failed: {e:#}");
             return;
         }
         self.save_cursor();
         self.rebuild_rows();
+    }
+
+    /// Mark every class of the selected entry, in one write. Set semantics:
+    /// a partly reviewed entry becomes fully reviewed rather than inverted.
+    fn toggle_selected_entry(&mut self) -> Result<(), differential_engine::EngineError> {
+        let keys: Vec<String> = match self.view_mode {
+            ViewMode::Groups => match self.groups.get(self.selected_group) {
+                Some(g) => g.class_keys.clone(),
+                None => return Ok(()),
+            },
+            ViewMode::Files => match self.files.get(self.selected_file) {
+                Some(f) => f
+                    .hunk_idxs
+                    .iter()
+                    .map(|h| self.session.hunk_class_key(*h).to_string())
+                    .collect(),
+                None => return Ok(()),
+            },
+        };
+        if keys.is_empty() {
+            self.status = "nothing to mark here".into();
+            return Ok(());
+        }
+        let all_done = keys.iter().all(|k| self.session.is_reviewed(k));
+        self.session.set_reviewed(&keys, !all_done)?;
+        self.status = if all_done {
+            "group unmarked".into()
+        } else {
+            "group marked reviewed".into()
+        };
+        Ok(())
     }
 
     fn add_finding(&mut self, hunk_idx: usize, body: String) {
@@ -990,7 +1050,7 @@ impl App {
             .filter(|f| f.status == FindingStatus::Open)
             .count();
         let text = format!(
-            " {done}/{total} classes reviewed · {open} finding(s) · {} · j/k J/K nav · space reviewed · c finding · s split · v files · z fold · y copy summary · ? help · q quit",
+            " {done}/{total} classes reviewed · {open} finding(s) · {} · j/k J/K nav · n/N hunk · space reviewed · c finding · s split · v files · z fold · y copy summary · ? help · q quit",
             self.status
         );
         frame.render_widget(
@@ -1047,6 +1107,7 @@ fn help_paragraph() -> Paragraph<'static> {
         Line::from("  ctrl-d/u   half page"),
         Line::from("  g/G        top / bottom"),
         Line::from("  z          unfold skim remainder / noise"),
+        Line::from("  n/N        next / previous hunk"),
         Line::from("  s          toggle unified / split diff"),
         Line::from("  v          toggle reading plan / file view"),
         Line::from("  f          file list of the current view (enter jumps)"),
