@@ -537,6 +537,16 @@ impl App {
         } else if self.cursor + SCROLL_MARGIN + 1 > self.scroll + h {
             self.scroll = self.cursor + SCROLL_MARGIN + 1 - h;
         }
+        // The rows above the first selectable one are the group header —
+        // label, description, dependencies — and the cursor can never enter
+        // them. Without this the scroll margin would pin the view one row
+        // below the top and that header could never be read.
+        if self
+            .next_selectable(0, 1)
+            .is_none_or(|first| self.cursor <= first)
+        {
+            self.scroll = 0;
+        }
     }
 
     /// Select the idx-th entry of the left pane (group or file).

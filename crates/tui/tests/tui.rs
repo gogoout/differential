@@ -645,3 +645,41 @@ fn the_selected_plan_row_is_highlighted_edge_to_edge() {
         "selection stops short of the pane edge"
     );
 }
+
+#[test]
+fn scrolling_back_up_reveals_the_group_header() {
+    let (_r, mut app) = make_app();
+    app.handle_key(key('z')); // unfold, so there is enough to scroll through
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    // A short pane, as a small terminal would give: the rows now overflow it.
+    app.viewport_hint = 8;
+
+    // The header block above the first selectable row carries the label,
+    // description and dependencies — the cursor can never enter it.
+    let first_selectable = app
+        .rows
+        .iter()
+        .position(|r| r.kind.selectable())
+        .expect("a selectable row");
+    assert!(
+        first_selectable > 0,
+        "fixture should have header rows on top"
+    );
+    assert!(matches!(app.rows[0].kind, RowKind::GroupHeader));
+
+    // Scroll to the bottom, then all the way back up.
+    app.handle_key(key('G'));
+    assert!(app.scroll > 0, "should have scrolled away from the top");
+    for _ in 0..40 {
+        app.handle_key(ctrl('u'));
+    }
+    assert_eq!(
+        app.scroll, 0,
+        "scrolling up must reach row 0, not stop below it"
+    );
+
+    // g (top) lands there too.
+    app.handle_key(key('G'));
+    app.handle_key(key('g'));
+    assert_eq!(app.scroll, 0);
+}
