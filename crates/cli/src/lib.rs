@@ -12,6 +12,7 @@ use differential_engine::gitio::Repo;
 use differential_engine::grouping::GroupingOptions;
 use differential_engine::invariants::InvariantReport;
 use differential_engine::lang::LanguageRegistry;
+use differential_engine::schema::SourceKind;
 use differential_engine::{resolve_range, run_pipeline};
 use differential_stack::{StackOptions, run_stack_pipeline};
 
@@ -207,36 +208,27 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 Some((base, head, kind)) => (base, head, kind, head_spec_of(&common_range), None),
                 None => match differential_tui::picker::pick_source(&repo)? {
                     None => return Ok(ExitCode::SUCCESS),
-                    Some(differential_tui::picker::PickedSource::Commit { sha }) => (
-                        sha,
+                    // Base commit + "include uncommitted changes": the head is
+                    // the worktree snapshot or HEAD. Review identity keys on the
+                    // base sha plus a stable literal, so the review survives the
+                    // worktree churning under it (ADR 0017).
+                    Some(picked) if picked.include_worktree => {
+                        let wt = differential_engine::worktree::worktree_tree(&repo)?;
+                        (
+                            picked.base.clone(),
+                            wt,
+                            SourceKind::Worktree,
+                            "WORKTREE".to_string(),
+                            Some(picked.base),
+                        )
+                    }
+                    Some(picked) => (
+                        picked.base,
                         "HEAD".to_string(),
-                        differential_engine::schema::SourceKind::Range,
+                        SourceKind::Range,
                         "HEAD".to_string(),
                         None,
                     ),
-                    Some(differential_tui::picker::PickedSource::Staged) => {
-                        let head_sha = repo.rev_parse("HEAD")?;
-                        let index = differential_engine::worktree::index_tree(&repo)?;
-                        (
-                            head_sha.clone(),
-                            index,
-                            differential_engine::schema::SourceKind::Staged,
-                            "INDEX".to_string(),
-                            Some(head_sha),
-                        )
-                    }
-                    Some(differential_tui::picker::PickedSource::Worktree) => {
-                        let head_sha = repo.rev_parse("HEAD")?;
-                        let index = differential_engine::worktree::index_tree(&repo)?;
-                        let wt = differential_engine::worktree::worktree_tree(&repo)?;
-                        (
-                            index,
-                            wt,
-                            differential_engine::schema::SourceKind::Worktree,
-                            "WORKTREE".to_string(),
-                            Some(head_sha),
-                        )
-                    }
                 },
             };
             let out = grouped(&repo, &base, &head, kind, &config, &langs, no_cache)?;
