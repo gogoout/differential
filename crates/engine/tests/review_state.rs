@@ -4,6 +4,7 @@
 mod common;
 
 use common::{FakeBackend, TestRepo, grouped, json_group};
+use differential_engine::ReviewSession;
 use differential_engine::config::Config;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::run_grouped_pipeline;
@@ -197,4 +198,76 @@ fn findings_reanchor_across_regeneration() {
     // Restored content is byte-identical to the original hunk, so revival
     // happens on the EXACT digest path — not even flagged as moved.
     assert!(!findings[1].moved);
+}
+
+/// The session owns persistence: every mutation is on disk before it returns,
+/// verified by re-reading through an independent `ReviewStore`.
+#[test]
+fn session_persists_every_mutation() {
+    let r = TestRepo::new();
+    r.write("f.txt", b"alpha_value = 1\n");
+    let base = r.commit_all("base");
+    r.write("f.txt", b"alpha_value = 2\n");
+    let head = r.commit_all("head");
+    let out = run_grouped_pipeline(
+        &r.repo(),
+        &base,
+        &head,
+        SourceKind::Range,
+        &Config::default(),
+        &LanguageRegistry::builtin(),
+        &differential_engine::grouping::GroupingOptions {
+            backend: Some(&close_all_backend()),
+            cache_dir: None,
+        },
+    )
+    .unwrap();
+    let doc = out.document.unwrap();
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dir = tmp.path().join("rev1");
+    let mut session = ReviewSession::open_at(dir.clone(), doc, out.view).unwrap();
+    let reread = || ReviewStore::open_at(dir.clone()).unwrap();
+
+    // The plan is persisted on open, `current` pointing at it.
+    assert!(dir.join("current").exists());
+    assert!(!session.plan_hash().is_empty());
+
+    // toggle_reviewed: on, then off — each visible to a fresh store.
+    assert!(session.toggle_reviewed(0).unwrap());
+    assert_eq!(reread().load_state().unwrap().reviewed_classes.len(), 1);
+    assert_eq!(session.reviewed_hunks(), std::iter::once(0).collect());
+    assert!(!session.toggle_reviewed(0).unwrap());
+    assert!(reread().load_state().unwrap().reviewed_classes.is_empty());
+
+    // add_finding derives the anchor from the document + view.
+    let id = {
+        let f = session.add_finding(0, "off by one".into()).unwrap();
+        assert_eq!(f.anchor.file, "f.txt");
+        assert_eq!(f.anchor.side, "new");
+        assert_eq!(f.anchor.line_text, "alpha_value = 2");
+        f.id.clone()
+    };
+    assert_eq!(reread().load_findings().unwrap().len(), 1);
+
+    // save_cursor round-trips.
+    session.save_cursor("g0".into(), 7).unwrap();
+    assert_eq!(
+        reread().load_state().unwrap().cursor,
+        Some(("g0".into(), 7))
+    );
+    assert_eq!(session.cursor(), Some(&("g0".to_string(), 7)));
+
+    // delete_finding removes from disk; a bogus id is a no-op.
+    assert!(session.delete_finding(&id).unwrap());
+    assert!(!session.delete_finding("nope").unwrap());
+    assert!(reread().load_findings().unwrap().is_empty());
+
+    // set_split_diff / set_file_view round-trip (additive, default false).
+    assert!(!session.split_diff());
+    session.set_split_diff(true).unwrap();
+    assert!(reread().load_state().unwrap().split_diff);
+    assert!(!session.file_view());
+    session.set_file_view(true).unwrap();
+    assert!(reread().load_state().unwrap().file_view);
 }

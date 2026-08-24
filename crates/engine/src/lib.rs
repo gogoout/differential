@@ -19,16 +19,19 @@ pub mod parse;
 pub mod paths;
 pub mod pipeline;
 pub mod rename_view;
+pub mod review_session;
 pub mod review_state;
 pub mod shape;
 pub mod stack;
 pub mod tree;
+pub mod worktree;
 
 pub use grouping::GroupingOptions;
 pub use pipeline::{
     PipelineOutput, StackOutput, resolve_range, run_grouped_pipeline, run_pipeline,
     run_stack_pipeline,
 };
+pub use review_session::ReviewSession;
 pub use stack::{StackOptions, StackResult};
 
 #[derive(Debug, thiserror::Error)]

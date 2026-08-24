@@ -62,10 +62,16 @@ back-fill: detection and preservation, not silent loss.
 
 Review progress (`state.json`) carries "reviewed" marks keyed by class/group **content
 hash**: a group whose content is unchanged stays reviewed; anything that changed resets.
+It also carries the resume cursor and the TUI's persisted layout choices (`split_diff`,
+`file_view`) — all additive, defaulted fields. The cursor is `(id, row)` where `id` is a
+group id in the semantic view and a file path in the flattened file view; the `file_view`
+flag disambiguates on load.
 
 ## Status
 
-Implemented in `engine::review_state` and consumed by the TUI ([tui.md](tui.md)):
-content-addressed immutable plans, reviewed marks keyed on class content, findings
-anchored by hunk digest with exact → content-match → orphaned re-anchoring (orphans revive
-on a later match). The forge consumer will publish from the same store.
+Implemented in `engine::review_state` (primitives: store, types, re-anchoring) and
+`engine::review_session` (the owning facade). **The engine owns all persistence**: a
+renderer opens a `ReviewSession` and reads/mutates through it — every mutation
+(reviewed mark, finding, cursor) is on disk before the call returns, and renderers hold
+no review state of their own. The TUI ([tui.md](tui.md)) and `dfr findings` are both
+session consumers; the forge consumer will publish from the same store.

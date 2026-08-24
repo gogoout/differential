@@ -45,9 +45,12 @@ pub struct Generator {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Source {
     pub kind: SourceKind,
-    /// Fully resolved commit sha.
+    /// Fully resolved commit sha — a raw tree oid for `staged`/`worktree`
+    /// sources, whose endpoints are synthesized snapshots of uncommitted
+    /// state.
     pub base: String,
-    /// Fully resolved commit sha.
+    /// Fully resolved commit sha — a raw tree oid for `staged`/`worktree`
+    /// sources (see `base`).
     pub head: String,
     pub remote: Option<Remote>,
 }
@@ -59,6 +62,10 @@ pub enum SourceKind {
     Range,
     Mr,
     Pr,
+    /// HEAD vs the index (additive in schema v1).
+    Staged,
+    /// The index vs the worktree (additive in schema v1).
+    Worktree,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

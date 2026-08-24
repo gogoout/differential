@@ -2,11 +2,18 @@
 
 A dedicated reviewer over the grouped, ordered document. Two panes: the reading plan
 (groups in rank order, effort/role tags, per-group progress) and the diff for the selected
-group — unified layout, syntax highlighting, word-level change emphasis, ±3 context lines
-recomputed from the base/head blobs (canonical `-U0` hunks carry none). Skim groups show
+group — unified layout by default, `s` toggles a side-by-side split (the layout choice
+persists per review); syntax highlighting, word-level change emphasis, ±3 context lines
+recomputed from the base/head blobs (canonical `-U0` hunks carry none). `v` flattens the
+left pane into a per-file list (every file in the document, including binary/submodule
+changes the group view cannot surface); the right pane then shows the selected file's
+hunks in position order regardless of grouping, each hunk header carrying its group's
+label. Reviewed marks are shared between the views — they key on class content either way. Skim groups show
 one exemplar per shape class with the remainder folded behind a single line; noise groups
 are folded entirely. Group headers render `depends_on` with labels — the causal chain, not
-just the sequence.
+just the sequence. Each reading-plan row shows the group's file count and added/removed
+line totals, derived from its hunks — so binary/submodule changes (no hunks) contribute
+zero, and a rename counts as two files (the canonical view is `--no-renames`).
 
 ## Keys
 
@@ -18,6 +25,9 @@ just the sequence.
 | `ctrl-d`/`ctrl-u` | half page |
 | `g`/`G` | top / bottom |
 | `z` | unfold / fold the skim remainder or noise group |
+| `s` | toggle unified / side-by-side diff layout (persisted) |
+| `v` | toggle the left pane: reading plan ↔ flattened file view (persisted) |
+| `f` | file-list modal over the current view (`enter` jumps to the file) |
 | `space` | toggle the hunk's **class** reviewed (one exemplar verifies the shape) |
 | `c` | add a finding on the current hunk (Ctrl-s save, Esc cancel) |
 | `dd` | delete the finding under the cursor |
@@ -25,9 +35,21 @@ just the sequence.
 | `?` | help |
 | `q` | quit — state is saved on every change, quitting never loses anything |
 
+## No range: the picker
+
+`dfr review` with no arguments opens a picker instead of failing: **worktree** (all
+uncommitted changes — staged + unstaged + untracked — as index-tree vs worktree-tree),
+**staged** (HEAD vs index), or a recent commit `C` — which reviews `C..HEAD`, everything
+since that commit. Uncommitted sources run the full grouped pipeline like any range
+(ADR 0017); their review identity keys on the HEAD sha plus a stable `INDEX`/`WORKTREE`
+literal, so marks and findings survive while the snapshot trees churn with every edit.
+The commit pick keys on `HEAD` as typed, so the review survives new commits landing.
+
 ## State
 
-Everything persists in the sidecar store (spec/persistence.md) under
+Everything persists through the engine's `ReviewSession` — the TUI is a stateless
+frontend that reads and mutates review state only via the session, which writes the
+sidecar store (spec/persistence.md) under
 `<git-common-dir>/differential/reviews/<review-id>/`, where the review id derives from the
 resolved base sha plus the head **as typed** — reviewing `main..feature` keeps one review
 while `feature` moves. Reviewed marks key on class content (sorted member digests);
