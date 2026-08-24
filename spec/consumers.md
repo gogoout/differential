@@ -1,10 +1,11 @@
 # Consuming the engine
 
-The core is a **library** (ADR 0014). Consumers — the TUI, the shadow-branch builder, the
-forge poster — link `differential-engine` and `differential-schema` directly; the JSON form
-of the document is for export and persistence, not inter-process plumbing. The binary
-namespace (`dfr`, also installed as `differential`) belongs to renderers; the shadow-branch
-renderer is its first occupant, and the TUI joins it later.
+The core is a **library** (ADR 0014, 0018). Consumers — the TUI (`differential-tui`), the
+shadow-branch builder (`differential-stack`), the forge poster — link `differential-engine`
+directly (the frozen contract lives in `engine::schema`); the JSON form of the document is
+for export and persistence, not inter-process plumbing. The binaries (`dfr`, also installed
+as `differential`) live in the application-layer `crates/cli`, which consumes the renderer
+crates.
 
 ## The renderer binary
 
@@ -32,7 +33,7 @@ use differential_engine::{gitio::Repo, config::Config, lang::LanguageRegistry,
                           resolve_range, run_pipeline};
 
 let repo = Repo::open(path)?;                       // any dir inside the repo
-let config = Config::load(repo.root(), None)?;      // .differential.toml or defaults
+let config = Config::load(repo.root(), None, None)?; // repo + user config, or defaults
 let (base, head, kind) = resolve_range(&repo, &["main..feature"])?;
 let out = run_pipeline(&repo, &base, &head, kind, &config, &LanguageRegistry::builtin())?;
 // out.report: InvariantReport — always present
@@ -47,7 +48,7 @@ let out = run_pipeline(&repo, &base, &head, kind, &config, &LanguageRegistry::bu
   grouping stage ([grouping.md](grouping.md)): `backend: None` builds one from
   `[grouping].command` (default: the tools-denied claude invocation), and the cache
   directory is conventionally `repo.common_dir()?/differential/cache/grouping`.
-- Language plugins (ADR 0015) and LLM backends (`differential-llm`, ADR 0016) are injected
+- Language plugins (ADR 0015) and LLM backends (`engine::llm`, ADR 0016/0018) are injected
   by the consumer; `LanguageRegistry::builtin()` and `CommandBackend::claude_cli()` are the
   defaults.
 

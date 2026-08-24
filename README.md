@@ -146,9 +146,10 @@ cargo clippy --all-targets && cargo fmt
 ```
 
 Changes land via pull request; CI runs format, clippy, tests and a release build on every
-PR, and main is protected. Releases are cut manually: bump the workspace version, merge,
-and dispatch the Publish workflow, which runs `cargo publish --workspace`.
+PR, and main is protected. Releases are tag-driven: bump the workspace version in a PR,
+merge, then push a `vX.Y.Z` tag — the Release workflow generates the changelog into a
+GitHub Release and runs `cargo publish --workspace`.
 
 See [`AGENTS.md`](AGENTS.md) for working rules and
 [`docs/architecture.md`](docs/architecture.md) for the testing philosophy. Before touching
-`crates/schema` or the invariants, read the ADRs — every invariant caught a real bug.
+`engine::schema` or the invariants, read the ADRs — every invariant caught a real bug.

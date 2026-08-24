@@ -1,6 +1,7 @@
-# The JSON contract (schema v1)
+# The JSON contract (schema v2)
 
-The document the engine produces. Types live in `crates/schema`; this file is the prose
+The document the engine produces. Types live in `engine::schema`
+(`crates/engine/src/schema.rs`); this file is the prose
 contract. The schema is frozen: breaking changes bump `schema_version`, additive changes do
 not (readers tolerate unknown fields, and must reject versions they do not know).
 
