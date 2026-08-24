@@ -480,7 +480,7 @@ dependencies = [
 
 [[package]]
 name = "differential"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -501,7 +501,7 @@ dependencies = [
 
 [[package]]
 name = "differential-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "differential-llm",
  "differential-schema",
@@ -518,14 +518,14 @@ dependencies = [
 
 [[package]]
 name = "differential-llm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "differential-schema"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
