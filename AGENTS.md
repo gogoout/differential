@@ -60,11 +60,15 @@ code must change together — or the change is wrong.
 - CI (`.github/workflows/ci.yml`) runs fmt, clippy `-D warnings`, tests and a release
   build on every PR and on main after merge — the done-criteria below are exactly what CI
   checks, so run them before pushing.
-- Releases: bump `[workspace.package].version` AND the version fields on the three
-  internal path deps in `[workspace.dependencies]` in a PR, merge, then manually dispatch
-  the Publish workflow from main (`gh workflow run publish.yml`). It runs
-  `cargo publish --workspace`; the `CARGO_REGISTRY_TOKEN` lives as a secret on the
-  `crates-io` environment (restricted to main).
+- Releases are tag-driven: bump `[workspace.package].version` AND the version fields on
+  the three internal path deps in `[workspace.dependencies]` in a PR, merge, then the
+  author tags the merge commit (`git tag vX.Y.Z && git push origin vX.Y.Z`). The Release
+  workflow (`.github/workflows/publish.yml`) then generates the changelog from commits
+  since the previous tag (git-cliff, config in `cliff.toml` — grouped by the
+  `component:` subject prefixes, so keep using them) into a GitHub Release, and runs
+  `cargo publish --workspace`. The tag must equal the workspace version or the publish
+  fails. A tag ruleset restricts `v*` tags to repo admins; the `CARGO_REGISTRY_TOKEN`
+  lives on the `crates-io` environment (deployments restricted to `v*` tags).
 
 ## Commands
 

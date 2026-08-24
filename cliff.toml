@@ -1,0 +1,36 @@
+# git-cliff configuration (https://git-cliff.org/docs/configuration)
+#
+# This repo does not use conventional commits; subjects carry a component
+# prefix ("engine: …", "tui: …"). Commits are grouped by that prefix; the
+# hidden <!-- N --> markers order the sections and are stripped on render.
+
+[changelog]
+trim = true
+body = """
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in commits %}
+- {{ commit.message | split(pat="\n") | first | trim }} ({{ commit.id | truncate(length=7, end="") }})
+{%- endfor %}
+{% endfor %}
+"""
+
+[git]
+conventional_commits = false
+filter_unconventional = false
+filter_commits = false
+tag_pattern = "v[0-9]*"
+sort_commits = "newest"
+commit_parsers = [
+  # Version-bump noise never lands in the changelog.
+  { message = "(?i)^release:", skip = true },
+  { message = "(?i)^engine[:\\s-]", group = "<!-- 0 -->Engine" },
+  { message = "(?i)^tui[:\\s-]", group = "<!-- 1 -->TUI" },
+  { message = "(?i)^cli[:\\s-]", group = "<!-- 2 -->CLI" },
+  { message = "(?i)^schema[:\\s-]", group = "<!-- 3 -->Schema" },
+  { message = "(?i)^llm[:\\s-]", group = "<!-- 4 -->LLM" },
+  { message = "(?i)^tests?[:\\s]", group = "<!-- 5 -->Tests" },
+  { message = "(?i)^(docs|adr|spec|readme|agents)[:\\s]", group = "<!-- 6 -->Docs" },
+  { message = "(?i)^ci[:\\s]", group = "<!-- 7 -->CI" },
+  { message = ".*", group = "<!-- 8 -->Other" },
+]
