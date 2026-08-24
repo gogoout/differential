@@ -483,19 +483,12 @@ name = "differential"
 version = "0.2.0"
 dependencies = [
  "anyhow",
- "arboard",
  "clap",
- "crossterm",
  "differential-engine",
  "differential-stack",
- "ratatui",
+ "differential-tui",
  "serde_json",
- "similar",
- "syntect",
  "tempfile",
- "tui-textarea-2",
- "two-face",
- "unicode-width",
 ]
 
 [[package]]
@@ -529,6 +522,24 @@ version = "0.2.0"
 dependencies = [
  "differential-engine",
  "tempfile",
+]
+
+[[package]]
+name = "differential-tui"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "crossterm",
+ "differential-engine",
+ "differential-testutil",
+ "ratatui",
+ "similar",
+ "syntect",
+ "tempfile",
+ "tui-textarea-2",
+ "two-face",
+ "unicode-width",
 ]
 
 [[package]]

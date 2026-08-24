@@ -68,12 +68,15 @@ The report is honest about the saving: skim exemplars still get read, so documen
 
 | path | what |
 |---|---|
-| `crates/engine` | the backend: git io, diff parsing, byte-exact applier, shape classes, language registry, grouping, ordering, stack renderer, invariants, review sessions — plus `engine::schema` (the frozen JSON contract, serde-only) and `engine::llm` (the backend abstraction, tools denied) |
-| `crates/cli` | the `dfr` / `differential` renderer binary — presentation only |
+| `crates/engine` | the backend: git io, diff parsing, byte-exact applier, shape classes, language registry, grouping, ordering, invariants, review sessions — plus `engine::schema` (the frozen JSON contract, serde-only) and `engine::llm` (the backend abstraction, tools denied) |
+| `crates/stack` | the shadow-branch renderer — the diff as a synthetic commit stack |
+| `crates/tui` | the terminal reviewer (vendored tuicr/lumen pieces live here) |
+| `crates/cli` | the application layer: the `dfr` / `differential` binaries, argument parsing and dispatch only |
+| `crates/testutil` | shared test fixtures, `publish = false` |
 
-Dependency direction is strict: `cli → engine`. The `engine::schema` module remains the
-product boundary — serde types only, no engine internals — as a reviewed module
-discipline rather than a crate boundary (ADR 0008, 0018).
+Dependency direction is strict: `cli → {tui, stack} → engine`. The `engine::schema`
+module remains the product boundary — serde types only, no engine internals — as a
+reviewed module discipline rather than a crate boundary (ADR 0008, 0018).
 All git access shells out to real git, plumbing commands only — the byte-exactness
 guarantees were validated against real git output and nothing else (ADR 0002, 0011).
 

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/engine", "crates/stack", "crates/cli", "crates/testutil"]
+members = ["crates/engine", "crates/stack", "crates/tui", "crates/cli", "crates/testutil"]
 
 [workspace.package]
 version = "0.2.0"
@@ -13,6 +13,7 @@ repository = "https://github.com/gogoout/differential"
 # [workspace.package].version when cutting a release.
 differential-engine = { path = "crates/engine", version = "0.2.0" }
 differential-stack = { path = "crates/stack", version = "0.2.0" }
+differential-tui = { path = "crates/tui", version = "0.2.0" }
 # Test-only, publish = false: path-only dev-dependency, stripped on publish.
 differential-testutil = { path = "crates/testutil" }
 serde = { version = "1", features = ["derive"] }

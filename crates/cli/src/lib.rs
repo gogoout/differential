@@ -2,8 +2,6 @@
 //! surfaces over the engine's document, per ADR 0014. The engine stays the
 //! single producer; this crate is argument parsing and presentation only.
 
-pub mod tui;
-
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -199,16 +197,16 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             // rules on uncommitted sources).
             let (base, head, kind, head_spec, identity_base) = match resolved {
                 Some((base, head, kind)) => (base, head, kind, head_spec_of(&common_range), None),
-                None => match tui::picker::pick_source(&repo)? {
+                None => match differential_tui::picker::pick_source(&repo)? {
                     None => return Ok(ExitCode::SUCCESS),
-                    Some(tui::picker::PickedSource::Commit { sha }) => (
+                    Some(differential_tui::picker::PickedSource::Commit { sha }) => (
                         sha,
                         "HEAD".to_string(),
                         differential_engine::schema::SourceKind::Range,
                         "HEAD".to_string(),
                         None,
                     ),
-                    Some(tui::picker::PickedSource::Staged) => {
+                    Some(differential_tui::picker::PickedSource::Staged) => {
                         let head_sha = repo.rev_parse("HEAD")?;
                         let index = differential_engine::worktree::index_tree(&repo)?;
                         (
@@ -219,7 +217,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                             Some(head_sha),
                         )
                     }
-                    Some(tui::picker::PickedSource::Worktree) => {
+                    Some(differential_tui::picker::PickedSource::Worktree) => {
                         let head_sha = repo.rev_parse("HEAD")?;
                         let index = differential_engine::worktree::index_tree(&repo)?;
                         let wt = differential_engine::worktree::worktree_tree(&repo)?;
@@ -237,7 +235,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             // Identity: HEAD sha + stable literal for uncommitted sources
             // (the synthesized trees churn per edit); resolved base otherwise.
             let review_base = identity_base.unwrap_or_else(|| out.base.clone());
-            tui::run_review(&repo, out, &review_base, &head_spec)?;
+            differential_tui::run_review(&repo, out, &review_base, &head_spec)?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Findings { no_cache, .. } => {

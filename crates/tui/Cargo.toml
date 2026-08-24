@@ -1,0 +1,26 @@
+[package]
+name = "differential-tui"
+description = "Terminal reviewer for differential reading plans (the dfr review surface)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+differential-engine = { workspace = true }
+anyhow = { workspace = true }
+ratatui = "0.30"
+crossterm = "0.29"
+similar = { version = "2", features = ["unicode", "inline"] }
+syntect = "5"
+two-face = { version = "0.5", default-features = false, features = ["syntect-default-fancy"] }
+unicode-width = "0.2"
+tui-textarea = { package = "tui-textarea-2", version = "0.13" }
+arboard = "3"
+
+[dev-dependencies]
+differential-testutil = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -522,7 +522,7 @@ mod tests {
         // the trailing \n that syntect includes). Short content gets padded
         // by truncate_or_pad_spans; the result must have exactly `width`
         // characters so the side-by-side separator stays aligned.
-        let highlighter = crate::tui::vendor::syntax::SyntaxHighlighter::default();
+        let highlighter = crate::vendor::syntax::SyntaxHighlighter::default();
         let lines = vec!["let x = 1;".to_string()];
         let highlighted = highlighter
             .highlight_file_lines(std::path::Path::new("test.rs"), &lines)

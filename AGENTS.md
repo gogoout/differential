@@ -47,9 +47,10 @@ code must change together — or the change is wrong.
   (ADR 0015). The real-corpus parity test's exact class count is the guard.
 - **Git access shells out to real git, plumbing commands only** (ADR 0002, 0011). Bytes
   in/out; UTF-8 only at display boundaries.
-- **The core is a library** (ADR 0014). Binaries belong to renderers: `dfr` carries the
-  render surfaces (`stack`, `check`, later the TUI) and stays presentation-only — pipeline
-  logic lives in the engine.
+- **The core is a library** (ADR 0014, 0018). Renderers are library crates
+  (`crates/stack`, `crates/tui`); `crates/cli` is the application layer owning the
+  `dfr`/`differential` binaries — presentation and dispatch only, pipeline logic lives
+  in the engine.
 
 ## Process
 
