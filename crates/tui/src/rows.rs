@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use differential_engine::gitio::Repo;
 use differential_engine::review_state::Finding;
-use differential_schema as schema;
+use differential_engine::schema;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -295,7 +295,7 @@ pub fn build_file_rows(
 fn header_rows(ctx: &GroupContext, rows: &mut Vec<Row>) {
     let g = ctx.group;
     let tier = match g.effort {
-        schema::Effort::Close => "close",
+        schema::Effort::Focus => "focus",
         schema::Effort::Skim => "skim",
         schema::Effort::Noise => "noise",
     };

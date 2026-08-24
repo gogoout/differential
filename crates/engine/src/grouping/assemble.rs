@@ -1,10 +1,10 @@
 //! Turn audited work groups into the document's `groups`, `reading_plan` and
-//! grouping-audit fields. Ordering here is presentation only (close → skim →
+//! grouping-audit fields. Ordering here is presentation only (focus → skim →
 //! noise → back-fill); the foundation-first DAG is the ordering stage's job.
 
 use std::collections::HashMap;
 
-use differential_schema as schema;
+use crate::schema;
 
 use super::{Audited, ClassInfo, WorkGroup};
 
@@ -18,8 +18,8 @@ pub fn assemble(
     let hunks_of =
         |g: &WorkGroup| -> usize { g.class_ids.iter().map(|c| by_id[c.as_str()].n_hunks).sum() };
 
-    // close (model order, gate group last) → skim (desc hunks) → noise → back-fill.
-    let mut close: Vec<&WorkGroup> = Vec::new();
+    // focus (model order, gate group last) → skim (desc hunks) → noise → back-fill.
+    let mut focus: Vec<&WorkGroup> = Vec::new();
     let mut skim: Vec<&WorkGroup> = Vec::new();
     let mut backfill: Vec<&WorkGroup> = Vec::new();
     for g in &audited.groups {
@@ -28,7 +28,7 @@ pub fn assemble(
         } else if g.skim {
             skim.push(g);
         } else {
-            close.push(g);
+            focus.push(g);
         }
     }
     skim.sort_by_key(|g| usize::MAX - hunks_of(g));
@@ -46,7 +46,7 @@ pub fn assemble(
         let n_hunks = hunks_of(g);
         let n_classes = g.class_ids.len();
         match effort {
-            schema::Effort::Close => {
+            schema::Effort::Focus => {
                 read_hunks += n_hunks;
                 plan.push(step(&id, schema::ReadAction::Read));
             }
@@ -82,8 +82,8 @@ pub fn assemble(
         });
     };
 
-    for g in close {
-        push(g, schema::Effort::Close, &mut groups, &mut plan);
+    for g in focus {
+        push(g, schema::Effort::Focus, &mut groups, &mut plan);
     }
     for g in skim {
         push(g, schema::Effort::Skim, &mut groups, &mut plan);
@@ -104,7 +104,7 @@ pub fn assemble(
         push(&noise_group, schema::Effort::Noise, &mut groups, &mut plan);
     }
     for g in backfill {
-        push(g, schema::Effort::Close, &mut groups, &mut plan);
+        push(g, schema::Effort::Focus, &mut groups, &mut plan);
     }
 
     let mut out = doc.clone();

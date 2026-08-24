@@ -1,16 +1,14 @@
 //! Shadow-branch renderer tests: build the stack in real temp repos with a
 //! fake LLM backend, then verify it with git itself.
 
-mod common;
-
-use common::{FakeBackend, TestRepo, json_group};
 use differential_engine::config::Config;
 use differential_engine::grouping::GroupingOptions;
 use differential_engine::lang::LanguageRegistry;
-use differential_engine::pipeline::run_stack_pipeline;
-use differential_engine::stack::{StackOptions, StackResult};
-use differential_llm::LlmBackend;
-use differential_schema::SourceKind;
+use differential_engine::llm::LlmBackend;
+use differential_engine::schema::SourceKind;
+use differential_stack::run_stack_pipeline;
+use differential_stack::{StackOptions, StackResult};
+use differential_testutil::{FakeBackend, TestRepo, json_group};
 
 fn stacked(r: &TestRepo, base: &str, head: &str, backend: &dyn LlmBackend) -> StackResult {
     let out = run_stack_pipeline(
@@ -52,24 +50,24 @@ fn two_class_repo() -> (TestRepo, String, String) {
     (r, base, head)
 }
 
-fn close_skim_backend() -> FakeBackend {
+fn focus_skim_backend() -> FakeBackend {
     FakeBackend::new("fake", |ids| {
         format!(
             r#"{{"groups": [{}, {}]}}"#,
-            json_group("Behaviour change", "close", &[&ids[1]]),
+            json_group("Behaviour change", "focus", &[&ids[1]]),
             json_group("Helper rename", "skim", &[&ids[0]])
         )
     })
 }
 
 #[test]
-fn stack_renders_close_then_skim_split_and_lands_on_the_ref() {
+fn stack_renders_focus_then_skim_split_and_lands_on_the_ref() {
     let (r, base, head) = two_class_repo();
-    let s = stacked(&r, &base, &head, &close_skim_backend());
+    let s = stacked(&r, &base, &head, &focus_skim_backend());
 
     let subjects: Vec<&str> = s.commits.iter().map(|c| c.subject.as_str()).collect();
     assert_eq!(subjects.len(), 3);
-    assert_eq!(subjects[0], "[close] Behaviour change");
+    assert_eq!(subjects[0], "[focus] Behaviour change");
     assert!(subjects[1].starts_with("[skim 1/2] Helper rename — 1 exemplars"));
     assert!(subjects[2].starts_with("[skim 2/2] Helper rename — 2 further hunks"));
     assert_eq!(s.hunks_carried, 4);
@@ -87,7 +85,7 @@ fn stack_renders_close_then_skim_split_and_lands_on_the_ref() {
     let log = r.git(&["log", "--format=%s", &format!("{base}..{tip}")]);
     let lines: Vec<&str> = log.lines().collect();
     assert_eq!(lines.len(), 3);
-    assert!(lines[2].starts_with("[close]"));
+    assert!(lines[2].starts_with("[focus]"));
     assert!(lines[0].starts_with("[skim 2/2]"));
 
     // Trailer on every commit.
@@ -140,7 +138,7 @@ fn zero_hunk_files_ride_the_meta_commit() {
     let backend = FakeBackend::new("fake", |ids| {
         format!(
             r#"{{"groups": [{}]}}"#,
-            json_group("Code", "close", &[&ids[0]])
+            json_group("Code", "focus", &[&ids[0]])
         )
     });
     let s = stacked(&r, &base, &head, &backend);
@@ -158,7 +156,7 @@ fn backfilled_group_renders_as_unclassified() {
     let backend = FakeBackend::new("fake", |ids| {
         format!(
             r#"{{"groups": [{}]}}"#,
-            json_group("Only one", "close", &[&ids[1]])
+            json_group("Only one", "focus", &[&ids[1]])
         )
     });
     let s = stacked(&r, &base, &head, &backend);
@@ -182,7 +180,7 @@ fn deletions_and_noise_render_and_reconstruct() {
         let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
         format!(
             r#"{{"groups": [{}]}}"#,
-            json_group("Everything", "close", &refs)
+            json_group("Everything", "focus", &refs)
         )
     });
     let s = stacked(&r, &base, &head, &backend);
@@ -219,7 +217,7 @@ fn submodule_bump_is_carried_as_a_gitlink() {
 
     let backend = FakeBackend::new("fake", |ids| {
         let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
-        format!(r#"{{"groups": [{}]}}"#, json_group("All", "close", &refs))
+        format!(r#"{{"groups": [{}]}}"#, json_group("All", "focus", &refs))
     });
     let s = stacked(&r, &base, &head, &backend);
     let tip_tree = r.git(&["rev-parse", &format!("{}^{{tree}}", s.tip)]);
@@ -230,7 +228,7 @@ fn submodule_bump_is_carried_as_a_gitlink() {
 #[test]
 fn custom_ref_name_is_honoured_and_rerun_is_idempotent() {
     let (r, base, head) = two_class_repo();
-    let backend = close_skim_backend();
+    let backend = focus_skim_backend();
     let out = run_stack_pipeline(
         &r.repo(),
         &base,
@@ -252,6 +250,6 @@ fn custom_ref_name_is_honoured_and_rerun_is_idempotent() {
     assert_eq!(r.git(&["rev-parse", "refs/review/custom/stack"]), s.tip);
 
     // Re-running just moves the ref to a fresh, equally valid stack.
-    let s2 = stacked(&r, &base, &head, &close_skim_backend());
+    let s2 = stacked(&r, &base, &head, &focus_skim_backend());
     assert_eq!(s2.hunks_carried, s.hunks_carried);
 }

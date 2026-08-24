@@ -4,7 +4,7 @@
 //! Usage: cargo run -p differential-engine --example group -- \
 //!            [--repo <path>] [--config <path>] [--no-cache] [-o <file>] <base>..<head>
 //!
-//! Backend: [grouping].command from .differential.toml, or the default
+//! Backend: [grouping].command from ~/.config/differential/config.toml, or the default
 //! tools-denied claude invocation. Cache: <git-common-dir>/differential/cache/grouping.
 
 use std::path::{Path, PathBuf};
@@ -14,8 +14,8 @@ use differential_engine::config::Config;
 use differential_engine::gitio::Repo;
 use differential_engine::grouping::GroupingOptions;
 use differential_engine::lang::LanguageRegistry;
+use differential_engine::schema::Effort;
 use differential_engine::{resolve_range, run_grouped_pipeline};
-use differential_schema::Effort;
 
 fn main() -> ExitCode {
     let mut repo_dir: Option<PathBuf> = None;
@@ -46,7 +46,7 @@ fn main() -> ExitCode {
         Ok(r) => r,
         Err(e) => return usage_error(&e.to_string()),
     };
-    let config = match Config::load(repo.root(), config_path.as_deref()) {
+    let config = match Config::load(repo.root(), config_path.as_deref(), None) {
         Ok(c) => c,
         Err(e) => return usage_error(&e.to_string()),
     };
@@ -92,7 +92,7 @@ fn main() -> ExitCode {
 
     // Reading-plan summary, one line per group.
     if let Some(groups) = &doc.groups {
-        let class_hunks = |g: &differential_schema::Group| -> usize {
+        let class_hunks = |g: &differential_engine::schema::Group| -> usize {
             g.class_ids
                 .iter()
                 .map(|cid| {
@@ -105,7 +105,7 @@ fn main() -> ExitCode {
         };
         for g in groups {
             let tier = match g.effort {
-                Effort::Close => "close",
+                Effort::Focus => "focus",
                 Effort::Skim => "skim ",
                 Effort::Noise => "noise",
             };

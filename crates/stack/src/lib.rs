@@ -17,14 +17,14 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
 
-use differential_schema as schema;
+use differential_engine::schema;
 
-use crate::EngineError;
-use crate::apply::apply_hunks;
-use crate::gitio::Repo;
-use crate::invariants::dumb_hunk_count;
-use crate::model::{DiffView, Disposition};
-use crate::tree::{index_entry, removal_entry};
+use differential_engine::EngineError;
+use differential_engine::apply::apply_hunks;
+use differential_engine::gitio::Repo;
+use differential_engine::invariants::dumb_hunk_count;
+use differential_engine::model::{DiffView, Disposition};
+use differential_engine::tree::{index_entry, removal_entry};
 
 #[derive(Default)]
 pub struct StackOptions<'a> {
@@ -186,14 +186,14 @@ fn commit_plan(doc: &schema::PlanDocument) -> Result<Vec<PlannedCommit>, EngineE
         let is_backfill = backfilled && gi == groups.len() - 1;
 
         match g.effort {
-            schema::Effort::Close if is_backfill => plan.push(PlannedCommit {
+            schema::Effort::Focus if is_backfill => plan.push(PlannedCommit {
                 subject: format!("[unclassified] {} hunks carried by no group", all.len()),
                 body,
                 hunks: all,
                 meta_files: Vec::new(),
             }),
-            schema::Effort::Close => plan.push(PlannedCommit {
-                subject: format!("[close] {}", g.label),
+            schema::Effort::Focus => plan.push(PlannedCommit {
+                subject: format!("[focus] {}", g.label),
                 body,
                 hunks: all,
                 meta_files: Vec::new(),
@@ -377,7 +377,7 @@ fn stage_file(
     if let std::collections::hash_map::Entry::Vacant(e) = base_blobs.entry(fi) {
         e.insert(repo.blob(base, &f.path)?);
     }
-    let hunks: Vec<&crate::model::Hunk> = applied
+    let hunks: Vec<&differential_engine::model::Hunk> = applied
         .get(&fi)
         .map(|v| v.iter().map(|&h| &view.hunks[h]).collect())
         .unwrap_or_default();
@@ -387,9 +387,47 @@ fn stage_file(
     Ok(index_entry(mode, &oid, &f.path))
 }
 
-fn missing_mode(f: &crate::model::FileChange) -> EngineError {
+fn missing_mode(f: &differential_engine::model::FileChange) -> EngineError {
     EngineError::Invariant(format!(
         "no mode recorded for {}",
         String::from_utf8_lossy(&f.path)
     ))
+}
+
+/// Output of the full stack pipeline.
+pub struct StackOutput {
+    pub pipeline: differential_engine::PipelineOutput,
+    /// `None` iff invariants failed upstream (no document, nothing rendered).
+    pub stack: Option<StackResult>,
+}
+
+/// Full production path for the shadow-branch renderer: grouped pipeline
+/// (core -> group -> order, in the engine) -> commit stack.
+// Mirrors run_grouped_pipeline plus the stack options; bundling the two option
+// structs further would be indirection for the lint's sake.
+#[allow(clippy::too_many_arguments)]
+pub fn run_stack_pipeline(
+    repo: &Repo,
+    base_rev: &str,
+    head_rev: &str,
+    kind: schema::SourceKind,
+    config: &differential_engine::config::Config,
+    langs: &differential_engine::lang::LanguageRegistry,
+    grouping: &differential_engine::grouping::GroupingOptions,
+    stack: &StackOptions,
+) -> Result<StackOutput, EngineError> {
+    let out = differential_engine::run_grouped_pipeline(
+        repo, base_rev, head_rev, kind, config, langs, grouping,
+    )?;
+    let Some(doc) = &out.document else {
+        return Ok(StackOutput {
+            pipeline: out,
+            stack: None,
+        });
+    };
+    let result = build_stack(repo, doc, &out.view, stack)?;
+    Ok(StackOutput {
+        pipeline: out,
+        stack: Some(result),
+    })
 }

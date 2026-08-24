@@ -13,7 +13,7 @@ code must change together — or the change is wrong.
    would want to make.
 
 2. **Prefer the simple solution. No new abstractions without a demonstrated reason.**
-   The abstractions that exist (`Language`, `LlmBackend`, the schema crate boundary) were
+   The abstractions that exist (`Language`, `LlmBackend`, the `engine::schema` boundary) were
    author decisions with recorded rationale. A new trait, layer, or indirection needs the
    same bar: a concrete second consumer or a recorded decision — not "we might need it".
    If you feel a "manager", "helper", or "context" struct forming, stop.
@@ -41,15 +41,16 @@ code must change together — or the change is wrong.
 - **The invariants stay.** Every one caught a real bug (`spec/invariants.md`). Never weaken,
   skip, or tautologise them; the recount must never share code with the parser.
 - **The schema is frozen.** Additive changes only; anything breaking bumps
-  `schema_version`. Consumer conveniences must not leak into `crates/schema` (ADR 0008).
+  `schema_version`. Consumer conveniences must not leak into `engine::schema` (ADR 0008, 0018).
 - **The generic normaliser is frozen.** `lang/generic.rs` is pinned to the validated
   prototype for hash parity; improvements land as language plugins with their own ids
   (ADR 0015). The real-corpus parity test's exact class count is the guard.
 - **Git access shells out to real git, plumbing commands only** (ADR 0002, 0011). Bytes
   in/out; UTF-8 only at display boundaries.
-- **The core is a library** (ADR 0014). Binaries belong to renderers: `dfr` carries the
-  render surfaces (`stack`, `check`, later the TUI) and stays presentation-only — pipeline
-  logic lives in the engine.
+- **The core is a library** (ADR 0014, 0018). Renderers are library crates
+  (`crates/stack`, `crates/tui`); `crates/cli` is the application layer owning the
+  `dfr`/`differential` binaries — presentation and dispatch only, pipeline logic lives
+  in the engine.
 
 ## Process
 
@@ -61,7 +62,7 @@ code must change together — or the change is wrong.
   build on every PR and on main after merge — the done-criteria below are exactly what CI
   checks, so run them before pushing.
 - Releases are tag-driven: bump `[workspace.package].version` AND the version fields on
-  the three internal path deps in `[workspace.dependencies]` in a PR, merge, then the
+  the internal path deps in `[workspace.dependencies]` in a PR, merge, then the
   author tags the merge commit (`git tag vX.Y.Z && git push origin vX.Y.Z`). The Release
   workflow (`.github/workflows/publish.yml`) then generates the changelog from commits
   since the previous tag (git-cliff, config in `cliff.toml` — grouped by the

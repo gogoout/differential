@@ -18,14 +18,14 @@ use crate::model::{DiffView, Disposition, Hunk};
 pub(crate) const ZERO_OID: &str = "0000000000000000000000000000000000000000";
 
 /// One `update-index -z --index-info` record: `<mode> <oid>\t<path>`.
-pub(crate) fn index_entry(mode: &str, oid: &str, path: &[u8]) -> Vec<u8> {
+pub fn index_entry(mode: &str, oid: &str, path: &[u8]) -> Vec<u8> {
     let mut line = format!("{mode} {oid}\t").into_bytes();
     line.extend_from_slice(path);
     line
 }
 
 /// Removal record (mode 0).
-pub(crate) fn removal_entry(path: &[u8]) -> Vec<u8> {
+pub fn removal_entry(path: &[u8]) -> Vec<u8> {
     index_entry("0", ZERO_OID, path)
 }
 

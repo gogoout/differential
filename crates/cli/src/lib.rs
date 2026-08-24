@@ -2,8 +2,6 @@
 //! surfaces over the engine's document, per ADR 0014. The engine stays the
 //! single producer; this crate is argument parsing and presentation only.
 
-pub mod tui;
-
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -14,8 +12,8 @@ use differential_engine::gitio::Repo;
 use differential_engine::grouping::GroupingOptions;
 use differential_engine::invariants::InvariantReport;
 use differential_engine::lang::LanguageRegistry;
-use differential_engine::stack::StackOptions;
-use differential_engine::{resolve_range, run_pipeline, run_stack_pipeline};
+use differential_engine::{resolve_range, run_pipeline};
+use differential_stack::{StackOptions, run_stack_pipeline};
 
 /// Grouped, ordered reading plans for large diffs.
 #[derive(Parser)]
@@ -80,9 +78,12 @@ struct Common {
     /// Repository to operate on (defaults to the one containing the cwd).
     #[arg(long)]
     repo: Option<PathBuf>,
-    /// Config file (defaults to <repo-root>/.differential.toml).
+    /// Repo config file (defaults to <repo-root>/.differential.toml).
     #[arg(long)]
     config: Option<PathBuf>,
+    /// User config file (defaults to ~/.config/differential/config.toml).
+    #[arg(long)]
+    user_config: Option<PathBuf>,
     /// `<base>..<head>`, `<a>...<b>` (merge-base), or two revs. `review`
     /// without a range opens a picker (recent commits / staged / worktree).
     #[arg(num_args = 0..=2)]
@@ -112,7 +113,11 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Ok(r) => r,
         Err(e) => return usage_error(&e.to_string()),
     };
-    let config = match Config::load(repo.root(), common.config.as_deref()) {
+    let config = match Config::load(
+        repo.root(),
+        common.config.as_deref(),
+        common.user_config.as_deref(),
+    ) {
         Ok(c) => c,
         Err(e) => return usage_error(&e.to_string()),
     };
@@ -199,34 +204,34 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             // rules on uncommitted sources).
             let (base, head, kind, head_spec, identity_base) = match resolved {
                 Some((base, head, kind)) => (base, head, kind, head_spec_of(&common_range), None),
-                None => match tui::picker::pick_source(&repo)? {
+                None => match differential_tui::picker::pick_source(&repo)? {
                     None => return Ok(ExitCode::SUCCESS),
-                    Some(tui::picker::PickedSource::Commit { sha }) => (
+                    Some(differential_tui::picker::PickedSource::Commit { sha }) => (
                         sha,
                         "HEAD".to_string(),
-                        differential_schema::SourceKind::Range,
+                        differential_engine::schema::SourceKind::Range,
                         "HEAD".to_string(),
                         None,
                     ),
-                    Some(tui::picker::PickedSource::Staged) => {
+                    Some(differential_tui::picker::PickedSource::Staged) => {
                         let head_sha = repo.rev_parse("HEAD")?;
                         let index = differential_engine::worktree::index_tree(&repo)?;
                         (
                             head_sha.clone(),
                             index,
-                            differential_schema::SourceKind::Staged,
+                            differential_engine::schema::SourceKind::Staged,
                             "INDEX".to_string(),
                             Some(head_sha),
                         )
                     }
-                    Some(tui::picker::PickedSource::Worktree) => {
+                    Some(differential_tui::picker::PickedSource::Worktree) => {
                         let head_sha = repo.rev_parse("HEAD")?;
                         let index = differential_engine::worktree::index_tree(&repo)?;
                         let wt = differential_engine::worktree::worktree_tree(&repo)?;
                         (
                             index,
                             wt,
-                            differential_schema::SourceKind::Worktree,
+                            differential_engine::schema::SourceKind::Worktree,
                             "WORKTREE".to_string(),
                             Some(head_sha),
                         )
@@ -237,7 +242,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             // Identity: HEAD sha + stable literal for uncommitted sources
             // (the synthesized trees churn per edit); resolved base otherwise.
             let review_base = identity_base.unwrap_or_else(|| out.base.clone());
-            tui::run_review(&repo, out, &review_base, &head_spec)?;
+            differential_tui::run_review(&repo, out, &review_base, &head_spec)?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Findings { no_cache, .. } => {
@@ -326,7 +331,7 @@ fn grouped(
     repo: &Repo,
     base: &str,
     head: &str,
-    kind: differential_schema::SourceKind,
+    kind: differential_engine::schema::SourceKind,
     config: &Config,
     langs: &LanguageRegistry,
     no_cache: bool,

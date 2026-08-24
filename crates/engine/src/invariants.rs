@@ -147,7 +147,7 @@ pub fn check_all(
 
 /// The deliberately dumb `@@` counter. Must never share code with `parse.rs` —
 /// a shared bug would make invariant 4 circular.
-pub(crate) fn dumb_hunk_count(patch: &[u8]) -> usize {
+pub fn dumb_hunk_count(patch: &[u8]) -> usize {
     patch
         .split(|&b| b == b'\n')
         .filter(|l| l.starts_with(b"@@ -"))

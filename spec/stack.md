@@ -1,7 +1,7 @@
 # The shadow-branch renderer
 
 The grouped, ordered document rewritten as a **synthetic commit stack**, reviewed natively
-in an IDE or `tig`. `git log --oneline` over the stack IS the reading plan: close groups
+in an IDE or `tig`. `git log --oneline` over the stack IS the reading plan: focus groups
 first (foundation-first), skim exemplars split from their skippable remainders, generated
 noise folded, the audit back-fill trailing. Arguably the primary artefact of the whole
 tool.
@@ -17,7 +17,7 @@ One commit per group in rank order:
 
 | subject | contents |
 |---|---|
-| `[close] {label}` | every hunk of the group |
+| `[focus] {label}` | every hunk of the group |
 | `[skim 1/2] {label} — k exemplars` | one hunk per shape class (the class exemplar) |
 | `[skim 2/2] {label} — n−k further hunks, same shapes` | the remainder — skippable on this subject line alone |
 | `[skim] {label} — k exemplars` | skim group whose classes are all singletons |

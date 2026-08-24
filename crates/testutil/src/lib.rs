@@ -1,6 +1,6 @@
-//! Shared test helper: hermetic temporary git repositories.
-// Each test binary uses a different subset of these helpers.
-#![allow(dead_code)]
+//! Shared test support (publish = false): hermetic temporary git
+//! repositories, the programmable fake LLM backend, and prompt helpers.
+//! Dev-dependency of the engine and renderer crates — never published.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -9,12 +9,18 @@ use differential_engine::config::Config;
 use differential_engine::gitio::Repo;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::{PipelineOutput, run_pipeline};
-use differential_schema::SourceKind;
+use differential_engine::schema::SourceKind;
 use tempfile::TempDir;
 
 pub struct TestRepo {
     pub _tmp: TempDir,
     pub root: PathBuf,
+}
+
+impl Default for TestRepo {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TestRepo {
@@ -91,7 +97,7 @@ pub fn assert_all_ok(out: &PipelineOutput) {
     );
 }
 
-pub fn doc(out: &PipelineOutput) -> &differential_schema::PlanDocument {
+pub fn doc(out: &PipelineOutput) -> &differential_engine::schema::PlanDocument {
     out.document.as_ref().unwrap()
 }
 
@@ -101,9 +107,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use differential_engine::grouping::GroupingOptions;
+use differential_engine::llm::{LlmBackend, LlmError};
 use differential_engine::pipeline::run_grouped_pipeline;
-use differential_llm::{LlmBackend, LlmError};
-use differential_schema::PlanDocument;
+use differential_engine::schema::PlanDocument;
 
 pub type Responder = Box<dyn Fn(&[String]) -> String + Send + Sync>;
 

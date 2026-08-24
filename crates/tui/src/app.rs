@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use differential_engine::ReviewSession;
 use differential_engine::review_state::FindingStatus;
-use differential_schema as schema;
+use differential_engine::schema;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -783,7 +783,7 @@ impl App {
                     let done = g.class_keys.iter().all(|k| self.session.is_reviewed(k))
                         && !g.class_keys.is_empty();
                     let tier = match g.effort {
-                        schema::Effort::Close => "C",
+                        schema::Effort::Focus => "F",
                         schema::Effort::Skim => "S",
                         schema::Effort::Noise => "N",
                     };

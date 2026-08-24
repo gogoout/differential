@@ -24,7 +24,7 @@ no-SCIP note in ADR 0015.
 
 ## Reorder
 
-Only the **contiguous close prefix** is reordered (skim/noise/back-fill placement is fixed
+Only the **contiguous focus prefix** is reordered (skim/noise/back-fill placement is fixed
 by the grouping stage; the audit back-fill group always stays trailing). Kahn's topological
 sort, foundation-first; among ready groups the tie-break is descending hunk count, then
 original model order. A dependency cycle (heuristic noise) is broken deterministically on
@@ -32,9 +32,9 @@ the largest remaining group — the recorded `depends_on` edges keep the truth.
 
 ## Roles
 
-- close group that at least one other group depends on → `foundation`
-- close group with only outgoing dependencies → `consumer`
-- skim → `mechanical`; the noise group keeps `noise`; isolated close groups and the
+- focus group that at least one other group depends on → `foundation`
+- focus group with only outgoing dependencies → `consumer`
+- skim → `mechanical`; the noise group keeps `noise`; isolated focus groups and the
   back-fill stay `null`.
 
 `rank` is rewritten to the final order; group ids are stable; the reading plan is

@@ -2,88 +2,30 @@
 //! test. No real terminal, no real LLM.
 
 use std::path::Path;
-use std::process::Command;
-use std::sync::Mutex;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use differential::tui::app::{App, Effect, Focus, Mode};
-use differential::tui::rows::{RowFactory, RowKind};
 use differential_engine::ReviewSession;
 use differential_engine::config::Config;
 use differential_engine::gitio::Repo;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::run_grouped_pipeline;
-use differential_llm::{LlmBackend, LlmError};
-use differential_schema::SourceKind;
-use tempfile::TempDir;
+use differential_engine::schema::SourceKind;
+use differential_testutil::{FakeBackend, TestRepo, json_group};
+use differential_tui::app::{App, Effect, Focus, Mode};
+use differential_tui::rows::{RowFactory, RowKind};
 
-// Minimal local copies of the engine's test helpers (test modules are not
-// importable across crates).
-struct TestRepo {
-    _tmp: TempDir,
-    root: std::path::PathBuf,
-}
-
-impl TestRepo {
-    fn new() -> Self {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path().to_path_buf();
-        let r = TestRepo { _tmp: tmp, root };
-        r.git(&["init", "-q", "-b", "main"]);
-        r
-    }
-    fn git(&self, args: &[&str]) -> String {
-        let out = Command::new("git")
-            .args(["-c", "user.name=test", "-c", "user.email=t@example.invalid"])
-            .args(args)
-            .current_dir(&self.root)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git {args:?} failed");
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    }
-    fn write(&self, path: &str, content: &str) {
-        let p = self.root.join(path);
-        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(p, content).unwrap();
-    }
-    fn commit_all(&self, msg: &str) -> String {
-        self.git(&["add", "-A"]);
-        self.git(&["commit", "-q", "-m", msg]);
-        self.git(&["rev-parse", "HEAD"])
-    }
-}
-
-struct FakeBackend(Mutex<String>);
-impl LlmBackend for FakeBackend {
-    fn name(&self) -> &str {
-        "fake"
-    }
-    fn complete(&self, prompt: &str) -> Result<String, LlmError> {
-        // First-listed class (the largest) becomes the skim sweep; the rest
-        // are close work — so the skim group has a foldable remainder.
-        let ids: Vec<&str> = prompt
-            .lines()
-            .filter_map(|l| {
-                let rest = l.strip_prefix('[')?;
-                let id = &rest[..rest.find(']')?];
-                id.starts_with('C').then_some(id)
-            })
-            .collect();
-        let skim = ids.first().copied().unwrap_or("C0");
-        let closes: Vec<String> = ids[1..].iter().map(|c| format!("\"{c}\"")).collect();
-        let mut groups = vec![format!(
-            r#"{{"label": "Skim sweep", "description": "d", "classes": ["{skim}"], "effort": "skim", "reason": "r"}}"#
-        )];
-        if !closes.is_empty() {
-            groups.push(format!(
-                r#"{{"label": "Close work", "description": "d", "classes": [{}], "effort": "close", "reason": "r"}}"#,
-                closes.join(", ")
-            ));
+/// First-listed class (the largest) becomes the skim sweep; the rest are
+/// focus work — so the skim group has a foldable remainder.
+fn skim_first_backend() -> FakeBackend {
+    FakeBackend::new("fake", |ids| {
+        let skim = ids.first().map(String::as_str).unwrap_or("C0");
+        let rest: Vec<&str> = ids.iter().skip(1).map(String::as_str).collect();
+        let mut groups = vec![json_group("Skim sweep", "skim", &[skim])];
+        if !rest.is_empty() {
+            groups.push(json_group("Focus work", "focus", &rest));
         }
-        *self.0.lock().unwrap() = prompt.to_string();
-        Ok(format!(r#"{{"groups": [{}]}}"#, groups.join(", ")))
-    }
+        format!(r#"{{"groups": [{}]}}"#, groups.join(", "))
+    })
 }
 
 /// Open an App over HEAD~1..HEAD of `r`, with the review store inside the
@@ -92,7 +34,7 @@ fn open_app(r: &TestRepo) -> App {
     let repo = Repo::open(Path::new(&r.root)).unwrap();
     let base = r.git(&["rev-parse", "HEAD~1"]);
     let head = r.git(&["rev-parse", "HEAD"]);
-    let backend = FakeBackend(Mutex::new(String::new()));
+    let backend = skim_first_backend();
     let out = run_grouped_pipeline(
         &repo,
         &base,
@@ -119,19 +61,19 @@ fn open_app(r: &TestRepo) -> App {
 /// Repo with one behavioural change + a 3-file repeated edit (skim material).
 fn make_app() -> (TestRepo, App) {
     let r = TestRepo::new();
-    r.write("src/main.txt", "fn main() { run_slowly() }\n");
+    r.write("src/main.txt", b"fn main() { run_slowly() }\n");
     for n in ["a", "b", "c"] {
         r.write(
             &format!("src/{n}.txt"),
-            "use old_helper_name;\nother content here\n",
+            b"use old_helper_name;\nother content here\n",
         );
     }
     r.commit_all("base");
-    r.write("src/main.txt", "fn main() { run_with_retries(3) }\n");
+    r.write("src/main.txt", b"fn main() { run_with_retries(3) }\n");
     for n in ["a", "b", "c"] {
         r.write(
             &format!("src/{n}.txt"),
-            "use new_helper_name;\nother content here\n",
+            b"use new_helper_name;\nother content here\n",
         );
     }
     r.commit_all("head");
@@ -275,7 +217,7 @@ fn group_counts_files_and_line_totals() {
 
 #[test]
 fn file_view_lists_all_files_and_shares_review_marks() {
-    use differential::tui::app::ViewMode;
+    use differential_tui::app::ViewMode;
     let (r, mut app) = make_app();
     assert_eq!(app.view_mode, ViewMode::Groups);
 
@@ -316,12 +258,12 @@ fn file_view_shows_hunks_across_groups_with_labels() {
     let r = TestRepo::new();
     r.write(
         "src/dual.txt",
-        "first_region = old_alpha\npad1\npad2\npad3\npad4\npad5\nfn second() { call_old_api() }\n",
+        b"first_region = old_alpha\npad1\npad2\npad3\npad4\npad5\nfn second() { call_old_api() }\n",
     );
     r.commit_all("base");
     r.write(
         "src/dual.txt",
-        "first_region = new_beta_value\npad1\npad2\npad3\npad4\npad5\nfn second() { call_new_api(42) }\n",
+        b"first_region = new_beta_value\npad1\npad2\npad3\npad4\npad5\nfn second() { call_new_api(42) }\n",
     );
     r.commit_all("head");
     let mut app = open_app(&r);
@@ -341,7 +283,7 @@ fn file_view_shows_hunks_across_groups_with_labels() {
 
 #[test]
 fn file_view_resume_restores_view_and_file() {
-    use differential::tui::app::ViewMode;
+    use differential_tui::app::ViewMode;
     let (r, mut app) = make_app();
     app.handle_key(key('v'));
     app.handle_key(key('J')); // second file
@@ -356,7 +298,7 @@ fn file_view_resume_restores_view_and_file() {
 
 #[test]
 fn file_list_modal_opens_jumps_and_closes() {
-    use differential::tui::app::Mode;
+    use differential_tui::app::Mode;
     let (_r, mut app) = make_app();
     // Group 1 ("Close work" or the skim sweep) — use whichever is selected;
     // ensure some file headers exist in the current rows.
@@ -388,7 +330,7 @@ fn file_list_modal_opens_jumps_and_closes() {
 
 #[test]
 fn split_view_toggles_and_keeps_cursor_on_hunk() {
-    use differential::tui::rows::RowContent;
+    use differential_tui::rows::RowContent;
     let (r, mut app) = make_app();
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     assert!(
@@ -456,7 +398,7 @@ fn draw_smoke_test_renders_group_label() {
     terminal.draw(|f| app.draw(f)).unwrap();
     let buffer = terminal.backend().buffer().clone();
     let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-    assert!(content.contains("Close work"));
+    assert!(content.contains("Focus work"));
     assert!(content.contains("reading plan"));
     assert!(content.contains("classes reviewed"));
 }

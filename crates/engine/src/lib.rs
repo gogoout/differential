@@ -13,6 +13,7 @@ pub mod gitio;
 pub mod grouping;
 pub mod invariants;
 pub mod lang;
+pub mod llm;
 pub mod model;
 pub mod ordering;
 pub mod parse;
@@ -21,18 +22,14 @@ pub mod pipeline;
 pub mod rename_view;
 pub mod review_session;
 pub mod review_state;
+pub mod schema;
 pub mod shape;
-pub mod stack;
 pub mod tree;
 pub mod worktree;
 
 pub use grouping::GroupingOptions;
-pub use pipeline::{
-    PipelineOutput, StackOutput, resolve_range, run_grouped_pipeline, run_pipeline,
-    run_stack_pipeline,
-};
+pub use pipeline::{PipelineOutput, resolve_range, run_grouped_pipeline, run_pipeline};
 pub use review_session::ReviewSession;
-pub use stack::{StackOptions, StackResult};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -68,7 +65,7 @@ pub enum EngineError {
     Range(String),
 
     #[error("grouping backend failed: {0}")]
-    Llm(#[from] differential_llm::LlmError),
+    Llm(#[from] crate::llm::LlmError),
 
     #[error("grouping response unusable: {msg}; response sample: {sample}")]
     GroupingParse { msg: String, sample: String },
@@ -81,5 +78,5 @@ pub enum EngineError {
     },
 
     #[error("schema error: {0}")]
-    Schema(#[from] differential_schema::SchemaError),
+    Schema(#[from] crate::schema::SchemaError),
 }

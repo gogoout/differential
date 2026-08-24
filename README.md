@@ -4,7 +4,7 @@
 
 `differential` looks at a big merge request, works out which changes are the same edit
 repeated (a rename sweeping through imports, a signature change echoing through call
-sites), which are generated noise, and which few genuinely need close reading — then
+sites), which are generated noise, and which few genuinely need focus (line-by-line) reading — then
 renders the result as a **review commit stack** you read natively in your IDE, `tig`, or
 plain `git log`. Coverage is guaranteed structurally: every hunk is accounted for, audited,
 and byte-exactly reconstructible, so skipping what it says to skip is safe.
@@ -49,11 +49,11 @@ f00dfee  [unclassified] 1 hunks carried by no group
 0ddba11  [noise] Lockfiles and generated artefacts — folded, 21 hunks
 cafe007  [skim 2/2] Import swaps for the renamed module — 38 further hunks, same shapes
 beefed5  [skim 1/2] Import swaps for the renamed module — 28 exemplars
-add1c7e  [close] Rework retry handling in the client
-decade0  [close] Introduce the storage backend trait and its implementations
+add1c7e  [focus] Rework retry handling in the client
+decade0  [focus] Introduce the storage backend trait and its implementations
 ```
 
-Read bottom-up: `[close]` commits first (ordered so definitions precede their consumers),
+Read bottom-up: `[focus]` commits first (ordered so definitions precede their consumers),
 then one exemplar per shape in `[skim 1/2]`, and skip `[skim 2/2]` and `[noise]` on their
 subject lines alone — every hunk in them is a repeat of a shape you already verified.
 
@@ -83,7 +83,8 @@ plumbing and only lands a ref.
 
 ## Configuration (optional)
 
-Drop a `.differential.toml` at the repo root:
+Repo-level: drop a `.differential.toml` at the repo root (classification hints, shared
+by everyone reviewing the repo):
 
 ```toml
 [classify]
@@ -93,7 +94,12 @@ generated = ["**/__snapshots__/**", "migrations/**"]
 not_generated = ["important.lock"]
 # gitattributes names honoured as "generated" declarations.
 attributes = ["linguist-generated"]
+```
 
+User-level: which agent to run is your choice, not the repo's — put it in
+`~/.config/differential/config.toml`:
+
+```toml
 [grouping]
 # Any prompt-on-stdin / text-on-stdout command. Default shown.
 command = ["claude", "-p", "--output-format", "text", "--allowed-tools", ""]
@@ -140,9 +146,10 @@ cargo clippy --all-targets && cargo fmt
 ```
 
 Changes land via pull request; CI runs format, clippy, tests and a release build on every
-PR, and main is protected. Releases are cut manually: bump the workspace version, merge,
-and dispatch the Publish workflow, which runs `cargo publish --workspace`.
+PR, and main is protected. Releases are tag-driven: bump the workspace version in a PR,
+merge, then push a `vX.Y.Z` tag — the Release workflow generates the changelog into a
+GitHub Release and runs `cargo publish --workspace`.
 
 See [`AGENTS.md`](AGENTS.md) for working rules and
 [`docs/architecture.md`](docs/architecture.md) for the testing philosophy. Before touching
-`crates/schema` or the invariants, read the ADRs — every invariant caught a real bug.
+`engine::schema` or the invariants, read the ADRs — every invariant caught a real bug.

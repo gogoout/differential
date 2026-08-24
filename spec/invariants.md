@@ -40,5 +40,5 @@ the diff parser.
 
 ## 5. Nothing unassigned is dropped (grouping stage)
 
-Any class id the model omits is back-filled into a trailing group marked `close`. Applies
+Any class id the model omits is back-filled into a trailing group marked `focus`. Applies
 from milestone 2 onward; the schema reserves the shape for it.

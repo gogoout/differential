@@ -1,4 +1,5 @@
-//! `dfr review` — the terminal reviewer over a grouped, ordered document.
+//! The terminal reviewer (`dfr review`) over a grouped, ordered document.
+//! Library crate: the `dfr` binary lives in `crates/cli` (ADR 0018).
 
 pub mod app;
 pub mod picker;

@@ -9,7 +9,7 @@ use super::ClassInfo;
 
 /// Feeds the cache key: bump on ANY change to the prompt text or payload
 /// format, or cached groupings would silently mix prompt generations.
-pub const PROMPT_VERSION: u32 = 1;
+pub const PROMPT_VERSION: u32 = 2;
 
 const MAX_SIDE_LINES: usize = 4;
 const MAX_LINE_CHARS: usize = 150;
@@ -37,7 +37,7 @@ Schema:
 {"groups": [{"label": "short name",
              "description": "one sentence: what changed and why it is safe or not",
              "classes": ["C3", "C17"],
-             "effort": "skim" | "close",
+             "effort": "skim" | "focus",
              "reason": "why this effort level"}]}
 
 Rules:
@@ -47,11 +47,11 @@ Rules:
 - "skim" means a reviewer can verify the whole group by reading one exemplar and
   trusting the rest are the same edit. Mechanical renames, import swaps, dependency
   bumps and refixtured snapshots are "skim".
-- "close" means the group changes behaviour, error handling, control flow, a public
-  contract, or a security or correctness boundary. When in doubt use "close".
+- "focus" means the group changes behaviour, error handling, control flow, a public
+  contract, or a security or correctness boundary. When in doubt use "focus".
 - A block noting "renamed from ... N% similar" with N below 95 was REWRITTEN during the
-  move, not relocated verbatim: it must be "close".
-- Order groups so "close" groups come first: the reviewer should meet real work before
+  move, not relocated verbatim: it must be "focus".
+- Order groups so "focus" groups come first: the reviewer should meet real work before
   mechanical work.
 - Labels describe the PURPOSE, not the mechanism.
 

@@ -1,6 +1,8 @@
 # 0012 — Repo config tunes classification, never enumeration
 
-Status: accepted
+Status: accepted (amended: `[grouping]` moved to the user-level
+`~/.config/differential/config.toml` — agents are a per-user choice; the repo file
+keeps classification hints only)
 
 ## Context
 

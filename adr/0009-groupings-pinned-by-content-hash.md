@@ -5,7 +5,7 @@ Status: accepted
 ## Context
 
 Three grouping runs over the same change produced 20, 23 and 25 groups with materially
-different skim/close splits. Coverage and the structural invariants were identical every
+different skim/focus splits. Coverage and the structural invariants were identical every
 time — they are structural; labels are model judgement and non-deterministic.
 
 ## Decision

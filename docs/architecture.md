@@ -9,7 +9,7 @@ with their evidence live in [`adr/`](../adr/). This page is the narrative tour.
 A 100-file merge request is not 100 files of work. Most of it is one decision echoing
 through the codebase: a signature change cascading through call sites, a rename sweeping
 across imports, a lockfile regenerating itself. A reviewer's real job is to find the
-handful of changes that deserve close reading — and to *safely* skip the rest.
+handful of changes that deserve focus (line-by-line) reading — and to *safely* skip the rest.
 
 ## The load-bearing idea: coverage is structural, judgement is delegated
 
@@ -25,7 +25,7 @@ handful of changes that deserve close reading — and to *safely* skip the rest.
    its keep — merging twenty textually-different shape classes into one "path and import
    swaps" group is exactly what hashing can't do ([ADR 0001](../adr/0001-llm-merges-class-ids-never-hunks.md)).
 3. **Deterministic ordering.** Symbol-definition → symbol-use edges between groups build a
-   dependency DAG; the close section is topologically sorted foundation-first, so the
+   dependency DAG; the focus section is topologically sorted foundation-first, so the
    reviewer meets the abstraction before its consumers
    ([spec/ordering.md](../spec/ordering.md)).
 4. **Structural audits.** Before any document is emitted: every changed file must
@@ -68,13 +68,15 @@ The report is honest about the saving: skim exemplars still get read, so documen
 
 | path | what |
 |---|---|
-| `crates/schema` | the frozen JSON contract as serde types — the product boundary |
-| `crates/engine` | git io, diff parsing, byte-exact applier, shape classes, language registry, grouping, ordering, stack renderer, invariants |
-| `crates/llm` | the LLM backend abstraction (one-shot completion, tools denied) |
-| `crates/cli` | the `dfr` / `differential` renderer binary — presentation only |
+| `crates/engine` | the backend: git io, diff parsing, byte-exact applier, shape classes, language registry, grouping, ordering, invariants, review sessions — plus `engine::schema` (the frozen JSON contract, serde-only) and `engine::llm` (the backend abstraction, tools denied) |
+| `crates/stack` | the shadow-branch renderer — the diff as a synthetic commit stack |
+| `crates/tui` | the terminal reviewer (vendored tuicr/lumen pieces live here) |
+| `crates/cli` | the application layer: the `dfr` / `differential` binaries, argument parsing and dispatch only |
+| `crates/testutil` | shared test fixtures, `publish = false` |
 
-Dependency direction is strict: `cli → engine → {schema, llm}`. The schema crate depends
-only on serde, so consumers take the contract without the git plumbing (ADR 0008, 0014).
+Dependency direction is strict: `cli → {tui, stack} → engine`. The `engine::schema`
+module remains the product boundary — serde types only, no engine internals — as a
+reviewed module discipline rather than a crate boundary (ADR 0008, 0018).
 All git access shells out to real git, plumbing commands only — the byte-exactness
 guarantees were validated against real git output and nothing else (ADR 0002, 0011).
 

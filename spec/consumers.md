@@ -1,10 +1,11 @@
 # Consuming the engine
 
-The core is a **library** (ADR 0014). Consumers — the TUI, the shadow-branch builder, the
-forge poster — link `differential-engine` and `differential-schema` directly; the JSON form
-of the document is for export and persistence, not inter-process plumbing. The binary
-namespace (`dfr`, also installed as `differential`) belongs to renderers; the shadow-branch
-renderer is its first occupant, and the TUI joins it later.
+The core is a **library** (ADR 0014, 0018). Consumers — the TUI (`differential-tui`), the
+shadow-branch builder (`differential-stack`), the forge poster — link `differential-engine`
+directly (the frozen contract lives in `engine::schema`); the JSON form of the document is
+for export and persistence, not inter-process plumbing. The binaries (`dfr`, also installed
+as `differential`) live in the application-layer `crates/cli`, which consumes the renderer
+crates.
 
 ## The renderer binary
 
@@ -32,7 +33,7 @@ use differential_engine::{gitio::Repo, config::Config, lang::LanguageRegistry,
                           resolve_range, run_pipeline};
 
 let repo = Repo::open(path)?;                       // any dir inside the repo
-let config = Config::load(repo.root(), None)?;      // .differential.toml or defaults
+let config = Config::load(repo.root(), None, None)?; // repo + user config, or defaults
 let (base, head, kind) = resolve_range(&repo, &["main..feature"])?;
 let out = run_pipeline(&repo, &base, &head, kind, &config, &LanguageRegistry::builtin())?;
 // out.report: InvariantReport — always present
@@ -47,7 +48,7 @@ let out = run_pipeline(&repo, &base, &head, kind, &config, &LanguageRegistry::bu
   grouping stage ([grouping.md](grouping.md)): `backend: None` builds one from
   `[grouping].command` (default: the tools-denied claude invocation), and the cache
   directory is conventionally `repo.common_dir()?/differential/cache/grouping`.
-- Language plugins (ADR 0015) and LLM backends (`differential-llm`, ADR 0016) are injected
+- Language plugins (ADR 0015) and LLM backends (`engine::llm`, ADR 0016/0018) are injected
   by the consumer; `LanguageRegistry::builtin()` and `CommandBackend::claude_cli()` are the
   defaults.
 
@@ -59,10 +60,11 @@ One example remains for debugging the grouped document itself (JSON to stdout):
 cargo run -p differential-engine --example group -- [--repo <path>] [--no-cache] [-o <file>] <base>..<head>
 ```
 
-## Config: `.differential.toml`
+## Config: two files, split by ownership
 
-Resolution: explicit path > `<repo-root>/.differential.toml` > built-in defaults.
-A missing file means defaults; a malformed file is a hard error, never silently ignored.
+**Repo-level** — `.differential.toml` at the target repo's root. Classification hints
+only: shared by everyone reviewing the repo. Resolution: `--config` path >
+`<repo-root>/.differential.toml` > built-in defaults.
 
 ```toml
 [classify]
@@ -74,9 +76,10 @@ not_generated = ["important.lock"]
 attributes = ["linguist-generated"]
 ```
 
-**The one hard rule: config can never remove a file or hunk from enumeration.** Enumeration
-is total, always — every invariant depends on it (ADR 0012). Config tunes classification
-hints and tool behaviour only.
+**User-level** — `~/.config/differential/config.toml` (honours `XDG_CONFIG_HOME`).
+The agent backend: a per-user choice, never a repo setting — not everyone uses the same
+agent. Resolution: `--user-config` path > the XDG location > built-in default.
+A `[grouping]` table in the REPO file is a hard error with a migration hint.
 
 ```toml
 [grouping]
@@ -86,5 +89,14 @@ command = ["claude", "-p", "--output-format", "text", "--allowed-tools", ""]
 timeout_secs = 1200
 ```
 
+Because the backend command is part of the grouping cache key, users running different
+agents get separate cache entries in the clone's shared cache — correct, since a
+different model may group differently.
+
+A missing file means defaults; a malformed file is a hard error, never silently ignored.
+**The one hard rule: config can never remove a file or hunk from enumeration.**
+Enumeration is total, always — every invariant depends on it (ADR 0012). Config tunes
+classification hints and tool behaviour only.
+
 Sections reserved for later milestones (documented so the file format is stable):
-`[ordering]`, `[stack]` (ref namespace).
+`[ordering]`, `[stack]` (ref namespace) in the repo file.

@@ -11,7 +11,7 @@ use differential_engine::config::Config;
 use differential_engine::gitio::Repo;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::run_pipeline;
-use differential_schema::SourceKind;
+use differential_engine::schema::SourceKind;
 use serde::Deserialize;
 
 #[derive(Deserialize)]

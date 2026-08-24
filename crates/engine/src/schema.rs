@@ -1,11 +1,14 @@
 //! The frozen JSON contract for differential reading plans.
 //!
-//! This crate is the product boundary: every consumer (shadow-branch stack, TUI,
-//! forge review) depends on these types and nothing else. Consumer conveniences
-//! must not leak in here.
+//! This module is the product boundary (ADR 0008, superseded-in-form by ADR
+//! 0018): every consumer (shadow-branch stack, TUI, forge review) depends on
+//! these types and nothing else. It stays serde-only — consumer conveniences
+//! and engine internals must not leak in here; that discipline is enforced in
+//! review now that the crate boundary is gone.
 //!
 //! Contract rules:
-//! - `schema_version` is 1. Readers must reject versions they do not know.
+//! - `schema_version` is 2 (v2 renamed the `close` effort tier to `focus`,
+//!   ADR 0019). Readers must reject versions they do not know.
 //! - Deserialisation tolerates unknown fields, so additive changes are non-breaking.
 //! - `groups`/`reading_plan` are `null` when the grouping stage has not run. That is
 //!   distinct from `[]`, which would mean "grouping ran and produced nothing" and is
@@ -14,7 +17,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// The one JSON document: a grouped, ordered reading plan for a diff.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -203,8 +206,8 @@ pub struct Group {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Effort {
-    /// Read every hunk.
-    Close,
+    /// Read every hunk, line by line.
+    Focus,
     /// Read one exemplar per shape class; trust the rest.
     Skim,
     /// Generated content: folded entirely, no exemplars to read.
@@ -254,7 +257,7 @@ pub struct Audit {
     pub classes_missing: Option<u32>,
     pub classes_duplicated: Option<Vec<String>>,
     pub classes_hallucinated: Option<Vec<String>>,
-    /// Hunks a reviewer actually reads (close + exemplars). The honest number.
+    /// Hunks a reviewer actually reads (focus + exemplars). The honest number.
     pub read_hunks: Option<u32>,
     /// Hunks never opened (skim remainders + folded noise). The genuine saving.
     pub skipped_hunks: Option<u32>,
