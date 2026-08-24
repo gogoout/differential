@@ -164,6 +164,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 &GroupingOptions {
                     backend: None, // from [grouping].command, default claude
                     cache_dir: cache_dir.as_deref(),
+                    progress: None,
                 },
                 &StackOptions {
                     ref_name: ref_name.as_deref(),
@@ -356,6 +357,7 @@ fn grouped(
         &GroupingOptions {
             backend: None,
             cache_dir: cache_dir.as_deref(),
+            progress: None,
         },
     )
     .context("grouped pipeline failed")

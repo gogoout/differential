@@ -45,6 +45,7 @@ fn open_app(r: &TestRepo) -> App {
         &differential_engine::grouping::GroupingOptions {
             backend: Some(&backend),
             cache_dir: None,
+            progress: None,
         },
     )
     .unwrap();

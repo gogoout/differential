@@ -480,3 +480,64 @@ fn backfill_stays_trailing_even_when_everything_is_close() {
     assert!(groups.last().unwrap().label.contains("no group"));
     assert_eq!(groups.last().unwrap().rank as usize, groups.len() - 1);
 }
+
+/// The progress callback reports the stages a renderer shows on its splash,
+/// and says whether the slow grouping stage was a cache hit.
+#[test]
+fn progress_reports_stages_and_cache_state() {
+    use differential_engine::config::Config;
+    use differential_engine::grouping::Progress;
+    use differential_engine::lang::LanguageRegistry;
+    use differential_engine::pipeline::run_grouped_pipeline;
+    use differential_engine::schema::SourceKind;
+    use std::sync::Mutex;
+
+    let r = TestRepo::new();
+    r.write("a.txt", b"alpha_original = 1\n");
+    let base = r.commit_all("base");
+    r.write("a.txt", b"alpha_changed = 2\n");
+    let head = r.commit_all("head");
+
+    let backend = FakeBackend::new("fake-agent", |ids| {
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        format!(r#"{{"groups": [{}]}}"#, json_group("All", "focus", &refs))
+    });
+    let cache = tempfile::TempDir::new().unwrap();
+
+    let run = || {
+        let seen: Mutex<Vec<Progress>> = Mutex::new(Vec::new());
+        let cb = |p: Progress| seen.lock().unwrap().push(p);
+        run_grouped_pipeline(
+            &r.repo(),
+            &base,
+            &head,
+            SourceKind::Range,
+            &Config::default(),
+            &LanguageRegistry::builtin(),
+            &differential_engine::grouping::GroupingOptions {
+                backend: Some(&backend),
+                cache_dir: Some(cache.path()),
+                progress: Some(&cb),
+            },
+        )
+        .unwrap();
+        seen.into_inner().unwrap()
+    };
+
+    let first = run();
+    assert_eq!(first.first(), Some(&Progress::Enumerating));
+    assert!(first.contains(&Progress::Classifying));
+    assert!(first.contains(&Progress::Ordering));
+    assert_eq!(first.last(), Some(&Progress::Done));
+    // Cache miss the first time: the backend name is carried for display.
+    assert!(first.contains(&Progress::Grouping {
+        backend: "fake-agent".into(),
+        cached: false,
+    }));
+
+    // Second run hits the cache, and says so.
+    assert!(run().contains(&Progress::Grouping {
+        backend: "fake-agent".into(),
+        cached: true,
+    }));
+}

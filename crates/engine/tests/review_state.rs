@@ -147,6 +147,7 @@ fn findings_reanchor_across_regeneration() {
         &differential_engine::grouping::GroupingOptions {
             backend: Some(&focus_all_backend()),
             cache_dir: None,
+            progress: None,
         },
     )
     .unwrap();
@@ -183,6 +184,7 @@ fn findings_reanchor_across_regeneration() {
         &differential_engine::grouping::GroupingOptions {
             backend: Some(&focus_all_backend()),
             cache_dir: None,
+            progress: None,
         },
     )
     .unwrap();
@@ -217,6 +219,7 @@ fn session_persists_every_mutation() {
         &differential_engine::grouping::GroupingOptions {
             backend: Some(&focus_all_backend()),
             cache_dir: None,
+            progress: None,
         },
     )
     .unwrap();
@@ -261,6 +264,23 @@ fn session_persists_every_mutation() {
     assert!(!session.delete_finding("nope").unwrap());
     assert!(reread().load_findings().unwrap().is_empty());
 
+    // set_reviewed is SET semantics over a batch, one write.
+    let keys: Vec<String> = doc_class_keys(&session);
+    session.set_reviewed(&keys, true).unwrap();
+    assert_eq!(
+        reread().load_state().unwrap().reviewed_classes.len(),
+        keys.len()
+    );
+    // A partially reviewed set resolves to "all reviewed", never inverted.
+    session.set_reviewed(&keys[..1], false).unwrap();
+    session.set_reviewed(&keys, true).unwrap();
+    assert_eq!(
+        reread().load_state().unwrap().reviewed_classes.len(),
+        keys.len()
+    );
+    session.set_reviewed(&keys, false).unwrap();
+    assert!(reread().load_state().unwrap().reviewed_classes.is_empty());
+
     // set_split_diff / set_file_view round-trip (additive, default false).
     assert!(!session.split_diff());
     session.set_split_diff(true).unwrap();
@@ -268,4 +288,14 @@ fn session_persists_every_mutation() {
     assert!(!session.file_view());
     session.set_file_view(true).unwrap();
     assert!(reread().load_state().unwrap().file_view);
+}
+
+/// Class content keys of every class in the session's document.
+fn doc_class_keys(session: &ReviewSession) -> Vec<String> {
+    session
+        .doc()
+        .classes
+        .iter()
+        .map(|c| session.class_key(&c.id).to_string())
+        .collect()
 }

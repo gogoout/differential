@@ -32,6 +32,21 @@ pub struct GroupingOptions<'a> {
     /// Cache directory (spec/persistence.md suggests
     /// `<git-common-dir>/differential/cache/grouping`). `None` disables caching.
     pub cache_dir: Option<&'a Path>,
+    /// Stage notifications for renderers that show progress while the
+    /// pipeline runs (the TUI's splash screen). `None` reports nothing.
+    pub progress: Option<&'a (dyn Fn(Progress) + Send + Sync)>,
+}
+
+/// Pipeline stage notifications, in the order they occur. `Grouping` carries
+/// the backend name so a renderer can say WHICH agent it is waiting on — that
+/// stage is the slow one (a subprocess LLM call on a cache miss).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Progress {
+    Enumerating,
+    Classifying,
+    Grouping { backend: String, cached: bool },
+    Ordering,
+    Done,
 }
 
 /// Everything the stage needs to know about one shape class, derived from the
@@ -75,6 +90,7 @@ pub fn run(
     backend: &dyn LlmBackend,
     cache_dir: Option<&Path>,
     lang_fingerprint: &str,
+    progress: Option<&(dyn Fn(Progress) + Send + Sync)>,
 ) -> Result<schema::PlanDocument, EngineError> {
     let infos = class_infos(doc);
 
@@ -91,7 +107,14 @@ pub fn run(
         }
     } else {
         let prompt = payload::build_prompt(&offered, view);
-        let response = fetch_response(&prompt, &offered, backend, cache_dir, lang_fingerprint)?;
+        let response = fetch_response(
+            &prompt,
+            &offered,
+            backend,
+            cache_dir,
+            lang_fingerprint,
+            progress,
+        )?;
         let raw = parse::parse_response(&response)?;
         audit(raw, &offered)
     };
@@ -300,12 +323,25 @@ fn fetch_response(
     backend: &dyn LlmBackend,
     cache_dir: Option<&Path>,
     lang_fingerprint: &str,
+    progress: Option<&(dyn Fn(Progress) + Send + Sync)>,
 ) -> Result<String, EngineError> {
     let key = cache::cache_key(offered, backend.name(), lang_fingerprint);
     if let Some(dir) = cache_dir
         && let Some(hit) = cache::load(dir, &key)?
     {
+        if let Some(f) = progress {
+            f(Progress::Grouping {
+                backend: backend.name().to_string(),
+                cached: true,
+            });
+        }
         return Ok(hit);
+    }
+    if let Some(f) = progress {
+        f(Progress::Grouping {
+            backend: backend.name().to_string(),
+            cached: false,
+        });
     }
     let response = backend.complete(prompt)?;
     if let Some(dir) = cache_dir {

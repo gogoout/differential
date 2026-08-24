@@ -89,7 +89,15 @@ pub fn run_grouped_pipeline(
     langs: &LanguageRegistry,
     grouping: &crate::grouping::GroupingOptions,
 ) -> Result<PipelineOutput, EngineError> {
-    let mut out = run_core(repo, base_rev, head_rev, kind, config, langs)?;
+    let mut out = run_core_with_progress(
+        repo,
+        base_rev,
+        head_rev,
+        kind,
+        config,
+        langs,
+        grouping.progress,
+    )?;
 
     if let Some(core_doc) = &out.document {
         // Backend: injected, or built from [grouping] config.
@@ -107,10 +115,17 @@ pub fn run_grouped_pipeline(
             backend,
             grouping.cache_dir,
             &langs.fingerprint(),
+            grouping.progress,
         )?;
         // Ordering is deterministic and model-free: always runs after grouping.
+        if let Some(f) = grouping.progress {
+            f(crate::grouping::Progress::Ordering);
+        }
         crate::ordering::apply(&mut grouped, &out.view, langs);
         out.document = Some(grouped);
+    }
+    if let Some(f) = grouping.progress {
+        f(crate::grouping::Progress::Done);
     }
     Ok(out)
 }
@@ -136,6 +151,21 @@ fn run_core(
     config: &Config,
     langs: &LanguageRegistry,
 ) -> Result<PipelineOutput, EngineError> {
+    run_core_with_progress(repo, base_rev, head_rev, kind, config, langs, None)
+}
+
+fn run_core_with_progress(
+    repo: &Repo,
+    base_rev: &str,
+    head_rev: &str,
+    kind: schema::SourceKind,
+    config: &Config,
+    langs: &LanguageRegistry,
+    progress: Option<&(dyn Fn(crate::grouping::Progress) + Send + Sync)>,
+) -> Result<PipelineOutput, EngineError> {
+    if let Some(f) = progress {
+        f(crate::grouping::Progress::Enumerating);
+    }
     // Commits normally; raw tree oids for uncommitted-state reviews
     // (ADR 0017) — every later stage treats the endpoints as trees anyway.
     let base = repo.rev_parse_commit_or_tree(base_rev)?;
@@ -190,6 +220,9 @@ fn run_core(
     mark_generated(&mut view, config, &attr_marked);
 
     // Mechanical partition: 100% coverage by construction.
+    if let Some(f) = progress {
+        f(crate::grouping::Progress::Classifying);
+    }
     let part = partition(&view, langs);
 
     // Invariants 1–4; no document on violation.

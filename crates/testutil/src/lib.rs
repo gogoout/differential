@@ -203,6 +203,7 @@ pub fn grouped_with_cache(
         &GroupingOptions {
             backend: Some(backend),
             cache_dir,
+            progress: None,
         },
     )
     .unwrap();

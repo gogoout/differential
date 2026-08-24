@@ -163,6 +163,22 @@ impl ReviewSession {
         Ok(now)
     }
 
+    /// Mark a whole set of classes reviewed (or not) in one write.
+    ///
+    /// Set semantics, not toggle: a partially reviewed group resolves to the
+    /// requested state instead of inverting member by member, and the batch
+    /// costs one `save_state` rather than one per class.
+    pub fn set_reviewed(&mut self, class_keys: &[String], on: bool) -> Result<(), EngineError> {
+        for key in class_keys {
+            if on {
+                self.state.reviewed_classes.insert(key.clone());
+            } else {
+                self.state.reviewed_classes.remove(key);
+            }
+        }
+        self.store.save_state(&self.state)
+    }
+
     /// Persist the resume position: (group id or file path, row offset).
     pub fn save_cursor(&mut self, id: String, row: usize) -> Result<(), EngineError> {
         self.state.cursor = Some((id, row));
