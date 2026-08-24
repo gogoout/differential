@@ -403,3 +403,40 @@ fn draw_smoke_test_renders_group_label() {
     assert!(content.contains("reading plan"));
     assert!(content.contains("classes reviewed"));
 }
+
+#[test]
+fn reading_plan_shows_dependency_labels_not_ids() {
+    // Two groups where the fake backend's order forces a dependency edge:
+    // the ordering stage records depends_on, and the pane must render the
+    // dependency's LABEL — "g0" means nothing to a reader.
+    let (_r, mut app) = make_app();
+    let with_deps = app.groups.iter().find(|g| !g.after.is_empty());
+    if let Some(g) = with_deps {
+        // Every rendered dependency is a real group label, never an id.
+        for dep in &g.after {
+            assert!(
+                app.groups.iter().any(|other| &other.label == dep),
+                "dependency {dep:?} is not a group label"
+            );
+            assert!(
+                !dep.starts_with('g') || dep.contains(' '),
+                "raw id leaked: {dep:?}"
+            );
+        }
+    }
+
+    // The pane renders multiple lines per group: counts land on their own
+    // line under the label.
+    let backend = ratatui::backend::TestBackend::new(100, 30);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let content: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(content.contains("files"), "per-group file count missing");
+    assert!(content.contains("−"), "removed-line count missing");
+}

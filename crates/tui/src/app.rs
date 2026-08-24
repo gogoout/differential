@@ -72,6 +72,10 @@ pub struct GroupInfo {
     /// Added / removed line totals over the group's hunks.
     pub adds: usize,
     pub dels: usize,
+    /// Labels of the groups this one depends on — ids mean nothing to a
+    /// reader, so the plan shows what it actually follows.
+    pub after: Vec<String>,
+    pub role: Option<schema::Role>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +130,10 @@ impl App {
             doc.classes.iter().map(|c| (c.id.as_str(), c)).collect();
         let empty = Vec::new();
         let schema_groups = doc.groups.as_ref().unwrap_or(&empty);
+        let labels_of: HashMap<String, String> = schema_groups
+            .iter()
+            .map(|g| (g.id.clone(), g.label.clone()))
+            .collect();
         let groups: Vec<GroupInfo> = schema_groups
             .iter()
             .map(|g| {
@@ -145,6 +153,12 @@ impl App {
                     id: g.id.clone(),
                     label: g.label.clone(),
                     effort: g.effort,
+                    after: g
+                        .depends_on
+                        .iter()
+                        .map(|id| labels_of.get(id).cloned().unwrap_or_else(|| id.clone()))
+                        .collect(),
+                    role: g.role,
                     class_keys: g
                         .class_ids
                         .iter()
@@ -157,10 +171,7 @@ impl App {
                 }
             })
             .collect();
-        let labels: HashMap<String, String> = schema_groups
-            .iter()
-            .map(|g| (g.id.clone(), g.label.clone()))
-            .collect();
+        let labels = labels_of.clone();
 
         // Hunk -> owning group label (via the hunk's class).
         let group_of_class: HashMap<&str, &str> = schema_groups
@@ -767,65 +778,34 @@ impl App {
     fn draw_groups(&mut self, frame: &mut Frame, area: Rect) {
         let inner_h = area.height.saturating_sub(2) as usize;
         let selected = self.selected_entry();
-        if selected < self.group_scroll {
-            self.group_scroll = selected;
-        } else if selected >= self.group_scroll + inner_h {
-            self.group_scroll = selected + 1 - inner_h;
-        }
-        let items: Vec<Line> = match self.view_mode {
-            ViewMode::Groups => self
-                .groups
-                .iter()
-                .enumerate()
-                .skip(self.group_scroll)
-                .take(inner_h)
-                .map(|(i, g)| {
-                    let done = g.class_keys.iter().all(|k| self.session.is_reviewed(k))
-                        && !g.class_keys.is_empty();
-                    let tier = match g.effort {
-                        schema::Effort::Focus => "F",
-                        schema::Effort::Skim => "S",
-                        schema::Effort::Noise => "N",
-                    };
-                    let mark = if done { "✓" } else { " " };
-                    let mut style = THEME.effort_style(g.effort);
-                    if i == selected {
-                        style = style.bg(THEME.selected_bg).add_modifier(Modifier::BOLD);
-                    }
-                    Line::from(Span::styled(
-                        format!(
-                            "{mark}{tier} {:>2}f +{:<4}-{:<4} {}",
-                            g.n_files, g.adds, g.dels, g.label
-                        ),
-                        style,
-                    ))
-                })
+
+        // Entries render as blocks of lines, so scrolling counts ROWS, not
+        // entries; keep the whole selected block in view.
+        let blocks: Vec<Vec<Line>> = match self.view_mode {
+            ViewMode::Groups => (0..self.groups.len())
+                .map(|i| self.group_lines(i, i == selected))
                 .collect(),
             ViewMode::Files => {
                 let reviewed = self.session.reviewed_hunks();
-                self.files
-                    .iter()
-                    .enumerate()
-                    .skip(self.group_scroll)
-                    .take(inner_h)
-                    .map(|(i, f)| {
-                        let done = !f.hunk_idxs.is_empty()
-                            && f.hunk_idxs.iter().all(|h| reviewed.contains(h));
-                        let mark = if done { "✓" } else { " " };
-                        let counts = if f.hunk_idxs.is_empty() {
-                            "  (bin)   ".to_string()
-                        } else {
-                            format!("+{:<4}-{:<4}", f.adds, f.dels)
-                        };
-                        let mut style = Style::default().fg(THEME.context_fg);
-                        if i == selected {
-                            style = style.bg(THEME.selected_bg).add_modifier(Modifier::BOLD);
-                        }
-                        Line::from(Span::styled(format!("{mark} {counts} {}", f.path), style))
-                    })
+                (0..self.files.len())
+                    .map(|i| self.file_lines(i, i == selected, &reviewed))
                     .collect()
             }
         };
+        let start_row: usize = blocks.iter().take(selected).map(Vec::len).sum();
+        let end_row = start_row + blocks.get(selected).map_or(0, Vec::len);
+        if start_row < self.group_scroll {
+            self.group_scroll = start_row;
+        } else if end_row > self.group_scroll + inner_h {
+            self.group_scroll = end_row.saturating_sub(inner_h);
+        }
+        let items: Vec<Line> = blocks
+            .into_iter()
+            .flatten()
+            .skip(self.group_scroll)
+            .take(inner_h)
+            .collect();
+
         let orphans = self
             .session
             .findings()
@@ -850,6 +830,124 @@ impl App {
                 Style::default().fg(THEME.gutter_fg)
             });
         frame.render_widget(Paragraph::new(items).block(block), area);
+    }
+
+    /// One group as 2–3 lines: title, counts, and what it follows.
+    fn group_lines(&self, idx: usize, selected: bool) -> Vec<Line<'static>> {
+        let g = &self.groups[idx];
+        let done =
+            g.class_keys.iter().all(|k| self.session.is_reviewed(k)) && !g.class_keys.is_empty();
+        let tier = match g.effort {
+            schema::Effort::Focus => "F",
+            schema::Effort::Skim => "S",
+            schema::Effort::Noise => "N",
+        };
+        let bg = |st: Style| {
+            if selected {
+                st.bg(THEME.selected_bg).add_modifier(Modifier::BOLD)
+            } else {
+                st
+            }
+        };
+        let dim = bg(Style::default().fg(THEME.gutter_fg));
+
+        let mut lines = vec![Line::from(vec![
+            Span::styled(
+                format!("{tier} ",),
+                bg(THEME.effort_style(g.effort).add_modifier(Modifier::BOLD)),
+            ),
+            Span::styled(
+                g.label.clone(),
+                bg(Style::default().fg(if done {
+                    THEME.reviewed_fg
+                } else {
+                    THEME.context_fg
+                })),
+            ),
+            Span::styled(
+                if done { "  ✓" } else { "" }.to_string(),
+                bg(Style::default().fg(THEME.reviewed_fg)),
+            ),
+        ])];
+
+        let role = match g.role {
+            Some(schema::Role::Foundation) => " · foundation",
+            Some(schema::Role::Consumer) => " · consumer",
+            Some(schema::Role::Mechanical) => " · mechanical",
+            Some(schema::Role::Noise) => " · noise",
+            None => "",
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("   {} files  ", g.n_files), dim),
+            Span::styled(
+                format!("+{}", g.adds),
+                bg(Style::default().fg(THEME.add_fg)),
+            ),
+            Span::styled(" ", dim),
+            Span::styled(
+                format!("−{}", g.dels),
+                bg(Style::default().fg(THEME.del_fg)),
+            ),
+            Span::styled(role.to_string(), dim),
+        ]));
+        if !g.after.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("   after: {}", g.after.join(", ")),
+                dim,
+            )));
+        }
+        lines
+    }
+
+    /// One file entry: path, then counts.
+    fn file_lines(
+        &self,
+        idx: usize,
+        selected: bool,
+        reviewed: &HashSet<usize>,
+    ) -> Vec<Line<'static>> {
+        let f = &self.files[idx];
+        let done = !f.hunk_idxs.is_empty() && f.hunk_idxs.iter().all(|h| reviewed.contains(h));
+        let bg = |st: Style| {
+            if selected {
+                st.bg(THEME.selected_bg).add_modifier(Modifier::BOLD)
+            } else {
+                st
+            }
+        };
+        let mark = if done { "✓ " } else { "  " };
+        let mut lines = vec![Line::from(vec![
+            Span::styled(mark.to_string(), bg(Style::default().fg(THEME.reviewed_fg))),
+            Span::styled(
+                f.path.clone(),
+                bg(Style::default().fg(if done {
+                    THEME.reviewed_fg
+                } else {
+                    THEME.context_fg
+                })),
+            ),
+        ])];
+        let dim = bg(Style::default().fg(THEME.gutter_fg));
+        if f.hunk_idxs.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "    (no text hunks)".to_string(),
+                dim,
+            )));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled("    ".to_string(), dim),
+                Span::styled(
+                    format!("+{}", f.adds),
+                    bg(Style::default().fg(THEME.add_fg)),
+                ),
+                Span::styled(" ", dim),
+                Span::styled(
+                    format!("−{}", f.dels),
+                    bg(Style::default().fg(THEME.del_fg)),
+                ),
+            ]));
+        }
+        lines
     }
 
     fn draw_diff(&mut self, frame: &mut Frame, area: Rect) {
