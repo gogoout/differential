@@ -5,12 +5,13 @@
 use std::collections::HashMap;
 
 use differential_engine::gitio::Repo;
+use differential_engine::plan::{self, Deferral, Fold, PlanIndex, reading_split};
 use differential_engine::review_state::Finding;
 use differential_engine::schema;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::theme::{THEME, highlighter};
+use super::theme::{THEME, Theme, highlighter};
 use super::vendor::LineOrigin;
 use super::vendor::diff_algo::compute_side_by_side;
 use super::vendor::diff_types::{ChangeType, DiffLine, InlineSegment, expand_tabs};
@@ -160,10 +161,11 @@ pub struct RowsContext<'a> {
 /// The group view's extras on top of the shared core.
 pub struct GroupContext<'a> {
     pub core: RowsContext<'a>,
+    pub index: &'a PlanIndex<'a>,
     pub group: &'a schema::Group,
     /// Group id -> label, for rendering depends_on legibly.
     pub labels: &'a HashMap<String, String>,
-    pub fold_open: bool,
+    pub fold: Fold,
 }
 
 /// Build the right-pane rows for one group.
@@ -171,74 +173,26 @@ pub fn build_group_rows(factory: &mut RowFactory, ctx: &GroupContext) -> Vec<Row
     let mut rows = Vec::new();
     header_rows(ctx, &mut rows);
 
-    let class_by_id: HashMap<&str, &schema::ClassEntry> = ctx
-        .core
-        .doc
-        .classes
-        .iter()
-        .map(|c| (c.id.as_str(), c))
-        .collect();
-    let hunk_idx = |hid: &str| -> usize { hid[1..].parse().expect("hunk ids are h<N>") };
-
-    // Which hunks to show expanded vs behind the fold.
-    let (shown, hidden): (Vec<usize>, Vec<usize>) = match ctx.group.effort {
-        schema::Effort::Skim if !ctx.fold_open => {
-            let ex: Vec<usize> = ctx
-                .group
-                .class_ids
-                .iter()
-                .map(|c| hunk_idx(&class_by_id[c.as_str()].exemplar))
-                .collect();
-            let rest: Vec<usize> = ctx
-                .group
-                .class_ids
-                .iter()
-                .flat_map(|c| {
-                    let class = class_by_id[c.as_str()];
-                    class
-                        .hunk_ids
-                        .iter()
-                        .filter(|h| **h != class.exemplar)
-                        .map(|h| hunk_idx(h))
-                })
-                .collect();
-            (ex, rest)
-        }
-        schema::Effort::Noise if !ctx.fold_open => {
-            let all: Vec<usize> = ctx
-                .group
-                .class_ids
-                .iter()
-                .flat_map(|c| class_by_id[c.as_str()].hunk_ids.iter().map(|h| hunk_idx(h)))
-                .collect();
-            (Vec::new(), all)
-        }
-        _ => {
-            let all: Vec<usize> = ctx
-                .group
-                .class_ids
-                .iter()
-                .flat_map(|c| class_by_id[c.as_str()].hunk_ids.iter().map(|h| hunk_idx(h)))
-                .collect();
-            (all, Vec::new())
-        }
-    };
-
+    let split = reading_split(ctx.index, ctx.group, ctx.fold);
+    let shown: Vec<usize> = split.shown.iter().map(|h| h.index()).collect();
     hunk_list_rows(factory, &ctx.core, shown, &mut rows);
 
-    if !hidden.is_empty() {
-        let what = match ctx.group.effort {
-            schema::Effort::Noise => "folded generated hunks",
-            _ => "remaining hunks, same shapes as the exemplars above",
-        };
-        rows.push(Row::full(
-            RowKind::Fold,
-            Line::from(Span::styled(
-                format!("  ── {} {what} — press z to unfold ──", hidden.len()),
-                Style::default().fg(THEME.noise_fg),
-            )),
-        ));
-    }
+    // The fold line is presentation over the domain's reason for deferring.
+    let what = match split.deferral {
+        Deferral::None => return rows,
+        Deferral::FoldedNoise => "folded generated hunks",
+        Deferral::SkimRemainder => "remaining hunks, same shapes as the exemplars above",
+    };
+    rows.push(Row::full(
+        RowKind::Fold,
+        Line::from(Span::styled(
+            format!(
+                "  ── {} {what} — press z to unfold ──",
+                split.deferred.len()
+            ),
+            Style::default().fg(THEME.noise_fg),
+        )),
+    ));
     rows
 }
 
@@ -312,20 +266,8 @@ pub fn build_file_rows(
 
 fn header_rows(ctx: &GroupContext, rows: &mut Vec<Row>) {
     let g = ctx.group;
-    let tier = match g.effort {
-        schema::Effort::Focus => "focus",
-        schema::Effort::Skim => "skim",
-        schema::Effort::Noise => "noise",
-    };
-    let role = g
-        .role
-        .map(|r| match r {
-            schema::Role::Foundation => " · foundation",
-            schema::Role::Consumer => " · consumer",
-            schema::Role::Mechanical => " · mechanical",
-            schema::Role::Noise => " · noise",
-        })
-        .unwrap_or("");
+    let tier = plan::effort_name(g.effort);
+    let role = Theme::role_suffix(g.role);
     rows.push(Row::full(
         RowKind::GroupHeader,
         Line::from(vec![

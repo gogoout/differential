@@ -59,6 +59,25 @@ impl Theme {
         Style::default().fg(fg)
     }
 
+    /// One-letter tier for the plan pane's narrow column.
+    ///
+    /// The pane is 40 columns wide and the tier shares a line with counts, so
+    /// this is the TUI's own vocabulary — the wire token lives in
+    /// `plan::effort_name` and the row header spells it out in full.
+    pub const fn effort_glyph(effort: differential_engine::schema::Effort) -> &'static str {
+        match effort {
+            differential_engine::schema::Effort::Focus => "F",
+            differential_engine::schema::Effort::Skim => "S",
+            differential_engine::schema::Effort::Noise => "N",
+        }
+    }
+
+    /// The role decoration, empty when the ordering stage assigned none.
+    pub fn role_suffix(role: Option<differential_engine::schema::Role>) -> String {
+        role.map(|r| format!(" · {}", differential_engine::plan::role_name(r)))
+            .unwrap_or_default()
+    }
+
     pub fn word_emphasis(&self, addition: bool) -> Style {
         Style::default()
             .bg(if addition {

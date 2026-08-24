@@ -19,6 +19,7 @@ pub mod ordering;
 pub mod parse;
 pub mod paths;
 pub mod pipeline;
+pub mod plan;
 pub mod rename_view;
 pub mod review_session;
 pub mod review_state;
@@ -57,6 +58,9 @@ pub enum EngineError {
 
     #[error("invariant violated: {0}")]
     Invariant(String),
+
+    #[error("plan document is inconsistent: {0}")]
+    PlanIntegrity(String),
 
     #[error("config error in {path}: {msg}")]
     Config { path: String, msg: String },

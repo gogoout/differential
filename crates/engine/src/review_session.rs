@@ -14,6 +14,7 @@ use crate::schema;
 use crate::EngineError;
 use crate::gitio::Repo;
 use crate::model::DiffView;
+use crate::plan::PlanIndex;
 use crate::review_state::{Anchor, Finding, ReviewState, ReviewStore, class_content_key, reanchor};
 
 pub struct ReviewSession {
@@ -67,22 +68,22 @@ impl ReviewSession {
         store.save_findings(&findings)?;
         let state = store.load_state()?;
 
-        let class_by_id: HashMap<&str, &schema::ClassEntry> =
-            doc.classes.iter().map(|c| (c.id.as_str(), c)).collect();
+        let index = PlanIndex::build(&doc)?;
         let mut class_key = HashMap::new();
         let mut hunk_key = HashMap::new();
-        for c in class_by_id.values() {
-            let digests: Vec<String> = c
-                .hunk_ids
+        for c in &doc.classes {
+            let members = index.class_hunks(&c.id);
+            let digests: Vec<String> = members
                 .iter()
-                .map(|hid| doc.hunks[hunk_index(hid)].digest.clone())
+                .map(|&h| index.hunk(h).digest.clone())
                 .collect();
             let key = class_content_key(&digests);
-            for hid in &c.hunk_ids {
-                hunk_key.insert(hunk_index(hid), key.clone());
+            for h in members {
+                hunk_key.insert(h.index(), key.clone());
             }
             class_key.insert(c.id.clone(), key);
         }
+        drop(index);
 
         Ok(ReviewSession {
             store,
@@ -244,9 +245,4 @@ impl ReviewSession {
         self.store.save_findings(&self.findings)?;
         Ok(true)
     }
-}
-
-/// Hunk ids are `h<N>` where N indexes `doc.hunks`.
-fn hunk_index(hid: &str) -> usize {
-    hid[1..].parse().expect("hunk id of the form h<N>")
 }
