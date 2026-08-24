@@ -18,8 +18,8 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use tui_textarea::TextArea;
 
 use super::rows::{
-    DiffMode, GroupContext, Row, RowContent, RowFactory, RowKind, RowsContext, build_file_rows,
-    build_group_rows,
+    DiffMode, GroupContext, Row, RowContent, RowFactory, RowKind, RowsContext, build_dir_rows,
+    build_file_rows, build_group_rows,
 };
 use super::theme::THEME;
 use super::vendor::text_utils::truncate_or_pad_spans;
@@ -86,6 +86,19 @@ pub enum ViewMode {
     Files,
 }
 
+/// One visible row of the file tree: a directory, or a file (indexing into
+/// `files`, which stays flat — it anchors reviewed state and the persisted
+/// cursor).
+pub struct TreeEntry {
+    pub depth: usize,
+    pub kind: TreeKind,
+}
+
+pub enum TreeKind {
+    Dir { path: String },
+    File { file_idx: usize },
+}
+
 pub struct FileInfo {
     pub path: String,
     /// Canonical hunk indices, position order.
@@ -105,6 +118,10 @@ pub struct App {
     pub files: Vec<FileInfo>,
     /// Hunk index -> owning group label, for file-view hunk headers.
     hunk_labels: HashMap<usize, String>,
+    /// Visible rows of the file tree (rebuilt when a directory folds).
+    pub tree: Vec<TreeEntry>,
+    /// Directory paths currently collapsed.
+    collapsed: HashSet<String>,
 
     pub focus: Focus,
     pub mode: Mode,
@@ -221,21 +238,18 @@ impl App {
         } else {
             ViewMode::Groups
         };
-        let (selected_group, selected_file, resume_row) = match session.cursor() {
-            Some((id, row)) => match view_mode {
-                ViewMode::Groups => (
-                    groups.iter().position(|g| &g.id == id).unwrap_or(0),
-                    0,
-                    Some(*row),
-                ),
-                ViewMode::Files => (
-                    0,
-                    files.iter().position(|f| &f.path == id).unwrap_or(0),
-                    Some(*row),
-                ),
-            },
-            None => (0, 0, None),
+        // The cursor id is a group id in the plan view, a path in the file
+        // view; the tree row for a path is resolved after the tree is built.
+        let resume_cursor: Option<(String, usize)> = session.cursor().cloned();
+        let (selected_group, resume_row) = match (&resume_cursor, view_mode) {
+            (Some((id, row)), ViewMode::Groups) => (
+                groups.iter().position(|g| &g.id == id).unwrap_or(0),
+                Some(*row),
+            ),
+            (Some((_, row)), ViewMode::Files) => (0, Some(*row)),
+            (None, _) => (0, None),
         };
+        let selected_file = 0;
 
         let mut app = App {
             session,
@@ -244,6 +258,8 @@ impl App {
             labels,
             files,
             hunk_labels,
+            tree: Vec::new(),
+            collapsed: HashSet::new(),
             focus: Focus::Groups,
             mode: Mode::Normal,
             view_mode,
@@ -258,11 +274,135 @@ impl App {
             viewport_hint: 24,
             pending_d: false,
         };
+        app.rebuild_tree();
+        // The persisted cursor names a path; reveal it in the tree.
+        if app.view_mode == ViewMode::Files
+            && let Some((id, _)) = resume_cursor.as_ref()
+            && let Some(row) = app.reveal_path(id)
+        {
+            app.selected_file = row;
+        }
         app.rebuild_rows();
         if let Some(row) = resume_row {
             app.cursor = row.min(app.rows.len().saturating_sub(1));
         }
         app
+    }
+
+    /// Rebuild the visible tree rows from the flat file list, honouring
+    /// collapsed directories. Directory rows appear once, in path order.
+    pub fn rebuild_tree(&mut self) {
+        let mut paths: Vec<(usize, Vec<String>)> = self
+            .files
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (i, f.path.split('/').map(str::to_string).collect()))
+            .collect();
+        paths.sort_by(|a, b| a.1.cmp(&b.1));
+
+        let mut tree = Vec::new();
+        let mut open: Vec<String> = Vec::new(); // directory components in scope
+        for (file_idx, parts) in paths {
+            let dirs = &parts[..parts.len() - 1];
+            // Close directories we have left.
+            while open.len() > dirs.len() || (!open.is_empty() && open[..] != dirs[..open.len()]) {
+                open.pop();
+            }
+            // Open the ones we entered.
+            let mut hidden = false;
+            for (d, name) in dirs.iter().enumerate() {
+                if d < open.len() {
+                    continue;
+                }
+                open.push(name.clone());
+                let path = open.join("/");
+                if !hidden {
+                    tree.push(TreeEntry {
+                        depth: d,
+                        kind: TreeKind::Dir { path: path.clone() },
+                    });
+                }
+                if self.collapsed.contains(&path) {
+                    hidden = true;
+                }
+            }
+            // A file under any collapsed ancestor is not a visible row.
+            let under_collapsed =
+                (1..=dirs.len()).any(|n| self.collapsed.contains(&dirs[..n].join("/")));
+            if !under_collapsed {
+                tree.push(TreeEntry {
+                    depth: dirs.len(),
+                    kind: TreeKind::File { file_idx },
+                });
+            }
+        }
+        self.tree = tree;
+    }
+
+    /// File indices covered by a tree row: one file, or every file under a
+    /// directory (including collapsed ones).
+    fn files_of_tree_row(&self, row: usize) -> Vec<usize> {
+        match self.tree.get(row).map(|e| &e.kind) {
+            Some(TreeKind::File { file_idx }) => vec![*file_idx],
+            Some(TreeKind::Dir { path }) => {
+                let prefix = format!("{path}/");
+                self.files
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| f.path.starts_with(&prefix))
+                    .map(|(i, _)| i)
+                    .collect()
+            }
+            None => Vec::new(),
+        }
+    }
+
+    /// Path of the selected file-tree row (a file path, or a directory).
+    pub fn selected_path(&self) -> Option<String> {
+        self.tree_row_path(self.selected_file)
+    }
+
+    /// The path a tree row stands for — what the resume cursor persists.
+    fn tree_row_path(&self, row: usize) -> Option<String> {
+        match self.tree.get(row).map(|e| &e.kind) {
+            Some(TreeKind::File { file_idx }) => Some(self.files[*file_idx].path.clone()),
+            Some(TreeKind::Dir { path }) => Some(path.clone()),
+            None => None,
+        }
+    }
+
+    /// Locate the tree row showing `path`, expanding collapsed ancestors.
+    fn reveal_path(&mut self, path: &str) -> Option<usize> {
+        let mut parts: Vec<&str> = path.split('/').collect();
+        parts.pop();
+        for n in 1..=parts.len() {
+            self.collapsed.remove(&parts[..n].join("/"));
+        }
+        self.rebuild_tree();
+        self.tree.iter().position(|e| match &e.kind {
+            TreeKind::File { file_idx } => self.files[*file_idx].path == path,
+            TreeKind::Dir { path: p } => p == path,
+        })
+    }
+
+    /// Fold or unfold the selected directory.
+    fn toggle_dir(&mut self) -> bool {
+        let Some(TreeKind::Dir { path }) = self.tree.get(self.selected_file).map(|e| &e.kind)
+        else {
+            return false;
+        };
+        let path = path.clone();
+        if !self.collapsed.insert(path.clone()) {
+            self.collapsed.remove(&path);
+        }
+        self.rebuild_tree();
+        self.selected_file = self
+            .tree
+            .iter()
+            .position(|e| matches!(&e.kind, TreeKind::Dir { path: p } if *p == path))
+            .unwrap_or(0);
+        self.rebuild_rows();
+        true
     }
 
     pub fn rebuild_rows(&mut self) {
@@ -296,14 +436,15 @@ impl App {
                 self.rows = build_group_rows(&mut self.factory, &ctx);
             }
             ViewMode::Files => {
-                if self.files.is_empty() {
+                if self.tree.is_empty() {
                     self.rows = vec![Row::full(
                         RowKind::Blank,
                         Line::from("nothing to review — empty diff"),
                     )];
                     return;
                 }
-                let f = &self.files[self.selected_file.min(self.files.len() - 1)];
+                let row = self.selected_file.min(self.tree.len() - 1);
+                let targets = self.files_of_tree_row(row);
                 let ctx = RowsContext {
                     doc: self.session.doc(),
                     findings: self.session.findings(),
@@ -311,7 +452,22 @@ impl App {
                     mode: self.diff_mode(),
                     hunk_labels: Some(&self.hunk_labels),
                 };
-                self.rows = build_file_rows(&mut self.factory, &ctx, &f.path, f.hunk_idxs.clone());
+                self.rows = match targets.as_slice() {
+                    // A single file keeps its dedicated builder (it renders a
+                    // placeholder for zero-hunk binary/submodule changes).
+                    [only] => {
+                        let f = &self.files[*only];
+                        build_file_rows(&mut self.factory, &ctx, &f.path, f.hunk_idxs.clone())
+                    }
+                    // A directory: every hunk beneath it, file headers and all.
+                    many => {
+                        let hunks: Vec<usize> = many
+                            .iter()
+                            .flat_map(|i| self.files[*i].hunk_idxs.iter().copied())
+                            .collect();
+                        build_dir_rows(&mut self.factory, &ctx, hunks)
+                    }
+                };
             }
         }
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
@@ -366,10 +522,10 @@ impl App {
                 self.selected_group = idx.min(self.groups.len() - 1);
             }
             ViewMode::Files => {
-                if self.files.is_empty() {
+                if self.tree.is_empty() {
                     return;
                 }
-                self.selected_file = idx.min(self.files.len() - 1);
+                self.selected_file = idx.min(self.tree.len() - 1);
             }
         }
         self.cursor = 0;
@@ -505,11 +661,7 @@ impl App {
                 .get(self.selected_group)
                 .map(|g| g.id.clone())
                 .unwrap_or_default(),
-            ViewMode::Files => self
-                .files
-                .get(self.selected_file)
-                .map(|f| f.path.clone())
-                .unwrap_or_default(),
+            ViewMode::Files => self.tree_row_path(self.selected_file).unwrap_or_default(),
         };
         if let Err(e) = self.session.save_cursor(id, self.cursor) {
             self.status = format!("save failed: {e:#}");
@@ -585,7 +737,12 @@ impl App {
                     Focus::Diff => Focus::Groups,
                 }
             }
-            (KeyCode::Enter, _) if self.focus == Focus::Groups => self.focus = Focus::Diff,
+            (KeyCode::Enter, _) if self.focus == Focus::Groups => {
+                // Enter opens a directory rather than jumping to the diff.
+                if !(self.view_mode == ViewMode::Files && self.toggle_dir()) {
+                    self.focus = Focus::Diff;
+                }
+            }
             (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, _) => match self.focus {
                 Focus::Groups => self.select_entry(self.selected_entry() + 1),
                 Focus::Diff => self.move_cursor(1),
@@ -621,6 +778,9 @@ impl App {
                     .next_selectable(self.rows.len().saturating_sub(1), -1)
                     .unwrap_or(0);
                 self.follow_cursor();
+            }
+            (KeyCode::Char('z'), _) if self.view_mode == ViewMode::Files => {
+                self.toggle_dir();
             }
             (KeyCode::Char('z'), _) => {
                 if self.view_mode == ViewMode::Groups
@@ -694,14 +854,12 @@ impl App {
                 Some(g) => g.class_keys.clone(),
                 None => return Ok(()),
             },
-            ViewMode::Files => match self.files.get(self.selected_file) {
-                Some(f) => f
-                    .hunk_idxs
-                    .iter()
-                    .map(|h| self.session.hunk_class_key(*h).to_string())
-                    .collect(),
-                None => return Ok(()),
-            },
+            ViewMode::Files => self
+                .files_of_tree_row(self.selected_file)
+                .iter()
+                .flat_map(|i| self.files[*i].hunk_idxs.iter())
+                .map(|h| self.session.hunk_class_key(*h).to_string())
+                .collect(),
         };
         if keys.is_empty() {
             self.status = "nothing to mark here".into();
@@ -847,8 +1005,8 @@ impl App {
                 .collect(),
             ViewMode::Files => {
                 let reviewed = self.session.reviewed_hunks();
-                (0..self.files.len())
-                    .map(|i| self.file_lines(i, i == selected, &reviewed))
+                (0..self.tree.len())
+                    .map(|i| self.tree_lines(i, i == selected, &reviewed))
                     .collect()
             }
         };
@@ -959,15 +1117,15 @@ impl App {
         lines
     }
 
-    /// One file entry: path, then counts.
-    fn file_lines(
+    /// One tree row: a directory (with aggregate counts and a fold marker)
+    /// or a file.
+    fn tree_lines(
         &self,
-        idx: usize,
+        row: usize,
         selected: bool,
         reviewed: &HashSet<usize>,
     ) -> Vec<Line<'static>> {
-        let f = &self.files[idx];
-        let done = !f.hunk_idxs.is_empty() && f.hunk_idxs.iter().all(|h| reviewed.contains(h));
+        let entry = &self.tree[row];
         let bg = |st: Style| {
             if selected {
                 st.bg(THEME.selected_bg).add_modifier(Modifier::BOLD)
@@ -975,39 +1133,71 @@ impl App {
                 st
             }
         };
-        let mark = if done { "✓ " } else { "  " };
-        let mut lines = vec![Line::from(vec![
-            Span::styled(mark.to_string(), bg(Style::default().fg(THEME.reviewed_fg))),
-            Span::styled(
-                f.path.clone(),
-                bg(Style::default().fg(if done {
-                    THEME.reviewed_fg
-                } else {
-                    THEME.context_fg
-                })),
-            ),
-        ])];
-        let dim = bg(Style::default().fg(THEME.gutter_fg));
-        if f.hunk_idxs.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "    (no text hunks)".to_string(),
-                dim,
-            )));
+        let indent = "  ".repeat(entry.depth);
+        let files = self.files_of_tree_row(row);
+        let (adds, dels): (usize, usize) = files
+            .iter()
+            .map(|i| (self.files[*i].adds, self.files[*i].dels))
+            .fold((0, 0), |(a, d), (x, y)| (a + x, d + y));
+        let hunks: Vec<usize> = files
+            .iter()
+            .flat_map(|i| self.files[*i].hunk_idxs.iter().copied())
+            .collect();
+        let done = !hunks.is_empty() && hunks.iter().all(|h| reviewed.contains(h));
+        let mark = if done { "✓" } else { " " };
+        let name_style = bg(Style::default().fg(if done {
+            THEME.reviewed_fg
         } else {
-            lines.push(Line::from(vec![
-                Span::styled("    ".to_string(), dim),
-                Span::styled(
-                    format!("+{}", f.adds),
-                    bg(Style::default().fg(THEME.add_fg)),
-                ),
-                Span::styled(" ", dim),
-                Span::styled(
-                    format!("−{}", f.dels),
-                    bg(Style::default().fg(THEME.del_fg)),
-                ),
-            ]));
+            THEME.context_fg
+        }));
+        let dim = bg(Style::default().fg(THEME.gutter_fg));
+
+        match &entry.kind {
+            TreeKind::Dir { path } => {
+                let glyph = if self.collapsed.contains(path) {
+                    "▸"
+                } else {
+                    "▾"
+                };
+                let name = path.rsplit('/').next().unwrap_or(path).to_string();
+                vec![Line::from(vec![
+                    Span::styled(format!("{mark}{indent}{glyph} "), dim),
+                    Span::styled(
+                        format!("{name}/"),
+                        bg(Style::default()
+                            .fg(THEME.header_fg)
+                            .add_modifier(Modifier::BOLD)),
+                    ),
+                    Span::styled("  ", dim),
+                    Span::styled(format!("+{adds}"), bg(Style::default().fg(THEME.add_fg))),
+                    Span::styled(" ", dim),
+                    Span::styled(format!("−{dels}"), bg(Style::default().fg(THEME.del_fg))),
+                ])]
+            }
+            TreeKind::File { file_idx } => {
+                let f = &self.files[*file_idx];
+                let name = f.path.rsplit('/').next().unwrap_or(&f.path).to_string();
+                let mut spans = vec![
+                    Span::styled(format!("{mark}{indent}  "), dim),
+                    Span::styled(name, name_style),
+                    Span::styled("  ", dim),
+                ];
+                if f.hunk_idxs.is_empty() {
+                    spans.push(Span::styled("(no text hunks)".to_string(), dim));
+                } else {
+                    spans.push(Span::styled(
+                        format!("+{}", f.adds),
+                        bg(Style::default().fg(THEME.add_fg)),
+                    ));
+                    spans.push(Span::styled(" ", dim));
+                    spans.push(Span::styled(
+                        format!("−{}", f.dels),
+                        bg(Style::default().fg(THEME.del_fg)),
+                    ));
+                }
+                vec![Line::from(spans)]
+            }
         }
-        lines
     }
 
     fn draw_diff(&mut self, frame: &mut Frame, area: Rect) {

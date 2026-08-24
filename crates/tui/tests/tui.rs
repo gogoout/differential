@@ -287,14 +287,14 @@ fn file_view_resume_restores_view_and_file() {
     use differential_tui::app::ViewMode;
     let (r, mut app) = make_app();
     app.handle_key(key('v'));
-    app.handle_key(key('J')); // second file
-    let path = app.files[app.selected_file].path.clone();
+    app.handle_key(key('J')); // next tree row
+    let path = app.selected_path().unwrap();
     app.handle_key(key('q'));
     drop(app);
 
     let app2 = open_app(&r);
     assert_eq!(app2.view_mode, ViewMode::Files);
-    assert_eq!(app2.files[app2.selected_file].path, path);
+    assert_eq!(app2.selected_path().unwrap(), path);
 }
 
 #[test]
@@ -503,4 +503,53 @@ fn n_and_shift_n_jump_between_hunks() {
     assert!(app.cursor > first);
     app.handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT));
     assert_eq!(app.cursor, first, "N goes back");
+}
+
+#[test]
+fn file_view_is_a_collapsible_tree() {
+    use differential_tui::app::{TreeKind, ViewMode};
+    let (_r, mut app) = make_app();
+    app.handle_key(key('v'));
+    assert_eq!(app.view_mode, ViewMode::Files);
+
+    // The fixture's files all live under src/, so the tree has a src/ node
+    // above them — directories are rows, files nest beneath.
+    let dir_row = app
+        .tree
+        .iter()
+        .position(|e| matches!(&e.kind, TreeKind::Dir { path } if path == "src"))
+        .expect("src/ directory row");
+    let files_visible = |a: &differential_tui::app::App| {
+        a.tree
+            .iter()
+            .filter(|e| matches!(e.kind, TreeKind::File { .. }))
+            .count()
+    };
+    assert_eq!(files_visible(&app), 4, "all files visible when expanded");
+
+    // Selecting the directory shows every hunk beneath it.
+    while app.selected_file != dir_row {
+        app.handle_key(key('j'));
+    }
+    let hunks_under_dir = app
+        .rows
+        .iter()
+        .filter(|r| matches!(r.kind, RowKind::HunkHeader(_)))
+        .count();
+    assert!(hunks_under_dir >= 4, "directory view spans its files");
+
+    // z collapses it: the files disappear, the directory row stays.
+    app.handle_key(key('z'));
+    assert_eq!(
+        files_visible(&app),
+        0,
+        "collapsed directory hides its files"
+    );
+    assert!(
+        app.tree
+            .iter()
+            .any(|e| matches!(&e.kind, TreeKind::Dir { path } if path == "src"))
+    );
+    app.handle_key(key('z'));
+    assert_eq!(files_visible(&app), 4, "unfold restores them");
 }
