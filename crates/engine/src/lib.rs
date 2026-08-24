@@ -24,6 +24,7 @@ pub mod review_state;
 pub mod shape;
 pub mod stack;
 pub mod tree;
+pub mod worktree;
 
 pub use grouping::GroupingOptions;
 pub use pipeline::{

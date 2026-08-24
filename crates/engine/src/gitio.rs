@@ -122,6 +122,14 @@ impl Repo {
         Ok(String::from_utf8_lossy(trim_newline(&out)).into_owned())
     }
 
+    /// Resolve to a commit sha, or accept a raw tree oid — the endpoints of
+    /// an uncommitted-state review are synthesized trees (ADR 0017), and
+    /// everything downstream of resolution is tree-safe.
+    pub fn rev_parse_commit_or_tree(&self, rev: &str) -> Result<String, EngineError> {
+        self.rev_parse(rev)
+            .or_else(|_| self.rev_parse_raw(&format!("{rev}^{{tree}}")))
+    }
+
     /// Resolve any rev expression (tree, `X^{tree}`, blob spec) to an object id.
     pub fn rev_parse_raw(&self, expr: &str) -> Result<String, EngineError> {
         let out = self.run(["rev-parse", "--verify", expr], None)?;

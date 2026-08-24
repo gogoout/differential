@@ -9,7 +9,8 @@ not (readers tolerate unknown fields, and must reject versions they do not know)
 - Optional fields serialise as explicit `null`, never omitted.
 - All ids (`h0…`, `C0…`, `g0…`) are document-local. Hunk and class ids are **positional** and
   do not survive regeneration; `hunks[].digest` is the stable anchor.
-- `base`/`head` are fully resolved commit shas.
+- `base`/`head` are fully resolved commit shas — except for `source.kind` of `staged` or
+  `worktree` (ADR 0017), where they are the synthesized snapshot **tree** oids.
 
 ## `generator`
 

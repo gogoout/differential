@@ -190,8 +190,10 @@ fn run_core(
     config: &Config,
     langs: &LanguageRegistry,
 ) -> Result<PipelineOutput, EngineError> {
-    let base = repo.rev_parse(base_rev)?;
-    let head = repo.rev_parse(head_rev)?;
+    // Commits normally; raw tree oids for uncommitted-state reviews
+    // (ADR 0017) — every later stage treats the endpoints as trees anyway.
+    let base = repo.rev_parse_commit_or_tree(base_rev)?;
+    let head = repo.rev_parse_commit_or_tree(head_rev)?;
 
     // Canonical metadata: authoritative modes, full oids, dispositions.
     let raw = repo.run(
