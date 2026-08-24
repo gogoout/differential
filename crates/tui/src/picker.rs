@@ -60,9 +60,13 @@ fn parse_rev_list(bytes: &[u8]) -> Vec<CommitEntry> {
         .collect()
 }
 
-/// `for-each-ref --format='%(objectname)%x00%(*objectname)%x00%(refname:short)'`
+/// `for-each-ref --format='%(objectname)%00%(*objectname)%00%(refname:short)'`
 /// output → sha -> ref names. Plumbing, so unaffected by log.decorate config;
 /// annotated tags carry the peeled commit in the second field.
+///
+/// NOTE the escape: for-each-ref's format language spells NUL `%00`. `%x00`
+/// is a rev-list/log spelling and passes through as literal text here, which
+/// is exactly how this silently produced no decorations at all.
 fn parse_refs(bytes: &[u8]) -> HashMap<String, Vec<String>> {
     let mut out: HashMap<String, Vec<String>> = HashMap::new();
     for line in bytes.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
@@ -82,6 +86,23 @@ fn parse_refs(bytes: &[u8]) -> HashMap<String, Vec<String>> {
         out.entry(target.clone()).or_default().push(name.clone());
     }
     out
+}
+
+/// Branch and tag names by commit sha. An unreadable ref list costs
+/// decoration, never the picker.
+pub fn ref_names(repo: &Repo) -> HashMap<String, Vec<String>> {
+    repo.run(
+        [
+            "for-each-ref",
+            "--format=%(objectname)%00%(*objectname)%00%(refname:short)",
+            "refs/heads",
+            "refs/tags",
+            "refs/remotes",
+        ],
+        None,
+    )
+    .map(|out| parse_refs(&out))
+    .unwrap_or_default()
 }
 
 /// Open the picker inside an existing terminal session. `Ok(None)` =
@@ -108,19 +129,7 @@ pub fn pick_source(
     )?;
     let mut commits = parse_rev_list(&raw);
 
-    let refs = repo
-        .run(
-            [
-                "for-each-ref",
-                "--format=%(objectname)%x00%(*objectname)%x00%(refname:short)",
-                "refs/heads",
-                "refs/tags",
-                "refs/remotes",
-            ],
-            None,
-        )
-        .map(|out| parse_refs(&out))
-        .unwrap_or_default();
+    let refs = ref_names(repo);
     for c in &mut commits {
         if let Some(names) = refs.get(&c.sha) {
             c.refs = names.clone();

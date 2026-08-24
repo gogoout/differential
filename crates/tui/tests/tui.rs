@@ -683,3 +683,27 @@ fn scrolling_back_up_reveals_the_group_header() {
     app.handle_key(key('g'));
     assert_eq!(app.scroll, 0);
 }
+
+/// The ref decoration runs a real `git for-each-ref` and parses its real
+/// output — the hand-written bytes in the unit test happily passed while the
+/// format string was wrong, so this drives the actual command.
+#[test]
+fn picker_reads_real_branch_and_tag_names() {
+    let r = TestRepo::new();
+    r.write("a.txt", b"one\n");
+    let first = r.commit_all("first");
+    r.git(&["tag", "v0.1.0"]);
+    r.git(&["tag", "-a", "v0.2.0", "-m", "annotated"]);
+    r.git(&["branch", "feature"]);
+    // A remote-tracking ref, without needing a remote.
+    r.git(&["update-ref", "refs/remotes/origin/main", &first]);
+
+    let refs = differential_tui::picker::ref_names(&r.repo());
+    let names = refs.get(&first).expect("refs for the commit");
+    for want in ["main", "feature", "v0.1.0", "v0.2.0", "origin/main"] {
+        assert!(
+            names.iter().any(|n| n == want),
+            "{want:?} missing from {names:?}"
+        );
+    }
+}
