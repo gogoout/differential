@@ -68,9 +68,10 @@ dfr findings [--no-cache] <range>               # print the review's findings as
 
 - `<range>`: `base..head`, `a...b` (base = merge-base, i.e. what an MR/PR diff is), or two
   revs.
-- `dfr review` with no range opens a picker: review the worktree (all uncommitted
-  changes), the staged index, or everything since a recent commit. Progress marks and
-  findings persist across new commits — and across edits, for uncommitted reviews.
+- `dfr review` with no range opens a picker: tick "include uncommitted changes" and pick
+  the base commit (branch and tag names are shown, and a bar marks what's in range) —
+  so "everything since `main`, including my uncommitted work" is one choice. Progress
+  marks and findings persist across new commits, and across edits for worktree reviews.
 - `--repo <path>` / `--config <path>` work on every command; the repo defaults to the one
   containing your cwd.
 - `dfr stack --ref refs/review/my-review/stack` picks the ref; default is
