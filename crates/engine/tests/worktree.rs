@@ -116,11 +116,19 @@ fn unmerged_index_is_a_clear_error() {
     r.write("c.txt", b"main version\n");
     r.commit_all("main edit");
     // Merge conflicts; git merge exits non-zero, so call it tolerantly.
-    let _ = std::process::Command::new("git")
+    // Identity flags matter: without them git aborts BEFORE writing the
+    // conflict entries on machines with no global user config (CI).
+    let out = std::process::Command::new("git")
+        .args(["-c", "user.name=test", "-c", "user.email=t@example.invalid"])
         .args(["merge", "side"])
         .current_dir(&r.root)
         .output()
         .unwrap();
+    assert!(
+        !out.status.success(),
+        "merge unexpectedly clean: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 
     let err = index_tree(&r.repo()).unwrap_err();
     assert!(err.to_string().contains("unmerged"), "got: {err}");
