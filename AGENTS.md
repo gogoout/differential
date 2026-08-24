@@ -21,9 +21,26 @@ code must change together — or the change is wrong.
    specific one to refuse: it re-opens the exclusion hole ADR 0012 closed.
 
 3. **Business logic owns the trait; the adapter implements it** (ADR 0020).
-   Domain code must not name an adapter. If a function needs git, the filesystem, a
-   clock, or a terminal, it takes a port defined next to the logic — `engine::ports` —
-   and `gitio`/`store` implement it. The dependency points inward, always.
+
+   **The domain must never depend on an adapter. The adapter depends on the domain.**
+   That arrow is one-way and has no exceptions. Concretely: a domain module may not
+   `use crate::gitio`, `std::fs`, `std::process`, `std::env`, `etcetera` or `tempfile` —
+   if it needs git, the filesystem, a clock or a terminal, it declares a port next to
+   the logic (`engine::ports`) and `gitio`/`store` implement that port. The trait is
+   defined by the side that *needs* the capability, never by the side that provides it,
+   which is what makes the domain compilable and readable without knowing an adapter
+   exists.
+
+   The tell that you have it backwards: the trait's methods read like the tool
+   (`run_git`, `write_file`) instead of like the need (`blob`, `save_state`). A port
+   named after its implementation is the adapter wearing a trait, and the dependency is
+   still pointing the wrong way.
+
+   This is enforced, not merely stated: `crates/engine/tests/layering.rs` fails if a
+   domain module names an adapter. Its `NOT_YET_INVERTED` list is the migration's
+   remaining debt and **only shrinks** — never add to it, and delete a line the moment
+   its module is inverted (a stale entry silently re-permits what it names, and the test
+   fails for that too).
 
    **Generics for inversion, `dyn` for polymorphism.** A trait with one production
    implementation, chosen at compile time, exists to invert a dependency: take it as a

@@ -33,6 +33,18 @@ parser's extra arms are currently unreachable.
 **Business logic owns the trait; the adapter implements it.** Dependency direction is
 inverted so implementation depends on domain and never the reverse.
 
+**The domain must never depend on an adapter — the arrow is one-way and has no
+exceptions.** A domain module may not name `gitio`, `store`, `std::fs`, `std::process`,
+`std::env` or the crates behind them; when it needs a capability it declares a port and
+an adapter implements that port. Which side declares the trait is the whole decision: a
+trait defined by the provider is the adapter wearing an interface, and leaves the arrow
+pointing outward however many traits are involved. Defined by the consumer, the domain
+compiles and reads without knowing an adapter exists.
+
+The observable tell is naming. A port's methods describe the *need* (`blob`,
+`recount_patch`, `save_state`); if they describe the *tool* (`run_git`, `write_file`,
+`exec`), the domain is still specifying an implementation and the inversion is cosmetic.
+
 **Ports are consumed by static dispatch — generics, not `dyn`.** The distinction is the
 load-bearing part of this record:
 
@@ -108,6 +120,12 @@ a crate, that is a later record with evidence, not this one.
 - `Repo::run` and `Repo::run_env` become **private to `gitio`**. The raw-git escape hatch
   is sealed by the compiler rather than by review, and that is the migration's completion
   test: `rg '\.run(_env)?\(' crates --glob '!**/gitio.rs'` returns nothing.
+- The direction is enforced by a test, not by review alone.
+  `crates/engine/tests/layering.rs` fails when a domain module names an adapter. It
+  carries a `NOT_YET_INVERTED` list of the modules this migration has not reached, which
+  may only shrink — and it fails on a *stale* entry too, so the list cannot quietly
+  become a permanent exemption. At the end of stage 5 the list is empty and the test
+  becomes an unconditional statement of the rule.
 - Invariant 4 keeps its independence structurally. `RecountSource` is a **separate trait**
   from `DiffSource` — not one trait with two methods, not one method with a flag — so a
   change to enumeration's argv cannot move both sides of the comparison. Its
