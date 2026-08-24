@@ -1,11 +1,14 @@
 //! The reviewer's model, key handling and drawing. `handle_key` is a plain
 //! method on the model returning effects — testable without a terminal.
+//!
+//! All review state (reviewed marks, findings, resume cursor) lives in the
+//! engine's `ReviewSession`; this model holds presentation state only.
 
 use std::collections::{HashMap, HashSet};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use differential_engine::model::DiffView;
-use differential_engine::review_state::{Anchor, Finding, FindingStatus, ReviewState};
+use differential_engine::ReviewSession;
+use differential_engine::review_state::FindingStatus;
 use differential_schema as schema;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -35,8 +38,6 @@ pub enum Mode {
 #[derive(Debug, PartialEq)]
 pub enum Effect {
     Quit,
-    SaveState,
-    SaveFindings,
     Yank(String),
 }
 
@@ -50,18 +51,11 @@ pub struct GroupInfo {
 }
 
 pub struct App {
-    pub doc: schema::PlanDocument,
-    pub view: DiffView,
-    pub plan_hash: String,
+    pub session: ReviewSession,
     factory: RowFactory,
 
     pub groups: Vec<GroupInfo>,
     pub labels: HashMap<String, String>,
-    /// hunk index -> class content key (reviewed-mark key).
-    pub hunk_key: HashMap<usize, String>,
-
-    pub state: ReviewState,
-    pub findings: Vec<Finding>,
 
     pub focus: Focus,
     pub mode: Mode,
@@ -79,39 +73,10 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(
-        doc: schema::PlanDocument,
-        view: DiffView,
-        plan_hash: String,
-        factory: RowFactory,
-        state: ReviewState,
-        findings: Vec<Finding>,
-    ) -> Self {
-        let class_key: HashMap<&str, String> = doc
-            .classes
-            .iter()
-            .map(|c| {
-                let digests: Vec<String> = c
-                    .hunk_ids
-                    .iter()
-                    .map(|hid| {
-                        let idx: usize = hid[1..].parse().expect("h<N>");
-                        doc.hunks[idx].digest.clone()
-                    })
-                    .collect();
-                (
-                    c.id.as_str(),
-                    differential_engine::review_state::class_content_key(&digests),
-                )
-            })
-            .collect();
-        let mut hunk_key = HashMap::new();
-        for c in &doc.classes {
-            for hid in &c.hunk_ids {
-                let idx: usize = hid[1..].parse().expect("h<N>");
-                hunk_key.insert(idx, class_key[c.id.as_str()].clone());
-            }
-        }
+    pub fn new(session: ReviewSession, factory: RowFactory) -> Self {
+        let doc = session.doc();
+        let class_by_id: HashMap<&str, &schema::ClassEntry> =
+            doc.classes.iter().map(|c| (c.id.as_str(), c)).collect();
         let empty = Vec::new();
         let schema_groups = doc.groups.as_ref().unwrap_or(&empty);
         let groups: Vec<GroupInfo> = schema_groups
@@ -123,15 +88,14 @@ impl App {
                 class_keys: g
                     .class_ids
                     .iter()
-                    .map(|c| class_key[c.as_str()].clone())
+                    .map(|c| session.class_key(c).to_string())
                     .collect(),
                 n_hunks: g
                     .class_ids
                     .iter()
                     .map(|c| {
-                        doc.classes
-                            .iter()
-                            .find(|cl| &cl.id == c)
+                        class_by_id
+                            .get(c.as_str())
                             .map_or(0, |cl| cl.hunk_ids.len())
                     })
                     .sum(),
@@ -143,22 +107,19 @@ impl App {
             .collect();
 
         // Resume position.
-        let selected_group = state
-            .cursor
-            .as_ref()
-            .and_then(|(gid, _)| groups.iter().position(|g| &g.id == gid))
-            .unwrap_or(0);
+        let (selected_group, resume_row) = match session.cursor() {
+            Some((gid, row)) => (
+                groups.iter().position(|g| &g.id == gid).unwrap_or(0),
+                Some(*row),
+            ),
+            None => (0, None),
+        };
 
         let mut app = App {
-            doc,
-            view,
-            plan_hash,
+            session,
             factory,
             groups,
             labels,
-            hunk_key,
-            state,
-            findings,
             focus: Focus::Groups,
             mode: Mode::Normal,
             selected_group,
@@ -172,22 +133,14 @@ impl App {
             pending_d: false,
         };
         app.rebuild_rows();
-        if let Some((_, row)) = app.state.cursor.clone() {
+        if let Some(row) = resume_row {
             app.cursor = row.min(app.rows.len().saturating_sub(1));
         }
         app
     }
 
-    pub fn reviewed_hunks_of_selected(&self) -> HashSet<usize> {
-        self.hunk_key
-            .iter()
-            .filter(|(_, key)| self.state.reviewed_classes.contains(*key))
-            .map(|(hi, _)| *hi)
-            .collect()
-    }
-
     pub fn rebuild_rows(&mut self) {
-        let Some(groups) = self.doc.groups.as_ref() else {
+        let Some(groups) = self.session.doc().groups.as_ref() else {
             self.rows = Vec::new();
             return;
         };
@@ -199,12 +152,12 @@ impl App {
             return;
         }
         let g = &groups[self.selected_group.min(groups.len() - 1)];
-        let reviewed = self.reviewed_hunks_of_selected();
+        let reviewed = self.session.reviewed_hunks();
         let ctx = GroupContext {
-            doc: &self.doc,
+            doc: self.session.doc(),
             group: g,
             labels: &self.labels,
-            findings: &self.findings,
+            findings: self.session.findings(),
             reviewed: &reviewed,
             fold_open: self.folds_open.contains(&g.id),
         };
@@ -265,6 +218,19 @@ impl App {
         self.rows.get(self.cursor).and_then(|r| r.kind.hunk())
     }
 
+    /// Persist the resume position through the session; surface failures in
+    /// the status line rather than tearing the TUI down.
+    fn save_cursor(&mut self) {
+        let id = self
+            .groups
+            .get(self.selected_group)
+            .map(|g| g.id.clone())
+            .unwrap_or_default();
+        if let Err(e) = self.session.save_cursor(id, self.cursor) {
+            self.status = format!("save failed: {e:#}");
+        }
+    }
+
     /// Key handling. Returns effects for the loop to execute.
     pub fn handle_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         match &mut self.mode {
@@ -287,7 +253,8 @@ impl App {
                             self.status = "empty finding discarded".into();
                             return Vec::new();
                         }
-                        return self.add_finding(hunk, body);
+                        self.add_finding(hunk, body);
+                        return Vec::new();
                     }
                     _ => {
                         textarea.input(key);
@@ -300,7 +267,10 @@ impl App {
 
         let pending_d = std::mem::take(&mut self.pending_d);
         match (key.code, key.modifiers) {
-            (KeyCode::Char('q'), _) => return vec![Effect::SaveState, Effect::Quit],
+            (KeyCode::Char('q'), _) => {
+                self.save_cursor();
+                return vec![Effect::Quit];
+            }
             (KeyCode::Char('?'), _) => self.mode = Mode::Help,
             (KeyCode::Tab, _) => {
                 self.focus = match self.focus {
@@ -346,13 +316,15 @@ impl App {
                 self.follow_cursor();
             }
             (KeyCode::Char('z'), _) => {
-                let gid = self.groups[self.selected_group].id.clone();
-                if !self.folds_open.insert(gid.clone()) {
-                    self.folds_open.remove(&gid);
+                if let Some(g) = self.groups.get(self.selected_group) {
+                    let gid = g.id.clone();
+                    if !self.folds_open.insert(gid.clone()) {
+                        self.folds_open.remove(&gid);
+                    }
+                    self.rebuild_rows();
                 }
-                self.rebuild_rows();
             }
-            (KeyCode::Char(' '), _) => return self.toggle_reviewed(),
+            (KeyCode::Char(' '), _) => self.toggle_reviewed(),
             (KeyCode::Char('c'), KeyModifiers::NONE) => {
                 if let Some(h) = self.current_hunk() {
                     let mut ta = TextArea::default();
@@ -368,9 +340,10 @@ impl App {
             }
             (KeyCode::Char('d'), KeyModifiers::NONE) => {
                 if pending_d {
-                    return self.delete_finding_at_cursor();
+                    self.delete_finding_at_cursor();
+                } else {
+                    self.pending_d = true;
                 }
-                self.pending_d = true;
             }
             (KeyCode::Char('y'), _) => {
                 return vec![Effect::Yank(self.findings_summary())];
@@ -380,82 +353,59 @@ impl App {
         Vec::new()
     }
 
-    fn toggle_reviewed(&mut self) -> Vec<Effect> {
+    fn toggle_reviewed(&mut self) {
         let Some(h) = self.current_hunk() else {
-            return Vec::new();
+            return;
         };
-        let key = self.hunk_key[&h].clone();
-        if !self.state.reviewed_classes.insert(key.clone()) {
-            self.state.reviewed_classes.remove(&key);
+        if let Err(e) = self.session.toggle_reviewed(h) {
+            self.status = format!("save failed: {e:#}");
+            return;
         }
-        self.state.cursor = Some((self.groups[self.selected_group].id.clone(), self.cursor));
+        self.save_cursor();
         self.rebuild_rows();
-        vec![Effect::SaveState]
     }
 
-    fn add_finding(&mut self, hunk_idx: usize, body: String) -> Vec<Effect> {
-        let hunk = &self.doc.hunks[hunk_idx];
-        let side = if hunk.new_count > 0 { "new" } else { "old" };
-        let line = if hunk.new_count > 0 {
-            hunk.new_start.max(1)
-        } else {
-            hunk.old_start.max(1)
-        };
-        let vh = &self.view.hunks[hunk_idx];
-        let line_text = vh
-            .added
-            .first()
-            .or(vh.removed.first())
-            .map(|l| String::from_utf8_lossy(l).into_owned())
-            .unwrap_or_default();
-        let finding = Finding::new(
-            body,
-            self.plan_hash.clone(),
-            Anchor {
-                file: hunk.file.clone(),
-                side: side.into(),
-                line,
-                hunk_digest: hunk.digest.clone(),
-                line_text,
-            },
-        );
-        self.findings.push(finding);
-        self.status = "finding saved".into();
+    fn add_finding(&mut self, hunk_idx: usize, body: String) {
+        match self.session.add_finding(hunk_idx, body) {
+            Ok(_) => self.status = "finding saved".into(),
+            Err(e) => self.status = format!("save failed: {e:#}"),
+        }
         self.rebuild_rows();
-        vec![Effect::SaveFindings]
     }
 
-    fn delete_finding_at_cursor(&mut self) -> Vec<Effect> {
+    fn delete_finding_at_cursor(&mut self) {
         if let Some(RowKind::Finding(id, _)) = self.rows.get(self.cursor).map(|r| r.kind.clone()) {
-            self.findings.retain(|f| f.id != id);
-            self.status = "finding deleted".into();
+            match self.session.delete_finding(&id) {
+                Ok(_) => self.status = "finding deleted".into(),
+                Err(e) => self.status = format!("save failed: {e:#}"),
+            }
             self.rebuild_rows();
-            return vec![Effect::SaveFindings];
+        } else {
+            self.status = "dd works on a finding line".into();
         }
-        self.status = "dd works on a finding line".into();
-        Vec::new()
     }
 
     /// Markdown summary of open findings, for pasting into an agent or PR.
     pub fn findings_summary(&self) -> String {
-        let group_of_digest: HashMap<&str, &str> = self
-            .doc
+        let doc = self.session.doc();
+        let group_of_digest: HashMap<&str, &str> = doc
             .groups
             .iter()
             .flatten()
             .flat_map(|g| {
                 g.class_ids.iter().flat_map(|cid| {
-                    let class = self.doc.classes.iter().find(|c| &c.id == cid).unwrap();
+                    let class = doc.classes.iter().find(|c| &c.id == cid).unwrap();
                     class.hunk_ids.iter().map(|hid| {
                         let idx: usize = hid[1..].parse().unwrap();
-                        (self.doc.hunks[idx].digest.as_str(), g.label.as_str())
+                        (doc.hunks[idx].digest.as_str(), g.label.as_str())
                     })
                 })
             })
             .collect();
         let mut out = String::new();
         for f in self
-            .findings
+            .session
+            .findings()
             .iter()
             .filter(|f| f.status == FindingStatus::Open)
         {
@@ -519,10 +469,7 @@ impl App {
             .skip(self.group_scroll)
             .take(inner_h)
             .map(|(i, g)| {
-                let done = g
-                    .class_keys
-                    .iter()
-                    .all(|k| self.state.reviewed_classes.contains(k))
+                let done = g.class_keys.iter().all(|k| self.session.is_reviewed(k))
                     && !g.class_keys.is_empty();
                 let tier = match g.effort {
                     schema::Effort::Close => "C",
@@ -541,7 +488,8 @@ impl App {
             })
             .collect();
         let orphans = self
-            .findings
+            .session
+            .findings()
             .iter()
             .filter(|f| f.status == FindingStatus::Orphaned)
             .count();
@@ -592,9 +540,10 @@ impl App {
 
     fn draw_status(&mut self, frame: &mut Frame, area: Rect) {
         let total: usize = self.groups.iter().map(|g| g.class_keys.len()).sum();
-        let done = self.state.reviewed_classes.len().min(total);
+        let done = self.session.reviewed_count().min(total);
         let open = self
-            .findings
+            .session
+            .findings()
             .iter()
             .filter(|f| f.status == FindingStatus::Open)
             .count();

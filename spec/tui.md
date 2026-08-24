@@ -27,7 +27,9 @@ just the sequence.
 
 ## State
 
-Everything persists in the sidecar store (spec/persistence.md) under
+Everything persists through the engine's `ReviewSession` — the TUI is a stateless
+frontend that reads and mutates review state only via the session, which writes the
+sidecar store (spec/persistence.md) under
 `<git-common-dir>/differential/reviews/<review-id>/`, where the review id derives from the
 resolved base sha plus the head **as typed** — reviewing `main..feature` keeps one review
 while `feature` moves. Reviewed marks key on class content (sorted member digests);

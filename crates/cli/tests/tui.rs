@@ -8,11 +8,11 @@ use std::sync::Mutex;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use differential::tui::app::{App, Effect, Focus, Mode};
 use differential::tui::rows::{RowFactory, RowKind};
+use differential_engine::ReviewSession;
 use differential_engine::config::Config;
 use differential_engine::gitio::Repo;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::run_grouped_pipeline;
-use differential_engine::review_state::ReviewState;
 use differential_llm::{LlmBackend, LlmError};
 use differential_schema::SourceKind;
 use tempfile::TempDir;
@@ -122,14 +122,13 @@ fn make_app() -> (TestRepo, App) {
     )
     .unwrap();
     let factory = RowFactory::new(repo, out.base.clone(), out.head.clone());
-    let app = App::new(
+    let session = ReviewSession::open_at(
+        r.root.join(".dfr-test-store"),
         out.document.unwrap(),
         out.view,
-        "planhash".into(),
-        factory,
-        ReviewState::default(),
-        Vec::new(),
-    );
+    )
+    .unwrap();
+    let app = App::new(session, factory);
     (r, app)
 }
 
@@ -168,15 +167,22 @@ fn navigation_group_switch_and_focus() {
 }
 
 #[test]
-fn space_toggles_class_reviewed_and_saves() {
-    let (_r, mut app) = make_app();
+fn space_toggles_class_reviewed_and_persists() {
+    let (r, mut app) = make_app();
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    let effects = app.handle_key(key(' '));
-    assert!(effects.contains(&Effect::SaveState));
-    assert_eq!(app.state.reviewed_classes.len(), 1);
+    app.handle_key(key(' '));
+    assert_eq!(app.session.reviewed_count(), 1);
+
+    // The renderer is stateless: the mark is already on disk.
+    let store =
+        differential_engine::review_state::ReviewStore::open_at(r.root.join(".dfr-test-store"))
+            .unwrap();
+    assert_eq!(store.load_state().unwrap().reviewed_classes.len(), 1);
+
     // Toggling again clears it.
     app.handle_key(key(' '));
-    assert!(app.state.reviewed_classes.is_empty());
+    assert_eq!(app.session.reviewed_count(), 0);
+    assert!(store.load_state().unwrap().reviewed_classes.is_empty());
 }
 
 #[test]
@@ -190,11 +196,10 @@ fn finding_lifecycle_add_yank_delete() {
     for ch in "off by one".chars() {
         app.handle_key(key(ch));
     }
-    let effects = app.handle_key(ctrl('s'));
-    assert!(effects.contains(&Effect::SaveFindings));
-    assert_eq!(app.findings.len(), 1);
-    assert_eq!(app.findings[0].body, "off by one");
-    assert!(!app.findings[0].anchor.hunk_digest.is_empty());
+    app.handle_key(ctrl('s'));
+    assert_eq!(app.session.findings().len(), 1);
+    assert_eq!(app.session.findings()[0].body, "off by one");
+    assert!(!app.session.findings()[0].anchor.hunk_digest.is_empty());
 
     // The finding renders as a row and the summary contains it.
     assert!(
@@ -219,9 +224,8 @@ fn finding_lifecycle_add_yank_delete() {
         .unwrap();
     app.cursor = finding_row;
     app.handle_key(key('d'));
-    let effects = app.handle_key(key('d'));
-    assert!(effects.contains(&Effect::SaveFindings));
-    assert!(app.findings.is_empty());
+    app.handle_key(key('d'));
+    assert!(app.session.findings().is_empty());
 }
 
 #[test]
@@ -234,14 +238,18 @@ fn esc_discards_editor_and_empty_findings_are_dropped() {
     app.handle_key(key('c'));
     let effects = app.handle_key(ctrl('s')); // empty body
     assert!(effects.is_empty());
-    assert!(app.findings.is_empty());
+    assert!(app.session.findings().is_empty());
 }
 
 #[test]
-fn quit_saves_state() {
-    let (_r, mut app) = make_app();
+fn quit_saves_cursor() {
+    let (r, mut app) = make_app();
     let effects = app.handle_key(key('q'));
-    assert_eq!(effects, vec![Effect::SaveState, Effect::Quit]);
+    assert_eq!(effects, vec![Effect::Quit]);
+    let store =
+        differential_engine::review_state::ReviewStore::open_at(r.root.join(".dfr-test-store"))
+            .unwrap();
+    assert!(store.load_state().unwrap().cursor.is_some());
 }
 
 #[test]

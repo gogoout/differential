@@ -184,7 +184,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Review { no_cache, .. } => {
             let out = grouped(&repo, &base, &head, kind, &config, &langs, no_cache)?;
             let head_spec = head_spec_of(&common_range);
-            tui::run_review(&repo, out, &head_spec)?;
+            let review_base = out.base.clone();
+            tui::run_review(&repo, out, &review_base, &head_spec)?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Findings { no_cache, .. } => {
@@ -192,16 +193,14 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             let doc = out
                 .document
                 .context("invariants failed; no plan available")?;
-            let store = differential_engine::review_state::ReviewStore::open(
+            let session = differential_engine::ReviewSession::open(
                 &repo,
                 &out.base,
                 &head_spec_of(&common_range),
+                doc,
+                out.view,
             )?;
-            let plan_hash = store.save_plan(&doc)?;
-            let mut findings = store.load_findings()?;
-            differential_engine::review_state::reanchor(&mut findings, &doc, &out.view, &plan_hash);
-            store.save_findings(&findings)?;
-            println!("{}", serde_json::to_string_pretty(&findings)?);
+            println!("{}", serde_json::to_string_pretty(session.findings())?);
             Ok(ExitCode::SUCCESS)
         }
         Command::Check { json, .. } => {

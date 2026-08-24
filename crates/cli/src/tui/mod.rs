@@ -9,29 +9,28 @@ use std::time::Duration;
 
 use anyhow::Context;
 use crossterm::event::{self, Event};
-use differential_engine::PipelineOutput;
 use differential_engine::gitio::Repo;
-use differential_engine::review_state::{ReviewStore, reanchor};
+use differential_engine::{PipelineOutput, ReviewSession};
 
 use app::{App, Effect};
 use rows::RowFactory;
 
-/// Open the reviewer. `head_spec` is the head AS TYPED (branch names keep a
-/// review's identity while the tip moves).
-pub fn run_review(repo: &Repo, out: PipelineOutput, head_spec: &str) -> anyhow::Result<()> {
+/// Open the reviewer. `(review_base, head_spec)` is the review's IDENTITY —
+/// the head AS TYPED keeps a branch review stable while its tip moves, and
+/// uncommitted reviews key on the HEAD sha plus a stable literal.
+pub fn run_review(
+    repo: &Repo,
+    out: PipelineOutput,
+    review_base: &str,
+    head_spec: &str,
+) -> anyhow::Result<()> {
     let doc = out
         .document
         .context("invariants failed; nothing to review")?;
 
-    let store = ReviewStore::open(repo, &out.base, head_spec)?;
-    let plan_hash = store.save_plan(&doc)?;
-    let mut findings = store.load_findings()?;
-    reanchor(&mut findings, &doc, &out.view, &plan_hash);
-    store.save_findings(&findings)?;
-    let state = store.load_state()?;
-
+    let session = ReviewSession::open(repo, review_base, head_spec, doc, out.view)?;
     let factory = RowFactory::new(repo.clone(), out.base.clone(), out.head.clone());
-    let mut app = App::new(doc, out.view, plan_hash, factory, state, findings);
+    let mut app = App::new(session, factory);
 
     // Terminal guard (vendored, Drop-safe) + chained panic hook.
     let original_hook = std::panic::take_hook();
@@ -76,17 +75,6 @@ pub fn run_review(repo: &Repo, out: PipelineOutput, head_spec: &str) -> anyhow::
         for e in effects {
             match e {
                 Effect::Quit => quit = true,
-                Effect::SaveState => {
-                    app.state.cursor = Some((
-                        app.groups
-                            .get(app.selected_group)
-                            .map(|g| g.id.clone())
-                            .unwrap_or_default(),
-                        app.cursor,
-                    ));
-                    store.save_state(&app.state)?;
-                }
-                Effect::SaveFindings => store.save_findings(&app.findings)?,
                 Effect::Yank(text) => {
                     let ok = clipboard
                         .as_mut()
