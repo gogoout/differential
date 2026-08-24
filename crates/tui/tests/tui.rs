@@ -621,3 +621,27 @@ fn the_plan_gutter_links_the_selected_group_to_its_neighbours() {
         .collect();
     assert!(content.contains("◆"), "selected group marker missing");
 }
+
+#[test]
+fn the_selected_plan_row_is_highlighted_edge_to_edge() {
+    let (_r, mut app) = make_app();
+    let backend = ratatui::backend::TestBackend::new(100, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+
+    // The plan pane is the left 40 columns; its border is column 0 and the
+    // last inner column is 38. Find the selected row by its background, then
+    // assert that background runs to the pane edge rather than stopping at
+    // the end of the label.
+    let bg_of = |x: u16, y: u16| buf[(x, y)].style().bg;
+    let selected_row = (1..39u16)
+        .find(|&y| bg_of(2, y).is_some() && bg_of(2, y) == bg_of(3, y))
+        .expect("a highlighted row");
+    let bg = bg_of(2, selected_row);
+    assert_eq!(
+        bg_of(38, selected_row),
+        bg,
+        "selection stops short of the pane edge"
+    );
+}

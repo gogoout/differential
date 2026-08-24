@@ -16,6 +16,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use tui_textarea::TextArea;
+use unicode_width::UnicodeWidthStr;
 
 use super::rows::{
     DiffMode, GroupContext, Row, RowContent, RowFactory, RowKind, RowsContext, build_dir_rows,
@@ -1025,7 +1026,7 @@ impl App {
 
         // Entries render as blocks of lines, so scrolling counts ROWS, not
         // entries; keep the whole selected block in view.
-        let blocks: Vec<Vec<Line>> = match self.view_mode {
+        let mut blocks: Vec<Vec<Line>> = match self.view_mode {
             ViewMode::Groups => (0..self.groups.len())
                 .map(|i| self.group_lines(i, i == selected))
                 .collect(),
@@ -1036,6 +1037,14 @@ impl App {
                     .collect()
             }
         };
+        // The selection reads as a row, not as highlighted text: pad its lines
+        // out to the pane so the background runs to the right edge.
+        let inner_w = area.width.saturating_sub(2) as usize;
+        if let Some(block) = blocks.get_mut(selected) {
+            for line in block.iter_mut() {
+                pad_to_width(line, inner_w, THEME.selected_bg);
+            }
+        }
         let start_row: usize = blocks.iter().take(selected).map(Vec::len).sum();
         let end_row = start_row + blocks.get(selected).map_or(0, Vec::len);
         if start_row < self.group_scroll {
@@ -1362,6 +1371,23 @@ fn compose_row(content: &RowContent, width: usize) -> Line<'static> {
             spans.extend(truncate_or_pad_spans(new, rw, Style::default()));
             Line::from(spans)
         }
+    }
+}
+
+/// Extend `line` with blank, styled cells so a selection background covers
+/// the full row width. Trailing padding only — the leading connector column
+/// keeps its own styling.
+fn pad_to_width(line: &mut Line<'static>, width: usize, bg: ratatui::style::Color) {
+    let used: usize = line
+        .spans
+        .iter()
+        .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+        .sum();
+    if used < width {
+        line.spans.push(Span::styled(
+            " ".repeat(width - used),
+            Style::default().bg(bg),
+        ));
     }
 }
 
