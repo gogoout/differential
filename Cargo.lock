@@ -501,6 +501,7 @@ dependencies = [
 name = "differential-engine"
 version = "0.2.0"
 dependencies = [
+ "differential-testutil",
  "globset",
  "hex",
  "regex",
@@ -510,6 +511,14 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "toml",
+]
+
+[[package]]
+name = "differential-testutil"
+version = "0.2.0"
+dependencies = [
+ "differential-engine",
+ "tempfile",
 ]
 
 [[package]]

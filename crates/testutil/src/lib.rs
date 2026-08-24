@@ -1,6 +1,6 @@
-//! Shared test helper: hermetic temporary git repositories.
-// Each test binary uses a different subset of these helpers.
-#![allow(dead_code)]
+//! Shared test support (publish = false): hermetic temporary git
+//! repositories, the programmable fake LLM backend, and prompt helpers.
+//! Dev-dependency of the engine and renderer crates — never published.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -15,6 +15,12 @@ use tempfile::TempDir;
 pub struct TestRepo {
     pub _tmp: TempDir,
     pub root: PathBuf,
+}
+
+impl Default for TestRepo {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TestRepo {

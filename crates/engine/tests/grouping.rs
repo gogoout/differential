@@ -1,9 +1,9 @@
 //! Grouping-stage tests: real temp repos, fake LLM backend. No model runs.
 
-mod common;
-
-use common::{FakeBackend, TestRepo, grouped, grouped_with_cache, ids_in_prompt, json_group};
 use differential_engine::schema::{Effort, PlanDocument, ReadAction};
+use differential_testutil::{
+    FakeBackend, TestRepo, grouped, grouped_with_cache, ids_in_prompt, json_group,
+};
 
 /// Standard fixture: one 3-hunk rename-shaped class + one behavioural class.
 fn two_class_repo() -> (TestRepo, String, String) {

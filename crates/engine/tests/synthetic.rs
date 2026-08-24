@@ -2,11 +2,9 @@
 //! (enumerate → annotate → classify → invariants → document) against a real
 //! temporary git repository built with plumbing-adjacent commands.
 
-mod common;
-
-use common::{TestRepo, assert_all_ok, doc};
 use differential_engine::config::Config;
 use differential_engine::schema::{Disposition, GeneratedBy};
+use differential_testutil::{TestRepo, assert_all_ok, doc};
 
 // ---------------------------------------------------------------- newlines
 

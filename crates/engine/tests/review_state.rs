@@ -1,9 +1,6 @@
 //! Review-state store tests: persistence, class content keys, and the
 //! re-anchoring guarantees across a regenerated plan.
 
-mod common;
-
-use common::{FakeBackend, TestRepo, grouped, json_group};
 use differential_engine::ReviewSession;
 use differential_engine::config::Config;
 use differential_engine::lang::LanguageRegistry;
@@ -12,6 +9,7 @@ use differential_engine::review_state::{
     Anchor, Finding, FindingStatus, ReviewStore, class_content_key, reanchor, review_id,
 };
 use differential_engine::schema::SourceKind;
+use differential_testutil::{FakeBackend, TestRepo, grouped, json_group};
 
 fn close_all_backend() -> FakeBackend {
     FakeBackend::new("fake", |ids| {

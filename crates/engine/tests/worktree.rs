@@ -1,14 +1,12 @@
 //! Uncommitted review sources (ADR 0017): index/worktree tree snapshots, and
 //! the full pipeline — all four invariants — over the synthesized endpoints.
 
-mod common;
-
-use common::{TestRepo, assert_all_ok};
 use differential_engine::config::Config;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::run_pipeline;
 use differential_engine::schema::SourceKind;
 use differential_engine::worktree::{index_tree, worktree_tree};
+use differential_testutil::{TestRepo, assert_all_ok};
 
 /// base commit, then: a.txt staged, b.txt edited unstaged, new.txt untracked,
 /// gone.txt deleted from the worktree only.

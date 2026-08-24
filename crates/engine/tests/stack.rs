@@ -1,9 +1,6 @@
 //! Shadow-branch renderer tests: build the stack in real temp repos with a
 //! fake LLM backend, then verify it with git itself.
 
-mod common;
-
-use common::{FakeBackend, TestRepo, json_group};
 use differential_engine::config::Config;
 use differential_engine::grouping::GroupingOptions;
 use differential_engine::lang::LanguageRegistry;
@@ -11,6 +8,7 @@ use differential_engine::llm::LlmBackend;
 use differential_engine::pipeline::run_stack_pipeline;
 use differential_engine::schema::SourceKind;
 use differential_engine::stack::{StackOptions, StackResult};
+use differential_testutil::{FakeBackend, TestRepo, json_group};
 
 fn stacked(r: &TestRepo, base: &str, head: &str, backend: &dyn LlmBackend) -> StackResult {
     let out = run_stack_pipeline(

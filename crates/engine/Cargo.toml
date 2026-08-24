@@ -18,6 +18,7 @@ toml = { workspace = true }
 globset = { workspace = true }
 
 [dev-dependencies]
+differential-testutil = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]
