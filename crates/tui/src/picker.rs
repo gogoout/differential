@@ -16,7 +16,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::theme::THEME;
-use super::vendor;
 
 /// What the user picked: a base commit, plus whether uncommitted work is in.
 pub struct PickedSource {
@@ -85,8 +84,12 @@ fn parse_refs(bytes: &[u8]) -> HashMap<String, Vec<String>> {
     out
 }
 
-/// Open the picker. `Ok(None)` = cancelled.
-pub fn pick_source(repo: &Repo) -> anyhow::Result<Option<PickedSource>> {
+/// Open the picker inside an existing terminal session. `Ok(None)` =
+/// cancelled.
+pub fn pick_source(
+    terminal: &mut super::vendor::terminal::TerminalSession<std::io::Stdout>,
+    repo: &Repo,
+) -> anyhow::Result<Option<PickedSource>> {
     // An unborn HEAD has nothing to diff against.
     if repo.rev_parse("HEAD").is_err() {
         anyhow::bail!("no commits yet — commit something first, then review");
@@ -124,16 +127,6 @@ pub fn pick_source(repo: &Repo) -> anyhow::Result<Option<PickedSource>> {
         }
     }
 
-    let original_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        vendor::terminal::restore_stdio_best_effort();
-        original_hook(info);
-    }));
-    let mut terminal = vendor::terminal::TerminalFeatures::new()
-        .mouse_enabled(false)
-        .keyboard_enhancements_supported(false)
-        .enter(std::io::stdout())?;
-
     let mut state = PickerState {
         selected: 0,
         include_worktree: true,
@@ -170,7 +163,6 @@ pub fn pick_source(repo: &Repo) -> anyhow::Result<Option<PickedSource>> {
             _ => {}
         }
     };
-    terminal.restore()?;
     result.map(|()| picked)
 }
 

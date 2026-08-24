@@ -136,7 +136,7 @@ fn space_toggles_class_reviewed_and_persists() {
 }
 
 #[test]
-fn finding_lifecycle_add_yank_delete() {
+fn finding_lifecycle_add_copy_delete() {
     let (_r, mut app) = make_app();
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
 
@@ -159,11 +159,11 @@ fn finding_lifecycle_add_yank_delete() {
     );
     let effects = app.handle_key(key('y'));
     match effects.first() {
-        Some(Effect::Yank(text)) => {
+        Some(Effect::CopySummary(text)) => {
             assert!(text.contains("off by one"));
             assert!(text.contains(":"));
         }
-        other => panic!("expected yank, got {other:?}"),
+        other => panic!("expected a copied summary, got {other:?}"),
     }
 
     // dd on the finding row deletes it.

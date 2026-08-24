@@ -1,40 +1,55 @@
 //! The terminal reviewer (`dfr review`) over a grouped, ordered document.
 //! Library crate: the `dfr` binary lives in `crates/cli` (ADR 0018).
+//!
+//! One terminal session spans the whole surface: picker → splash (while the
+//! pipeline runs on a worker thread) → reviewer. The application layer owns
+//! what the pipeline IS — it passes a closure — and this crate owns the
+//! screen.
 
 pub mod app;
 pub mod picker;
 pub mod rows;
+pub mod splash;
 pub mod theme;
 pub mod vendor;
 
+use std::io::Stdout;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::Context;
 use crossterm::event::{self, Event};
 use differential_engine::gitio::Repo;
+use differential_engine::grouping::Progress;
 use differential_engine::{PipelineOutput, ReviewSession};
 
 use app::{App, Effect};
+use picker::PickedSource;
 use rows::RowFactory;
 
-/// Open the reviewer. `(review_base, head_spec)` is the review's IDENTITY —
-/// the head AS TYPED keeps a branch review stable while its tip moves, and
-/// uncommitted reviews key on the HEAD sha plus a stable literal.
-pub fn run_review(
-    repo: &Repo,
-    out: PipelineOutput,
-    review_base: &str,
-    head_spec: &str,
-) -> anyhow::Result<()> {
-    let doc = out
-        .document
-        .context("invariants failed; nothing to review")?;
+type Session = vendor::terminal::TerminalSession<Stdout>;
 
-    let session = ReviewSession::open(repo, review_base, head_spec, doc, out.view)?;
-    let factory = RowFactory::new(repo.clone(), out.base.clone(), out.head.clone());
-    let mut app = App::new(session, factory);
+/// A pipeline result plus the review's IDENTITY — the head AS TYPED keeps a
+/// branch review stable while its tip moves, and uncommitted reviews key on a
+/// real sha plus a stable literal (ADR 0017).
+pub struct Prepared {
+    pub out: PipelineOutput,
+    pub review_base: String,
+    pub head_spec: String,
+}
 
-    // Terminal guard (vendored, Drop-safe) + chained panic hook.
+/// Run the whole review surface. `pick` opens the source picker first and
+/// hands the choice to `pipeline`; otherwise `pipeline` gets `None` (the user
+/// typed a range). `pipeline` runs on a worker thread while the splash reports
+/// the stages it publishes on the channel.
+pub fn review<P>(repo: &Repo, pick: bool, pipeline: P) -> anyhow::Result<()>
+where
+    P: FnOnce(Option<PickedSource>, mpsc::Sender<Progress>) -> anyhow::Result<Prepared>
+        + Send
+        + 'static,
+{
+    // One terminal guard (vendored, Drop-safe) + one chained panic hook for
+    // the whole surface.
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         vendor::terminal::restore_stdio_best_effort();
@@ -45,9 +60,62 @@ pub fn run_review(
         .keyboard_enhancements_supported(false)
         .enter(std::io::stdout())?;
 
+    let result = review_in(&mut terminal, repo, pick, pipeline);
+    terminal.restore()?;
+    result
+}
+
+fn review_in<P>(terminal: &mut Session, repo: &Repo, pick: bool, pipeline: P) -> anyhow::Result<()>
+where
+    P: FnOnce(Option<PickedSource>, mpsc::Sender<Progress>) -> anyhow::Result<Prepared>
+        + Send
+        + 'static,
+{
+    let picked = if pick {
+        match picker::pick_source(terminal, repo)? {
+            Some(p) => Some(p),
+            None => return Ok(()), // cancelled
+        }
+    } else {
+        None
+    };
+
+    // The pipeline (an LLM call on a cache miss) runs off the UI thread so the
+    // splash can report what it is waiting on.
+    let (tx, rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || pipeline(picked, tx));
+    let prepared = splash::run(terminal, rx, &worker)?;
+    let prepared = match prepared {
+        Some(()) => worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("pipeline thread panicked"))??,
+        None => return Ok(()), // cancelled at the splash
+    };
+
+    let doc = prepared
+        .out
+        .document
+        .context("invariants failed; nothing to review")?;
+    let session = ReviewSession::open(
+        repo,
+        &prepared.review_base,
+        &prepared.head_spec,
+        doc,
+        prepared.out.view,
+    )?;
+    let factory = RowFactory::new(
+        repo.clone(),
+        prepared.out.base.clone(),
+        prepared.out.head.clone(),
+    );
+    run_app(terminal, App::new(session, factory))
+}
+
+/// The reviewer's event loop.
+fn run_app(terminal: &mut Session, mut app: App) -> anyhow::Result<()> {
     let mut clipboard: Option<arboard::Clipboard> = arboard::Clipboard::new().ok();
     let mut dirty = true;
-    let result = loop {
+    loop {
         if dirty {
             terminal.draw(|frame| app.draw(frame))?;
             dirty = false;
@@ -77,7 +145,7 @@ pub fn run_review(
         for e in effects {
             match e {
                 Effect::Quit => quit = true,
-                Effect::Yank(text) => {
+                Effect::CopySummary(text) => {
                     let ok = clipboard
                         .as_mut()
                         .and_then(|c| c.set_text(text.clone()).ok())
@@ -91,10 +159,7 @@ pub fn run_review(
             }
         }
         if quit {
-            break Ok(());
+            return Ok(());
         }
-    };
-
-    terminal.restore()?;
-    result
+    }
 }

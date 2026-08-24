@@ -201,41 +201,64 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Review { no_cache, .. } => {
-            // Endpoints + review identity, either from the range or the
-            // picker (see the wiring table in adr/0017 for the identity
-            // rules on uncommitted sources).
-            let (base, head, kind, head_spec, identity_base) = match resolved {
-                Some((base, head, kind)) => (base, head, kind, head_spec_of(&common_range), None),
-                None => match differential_tui::picker::pick_source(&repo)? {
-                    None => return Ok(ExitCode::SUCCESS),
+            // The renderer owns the screen (picker -> splash -> reviewer); the
+            // app layer owns what the pipeline is. Endpoints and review
+            // identity per the wiring table in adr/0017.
+            let pick = resolved.is_none();
+            let cache_dir = cache_dir(&repo, no_cache)?;
+            let worker_repo = repo.clone();
+            differential_tui::review(&repo, pick, move |picked, tx| {
+                let (base, head, kind, head_spec, identity_base) = match (resolved, picked) {
+                    (Some((base, head, kind)), _) => {
+                        (base, head, kind, head_spec_of(&common_range), None)
+                    }
                     // Base commit + "include uncommitted changes": the head is
-                    // the worktree snapshot or HEAD. Review identity keys on the
-                    // base sha plus a stable literal, so the review survives the
-                    // worktree churning under it (ADR 0017).
-                    Some(picked) if picked.include_worktree => {
-                        let wt = differential_engine::worktree::worktree_tree(&repo)?;
+                    // the worktree snapshot or HEAD. Identity keys on the base
+                    // sha plus a stable literal, so the review survives the
+                    // worktree churning under it.
+                    (None, Some(p)) if p.include_worktree => {
+                        let wt = differential_engine::worktree::worktree_tree(&worker_repo)?;
                         (
-                            picked.base.clone(),
+                            p.base.clone(),
                             wt,
                             SourceKind::Worktree,
                             "WORKTREE".to_string(),
-                            Some(picked.base),
+                            Some(p.base),
                         )
                     }
-                    Some(picked) => (
-                        picked.base,
+                    (None, Some(p)) => (
+                        p.base,
                         "HEAD".to_string(),
                         SourceKind::Range,
                         "HEAD".to_string(),
                         None,
                     ),
-                },
-            };
-            let out = grouped(&repo, &base, &head, kind, &config, &langs, no_cache)?;
-            // Identity: HEAD sha + stable literal for uncommitted sources
-            // (the synthesized trees churn per edit); resolved base otherwise.
-            let review_base = identity_base.unwrap_or_else(|| out.base.clone());
-            differential_tui::run_review(&repo, out, &review_base, &head_spec)?;
+                    (None, None) => anyhow::bail!("no review source picked"),
+                };
+                let report = move |p| {
+                    let _ = tx.send(p);
+                };
+                let out = differential_engine::run_grouped_pipeline(
+                    &worker_repo,
+                    &base,
+                    &head,
+                    kind,
+                    &config,
+                    &langs,
+                    &GroupingOptions {
+                        backend: None,
+                        cache_dir: cache_dir.as_deref(),
+                        progress: Some(&report),
+                    },
+                )
+                .context("grouped pipeline failed")?;
+                let review_base = identity_base.unwrap_or_else(|| out.base.clone());
+                Ok(differential_tui::Prepared {
+                    out,
+                    review_base,
+                    head_spec,
+                })
+            })?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Findings { no_cache, .. } => {
@@ -319,6 +342,19 @@ fn print_report(report: &InvariantReport, base: &str, head: &str) {
     println!("note: tree building writes unreferenced loose objects into the odb (gc-able)");
 }
 
+/// The on-disk grouping cache (spec/persistence.md), unless bypassed.
+fn cache_dir(repo: &Repo, no_cache: bool) -> anyhow::Result<Option<PathBuf>> {
+    if no_cache {
+        return Ok(None);
+    }
+    Ok(Some(
+        repo.common_dir()?
+            .join("differential")
+            .join("cache")
+            .join("grouping"),
+    ))
+}
+
 /// Grouped pipeline with the on-disk cache (unless bypassed).
 fn grouped(
     repo: &Repo,
@@ -329,16 +365,7 @@ fn grouped(
     langs: &LanguageRegistry,
     no_cache: bool,
 ) -> anyhow::Result<differential_engine::PipelineOutput> {
-    let cache_dir = if no_cache {
-        None
-    } else {
-        Some(
-            repo.common_dir()?
-                .join("differential")
-                .join("cache")
-                .join("grouping"),
-        )
-    };
+    let cache_dir = cache_dir(repo, no_cache)?;
     differential_engine::run_grouped_pipeline(
         repo,
         base,

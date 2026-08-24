@@ -56,7 +56,7 @@ pub struct FileListEntry {
 #[derive(Debug, PartialEq)]
 pub enum Effect {
     Quit,
-    Yank(String),
+    CopySummary(String),
 }
 
 pub struct GroupInfo {
@@ -627,7 +627,7 @@ impl App {
                 }
             }
             (KeyCode::Char('y'), _) => {
-                return vec![Effect::Yank(self.findings_summary())];
+                return vec![Effect::CopySummary(self.findings_summary())];
             }
             _ => {}
         }
@@ -892,7 +892,7 @@ impl App {
             .filter(|f| f.status == FindingStatus::Open)
             .count();
         let text = format!(
-            " {done}/{total} classes reviewed · {open} finding(s) · {} · j/k J/K nav · space reviewed · c finding · s split · v files · z fold · y yank · ? help · q quit",
+            " {done}/{total} classes reviewed · {open} finding(s) · {} · j/k J/K nav · space reviewed · c finding · s split · v files · z fold · y copy summary · ? help · q quit",
             self.status
         );
         frame.render_widget(
