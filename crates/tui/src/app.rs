@@ -16,10 +16,11 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use tui_textarea::TextArea;
+use unicode_width::UnicodeWidthStr;
 
 use super::rows::{
-    DiffMode, GroupContext, Row, RowContent, RowFactory, RowKind, RowsContext, build_file_rows,
-    build_group_rows,
+    DiffMode, GroupContext, Row, RowContent, RowFactory, RowKind, RowsContext, build_dir_rows,
+    build_file_rows, build_group_rows,
 };
 use super::theme::THEME;
 use super::vendor::text_utils::truncate_or_pad_spans;
@@ -56,7 +57,7 @@ pub struct FileListEntry {
 #[derive(Debug, PartialEq)]
 pub enum Effect {
     Quit,
-    Yank(String),
+    CopySummary(String),
 }
 
 pub struct GroupInfo {
@@ -72,6 +73,23 @@ pub struct GroupInfo {
     /// Added / removed line totals over the group's hunks.
     pub adds: usize,
     pub dels: usize,
+    /// Groups this one depends on: (id, appears later in the plan). A
+    /// dependency listed later means the order could not honour that edge —
+    /// the groups are mutually dependent and the toposort broke the cycle.
+    pub after: Vec<(String, bool)>,
+    pub role: Option<schema::Role>,
+}
+
+/// A plan row's relation to the selected group — what the gutter connector
+/// draws. The plan is a DAG (a group can follow several others), not a tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Relation {
+    Selected,
+    /// The selected group follows this one.
+    Dependency,
+    /// This one follows the selected group.
+    Dependent,
+    None,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +98,19 @@ pub enum ViewMode {
     Groups,
     /// Flattened per-file list, every hunk in file order.
     Files,
+}
+
+/// One visible row of the file tree: a directory, or a file (indexing into
+/// `files`, which stays flat — it anchors reviewed state and the persisted
+/// cursor).
+pub struct TreeEntry {
+    pub depth: usize,
+    pub kind: TreeKind,
+}
+
+pub enum TreeKind {
+    Dir { path: String },
+    File { file_idx: usize },
 }
 
 pub struct FileInfo {
@@ -101,6 +132,10 @@ pub struct App {
     pub files: Vec<FileInfo>,
     /// Hunk index -> owning group label, for file-view hunk headers.
     hunk_labels: HashMap<usize, String>,
+    /// Visible rows of the file tree (rebuilt when a directory folds).
+    pub tree: Vec<TreeEntry>,
+    /// Directory paths currently collapsed.
+    collapsed: HashSet<String>,
 
     pub focus: Focus,
     pub mode: Mode,
@@ -126,9 +161,21 @@ impl App {
             doc.classes.iter().map(|c| (c.id.as_str(), c)).collect();
         let empty = Vec::new();
         let schema_groups = doc.groups.as_ref().unwrap_or(&empty);
+        let labels_of: HashMap<String, String> = schema_groups
+            .iter()
+            .map(|g| (g.id.clone(), g.label.clone()))
+            .collect();
+        // Position in the plan, for spotting dependencies the order could not
+        // satisfy (cycles).
+        let rank_of: HashMap<String, usize> = schema_groups
+            .iter()
+            .enumerate()
+            .map(|(i, g)| (g.id.clone(), i))
+            .collect();
         let groups: Vec<GroupInfo> = schema_groups
             .iter()
-            .map(|g| {
+            .enumerate()
+            .map(|(rank, g)| {
                 let hunks: Vec<&schema::HunkEntry> = g
                     .class_ids
                     .iter()
@@ -145,6 +192,12 @@ impl App {
                     id: g.id.clone(),
                     label: g.label.clone(),
                     effort: g.effort,
+                    after: g
+                        .depends_on
+                        .iter()
+                        .map(|id| (id.clone(), rank_of.get(id).copied().unwrap_or(0) > rank))
+                        .collect(),
+                    role: g.role,
                     class_keys: g
                         .class_ids
                         .iter()
@@ -157,10 +210,7 @@ impl App {
                 }
             })
             .collect();
-        let labels: HashMap<String, String> = schema_groups
-            .iter()
-            .map(|g| (g.id.clone(), g.label.clone()))
-            .collect();
+        let labels = labels_of.clone();
 
         // Hunk -> owning group label (via the hunk's class).
         let group_of_class: HashMap<&str, &str> = schema_groups
@@ -210,21 +260,18 @@ impl App {
         } else {
             ViewMode::Groups
         };
-        let (selected_group, selected_file, resume_row) = match session.cursor() {
-            Some((id, row)) => match view_mode {
-                ViewMode::Groups => (
-                    groups.iter().position(|g| &g.id == id).unwrap_or(0),
-                    0,
-                    Some(*row),
-                ),
-                ViewMode::Files => (
-                    0,
-                    files.iter().position(|f| &f.path == id).unwrap_or(0),
-                    Some(*row),
-                ),
-            },
-            None => (0, 0, None),
+        // The cursor id is a group id in the plan view, a path in the file
+        // view; the tree row for a path is resolved after the tree is built.
+        let resume_cursor: Option<(String, usize)> = session.cursor().cloned();
+        let (selected_group, resume_row) = match (&resume_cursor, view_mode) {
+            (Some((id, row)), ViewMode::Groups) => (
+                groups.iter().position(|g| &g.id == id).unwrap_or(0),
+                Some(*row),
+            ),
+            (Some((_, row)), ViewMode::Files) => (0, Some(*row)),
+            (None, _) => (0, None),
         };
+        let selected_file = 0;
 
         let mut app = App {
             session,
@@ -233,6 +280,8 @@ impl App {
             labels,
             files,
             hunk_labels,
+            tree: Vec::new(),
+            collapsed: HashSet::new(),
             focus: Focus::Groups,
             mode: Mode::Normal,
             view_mode,
@@ -247,11 +296,140 @@ impl App {
             viewport_hint: 24,
             pending_d: false,
         };
+        app.rebuild_tree();
+        // The persisted cursor names a path; reveal it in the tree.
+        if app.view_mode == ViewMode::Files
+            && let Some((id, _)) = resume_cursor.as_ref()
+            && let Some(row) = app.reveal_path(id)
+        {
+            app.selected_file = row;
+        }
         app.rebuild_rows();
         if let Some(row) = resume_row {
             app.cursor = row.min(app.rows.len().saturating_sub(1));
         }
         app
+    }
+
+    /// Rebuild the visible tree rows from the flat file list, honouring
+    /// collapsed directories. Directory rows appear once, in path order.
+    pub fn rebuild_tree(&mut self) {
+        let mut paths: Vec<(usize, Vec<String>)> = self
+            .files
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (i, f.path.split('/').map(str::to_string).collect()))
+            .collect();
+        paths.sort_by(|a, b| a.1.cmp(&b.1));
+
+        let mut tree = Vec::new();
+        let mut open: Vec<String> = Vec::new(); // directory components in scope
+        for (file_idx, parts) in paths {
+            let dirs = &parts[..parts.len() - 1];
+            // Close directories we have left.
+            while open.len() > dirs.len() || (!open.is_empty() && open[..] != dirs[..open.len()]) {
+                open.pop();
+            }
+            // Open the ones we entered.
+            let mut hidden = false;
+            for (d, name) in dirs.iter().enumerate() {
+                if d < open.len() {
+                    continue;
+                }
+                open.push(name.clone());
+                let path = open.join("/");
+                if !hidden {
+                    tree.push(TreeEntry {
+                        depth: d,
+                        kind: TreeKind::Dir { path: path.clone() },
+                    });
+                }
+                if self.collapsed.contains(&path) {
+                    hidden = true;
+                }
+            }
+            // A file under any collapsed ancestor is not a visible row.
+            let under_collapsed =
+                (1..=dirs.len()).any(|n| self.collapsed.contains(&dirs[..n].join("/")));
+            if !under_collapsed {
+                tree.push(TreeEntry {
+                    depth: dirs.len(),
+                    kind: TreeKind::File { file_idx },
+                });
+            }
+        }
+        self.tree = tree;
+    }
+
+    /// File indices covered by a tree row: one file, or every file under a
+    /// directory (including collapsed ones).
+    fn files_of_tree_row(&self, row: usize) -> Vec<usize> {
+        match self.tree.get(row).map(|e| &e.kind) {
+            Some(TreeKind::File { file_idx }) => vec![*file_idx],
+            Some(TreeKind::Dir { path }) => {
+                let prefix = format!("{path}/");
+                let mut under: Vec<usize> = self
+                    .files
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| f.path.starts_with(&prefix))
+                    .map(|(i, _)| i)
+                    .collect();
+                // Path order, so the diff pane presents files in the order the
+                // tree lists them rather than in document order.
+                under.sort_by(|a, b| self.files[*a].path.cmp(&self.files[*b].path));
+                under
+            }
+            None => Vec::new(),
+        }
+    }
+
+    /// Path of the selected file-tree row (a file path, or a directory).
+    pub fn selected_path(&self) -> Option<String> {
+        self.tree_row_path(self.selected_file)
+    }
+
+    /// The path a tree row stands for — what the resume cursor persists.
+    fn tree_row_path(&self, row: usize) -> Option<String> {
+        match self.tree.get(row).map(|e| &e.kind) {
+            Some(TreeKind::File { file_idx }) => Some(self.files[*file_idx].path.clone()),
+            Some(TreeKind::Dir { path }) => Some(path.clone()),
+            None => None,
+        }
+    }
+
+    /// Locate the tree row showing `path`, expanding collapsed ancestors.
+    fn reveal_path(&mut self, path: &str) -> Option<usize> {
+        let mut parts: Vec<&str> = path.split('/').collect();
+        parts.pop();
+        for n in 1..=parts.len() {
+            self.collapsed.remove(&parts[..n].join("/"));
+        }
+        self.rebuild_tree();
+        self.tree.iter().position(|e| match &e.kind {
+            TreeKind::File { file_idx } => self.files[*file_idx].path == path,
+            TreeKind::Dir { path: p } => p == path,
+        })
+    }
+
+    /// Fold or unfold the selected directory.
+    fn toggle_dir(&mut self) -> bool {
+        let Some(TreeKind::Dir { path }) = self.tree.get(self.selected_file).map(|e| &e.kind)
+        else {
+            return false;
+        };
+        let path = path.clone();
+        if !self.collapsed.insert(path.clone()) {
+            self.collapsed.remove(&path);
+        }
+        self.rebuild_tree();
+        self.selected_file = self
+            .tree
+            .iter()
+            .position(|e| matches!(&e.kind, TreeKind::Dir { path: p } if *p == path))
+            .unwrap_or(0);
+        self.rebuild_rows();
+        true
     }
 
     pub fn rebuild_rows(&mut self) {
@@ -285,14 +463,15 @@ impl App {
                 self.rows = build_group_rows(&mut self.factory, &ctx);
             }
             ViewMode::Files => {
-                if self.files.is_empty() {
+                if self.tree.is_empty() {
                     self.rows = vec![Row::full(
                         RowKind::Blank,
                         Line::from("nothing to review — empty diff"),
                     )];
                     return;
                 }
-                let f = &self.files[self.selected_file.min(self.files.len() - 1)];
+                let row = self.selected_file.min(self.tree.len() - 1);
+                let targets = self.files_of_tree_row(row);
                 let ctx = RowsContext {
                     doc: self.session.doc(),
                     findings: self.session.findings(),
@@ -300,7 +479,22 @@ impl App {
                     mode: self.diff_mode(),
                     hunk_labels: Some(&self.hunk_labels),
                 };
-                self.rows = build_file_rows(&mut self.factory, &ctx, &f.path, f.hunk_idxs.clone());
+                self.rows = match targets.as_slice() {
+                    // A single file keeps its dedicated builder (it renders a
+                    // placeholder for zero-hunk binary/submodule changes).
+                    [only] => {
+                        let f = &self.files[*only];
+                        build_file_rows(&mut self.factory, &ctx, &f.path, f.hunk_idxs.clone())
+                    }
+                    // A directory: every hunk beneath it, file headers and all.
+                    many => {
+                        let hunks: Vec<usize> = many
+                            .iter()
+                            .flat_map(|i| self.files[*i].hunk_idxs.iter().copied())
+                            .collect();
+                        build_dir_rows(&mut self.factory, &ctx, hunks)
+                    }
+                };
             }
         }
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
@@ -343,6 +537,16 @@ impl App {
         } else if self.cursor + SCROLL_MARGIN + 1 > self.scroll + h {
             self.scroll = self.cursor + SCROLL_MARGIN + 1 - h;
         }
+        // The rows above the first selectable one are the group header —
+        // label, description, dependencies — and the cursor can never enter
+        // them. Without this the scroll margin would pin the view one row
+        // below the top and that header could never be read.
+        if self
+            .next_selectable(0, 1)
+            .is_none_or(|first| self.cursor <= first)
+        {
+            self.scroll = 0;
+        }
     }
 
     /// Select the idx-th entry of the left pane (group or file).
@@ -355,10 +559,10 @@ impl App {
                 self.selected_group = idx.min(self.groups.len() - 1);
             }
             ViewMode::Files => {
-                if self.files.is_empty() {
+                if self.tree.is_empty() {
                     return;
                 }
-                self.selected_file = idx.min(self.files.len() - 1);
+                self.selected_file = idx.min(self.tree.len() - 1);
             }
         }
         self.cursor = 0;
@@ -434,6 +638,26 @@ impl App {
         };
     }
 
+    /// Jump to the next/previous hunk header, so a reviewer can move by
+    /// change instead of by line.
+    fn jump_hunk(&mut self, dir: isize) {
+        let mut i = self.cursor as isize + dir;
+        while i >= 0 && (i as usize) < self.rows.len() {
+            if matches!(self.rows[i as usize].kind, RowKind::HunkHeader(_)) {
+                self.cursor = i as usize;
+                self.focus = Focus::Diff;
+                self.follow_cursor();
+                return;
+            }
+            i += dir;
+        }
+        self.status = if dir > 0 {
+            "last hunk in this view".into()
+        } else {
+            "first hunk in this view".into()
+        };
+    }
+
     fn current_hunk(&self) -> Option<usize> {
         self.rows.get(self.cursor).and_then(|r| r.kind.hunk())
     }
@@ -474,11 +698,7 @@ impl App {
                 .get(self.selected_group)
                 .map(|g| g.id.clone())
                 .unwrap_or_default(),
-            ViewMode::Files => self
-                .files
-                .get(self.selected_file)
-                .map(|f| f.path.clone())
-                .unwrap_or_default(),
+            ViewMode::Files => self.tree_row_path(self.selected_file).unwrap_or_default(),
         };
         if let Err(e) = self.session.save_cursor(id, self.cursor) {
             self.status = format!("save failed: {e:#}");
@@ -554,7 +774,12 @@ impl App {
                     Focus::Diff => Focus::Groups,
                 }
             }
-            (KeyCode::Enter, _) if self.focus == Focus::Groups => self.focus = Focus::Diff,
+            (KeyCode::Enter, _) if self.focus == Focus::Groups => {
+                // Enter opens a directory rather than jumping to the diff.
+                if !(self.view_mode == ViewMode::Files && self.toggle_dir()) {
+                    self.focus = Focus::Diff;
+                }
+            }
             (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, _) => match self.focus {
                 Focus::Groups => self.select_entry(self.selected_entry() + 1),
                 Focus::Diff => self.move_cursor(1),
@@ -591,6 +816,9 @@ impl App {
                     .unwrap_or(0);
                 self.follow_cursor();
             }
+            (KeyCode::Char('z'), _) if self.view_mode == ViewMode::Files => {
+                self.toggle_dir();
+            }
             (KeyCode::Char('z'), _) => {
                 if self.view_mode == ViewMode::Groups
                     && let Some(g) = self.groups.get(self.selected_group)
@@ -602,6 +830,8 @@ impl App {
                     self.rebuild_rows();
                 }
             }
+            (KeyCode::Char('n'), KeyModifiers::NONE) => self.jump_hunk(1),
+            (KeyCode::Char('N'), _) => self.jump_hunk(-1),
             (KeyCode::Char('s'), KeyModifiers::NONE) => self.toggle_split(),
             (KeyCode::Char('v'), KeyModifiers::NONE) => self.toggle_file_view(),
             (KeyCode::Char('f'), KeyModifiers::NONE) => self.open_file_list(),
@@ -627,23 +857,59 @@ impl App {
                 }
             }
             (KeyCode::Char('y'), _) => {
-                return vec![Effect::Yank(self.findings_summary())];
+                return vec![Effect::CopySummary(self.findings_summary())];
             }
             _ => {}
         }
         Vec::new()
     }
 
+    /// Space marks reviewed. In the left pane that means the WHOLE selected
+    /// entry (a group, or a file's classes); in the diff pane it means the
+    /// class under the cursor.
     fn toggle_reviewed(&mut self) {
-        let Some(h) = self.current_hunk() else {
-            return;
+        let outcome = match self.focus {
+            Focus::Groups => self.toggle_selected_entry(),
+            Focus::Diff => match self.current_hunk() {
+                Some(h) => self.session.toggle_reviewed(h).map(|_| ()),
+                None => return,
+            },
         };
-        if let Err(e) = self.session.toggle_reviewed(h) {
+        if let Err(e) = outcome {
             self.status = format!("save failed: {e:#}");
             return;
         }
         self.save_cursor();
         self.rebuild_rows();
+    }
+
+    /// Mark every class of the selected entry, in one write. Set semantics:
+    /// a partly reviewed entry becomes fully reviewed rather than inverted.
+    fn toggle_selected_entry(&mut self) -> Result<(), differential_engine::EngineError> {
+        let keys: Vec<String> = match self.view_mode {
+            ViewMode::Groups => match self.groups.get(self.selected_group) {
+                Some(g) => g.class_keys.clone(),
+                None => return Ok(()),
+            },
+            ViewMode::Files => self
+                .files_of_tree_row(self.selected_file)
+                .iter()
+                .flat_map(|i| self.files[*i].hunk_idxs.iter())
+                .map(|h| self.session.hunk_class_key(*h).to_string())
+                .collect(),
+        };
+        if keys.is_empty() {
+            self.status = "nothing to mark here".into();
+            return Ok(());
+        }
+        let all_done = keys.iter().all(|k| self.session.is_reviewed(k));
+        self.session.set_reviewed(&keys, !all_done)?;
+        self.status = if all_done {
+            "group unmarked".into()
+        } else {
+            "group marked reviewed".into()
+        };
+        Ok(())
     }
 
     fn add_finding(&mut self, hunk_idx: usize, body: String) {
@@ -767,65 +1033,42 @@ impl App {
     fn draw_groups(&mut self, frame: &mut Frame, area: Rect) {
         let inner_h = area.height.saturating_sub(2) as usize;
         let selected = self.selected_entry();
-        if selected < self.group_scroll {
-            self.group_scroll = selected;
-        } else if selected >= self.group_scroll + inner_h {
-            self.group_scroll = selected + 1 - inner_h;
-        }
-        let items: Vec<Line> = match self.view_mode {
-            ViewMode::Groups => self
-                .groups
-                .iter()
-                .enumerate()
-                .skip(self.group_scroll)
-                .take(inner_h)
-                .map(|(i, g)| {
-                    let done = g.class_keys.iter().all(|k| self.session.is_reviewed(k))
-                        && !g.class_keys.is_empty();
-                    let tier = match g.effort {
-                        schema::Effort::Focus => "F",
-                        schema::Effort::Skim => "S",
-                        schema::Effort::Noise => "N",
-                    };
-                    let mark = if done { "✓" } else { " " };
-                    let mut style = THEME.effort_style(g.effort);
-                    if i == selected {
-                        style = style.bg(THEME.selected_bg).add_modifier(Modifier::BOLD);
-                    }
-                    Line::from(Span::styled(
-                        format!(
-                            "{mark}{tier} {:>2}f +{:<4}-{:<4} {}",
-                            g.n_files, g.adds, g.dels, g.label
-                        ),
-                        style,
-                    ))
-                })
+
+        // Entries render as blocks of lines, so scrolling counts ROWS, not
+        // entries; keep the whole selected block in view.
+        let mut blocks: Vec<Vec<Line>> = match self.view_mode {
+            ViewMode::Groups => (0..self.groups.len())
+                .map(|i| self.group_lines(i, i == selected))
                 .collect(),
             ViewMode::Files => {
                 let reviewed = self.session.reviewed_hunks();
-                self.files
-                    .iter()
-                    .enumerate()
-                    .skip(self.group_scroll)
-                    .take(inner_h)
-                    .map(|(i, f)| {
-                        let done = !f.hunk_idxs.is_empty()
-                            && f.hunk_idxs.iter().all(|h| reviewed.contains(h));
-                        let mark = if done { "✓" } else { " " };
-                        let counts = if f.hunk_idxs.is_empty() {
-                            "  (bin)   ".to_string()
-                        } else {
-                            format!("+{:<4}-{:<4}", f.adds, f.dels)
-                        };
-                        let mut style = Style::default().fg(THEME.context_fg);
-                        if i == selected {
-                            style = style.bg(THEME.selected_bg).add_modifier(Modifier::BOLD);
-                        }
-                        Line::from(Span::styled(format!("{mark} {counts} {}", f.path), style))
-                    })
+                (0..self.tree.len())
+                    .map(|i| self.tree_lines(i, i == selected, &reviewed))
                     .collect()
             }
         };
+        // The selection reads as a row, not as highlighted text: pad its lines
+        // out to the pane so the background runs to the right edge.
+        let inner_w = area.width.saturating_sub(2) as usize;
+        if let Some(block) = blocks.get_mut(selected) {
+            for line in block.iter_mut() {
+                pad_to_width(line, inner_w, THEME.selected_bg);
+            }
+        }
+        let start_row: usize = blocks.iter().take(selected).map(Vec::len).sum();
+        let end_row = start_row + blocks.get(selected).map_or(0, Vec::len);
+        if start_row < self.group_scroll {
+            self.group_scroll = start_row;
+        } else if end_row > self.group_scroll + inner_h {
+            self.group_scroll = end_row.saturating_sub(inner_h);
+        }
+        let items: Vec<Line> = blocks
+            .into_iter()
+            .flatten()
+            .skip(self.group_scroll)
+            .take(inner_h)
+            .collect();
+
         let orphans = self
             .session
             .findings()
@@ -850,6 +1093,229 @@ impl App {
                 Style::default().fg(THEME.gutter_fg)
             });
         frame.render_widget(Paragraph::new(items).block(block), area);
+    }
+
+    /// How a plan row relates to the selected one — what the connector line
+    /// in the left gutter is drawing.
+    pub fn relation_to_selected(&self, idx: usize) -> Relation {
+        let selected = self.selected_group;
+        if idx == selected {
+            return Relation::Selected;
+        }
+        let Some(sel) = self.groups.get(selected) else {
+            return Relation::None;
+        };
+        if sel.after.iter().any(|(id, _)| *id == self.groups[idx].id) {
+            return Relation::Dependency;
+        }
+        if self.groups[idx].after.iter().any(|(id, _)| *id == sel.id) {
+            return Relation::Dependent;
+        }
+        Relation::None
+    }
+
+    /// Rows spanned by the selected group's edges, so the connector can be
+    /// drawn as one continuous line.
+    fn edge_span(&self) -> (usize, usize) {
+        let mut lo = self.selected_group;
+        let mut hi = self.selected_group;
+        for i in 0..self.groups.len() {
+            if !matches!(self.relation_to_selected(i), Relation::None) {
+                lo = lo.min(i);
+                hi = hi.max(i);
+            }
+        }
+        (lo, hi)
+    }
+
+    /// One group as 2–3 lines: title, counts, and what it follows.
+    fn group_lines(&self, idx: usize, selected: bool) -> Vec<Line<'static>> {
+        let g = &self.groups[idx];
+        let relation = self.relation_to_selected(idx);
+        let (lo, hi) = self.edge_span();
+        // The connector: a line running between the selected group and every
+        // group it links to, so the DAG is visible without reading ids.
+        let (head_glyph, head_style) = match relation {
+            Relation::Selected => ("◆", Style::default().fg(THEME.header_fg)),
+            // Read before the selected group.
+            Relation::Dependency => ("├", Style::default().fg(THEME.reviewed_fg)),
+            // Reads after it.
+            Relation::Dependent => ("├", Style::default().fg(THEME.skim_fg)),
+            Relation::None if idx > lo && idx < hi => ("│", Style::default().fg(THEME.gutter_fg)),
+            Relation::None => (" ", Style::default().fg(THEME.gutter_fg)),
+        };
+        let tail_glyph = if idx >= lo && idx < hi { "│" } else { " " };
+        let done =
+            g.class_keys.iter().all(|k| self.session.is_reviewed(k)) && !g.class_keys.is_empty();
+        let tier = match g.effort {
+            schema::Effort::Focus => "F",
+            schema::Effort::Skim => "S",
+            schema::Effort::Noise => "N",
+        };
+        let bg = |st: Style| {
+            if selected {
+                st.bg(THEME.selected_bg).add_modifier(Modifier::BOLD)
+            } else {
+                st
+            }
+        };
+        let dim = bg(Style::default().fg(THEME.gutter_fg));
+
+        let mut lines = vec![Line::from(vec![
+            Span::styled(format!("{head_glyph} "), head_style),
+            Span::styled(
+                // The id is what `after:` references, so it has to be visible.
+                format!("{:>3} ", g.id),
+                bg(Style::default().fg(THEME.gutter_fg)),
+            ),
+            Span::styled(
+                format!("{tier} "),
+                bg(THEME.effort_style(g.effort).add_modifier(Modifier::BOLD)),
+            ),
+            Span::styled(
+                g.label.clone(),
+                bg(Style::default().fg(if done {
+                    THEME.reviewed_fg
+                } else {
+                    THEME.context_fg
+                })),
+            ),
+            Span::styled(
+                if done { "  ✓" } else { "" }.to_string(),
+                bg(Style::default().fg(THEME.reviewed_fg)),
+            ),
+        ])];
+
+        let role = match g.role {
+            Some(schema::Role::Foundation) => " · foundation",
+            Some(schema::Role::Consumer) => " · consumer",
+            Some(schema::Role::Mechanical) => " · mechanical",
+            Some(schema::Role::Noise) => " · noise",
+            None => "",
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{tail_glyph} "),
+                Style::default().fg(THEME.gutter_fg),
+            ),
+            Span::styled(format!("   {} files  ", g.n_files), dim),
+            Span::styled(
+                format!("+{}", g.adds),
+                bg(Style::default().fg(THEME.add_fg)),
+            ),
+            Span::styled(" ", dim),
+            Span::styled(
+                format!("−{}", g.dels),
+                bg(Style::default().fg(THEME.del_fg)),
+            ),
+            Span::styled(role.to_string(), dim),
+        ]));
+        if !g.after.is_empty() {
+            // "↓" marks a dependency that appears LATER in the plan: the two
+            // groups depend on each other, so no order can satisfy both.
+            let mut spans = vec![
+                Span::styled(
+                    format!("{tail_glyph} "),
+                    Style::default().fg(THEME.gutter_fg),
+                ),
+                Span::styled("   after: ".to_string(), dim),
+            ];
+            for (id, later) in &g.after {
+                spans.push(Span::styled(
+                    format!("{id}{} ", if *later { "↓" } else { "" }),
+                    if *later {
+                        bg(Style::default().fg(THEME.skim_fg))
+                    } else {
+                        dim
+                    },
+                ));
+            }
+            lines.push(Line::from(spans));
+        }
+        lines
+    }
+
+    /// One tree row: a directory (with aggregate counts and a fold marker)
+    /// or a file.
+    fn tree_lines(
+        &self,
+        row: usize,
+        selected: bool,
+        reviewed: &HashSet<usize>,
+    ) -> Vec<Line<'static>> {
+        let entry = &self.tree[row];
+        let bg = |st: Style| {
+            if selected {
+                st.bg(THEME.selected_bg).add_modifier(Modifier::BOLD)
+            } else {
+                st
+            }
+        };
+        let indent = "  ".repeat(entry.depth);
+        let files = self.files_of_tree_row(row);
+        let (adds, dels): (usize, usize) = files
+            .iter()
+            .map(|i| (self.files[*i].adds, self.files[*i].dels))
+            .fold((0, 0), |(a, d), (x, y)| (a + x, d + y));
+        let hunks: Vec<usize> = files
+            .iter()
+            .flat_map(|i| self.files[*i].hunk_idxs.iter().copied())
+            .collect();
+        let done = !hunks.is_empty() && hunks.iter().all(|h| reviewed.contains(h));
+        let mark = if done { "✓" } else { " " };
+        let name_style = bg(Style::default().fg(if done {
+            THEME.reviewed_fg
+        } else {
+            THEME.context_fg
+        }));
+        let dim = bg(Style::default().fg(THEME.gutter_fg));
+
+        match &entry.kind {
+            TreeKind::Dir { path } => {
+                let glyph = if self.collapsed.contains(path) {
+                    "▸"
+                } else {
+                    "▾"
+                };
+                let name = path.rsplit('/').next().unwrap_or(path).to_string();
+                vec![Line::from(vec![
+                    Span::styled(format!("{mark}{indent}{glyph} "), dim),
+                    Span::styled(
+                        format!("{name}/"),
+                        bg(Style::default()
+                            .fg(THEME.header_fg)
+                            .add_modifier(Modifier::BOLD)),
+                    ),
+                    Span::styled("  ", dim),
+                    Span::styled(format!("+{adds}"), bg(Style::default().fg(THEME.add_fg))),
+                    Span::styled(" ", dim),
+                    Span::styled(format!("−{dels}"), bg(Style::default().fg(THEME.del_fg))),
+                ])]
+            }
+            TreeKind::File { file_idx } => {
+                let f = &self.files[*file_idx];
+                let name = f.path.rsplit('/').next().unwrap_or(&f.path).to_string();
+                let mut spans = vec![
+                    Span::styled(format!("{mark}{indent}  "), dim),
+                    Span::styled(name, name_style),
+                    Span::styled("  ", dim),
+                ];
+                if f.hunk_idxs.is_empty() {
+                    spans.push(Span::styled("(no text hunks)".to_string(), dim));
+                } else {
+                    spans.push(Span::styled(
+                        format!("+{}", f.adds),
+                        bg(Style::default().fg(THEME.add_fg)),
+                    ));
+                    spans.push(Span::styled(" ", dim));
+                    spans.push(Span::styled(
+                        format!("−{}", f.dels),
+                        bg(Style::default().fg(THEME.del_fg)),
+                    ));
+                }
+                vec![Line::from(spans)]
+            }
+        }
     }
 
     fn draw_diff(&mut self, frame: &mut Frame, area: Rect) {
@@ -892,7 +1358,7 @@ impl App {
             .filter(|f| f.status == FindingStatus::Open)
             .count();
         let text = format!(
-            " {done}/{total} classes reviewed · {open} finding(s) · {} · j/k J/K nav · space reviewed · c finding · s split · v files · z fold · y yank · ? help · q quit",
+            " {done}/{total} classes reviewed · {open} finding(s) · {} · j/k J/K nav · n/N hunk · space reviewed · c finding · s split · v files · z fold · y copy summary · ? help · q quit",
             self.status
         );
         frame.render_widget(
@@ -915,6 +1381,23 @@ fn compose_row(content: &RowContent, width: usize) -> Line<'static> {
             spans.extend(truncate_or_pad_spans(new, rw, Style::default()));
             Line::from(spans)
         }
+    }
+}
+
+/// Extend `line` with blank, styled cells so a selection background covers
+/// the full row width. Trailing padding only — the leading connector column
+/// keeps its own styling.
+fn pad_to_width(line: &mut Line<'static>, width: usize, bg: ratatui::style::Color) {
+    let used: usize = line
+        .spans
+        .iter()
+        .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+        .sum();
+    if used < width {
+        line.spans.push(Span::styled(
+            " ".repeat(width - used),
+            Style::default().bg(bg),
+        ));
     }
 }
 
@@ -949,6 +1432,11 @@ fn help_paragraph() -> Paragraph<'static> {
         Line::from("  ctrl-d/u   half page"),
         Line::from("  g/G        top / bottom"),
         Line::from("  z          unfold skim remainder / noise"),
+        Line::from("  n/N        next / previous hunk"),
+        Line::from(""),
+        Line::from("  plan rows: <id> <tier> label · after: what it follows"),
+        Line::from("  the line links the selected group to its neighbours;"),
+        Line::from("  ↓ marks a dependency listed later (mutual dependency)"),
         Line::from("  s          toggle unified / split diff"),
         Line::from("  v          toggle reading plan / file view"),
         Line::from("  f          file list of the current view (enter jumps)"),

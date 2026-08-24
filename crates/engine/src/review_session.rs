@@ -114,6 +114,11 @@ impl ReviewSession {
         &self.findings
     }
 
+    /// Content key of the class owning `hunk`.
+    pub fn hunk_class_key(&self, hunk: usize) -> &str {
+        &self.hunk_key[&hunk]
+    }
+
     /// Content key for a class id (present for every class in the document).
     pub fn class_key(&self, class_id: &str) -> &str {
         &self.class_key[class_id]
@@ -161,6 +166,22 @@ impl ReviewSession {
         }
         self.store.save_state(&self.state)?;
         Ok(now)
+    }
+
+    /// Mark a whole set of classes reviewed (or not) in one write.
+    ///
+    /// Set semantics, not toggle: a partially reviewed group resolves to the
+    /// requested state instead of inverting member by member, and the batch
+    /// costs one `save_state` rather than one per class.
+    pub fn set_reviewed(&mut self, class_keys: &[String], on: bool) -> Result<(), EngineError> {
+        for key in class_keys {
+            if on {
+                self.state.reviewed_classes.insert(key.clone());
+            } else {
+                self.state.reviewed_classes.remove(key);
+            }
+        }
+        self.store.save_state(&self.state)
     }
 
     /// Persist the resume position: (group id or file path, row offset).

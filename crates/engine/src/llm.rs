@@ -11,6 +11,8 @@
 
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
@@ -35,6 +37,9 @@ pub enum LlmError {
     #[error("{command} exceeded the {timeout:?} deadline and was killed")]
     Timeout { command: String, timeout: Duration },
 
+    #[error("{command} was cancelled and killed")]
+    Cancelled { command: String },
+
     #[error("io error talking to {command}: {source}")]
     Io {
         command: String,
@@ -55,6 +60,10 @@ pub struct CommandBackend {
     argv: Vec<String>,
     timeout: Duration,
     name: String,
+    /// Set from another thread to kill an in-flight child (a reviewer
+    /// abandoning the wait). Without this the subprocess would outlive the
+    /// process that asked for it, up to the whole timeout.
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl CommandBackend {
@@ -65,12 +74,25 @@ impl CommandBackend {
             argv,
             timeout,
             name,
+            cancel: None,
         }
+    }
+
+    /// Kill the child as soon as `flag` is set.
+    pub fn with_cancel(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.cancel = Some(flag);
+        self
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|c| c.load(Ordering::Relaxed))
     }
 
     /// The validated default (ADR 0010): headless, text output, tools denied.
@@ -141,6 +163,16 @@ impl LlmBackend for CommandBackend {
                 source,
             })? {
                 Some(status) => break status,
+                None if self.cancelled() => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = writer.join();
+                    let _ = stdout_reader.join();
+                    let _ = stderr_reader.join();
+                    return Err(LlmError::Cancelled {
+                        command: self.name.clone(),
+                    });
+                }
                 None if std::time::Instant::now() >= deadline => {
                     let _ = child.kill();
                     let _ = child.wait();
@@ -210,6 +242,31 @@ mod tests {
             Err(LlmError::Empty { .. }) => {}
             other => panic!("expected Empty, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn cancel_kills_the_child() {
+        // A long sleep with a generous deadline: only the cancel flag can end
+        // this, and it must do so promptly rather than leaving the child to
+        // outlive the caller.
+        let flag = Arc::new(AtomicBool::new(false));
+        let backend =
+            CommandBackend::new(vec!["sleep".into(), "600".into()], Duration::from_secs(600))
+                .with_cancel(Arc::clone(&flag));
+        let started = std::time::Instant::now();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            flag.store(true, Ordering::Relaxed);
+        });
+        let err = backend.complete("hello").unwrap_err();
+        assert!(
+            matches!(err, LlmError::Cancelled { .. }),
+            "expected cancellation, got {err:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "child was not killed promptly"
+        );
     }
 
     #[test]

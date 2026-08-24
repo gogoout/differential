@@ -22,6 +22,9 @@ pub struct Theme {
     pub skim_fg: Color,
     pub noise_fg: Color,
     pub reviewed_fg: Color,
+    /// Added / removed line counts in the left pane.
+    pub add_fg: Color,
+    pub del_fg: Color,
     pub finding_fg: Color,
     pub status_bg: Color,
 }
@@ -40,6 +43,8 @@ pub const THEME: Theme = Theme {
     skim_fg: Color::Yellow,
     noise_fg: Color::DarkGray,
     reviewed_fg: Color::Green,
+    add_fg: Color::LightGreen,
+    del_fg: Color::LightRed,
     finding_fg: Color::Magenta,
     status_bg: Color::Rgb(30, 32, 40),
 };

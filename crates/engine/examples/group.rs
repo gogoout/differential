@@ -75,6 +75,8 @@ fn main() -> ExitCode {
         &GroupingOptions {
             backend: None, // built from [grouping].command / claude default
             cache_dir: cache_dir.as_deref(),
+            progress: None,
+            cancel: None,
         },
     ) {
         Ok(o) => o,

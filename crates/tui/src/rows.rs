@@ -269,6 +269,24 @@ fn hunk_list_rows(
 /// Build the right-pane rows for one file (the flattened view): every hunk of
 /// the file in position order, regardless of grouping; no fold logic — the
 /// flat view's whole point is everything, in file order.
+/// Rows for a directory: every hunk beneath it, in file order. The shared
+/// emitter already writes a file header on each file change.
+pub fn build_dir_rows(factory: &mut RowFactory, ctx: &RowsContext, hunks: Vec<usize>) -> Vec<Row> {
+    let mut rows = Vec::new();
+    if hunks.is_empty() {
+        rows.push(Row::full(
+            RowKind::Blank,
+            Line::from(Span::styled(
+                "  (no text hunks under this directory)",
+                Style::default().fg(THEME.noise_fg),
+            )),
+        ));
+        return rows;
+    }
+    hunk_list_rows(factory, ctx, hunks, &mut rows);
+    rows
+}
+
 pub fn build_file_rows(
     factory: &mut RowFactory,
     ctx: &RowsContext,

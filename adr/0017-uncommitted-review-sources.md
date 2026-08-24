@@ -48,8 +48,12 @@ variant, which is the correct outcome: it cannot interpret that source anyway). 
 
 ## Consequences
 
-- `dfr review` (no arguments) can offer staged/worktree review; the grouped pipeline —
-  LLM grouping included — runs identically on the snapshots.
+- `dfr review` (no arguments) can offer uncommitted review; the grouped pipeline —
+  LLM grouping included — runs identically on the snapshots. (The picker later replaced
+  its three-option list with a base commit plus an "include uncommitted changes"
+  checkbox, so any base can be paired with the worktree endpoint; the tree synthesis and
+  the identity literals here are unchanged, and `index_tree` remains the staged snapshot
+  for consumers that want it.)
 - Grouping-cache keys derive from class digests, so an unchanged diff still hits cache;
   any edit is a miss, which is inherent to reviewing a moving worktree.
 - `dfr stack` still requires a commit base (`commit-tree -p`); it is not offered for

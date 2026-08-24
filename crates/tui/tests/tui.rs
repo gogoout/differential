@@ -45,6 +45,8 @@ fn open_app(r: &TestRepo) -> App {
         &differential_engine::grouping::GroupingOptions {
             backend: Some(&backend),
             cache_dir: None,
+            progress: None,
+            cancel: None,
         },
     )
     .unwrap();
@@ -135,7 +137,7 @@ fn space_toggles_class_reviewed_and_persists() {
 }
 
 #[test]
-fn finding_lifecycle_add_yank_delete() {
+fn finding_lifecycle_add_copy_delete() {
     let (_r, mut app) = make_app();
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
 
@@ -158,11 +160,11 @@ fn finding_lifecycle_add_yank_delete() {
     );
     let effects = app.handle_key(key('y'));
     match effects.first() {
-        Some(Effect::Yank(text)) => {
+        Some(Effect::CopySummary(text)) => {
             assert!(text.contains("off by one"));
             assert!(text.contains(":"));
         }
-        other => panic!("expected yank, got {other:?}"),
+        other => panic!("expected a copied summary, got {other:?}"),
     }
 
     // dd on the finding row deletes it.
@@ -286,14 +288,14 @@ fn file_view_resume_restores_view_and_file() {
     use differential_tui::app::ViewMode;
     let (r, mut app) = make_app();
     app.handle_key(key('v'));
-    app.handle_key(key('J')); // second file
-    let path = app.files[app.selected_file].path.clone();
+    app.handle_key(key('J')); // next tree row
+    let path = app.selected_path().unwrap();
     app.handle_key(key('q'));
     drop(app);
 
     let app2 = open_app(&r);
     assert_eq!(app2.view_mode, ViewMode::Files);
-    assert_eq!(app2.files[app2.selected_file].path, path);
+    assert_eq!(app2.selected_path().unwrap(), path);
 }
 
 #[test]
@@ -401,4 +403,307 @@ fn draw_smoke_test_renders_group_label() {
     assert!(content.contains("Focus work"));
     assert!(content.contains("reading plan"));
     assert!(content.contains("classes reviewed"));
+}
+
+#[test]
+fn reading_plan_shows_ids_and_flags_unsatisfiable_dependencies() {
+    let (_r, mut app) = make_app();
+
+    // Every dependency names a real group id — the id column makes them
+    // resolvable, which is the whole point of showing it.
+    let ids: Vec<&str> = app.groups.iter().map(|g| g.id.as_str()).collect();
+    for g in &app.groups {
+        for (dep, later) in &g.after {
+            assert!(
+                ids.contains(&dep.as_str()),
+                "dependency {dep:?} is not a group id"
+            );
+            // The flag must agree with the plan order: it means "this
+            // dependency appears further down", i.e. a cycle the toposort
+            // had to break.
+            let dep_pos = app.groups.iter().position(|o| &o.id == dep).unwrap();
+            let self_pos = app.groups.iter().position(|o| o.id == g.id).unwrap();
+            assert_eq!(
+                *later,
+                dep_pos > self_pos,
+                "cycle flag disagrees with the order"
+            );
+        }
+    }
+
+    // The pane renders the id, the tier, and the counts.
+    let backend = ratatui::backend::TestBackend::new(100, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let content: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(
+        content.contains(&app.groups[0].id),
+        "group id missing from the plan"
+    );
+    assert!(content.contains("files"), "per-group file count missing");
+    assert!(content.contains("−"), "removed-line count missing");
+}
+
+#[test]
+fn space_in_the_plan_pane_marks_the_whole_group() {
+    let (_r, mut app) = make_app();
+    assert_eq!(app.focus, Focus::Groups);
+    // Pick the group with the most classes so "whole group" is meaningful.
+    let target = app
+        .groups
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, g)| g.class_keys.len())
+        .map(|(i, _)| i)
+        .unwrap();
+    while app.selected_group != target {
+        app.handle_key(key('j'));
+    }
+    let want = app.groups[target].class_keys.len();
+    assert!(want >= 1);
+
+    app.handle_key(key(' '));
+    assert_eq!(
+        app.session.reviewed_count(),
+        want,
+        "whole group should be marked"
+    );
+    // Pressing again clears the whole group (set semantics, not per-class flip).
+    app.handle_key(key(' '));
+    assert_eq!(app.session.reviewed_count(), 0);
+
+    // In the diff pane, space still marks just the class under the cursor.
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(key(' '));
+    assert_eq!(app.session.reviewed_count(), 1);
+}
+
+#[test]
+fn n_and_shift_n_jump_between_hunks() {
+    let (_r, mut app) = make_app();
+    // Move to the skim group (3 hunks of one shape) and unfold its remainder,
+    // so the view holds several hunks to jump between.
+    app.handle_key(key('j'));
+    app.handle_key(key('z'));
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(key('g'));
+    let hunk_rows: Vec<usize> = app
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| matches!(r.kind, RowKind::HunkHeader(_)))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(hunk_rows.len() >= 2, "fixture needs multiple hunks");
+
+    app.handle_key(key('n'));
+    assert!(
+        hunk_rows.contains(&app.cursor),
+        "n should land on a hunk header"
+    );
+    let first = app.cursor;
+    app.handle_key(key('n'));
+    assert!(app.cursor > first);
+    app.handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT));
+    assert_eq!(app.cursor, first, "N goes back");
+}
+
+#[test]
+fn file_view_is_a_collapsible_tree() {
+    use differential_tui::app::{TreeKind, ViewMode};
+    let (_r, mut app) = make_app();
+    app.handle_key(key('v'));
+    assert_eq!(app.view_mode, ViewMode::Files);
+
+    // The fixture's files all live under src/, so the tree has a src/ node
+    // above them — directories are rows, files nest beneath.
+    let dir_row = app
+        .tree
+        .iter()
+        .position(|e| matches!(&e.kind, TreeKind::Dir { path } if path == "src"))
+        .expect("src/ directory row");
+    let files_visible = |a: &differential_tui::app::App| {
+        a.tree
+            .iter()
+            .filter(|e| matches!(e.kind, TreeKind::File { .. }))
+            .count()
+    };
+    assert_eq!(files_visible(&app), 4, "all files visible when expanded");
+
+    // Selecting the directory shows every hunk beneath it.
+    while app.selected_file != dir_row {
+        app.handle_key(key('j'));
+    }
+    let hunks_under_dir = app
+        .rows
+        .iter()
+        .filter(|r| matches!(r.kind, RowKind::HunkHeader(_)))
+        .count();
+    assert!(hunks_under_dir >= 4, "directory view spans its files");
+
+    // z collapses it: the files disappear, the directory row stays.
+    app.handle_key(key('z'));
+    assert_eq!(
+        files_visible(&app),
+        0,
+        "collapsed directory hides its files"
+    );
+    assert!(
+        app.tree
+            .iter()
+            .any(|e| matches!(&e.kind, TreeKind::Dir { path } if path == "src"))
+    );
+    app.handle_key(key('z'));
+    assert_eq!(files_visible(&app), 4, "unfold restores them");
+}
+
+#[test]
+fn the_plan_gutter_links_the_selected_group_to_its_neighbours() {
+    use differential_tui::app::Relation;
+    let (_r, mut app) = make_app();
+
+    // Land on a group that actually has an edge, so the connector has
+    // something to draw.
+    let with_edge = app
+        .groups
+        .iter()
+        .position(|g| !g.after.is_empty())
+        .or_else(|| {
+            let ids: Vec<String> = app.groups.iter().map(|g| g.id.clone()).collect();
+            ids.iter().position(|id| {
+                app.groups
+                    .iter()
+                    .any(|o| o.after.iter().any(|(d, _)| d == id))
+            })
+        });
+    let Some(target) = with_edge else {
+        return; // no edges in this fixture: nothing to assert
+    };
+    while app.selected_group != target {
+        app.handle_key(key('j'));
+    }
+
+    // The relation model matches depends_on in both directions, and the
+    // selected row is the anchor.
+    assert_eq!(app.relation_to_selected(target), Relation::Selected);
+    for (i, g) in app.groups.iter().enumerate() {
+        match app.relation_to_selected(i) {
+            Relation::Dependency => assert!(
+                app.groups[target].after.iter().any(|(d, _)| *d == g.id),
+                "{} marked as a dependency but the selected group does not follow it",
+                g.id
+            ),
+            Relation::Dependent => assert!(
+                g.after.iter().any(|(d, _)| *d == app.groups[target].id),
+                "{} marked as a dependent but does not follow the selected group",
+                g.id
+            ),
+            _ => {}
+        }
+    }
+
+    // It reaches the screen.
+    let backend = ratatui::backend::TestBackend::new(100, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let content: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(content.contains("◆"), "selected group marker missing");
+}
+
+#[test]
+fn the_selected_plan_row_is_highlighted_edge_to_edge() {
+    let (_r, mut app) = make_app();
+    let backend = ratatui::backend::TestBackend::new(100, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+
+    // The plan pane is the left 40 columns; its border is column 0 and the
+    // last inner column is 38. Find the selected row by its background, then
+    // assert that background runs to the pane edge rather than stopping at
+    // the end of the label.
+    let bg_of = |x: u16, y: u16| buf[(x, y)].style().bg;
+    let selected_row = (1..39u16)
+        .find(|&y| bg_of(2, y).is_some() && bg_of(2, y) == bg_of(3, y))
+        .expect("a highlighted row");
+    let bg = bg_of(2, selected_row);
+    assert_eq!(
+        bg_of(38, selected_row),
+        bg,
+        "selection stops short of the pane edge"
+    );
+}
+
+#[test]
+fn scrolling_back_up_reveals_the_group_header() {
+    let (_r, mut app) = make_app();
+    app.handle_key(key('z')); // unfold, so there is enough to scroll through
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    // A short pane, as a small terminal would give: the rows now overflow it.
+    app.viewport_hint = 8;
+
+    // The header block above the first selectable row carries the label,
+    // description and dependencies — the cursor can never enter it.
+    let first_selectable = app
+        .rows
+        .iter()
+        .position(|r| r.kind.selectable())
+        .expect("a selectable row");
+    assert!(
+        first_selectable > 0,
+        "fixture should have header rows on top"
+    );
+    assert!(matches!(app.rows[0].kind, RowKind::GroupHeader));
+
+    // Scroll to the bottom, then all the way back up.
+    app.handle_key(key('G'));
+    assert!(app.scroll > 0, "should have scrolled away from the top");
+    for _ in 0..40 {
+        app.handle_key(ctrl('u'));
+    }
+    assert_eq!(
+        app.scroll, 0,
+        "scrolling up must reach row 0, not stop below it"
+    );
+
+    // g (top) lands there too.
+    app.handle_key(key('G'));
+    app.handle_key(key('g'));
+    assert_eq!(app.scroll, 0);
+}
+
+/// The ref decoration runs a real `git for-each-ref` and parses its real
+/// output — the hand-written bytes in the unit test happily passed while the
+/// format string was wrong, so this drives the actual command.
+#[test]
+fn picker_reads_real_branch_and_tag_names() {
+    let r = TestRepo::new();
+    r.write("a.txt", b"one\n");
+    let first = r.commit_all("first");
+    r.git(&["tag", "v0.1.0"]);
+    r.git(&["tag", "-a", "v0.2.0", "-m", "annotated"]);
+    r.git(&["branch", "feature"]);
+    // A remote-tracking ref, without needing a remote.
+    r.git(&["update-ref", "refs/remotes/origin/main", &first]);
+
+    let refs = differential_tui::picker::ref_names(&r.repo());
+    let names = refs.get(&first).expect("refs for the commit");
+    for want in ["main", "feature", "v0.1.0", "v0.2.0", "origin/main"] {
+        assert!(
+            names.iter().any(|n| n == want),
+            "{want:?} missing from {names:?}"
+        );
+    }
 }

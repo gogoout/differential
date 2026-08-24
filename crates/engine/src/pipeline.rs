@@ -89,7 +89,15 @@ pub fn run_grouped_pipeline(
     langs: &LanguageRegistry,
     grouping: &crate::grouping::GroupingOptions,
 ) -> Result<PipelineOutput, EngineError> {
-    let mut out = run_core(repo, base_rev, head_rev, kind, config, langs)?;
+    let mut out = run_core_with_progress(
+        repo,
+        base_rev,
+        head_rev,
+        kind,
+        config,
+        langs,
+        grouping.progress,
+    )?;
 
     if let Some(core_doc) = &out.document {
         // Backend: injected, or built from [grouping] config.
@@ -97,7 +105,7 @@ pub fn run_grouped_pipeline(
         let backend: &dyn crate::llm::LlmBackend = match grouping.backend {
             Some(b) => b,
             None => {
-                built = backend_from_config(&config.grouping);
+                built = backend_from_config(&config.grouping, grouping.cancel.clone());
                 &built
             }
         };
@@ -107,23 +115,37 @@ pub fn run_grouped_pipeline(
             backend,
             grouping.cache_dir,
             &langs.fingerprint(),
+            grouping.progress,
         )?;
         // Ordering is deterministic and model-free: always runs after grouping.
+        if let Some(f) = grouping.progress {
+            f(crate::grouping::Progress::Ordering);
+        }
         crate::ordering::apply(&mut grouped, &out.view, langs);
         out.document = Some(grouped);
+    }
+    if let Some(f) = grouping.progress {
+        f(crate::grouping::Progress::Done);
     }
     Ok(out)
 }
 
-fn backend_from_config(cfg: &crate::config::GroupingConfig) -> crate::llm::CommandBackend {
+fn backend_from_config(
+    cfg: &crate::config::GroupingConfig,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> crate::llm::CommandBackend {
     let backend = match &cfg.command {
         Some(argv) if !argv.is_empty() => {
             crate::llm::CommandBackend::new(argv.clone(), std::time::Duration::from_secs(1200))
         }
         _ => crate::llm::CommandBackend::claude_cli(),
     };
-    match cfg.timeout_secs {
+    let backend = match cfg.timeout_secs {
         Some(s) => backend.with_timeout(std::time::Duration::from_secs(s)),
+        None => backend,
+    };
+    match cancel {
+        Some(flag) => backend.with_cancel(flag),
         None => backend,
     }
 }
@@ -136,6 +158,21 @@ fn run_core(
     config: &Config,
     langs: &LanguageRegistry,
 ) -> Result<PipelineOutput, EngineError> {
+    run_core_with_progress(repo, base_rev, head_rev, kind, config, langs, None)
+}
+
+fn run_core_with_progress(
+    repo: &Repo,
+    base_rev: &str,
+    head_rev: &str,
+    kind: schema::SourceKind,
+    config: &Config,
+    langs: &LanguageRegistry,
+    progress: Option<&(dyn Fn(crate::grouping::Progress) + Send + Sync)>,
+) -> Result<PipelineOutput, EngineError> {
+    if let Some(f) = progress {
+        f(crate::grouping::Progress::Enumerating);
+    }
     // Commits normally; raw tree oids for uncommitted-state reviews
     // (ADR 0017) — every later stage treats the endpoints as trees anyway.
     let base = repo.rev_parse_commit_or_tree(base_rev)?;
@@ -190,6 +227,9 @@ fn run_core(
     mark_generated(&mut view, config, &attr_marked);
 
     // Mechanical partition: 100% coverage by construction.
+    if let Some(f) = progress {
+        f(crate::grouping::Progress::Classifying);
+    }
     let part = partition(&view, langs);
 
     // Invariants 1–4; no document on violation.
