@@ -1,7 +1,7 @@
 # Agent instructions for `differential`
 
 Read [`README.md`](README.md) for what this is. `spec/` is normative (what the program does);
-`adr/` records why (0001–0016). When your change contradicts a spec or ADR, the docs and the
+`adr/` records why (0001–0020). When your change contradicts a spec or ADR, the docs and the
 code must change together — or the change is wrong.
 
 ## Working rules
@@ -13,19 +13,50 @@ code must change together — or the change is wrong.
    would want to make.
 
 2. **Prefer the simple solution. No new abstractions without a demonstrated reason.**
-   The abstractions that exist (`Language`, `LlmBackend`, the `engine::schema` boundary) were
-   author decisions with recorded rationale. A new trait, layer, or indirection needs the
-   same bar: a concrete second consumer or a recorded decision — not "we might need it".
-   If you feel a "manager", "helper", or "context" struct forming, stop.
+   The abstractions that exist (`Language`, `LlmBackend`, the `engine::ports` seams, the
+   `engine::schema` boundary) were author decisions with recorded rationale. A new trait,
+   layer, or indirection needs the same bar: a concrete second consumer or a recorded
+   decision — not "we might need it". If you feel a "manager", "helper", or "context"
+   struct forming, stop. A `Context` bundling a git provider with a `Config` is the
+   specific one to refuse: it re-opens the exclusion hole ADR 0012 closed.
 
-3. **Don't hand-roll utilities — find an established open-source crate.**
+3. **Business logic owns the trait; the adapter implements it** (ADR 0020).
+   Domain code must not name an adapter. If a function needs git, the filesystem, a
+   clock, or a terminal, it takes a port defined next to the logic — `engine::ports` —
+   and `gitio`/`store` implement it. The dependency points inward, always.
+
+   **Generics for inversion, `dyn` for polymorphism.** A trait with one production
+   implementation, chosen at compile time, exists to invert a dependency: take it as a
+   generic (`fn f<G: ObjectReader>(git: &G)`). A trait whose implementation is genuinely
+   chosen at run time is polymorphism: `dyn` is correct. Exactly two seams are the
+   latter — `llm::LlmBackend` (config picks the backend) and `lang::Language` (an open
+   plugin set). Reaching for `Box<dyn>` anywhere else means you have mistaken one for
+   the other.
+
+   Three rules that follow, each of which has a way of quietly reversing itself:
+   - **Name the port for what the caller needs**, not for the thing that implements it.
+     Bound lists are the point: they state a function's budget. Never merge them into a
+     `trait Git: A + B + …` supertrait for convenience.
+   - **No `Option<&Port>` in a domain signature.** Disabling is a constructor
+     (`FsGroupingCache::disabled()`), so the branch lives in the adapter, not the domain.
+   - **`gitio::Repo` is the only implementation of the git ports.** A fake git for tests
+     is forbidden: invariants 1–4 compare the engine against git's own answer, so a fake
+     would make them compare the fake against the fake (ADR 0002). Tests use hermetic
+     temp repositories and real `git`.
+
+   Shared domain policy lives in `engine::plan`, not in a renderer. If you find yourself
+   parsing an id, indexing classes, or deciding what a tier defers inside `crates/tui`
+   or `crates/stack`, it belongs one layer down — that duplication is what let the two
+   renderers disagree about the same document.
+
+4. **Don't hand-roll utilities — find an established open-source crate.**
    Before writing a parser, encoder, globber, retry loop, or similar plumbing, look for the
    boring, widely-used crate (as `globset`, `tempfile`, `regex` already are here). A
    hand-rolled utility is only acceptable when the crate genuinely doesn't fit, and then say
    so in a comment. Exception: the deliberately dumb recount in `invariants.rs` must stay
    independent of everything — that separation is its whole point (invariant 4).
 
-4. **Don't artificially minimise blast radius.** If a feature genuinely touches a wide
+5. **Don't artificially minimise blast radius.** If a feature genuinely touches a wide
    area, refactor properly rather than patching around the edges to keep the diff small.
    A narrow patch that leaves the design wrong is more expensive than the wide diff that
    fixes it. (This tool exists precisely because wide, honest diffs are reviewable.)
@@ -46,7 +77,10 @@ code must change together — or the change is wrong.
   prototype for hash parity; improvements land as language plugins with their own ids
   (ADR 0015). The real-corpus parity test's exact class count is the guard.
 - **Git access shells out to real git, plumbing commands only** (ADR 0002, 0011). Bytes
-  in/out; UTF-8 only at display boundaries.
+  in/out; UTF-8 only at display boundaries. Domain code reaches git through the
+  `engine::ports` traits, whose only implementation is `gitio::Repo`; never add a second
+  one, a fake git included (ADR 0020). The migration completes when `Repo::run` is
+  private to `gitio` — until then, don't add call sites outside it.
 - **The core is a library** (ADR 0014, 0018). Renderers are library crates
   (`crates/stack`, `crates/tui`); `crates/cli` is the application layer owning the
   `dfr`/`differential` binaries — presentation and dispatch only, pipeline logic lives
