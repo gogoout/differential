@@ -4,7 +4,7 @@
 //! Usage: cargo run -p differential-engine --example group -- \
 //!            [--repo <path>] [--config <path>] [--no-cache] [-o <file>] <base>..<head>
 //!
-//! Backend: [grouping].command from .differential.toml, or the default
+//! Backend: [grouping].command from ~/.config/differential/config.toml, or the default
 //! tools-denied claude invocation. Cache: <git-common-dir>/differential/cache/grouping.
 
 use std::path::{Path, PathBuf};
@@ -46,7 +46,7 @@ fn main() -> ExitCode {
         Ok(r) => r,
         Err(e) => return usage_error(&e.to_string()),
     };
-    let config = match Config::load(repo.root(), config_path.as_deref()) {
+    let config = match Config::load(repo.root(), config_path.as_deref(), None) {
         Ok(c) => c,
         Err(e) => return usage_error(&e.to_string()),
     };

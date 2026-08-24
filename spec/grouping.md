@@ -4,7 +4,7 @@ Turns the mechanical class partition into labelled, effort-rated groups. The mod
 and labels **class ids, never hunks** (ADR 0001): it cannot drop what it never names, and
 anything it omits is detected and back-filled. Runs inside the engine
 (`run_grouped_pipeline`); the backend is any `LlmBackend` (ADR 0016), defaulting to the
-tools-denied claude invocation (ADR 0010), configurable via `[grouping].command`.
+tools-denied claude invocation (ADR 0010), configurable via `[grouping].command` in the user-level config (agents are per-user; the backend command is part of the cache key, so different agents get separate cache entries).
 
 ## What the model never sees or cannot override
 

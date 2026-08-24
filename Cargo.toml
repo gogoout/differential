@@ -27,6 +27,7 @@ hex = "0.4"
 tempfile = "3"
 toml = "0.8"
 globset = "0.4"
+etcetera = "0.10"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

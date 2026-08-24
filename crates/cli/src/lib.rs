@@ -78,9 +78,12 @@ struct Common {
     /// Repository to operate on (defaults to the one containing the cwd).
     #[arg(long)]
     repo: Option<PathBuf>,
-    /// Config file (defaults to <repo-root>/.differential.toml).
+    /// Repo config file (defaults to <repo-root>/.differential.toml).
     #[arg(long)]
     config: Option<PathBuf>,
+    /// User config file (defaults to ~/.config/differential/config.toml).
+    #[arg(long)]
+    user_config: Option<PathBuf>,
     /// `<base>..<head>`, `<a>...<b>` (merge-base), or two revs. `review`
     /// without a range opens a picker (recent commits / staged / worktree).
     #[arg(num_args = 0..=2)]
@@ -110,7 +113,11 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Ok(r) => r,
         Err(e) => return usage_error(&e.to_string()),
     };
-    let config = match Config::load(repo.root(), common.config.as_deref()) {
+    let config = match Config::load(
+        repo.root(),
+        common.config.as_deref(),
+        common.user_config.as_deref(),
+    ) {
         Ok(c) => c,
         Err(e) => return usage_error(&e.to_string()),
     };

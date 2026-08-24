@@ -83,7 +83,8 @@ plumbing and only lands a ref.
 
 ## Configuration (optional)
 
-Drop a `.differential.toml` at the repo root:
+Repo-level: drop a `.differential.toml` at the repo root (classification hints, shared
+by everyone reviewing the repo):
 
 ```toml
 [classify]
@@ -93,7 +94,12 @@ generated = ["**/__snapshots__/**", "migrations/**"]
 not_generated = ["important.lock"]
 # gitattributes names honoured as "generated" declarations.
 attributes = ["linguist-generated"]
+```
 
+User-level: which agent to run is your choice, not the repo's — put it in
+`~/.config/differential/config.toml`:
+
+```toml
 [grouping]
 # Any prompt-on-stdin / text-on-stdout command. Default shown.
 command = ["claude", "-p", "--output-format", "text", "--allowed-tools", ""]

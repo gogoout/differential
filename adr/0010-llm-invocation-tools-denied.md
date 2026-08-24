@@ -12,7 +12,7 @@ as fatal.
 
 The grouping stage invokes `claude -p --output-format text --allowed-tools ""` — plain
 prompt in, text out, no tools. Across all validation runs this configuration never exhibited
-the failure. The command is configurable (`[grouping]` in `.differential.toml`) but the
+the failure. The command is configurable (`[grouping]` in the user-level `~/.config/differential/config.toml`) but the
 tools-denied contract is required of any configured command.
 
 ## Consequences
