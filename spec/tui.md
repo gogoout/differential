@@ -7,7 +7,9 @@ persists per review); syntax highlighting, word-level change emphasis, ±3 conte
 recomputed from the base/head blobs (canonical `-U0` hunks carry none). Skim groups show
 one exemplar per shape class with the remainder folded behind a single line; noise groups
 are folded entirely. Group headers render `depends_on` with labels — the causal chain, not
-just the sequence.
+just the sequence. Each reading-plan row shows the group's file count and added/removed
+line totals, derived from its hunks — so binary/submodule changes (no hunks) contribute
+zero, and a rename counts as two files (the canonical view is `--no-renames`).
 
 ## Keys
 

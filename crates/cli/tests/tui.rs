@@ -253,6 +253,20 @@ fn quit_saves_cursor() {
 }
 
 #[test]
+fn group_counts_files_and_line_totals() {
+    let (_r, app) = make_app();
+    // Across both groups: 4 files, 4 hunks, each hunk one line replaced.
+    let files: usize = app.groups.iter().map(|g| g.n_files).sum();
+    let adds: usize = app.groups.iter().map(|g| g.adds).sum();
+    let dels: usize = app.groups.iter().map(|g| g.dels).sum();
+    assert_eq!(files, 4);
+    assert_eq!(adds, 4);
+    assert_eq!(dels, 4);
+    // The 3-file repeated edit lands in one group.
+    assert!(app.groups.iter().any(|g| g.n_files == 3));
+}
+
+#[test]
 fn split_view_toggles_and_keeps_cursor_on_hunk() {
     use differential::tui::rows::RowContent;
     let (r, mut app) = make_app();

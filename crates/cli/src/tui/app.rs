@@ -49,6 +49,12 @@ pub struct GroupInfo {
     /// Class content keys of the group's classes (reviewed-mark keys).
     pub class_keys: Vec<String>,
     pub n_hunks: usize,
+    /// Distinct paths touched (a rename counts as two: the canonical view is
+    /// --no-renames). Binary/submodule changes carry no hunks and count 0.
+    pub n_files: usize,
+    /// Added / removed line totals over the group's hunks.
+    pub adds: usize,
+    pub dels: usize,
 }
 
 pub struct App {
@@ -82,24 +88,33 @@ impl App {
         let schema_groups = doc.groups.as_ref().unwrap_or(&empty);
         let groups: Vec<GroupInfo> = schema_groups
             .iter()
-            .map(|g| GroupInfo {
-                id: g.id.clone(),
-                label: g.label.clone(),
-                effort: g.effort,
-                class_keys: g
+            .map(|g| {
+                let hunks: Vec<&schema::HunkEntry> = g
                     .class_ids
                     .iter()
-                    .map(|c| session.class_key(c).to_string())
-                    .collect(),
-                n_hunks: g
-                    .class_ids
-                    .iter()
-                    .map(|c| {
-                        class_by_id
-                            .get(c.as_str())
-                            .map_or(0, |cl| cl.hunk_ids.len())
+                    .filter_map(|c| class_by_id.get(c.as_str()))
+                    .flat_map(|cl| cl.hunk_ids.iter())
+                    .map(|hid| {
+                        let idx: usize = hid[1..].parse().expect("h<N>");
+                        &doc.hunks[idx]
                     })
-                    .sum(),
+                    .collect();
+                let files: std::collections::HashSet<&str> =
+                    hunks.iter().map(|h| h.file.as_str()).collect();
+                GroupInfo {
+                    id: g.id.clone(),
+                    label: g.label.clone(),
+                    effort: g.effort,
+                    class_keys: g
+                        .class_ids
+                        .iter()
+                        .map(|c| session.class_key(c).to_string())
+                        .collect(),
+                    n_hunks: hunks.len(),
+                    n_files: files.len(),
+                    adds: hunks.iter().map(|h| h.new_count as usize).sum(),
+                    dels: hunks.iter().map(|h| h.old_count as usize).sum(),
+                }
             })
             .collect();
         let labels = schema_groups
@@ -463,7 +478,7 @@ impl App {
             .split(frame.area());
         let panes = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(34), Constraint::Min(0)])
+            .constraints([Constraint::Length(40), Constraint::Min(0)])
             .split(outer[0]);
 
         self.draw_groups(frame, panes[0]);
@@ -512,7 +527,10 @@ impl App {
                     style = style.bg(THEME.selected_bg).add_modifier(Modifier::BOLD);
                 }
                 Line::from(Span::styled(
-                    format!("{mark}{tier} {:>3}h  {}", g.n_hunks, g.label),
+                    format!(
+                        "{mark}{tier} {:>2}f +{:<4}-{:<4} {}",
+                        g.n_files, g.adds, g.dels, g.label
+                    ),
                     style,
                 ))
             })
