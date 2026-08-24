@@ -53,9 +53,10 @@ code must change together — or the change is wrong.
 
 ## Process
 
-- **Never push to main.** Every change: branch → PR → CI green → squash merge
-  (`gh pr merge --squash --delete-branch`). Branch protection enforces this (PR + the
-  `test` check, admins included).
+- **Never push to main.** Every change: branch → PR. Branch protection enforces this
+  (PR + the `test` check, admins included).
+- **Stop at PR created.** Never merge or arm auto-merge — report the PR link and CI
+  status; the author reviews and merges (squash) themselves.
 - CI (`.github/workflows/ci.yml`) runs fmt, clippy `-D warnings`, tests and a release
   build on every PR and on main after merge — the done-criteria below are exactly what CI
   checks, so run them before pushing.
