@@ -35,6 +35,16 @@ zero, and a rename counts as two files (the canonical view is `--no-renames`).
 | `?` | help |
 | `q` | quit — state is saved on every change, quitting never loses anything |
 
+## No range: the picker
+
+`dfr review` with no arguments opens a picker instead of failing: **worktree** (all
+uncommitted changes — staged + unstaged + untracked — as index-tree vs worktree-tree),
+**staged** (HEAD vs index), or a recent commit `C` — which reviews `C..HEAD`, everything
+since that commit. Uncommitted sources run the full grouped pipeline like any range
+(ADR 0017); their review identity keys on the HEAD sha plus a stable `INDEX`/`WORKTREE`
+literal, so marks and findings survive while the snapshot trees churn with every edit.
+The commit pick keys on `HEAD` as typed, so the review survives new commits landing.
+
 ## State
 
 Everything persists through the engine's `ReviewSession` — the TUI is a stateless

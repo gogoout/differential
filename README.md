@@ -60,12 +60,17 @@ subject lines alone — every hunk in them is a repeat of a shape you already ve
 ### Commands
 
 ```sh
+dfr review [--no-cache] [<range>]               # terminal reviewer (no range: opens a picker)
 dfr stack [--ref <name>] [--no-cache] <range>   # build + land the review stack
 dfr check [--json] <range>                      # run the structural invariants (CI-friendly)
+dfr findings [--no-cache] <range>               # print the review's findings as JSON
 ```
 
 - `<range>`: `base..head`, `a...b` (base = merge-base, i.e. what an MR/PR diff is), or two
   revs.
+- `dfr review` with no range opens a picker: review the worktree (all uncommitted
+  changes), the staged index, or everything since a recent commit. Progress marks and
+  findings persist across new commits — and across edits, for uncommitted reviews.
 - `--repo <path>` / `--config <path>` work on every command; the repo defaults to the one
   containing your cwd.
 - `dfr stack --ref refs/review/my-review/stack` picks the ref; default is

@@ -83,8 +83,9 @@ struct Common {
     /// Config file (defaults to <repo-root>/.differential.toml).
     #[arg(long)]
     config: Option<PathBuf>,
-    /// `<base>..<head>`, `<a>...<b>` (merge-base), or two revs.
-    #[arg(required = true, num_args = 1..=2)]
+    /// `<base>..<head>`, `<a>...<b>` (merge-base), or two revs. `review`
+    /// without a range opens a picker (recent commits / staged / worktree).
+    #[arg(num_args = 0..=2)]
     range: Vec<String>,
 }
 
@@ -116,10 +117,20 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Err(e) => return usage_error(&e.to_string()),
     };
     let common_range: Vec<String> = common.range.clone();
-    let spec: Vec<&str> = common.range.iter().map(String::as_str).collect();
-    let (base, head, kind) = match resolve_range(&repo, &spec) {
-        Ok(t) => t,
-        Err(e) => return usage_error(&e.to_string()),
+    // Only `review` may omit the range (it opens the picker instead).
+    let resolved = if common_range.is_empty() {
+        if !matches!(cli.command, Command::Review { .. }) {
+            return usage_error(
+                "a revision range is required: <base>..<head>, <a>...<b>, or two revs",
+            );
+        }
+        None
+    } else {
+        let spec: Vec<&str> = common.range.iter().map(String::as_str).collect();
+        match resolve_range(&repo, &spec) {
+            Ok(t) => Some(t),
+            Err(e) => return usage_error(&e.to_string()),
+        }
     };
     let langs = LanguageRegistry::builtin();
 
@@ -127,6 +138,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Stack {
             ref_name, no_cache, ..
         } => {
+            let (base, head, kind) = resolved.expect("range checked above");
             let cache_dir = if no_cache {
                 None
             } else {
@@ -182,13 +194,54 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Review { no_cache, .. } => {
+            // Endpoints + review identity, either from the range or the
+            // picker (see the wiring table in adr/0017 for the identity
+            // rules on uncommitted sources).
+            let (base, head, kind, head_spec, identity_base) = match resolved {
+                Some((base, head, kind)) => (base, head, kind, head_spec_of(&common_range), None),
+                None => match tui::picker::pick_source(&repo)? {
+                    None => return Ok(ExitCode::SUCCESS),
+                    Some(tui::picker::PickedSource::Commit { sha }) => (
+                        sha,
+                        "HEAD".to_string(),
+                        differential_schema::SourceKind::Range,
+                        "HEAD".to_string(),
+                        None,
+                    ),
+                    Some(tui::picker::PickedSource::Staged) => {
+                        let head_sha = repo.rev_parse("HEAD")?;
+                        let index = differential_engine::worktree::index_tree(&repo)?;
+                        (
+                            head_sha.clone(),
+                            index,
+                            differential_schema::SourceKind::Staged,
+                            "INDEX".to_string(),
+                            Some(head_sha),
+                        )
+                    }
+                    Some(tui::picker::PickedSource::Worktree) => {
+                        let head_sha = repo.rev_parse("HEAD")?;
+                        let index = differential_engine::worktree::index_tree(&repo)?;
+                        let wt = differential_engine::worktree::worktree_tree(&repo)?;
+                        (
+                            index,
+                            wt,
+                            differential_schema::SourceKind::Worktree,
+                            "WORKTREE".to_string(),
+                            Some(head_sha),
+                        )
+                    }
+                },
+            };
             let out = grouped(&repo, &base, &head, kind, &config, &langs, no_cache)?;
-            let head_spec = head_spec_of(&common_range);
-            let review_base = out.base.clone();
+            // Identity: HEAD sha + stable literal for uncommitted sources
+            // (the synthesized trees churn per edit); resolved base otherwise.
+            let review_base = identity_base.unwrap_or_else(|| out.base.clone());
             tui::run_review(&repo, out, &review_base, &head_spec)?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Findings { no_cache, .. } => {
+            let (base, head, kind) = resolved.expect("range checked above");
             let out = grouped(&repo, &base, &head, kind, &config, &langs, no_cache)?;
             let doc = out
                 .document
@@ -204,6 +257,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Check { json, .. } => {
+            let (base, head, kind) = resolved.expect("range checked above");
             let out = run_pipeline(&repo, &base, &head, kind, &config, &langs)
                 .context("pipeline failed")?;
             if json {

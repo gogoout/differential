@@ -1,6 +1,7 @@
 //! `dfr review` — the terminal reviewer over a grouped, ordered document.
 
 pub mod app;
+pub mod picker;
 pub mod rows;
 pub mod theme;
 pub mod vendor;
