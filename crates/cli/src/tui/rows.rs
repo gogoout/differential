@@ -23,7 +23,8 @@ const TAB_WIDTH: usize = 4;
 #[derive(Debug, Clone, PartialEq)]
 pub enum RowKind {
     GroupHeader,
-    FileHeader,
+    /// A file header carrying its path (the file-list modal jumps to these).
+    FileHeader(String),
     /// Canonical hunk index.
     HunkHeader(usize),
     /// A diff content row belonging to a hunk.
@@ -370,7 +371,7 @@ fn file_header_row(doc: &schema::PlanDocument, path: &str) -> Row {
         }
     }
     Row::full(
-        RowKind::FileHeader,
+        RowKind::FileHeader(path.to_string()),
         Line::from(Span::styled(
             text,
             Style::default()

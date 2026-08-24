@@ -37,6 +37,20 @@ pub enum Mode {
     /// Editing a finding for the given canonical hunk index.
     Editing(usize, Box<TextArea<'static>>),
     Help,
+    /// File-list modal over the current rows: jump to a file header.
+    FileList {
+        entries: Vec<FileListEntry>,
+        selected: usize,
+    },
+}
+
+pub struct FileListEntry {
+    pub path: String,
+    /// Row index of the file's header in the current rows.
+    pub row_idx: usize,
+    pub adds: usize,
+    pub dels: usize,
+    pub reviewed: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -377,6 +391,49 @@ impl App {
         self.status = if on { "file view" } else { "reading plan view" }.into();
     }
 
+    /// Open the file-list modal over the current rows (reflects folds and the
+    /// active view). Enter jumps to the chosen file's header.
+    fn open_file_list(&mut self) {
+        let reviewed = self.session.reviewed_hunks();
+        let entries: Vec<FileListEntry> = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| match &r.kind {
+                RowKind::FileHeader(path) => Some((i, path.clone())),
+                _ => None,
+            })
+            .map(|(row_idx, path)| {
+                let info = self.files.iter().find(|f| f.path == path);
+                let (adds, dels, done) = info
+                    .map(|f| {
+                        (
+                            f.adds,
+                            f.dels,
+                            !f.hunk_idxs.is_empty()
+                                && f.hunk_idxs.iter().all(|h| reviewed.contains(h)),
+                        )
+                    })
+                    .unwrap_or((0, 0, false));
+                FileListEntry {
+                    path,
+                    row_idx,
+                    adds,
+                    dels,
+                    reviewed: done,
+                }
+            })
+            .collect();
+        if entries.is_empty() {
+            self.status = "no files listed here (unfold with z?)".into();
+            return;
+        }
+        self.mode = Mode::FileList {
+            entries,
+            selected: 0,
+        };
+    }
+
     fn current_hunk(&self) -> Option<usize> {
         self.rows.get(self.cursor).and_then(|r| r.kind.hunk())
     }
@@ -433,6 +490,28 @@ impl App {
         match &mut self.mode {
             Mode::Help => {
                 self.mode = Mode::Normal;
+                return Vec::new();
+            }
+            Mode::FileList { entries, selected } => {
+                match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        *selected = (*selected + 1).min(entries.len().saturating_sub(1));
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        *selected = selected.saturating_sub(1);
+                    }
+                    KeyCode::Enter => {
+                        let row = entries[*selected].row_idx;
+                        self.mode = Mode::Normal;
+                        self.cursor = self.next_selectable(row, 1).unwrap_or(row);
+                        self.focus = Focus::Diff;
+                        self.follow_cursor();
+                    }
+                    KeyCode::Esc | KeyCode::Char('f') | KeyCode::Char('q') => {
+                        self.mode = Mode::Normal;
+                    }
+                    _ => {}
+                }
                 return Vec::new();
             }
             Mode::Editing(hunk, textarea) => {
@@ -525,6 +604,7 @@ impl App {
             }
             (KeyCode::Char('s'), KeyModifiers::NONE) => self.toggle_split(),
             (KeyCode::Char('v'), KeyModifiers::NONE) => self.toggle_file_view(),
+            (KeyCode::Char('f'), KeyModifiers::NONE) => self.open_file_list(),
             (KeyCode::Char(' '), _) => self.toggle_reviewed(),
             (KeyCode::Char('c'), KeyModifiers::NONE) => {
                 if let Some(h) = self.current_hunk() {
@@ -648,9 +728,37 @@ impl App {
                 frame.render_widget(&**textarea, area);
             }
             Mode::Help => {
-                let area = centered_rect(outer[0], 60, 16);
+                let area = centered_rect(outer[0], 60, 18);
                 frame.render_widget(Clear, area);
                 frame.render_widget(help_paragraph(), area);
+            }
+            Mode::FileList { entries, selected } => {
+                let height = (entries.len() as u16 + 2).min(outer[0].height);
+                let area = centered_rect(outer[0], 70, height);
+                let lines: Vec<Line> = entries
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| {
+                        let mark = if e.reviewed { "✓" } else { " " };
+                        let mut style = Style::default().fg(THEME.context_fg);
+                        if i == *selected {
+                            style = style.bg(THEME.selected_bg).add_modifier(Modifier::BOLD);
+                        }
+                        Line::from(Span::styled(
+                            format!("{mark} +{:<4}-{:<4} {}", e.adds, e.dels, e.path),
+                            style,
+                        ))
+                    })
+                    .collect();
+                frame.render_widget(Clear, area);
+                frame.render_widget(
+                    Paragraph::new(lines).block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title(" files — enter jump · esc close "),
+                    ),
+                    area,
+                );
             }
             Mode::Normal => {}
         }
@@ -843,6 +951,7 @@ fn help_paragraph() -> Paragraph<'static> {
         Line::from("  z          unfold skim remainder / noise"),
         Line::from("  s          toggle unified / split diff"),
         Line::from("  v          toggle reading plan / file view"),
+        Line::from("  f          file list of the current view (enter jumps)"),
         Line::from("  space      toggle class reviewed"),
         Line::from("  c          add finding on current hunk"),
         Line::from("  dd         delete finding under cursor"),

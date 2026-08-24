@@ -27,6 +27,7 @@ zero, and a rename counts as two files (the canonical view is `--no-renames`).
 | `z` | unfold / fold the skim remainder or noise group |
 | `s` | toggle unified / side-by-side diff layout (persisted) |
 | `v` | toggle the left pane: reading plan ↔ flattened file view (persisted) |
+| `f` | file-list modal over the current view (`enter` jumps to the file) |
 | `space` | toggle the hunk's **class** reviewed (one exemplar verifies the shape) |
 | `c` | add a finding on the current hunk (Ctrl-s save, Esc cancel) |
 | `dd` | delete the finding under the cursor |

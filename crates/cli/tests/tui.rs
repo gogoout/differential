@@ -288,7 +288,11 @@ fn file_view_lists_all_files_and_shares_review_marks() {
     assert!(store.load_state().unwrap().file_view);
 
     // The right pane shows the selected file: one header + its hunks.
-    assert!(app.rows.iter().any(|row| row.kind == RowKind::FileHeader));
+    assert!(
+        app.rows
+            .iter()
+            .any(|row| matches!(row.kind, RowKind::FileHeader(_)))
+    );
     assert!(
         app.rows
             .iter()
@@ -348,6 +352,38 @@ fn file_view_resume_restores_view_and_file() {
     let app2 = open_app(&r);
     assert_eq!(app2.view_mode, ViewMode::Files);
     assert_eq!(app2.files[app2.selected_file].path, path);
+}
+
+#[test]
+fn file_list_modal_opens_jumps_and_closes() {
+    use differential::tui::app::Mode;
+    let (_r, mut app) = make_app();
+    // Group 1 ("Close work" or the skim sweep) — use whichever is selected;
+    // ensure some file headers exist in the current rows.
+    app.handle_key(key('f'));
+    let (n_entries, first_path) = match &app.mode {
+        Mode::FileList { entries, .. } => (entries.len(), entries[0].path.clone()),
+        _ => panic!("f should open the file list"),
+    };
+    assert!(n_entries >= 1);
+
+    // Enter jumps the cursor to (the first selectable after) that header.
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(app.mode, Mode::Normal));
+    assert_eq!(app.focus, Focus::Diff);
+    let header_row = app
+        .rows
+        .iter()
+        .position(|r| matches!(&r.kind, RowKind::FileHeader(p) if *p == first_path))
+        .unwrap();
+    assert!(app.cursor >= header_row);
+    assert!(app.rows[app.cursor].kind.selectable());
+
+    // Esc closes without moving.
+    app.handle_key(key('f'));
+    assert!(matches!(app.mode, Mode::FileList { .. }));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(matches!(app.mode, Mode::Normal));
 }
 
 #[test]
