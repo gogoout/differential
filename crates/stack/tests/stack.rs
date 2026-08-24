@@ -22,6 +22,7 @@ fn stacked(r: &TestRepo, base: &str, head: &str, backend: &dyn LlmBackend) -> St
             backend: Some(backend),
             cache_dir: None,
             progress: None,
+            cancel: None,
         },
         &StackOptions::default(),
     )
@@ -241,6 +242,7 @@ fn custom_ref_name_is_honoured_and_rerun_is_idempotent() {
             backend: Some(&backend),
             cache_dir: None,
             progress: None,
+            cancel: None,
         },
         &StackOptions {
             ref_name: Some("refs/review/custom/stack"),

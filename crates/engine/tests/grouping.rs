@@ -518,6 +518,7 @@ fn progress_reports_stages_and_cache_state() {
                 backend: Some(&backend),
                 cache_dir: Some(cache.path()),
                 progress: Some(&cb),
+                cancel: None,
             },
         )
         .unwrap();

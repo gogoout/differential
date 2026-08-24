@@ -68,7 +68,9 @@ as typed, so the review survives new commits landing.
 The reviewer opens immediately and shows a splash until the document is ready:
 enumerate → classify → group → order, the active stage spinning, with an elapsed timer.
 The grouping line names the agent it is waiting on, or says the cache spared the call —
-that stage shells out to an LLM on a cache miss and dominates the wait. `q` cancels.
+that stage shells out to an LLM on a cache miss and dominates the wait. `q` cancels, and
+cancelling kills the agent subprocess rather than merely stopping the screen from
+watching it: raw mode has already disabled `Ctrl-C`, so nothing else would reap it.
 
 ## State
 

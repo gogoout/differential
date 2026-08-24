@@ -346,12 +346,17 @@ impl App {
             Some(TreeKind::File { file_idx }) => vec![*file_idx],
             Some(TreeKind::Dir { path }) => {
                 let prefix = format!("{path}/");
-                self.files
+                let mut under: Vec<usize> = self
+                    .files
                     .iter()
                     .enumerate()
                     .filter(|(_, f)| f.path.starts_with(&prefix))
                     .map(|(i, _)| i)
-                    .collect()
+                    .collect();
+                // Path order, so the diff pane presents files in the order the
+                // tree lists them rather than in document order.
+                under.sort_by(|a, b| self.files[*a].path.cmp(&self.files[*b].path));
+                under
             }
             None => Vec::new(),
         }

@@ -148,6 +148,7 @@ fn findings_reanchor_across_regeneration() {
             backend: Some(&focus_all_backend()),
             cache_dir: None,
             progress: None,
+            cancel: None,
         },
     )
     .unwrap();
@@ -185,6 +186,7 @@ fn findings_reanchor_across_regeneration() {
             backend: Some(&focus_all_backend()),
             cache_dir: None,
             progress: None,
+            cancel: None,
         },
     )
     .unwrap();
@@ -220,6 +222,7 @@ fn session_persists_every_mutation() {
             backend: Some(&focus_all_backend()),
             cache_dir: None,
             progress: None,
+            cancel: None,
         },
     )
     .unwrap();

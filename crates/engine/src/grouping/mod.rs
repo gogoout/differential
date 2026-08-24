@@ -35,6 +35,9 @@ pub struct GroupingOptions<'a> {
     /// Stage notifications for renderers that show progress while the
     /// pipeline runs (the TUI's splash screen). `None` reports nothing.
     pub progress: Option<&'a (dyn Fn(Progress) + Send + Sync)>,
+    /// Set to abandon the run: the in-flight agent subprocess is killed
+    /// rather than left running after its caller has walked away.
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// Pipeline stage notifications, in the order they occur. `Grouping` carries

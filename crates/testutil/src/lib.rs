@@ -204,6 +204,7 @@ pub fn grouped_with_cache(
             backend: Some(backend),
             cache_dir,
             progress: None,
+            cancel: None,
         },
     )
     .unwrap();

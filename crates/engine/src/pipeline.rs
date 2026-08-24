@@ -105,7 +105,7 @@ pub fn run_grouped_pipeline(
         let backend: &dyn crate::llm::LlmBackend = match grouping.backend {
             Some(b) => b,
             None => {
-                built = backend_from_config(&config.grouping);
+                built = backend_from_config(&config.grouping, grouping.cancel.clone());
                 &built
             }
         };
@@ -130,15 +130,22 @@ pub fn run_grouped_pipeline(
     Ok(out)
 }
 
-fn backend_from_config(cfg: &crate::config::GroupingConfig) -> crate::llm::CommandBackend {
+fn backend_from_config(
+    cfg: &crate::config::GroupingConfig,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> crate::llm::CommandBackend {
     let backend = match &cfg.command {
         Some(argv) if !argv.is_empty() => {
             crate::llm::CommandBackend::new(argv.clone(), std::time::Duration::from_secs(1200))
         }
         _ => crate::llm::CommandBackend::claude_cli(),
     };
-    match cfg.timeout_secs {
+    let backend = match cfg.timeout_secs {
         Some(s) => backend.with_timeout(std::time::Duration::from_secs(s)),
+        None => backend,
+    };
+    match cancel {
+        Some(flag) => backend.with_cancel(flag),
         None => backend,
     }
 }

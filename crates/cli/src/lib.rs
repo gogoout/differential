@@ -166,6 +166,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     backend: None, // from [grouping].command, default claude
                     cache_dir: cache_dir.as_deref(),
                     progress: None,
+                    cancel: None,
                 },
                 &StackOptions {
                     ref_name: ref_name.as_deref(),
@@ -207,7 +208,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             let pick = resolved.is_none();
             let cache_dir = cache_dir(&repo, no_cache)?;
             let worker_repo = repo.clone();
-            differential_tui::review(&repo, pick, move |picked, tx| {
+            differential_tui::review(&repo, pick, move |picked, tx, cancel| {
                 let (base, head, kind, head_spec, identity_base) = match (resolved, picked) {
                     (Some((base, head, kind)), _) => {
                         (base, head, kind, head_spec_of(&common_range), None)
@@ -249,6 +250,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                         backend: None,
                         cache_dir: cache_dir.as_deref(),
                         progress: Some(&report),
+                        cancel: Some(cancel),
                     },
                 )
                 .context("grouped pipeline failed")?;
@@ -377,6 +379,7 @@ fn grouped(
             backend: None,
             cache_dir: cache_dir.as_deref(),
             progress: None,
+            cancel: None,
         },
     )
     .context("grouped pipeline failed")

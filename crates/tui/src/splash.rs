@@ -40,14 +40,14 @@ fn stage_index(p: &Progress) -> usize {
     }
 }
 
-/// Draw the splash until the worker finishes. `Ok(Some(()))` means the
-/// pipeline is done (join it for the result); `Ok(None)` means the user
-/// cancelled with `q`/Esc.
+/// Draw the splash until the worker finishes. `true` means the pipeline is
+/// done (join it for the result); `false` means the user cancelled with
+/// `q`/Esc and the caller must stop the work.
 pub fn run<T>(
     terminal: &mut vendor::terminal::TerminalSession<Stdout>,
     rx: Receiver<Progress>,
     worker: &JoinHandle<T>,
-) -> anyhow::Result<Option<()>> {
+) -> anyhow::Result<bool> {
     let started = Instant::now();
     let mut current = 0usize;
     // Set once the grouping stage reports which backend it is waiting on.
@@ -70,7 +70,7 @@ pub fn run<T>(
             }
         }
         if worker.is_finished() {
-            return Ok(Some(()));
+            return Ok(true);
         }
 
         terminal.draw(|frame| draw(frame, current, agent.as_ref(), started, tick))?;
@@ -81,9 +81,32 @@ pub fn run<T>(
             && key.is_press()
             && matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
         {
-            return Ok(None);
+            return Ok(false);
         }
     }
+}
+
+/// Shown while an abandoned run is being torn down — killing the agent
+/// subprocess takes a moment, and a frozen screen would look like a hang.
+pub fn draw_cancelling(
+    terminal: &mut vendor::terminal::TerminalSession<Stdout>,
+) -> anyhow::Result<()> {
+    terminal.draw(|frame| {
+        let area = frame.area();
+        frame.render_widget(Clear, area);
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::default(),
+                Line::from(Span::styled(
+                    "  cancelling — stopping the agent…",
+                    Style::default().fg(THEME.gutter_fg),
+                )),
+            ])
+            .block(Block::default().borders(Borders::ALL).title(" dfr review ")),
+            area,
+        );
+    })?;
+    Ok(())
 }
 
 fn draw(
@@ -130,7 +153,7 @@ fn draw(
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
         format!(
-            "  {:.0}s elapsed · q cancels",
+            "  {:.0}s elapsed · q cancels (stops the agent too)",
             started.elapsed().as_secs_f64()
         ),
         Style::default().fg(THEME.gutter_fg),

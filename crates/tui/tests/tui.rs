@@ -46,6 +46,7 @@ fn open_app(r: &TestRepo) -> App {
             backend: Some(&backend),
             cache_dir: None,
             progress: None,
+            cancel: None,
         },
     )
     .unwrap();

@@ -14,6 +14,8 @@ pub mod theme;
 pub mod vendor;
 
 use std::io::Stdout;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -44,7 +46,11 @@ pub struct Prepared {
 /// the stages it publishes on the channel.
 pub fn review<P>(repo: &Repo, pick: bool, pipeline: P) -> anyhow::Result<()>
 where
-    P: FnOnce(Option<PickedSource>, mpsc::Sender<Progress>) -> anyhow::Result<Prepared>
+    P: FnOnce(
+            Option<PickedSource>,
+            mpsc::Sender<Progress>,
+            Arc<AtomicBool>,
+        ) -> anyhow::Result<Prepared>
         + Send
         + 'static,
 {
@@ -67,7 +73,11 @@ where
 
 fn review_in<P>(terminal: &mut Session, repo: &Repo, pick: bool, pipeline: P) -> anyhow::Result<()>
 where
-    P: FnOnce(Option<PickedSource>, mpsc::Sender<Progress>) -> anyhow::Result<Prepared>
+    P: FnOnce(
+            Option<PickedSource>,
+            mpsc::Sender<Progress>,
+            Arc<AtomicBool>,
+        ) -> anyhow::Result<Prepared>
         + Send
         + 'static,
 {
@@ -83,14 +93,24 @@ where
     // The pipeline (an LLM call on a cache miss) runs off the UI thread so the
     // splash can report what it is waiting on.
     let (tx, rx) = mpsc::channel();
-    let worker = std::thread::spawn(move || pipeline(picked, tx));
-    let prepared = splash::run(terminal, rx, &worker)?;
-    let prepared = match prepared {
-        Some(()) => worker
-            .join()
-            .map_err(|_| anyhow::anyhow!("pipeline thread panicked"))??,
-        None => return Ok(()), // cancelled at the splash
+    let cancel = Arc::new(AtomicBool::new(false));
+    let worker = {
+        let cancel = Arc::clone(&cancel);
+        std::thread::spawn(move || pipeline(picked, tx, cancel))
     };
+    let finished = splash::run(terminal, rx, &worker)?;
+    if !finished {
+        // Cancelling means the agent subprocess dies too, not just that we
+        // stop watching it: raise the flag, then wait for the worker to
+        // unwind so nothing outlives this process.
+        cancel.store(true, Ordering::Relaxed);
+        splash::draw_cancelling(terminal)?;
+        let _ = worker.join();
+        return Ok(());
+    }
+    let prepared = worker
+        .join()
+        .map_err(|_| anyhow::anyhow!("pipeline thread panicked"))??;
 
     let doc = prepared
         .out
