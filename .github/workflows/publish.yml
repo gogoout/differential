@@ -1,23 +1,62 @@
-name: Publish
+name: Release
 
-# Manual release: bump [workspace.package].version in a PR, merge, then
-# dispatch this from main. Publishes all workspace crates to crates.io in
-# dependency order (native cargo workspace publishing, stable since 1.90).
-# Requires the CARGO_REGISTRY_TOKEN repository secret.
+# Tag-driven release: an admin pushes vX.Y.Z (a tag ruleset restricts v* tags
+# to admins) after the version-bump PR merged. This generates the changelog
+# from commits since the previous tag (git-cliff -> GitHub Release notes) and
+# publishes all workspace crates to crates.io in dependency order. The tag
+# must equal [workspace.package].version or the publish job fails.
 on:
-  workflow_dispatch:
+  push:
+    tags: ["v*"]
 
 jobs:
+  release:
+    name: github release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # git-cliff walks history back to the previous tag.
+          fetch-depth: 0
+
+      - name: Generate changelog
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: RELEASE_NOTES.md
+
+      - name: Create GitHub release
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file RELEASE_NOTES.md \
+            --verify-tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   publish:
     name: publish
-    if: github.ref == 'refs/heads/main'
+    needs: release
     runs-on: ubuntu-latest
     # The CARGO_REGISTRY_TOKEN lives as an environment secret here: only jobs
-    # declaring this environment can read it, and the environment itself is
-    # restricted to deployments from main.
+    # declaring this environment can read it, and the environment's deployment
+    # policy only accepts v* tags.
     environment: crates-io
     steps:
       - uses: actions/checkout@v4
+
+      - name: Tag must match the workspace version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match workspace version ${version}" >&2
+            echo "bump the version in a PR first, then tag the merge commit" >&2
+            exit 1
+          fi
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
