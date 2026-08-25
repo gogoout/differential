@@ -24,7 +24,15 @@ use differential_engine::apply::apply_hunks;
 use differential_engine::gitio::Repo;
 use differential_engine::invariants::dumb_hunk_count;
 use differential_engine::model::{DiffView, Disposition};
+use differential_engine::plan::{self, Deferral, Fold, HunkId, PlanIndex, reading_split};
 use differential_engine::tree::{index_entry, removal_entry};
+
+/// Ref-name component width (`spec/stack.md`).
+///
+/// Narrower than `plan::short_oid` on purpose: this one ends up in a ref a
+/// human types back, so it is a documented part of the CLI contract rather
+/// than a display convenience.
+const REF_ABBREV: usize = 7;
 
 #[derive(Default)]
 pub struct StackOptions<'a> {
@@ -52,8 +60,8 @@ pub struct StackResult {
 struct PlannedCommit {
     subject: String,
     body: String,
-    /// Canonical hunk indices carried by this commit.
-    hunks: Vec<usize>,
+    /// Canonical hunks carried by this commit.
+    hunks: Vec<HunkId>,
     /// Zero-hunk file indices carried by this commit (the `[meta]` commit).
     meta_files: Vec<usize>,
 }
@@ -94,12 +102,12 @@ pub fn build_stack(
     let mut seen = vec![false; view.hunks.len()];
     for c in &plan {
         for &h in &c.hunks {
-            if seen[h] {
+            if seen[h.index()] {
                 return Err(EngineError::Invariant(format!(
-                    "hunk h{h} carried by two commits"
+                    "hunk {h} carried by two commits"
                 )));
             }
-            seen[h] = true;
+            seen[h.index()] = true;
         }
     }
     let hunks_carried = seen.iter().filter(|s| **s).count();
@@ -142,8 +150,8 @@ pub fn build_stack(
     let ref_name = opts.ref_name.map(str::to_string).unwrap_or_else(|| {
         format!(
             "refs/review/{}-{}/stack",
-            &base[..7.min(base.len())],
-            &head[..7.min(head.len())]
+            &base[..REF_ABBREV.min(base.len())],
+            &head[..REF_ABBREV.min(head.len())]
         )
     });
     repo.run(["update-ref", &ref_name, &tip], None)?;
@@ -165,87 +173,77 @@ fn commit_plan(doc: &schema::PlanDocument) -> Result<Vec<PlannedCommit>, EngineE
             "stack rendering needs a grouped document (groups is null)".into(),
         ));
     };
-    let class_by_id: HashMap<&str, &schema::ClassEntry> =
-        doc.classes.iter().map(|c| (c.id.as_str(), c)).collect();
-    let hunk_idx = |hid: &str| -> usize { hid[1..].parse().expect("hunk ids are h<N>") };
+    let index = PlanIndex::build(doc)?;
 
+    // The audit's back-fill group is assembled last and the ordering stage
+    // keeps it trailing, so its position identifies it.
     let backfilled = doc.audit.classes_missing.unwrap_or(0) > 0;
     let mut plan = Vec::new();
 
     for (gi, g) in groups.iter().enumerate() {
-        let classes: Vec<&schema::ClassEntry> = g
-            .class_ids
-            .iter()
-            .map(|c| class_by_id[c.as_str()])
-            .collect();
-        let all: Vec<usize> = classes
-            .iter()
-            .flat_map(|c| c.hunk_ids.iter().map(|h| hunk_idx(h)))
-            .collect();
+        // Always folded: the stack's way of unfolding a skim group is the
+        // [skim 2/2] commit that follows it.
+        let split = reading_split(&index, g, Fold::Folded);
         let body = format!("{}\n\n{}", g.description, g.reason);
         let is_backfill = backfilled && gi == groups.len() - 1;
 
-        match g.effort {
-            schema::Effort::Focus if is_backfill => plan.push(PlannedCommit {
-                subject: format!("[unclassified] {} hunks carried by no group", all.len()),
+        match split.deferral {
+            Deferral::None if is_backfill => plan.push(PlannedCommit {
+                subject: format!(
+                    "[unclassified] {} hunks carried by no group",
+                    split.shown.len()
+                ),
                 body,
-                hunks: all,
+                hunks: split.shown,
                 meta_files: Vec::new(),
             }),
-            schema::Effort::Focus => plan.push(PlannedCommit {
-                subject: format!("[focus] {}", g.label),
-                body,
-                hunks: all,
+            Deferral::None if g.effort == schema::Effort::Skim => plan.push(PlannedCommit {
+                subject: format!("[skim] {} — {} exemplars", g.label, split.shown.len()),
+                body: format!("{body}\n\nEvery shape class in this group is a singleton."),
+                hunks: split.shown,
                 meta_files: Vec::new(),
             }),
-            schema::Effort::Noise => plan.push(PlannedCommit {
-                subject: format!("[noise] {} — folded, {} hunks", g.label, all.len()),
+            Deferral::None => plan.push(PlannedCommit {
+                subject: format!("[{}] {}", plan::effort_name(g.effort), g.label),
                 body,
-                hunks: all,
+                hunks: split.shown,
                 meta_files: Vec::new(),
             }),
-            schema::Effort::Skim => {
-                let exemplars: Vec<usize> = classes.iter().map(|c| hunk_idx(&c.exemplar)).collect();
-                let rest: Vec<usize> = classes
-                    .iter()
-                    .flat_map(|c| {
-                        c.hunk_ids
-                            .iter()
-                            .filter(|h| **h != c.exemplar)
-                            .map(|h| hunk_idx(h))
-                    })
-                    .collect();
-                if rest.is_empty() {
-                    plan.push(PlannedCommit {
-                        subject: format!("[skim] {} — {} exemplars", g.label, exemplars.len()),
-                        body: format!("{body}\n\nEvery shape class in this group is a singleton."),
-                        hunks: exemplars,
-                        meta_files: Vec::new(),
-                    });
-                } else {
-                    plan.push(PlannedCommit {
-                        subject: format!("[skim 1/2] {} — {} exemplars", g.label, exemplars.len()),
-                        body: format!(
-                            "{body}\n\nOne hunk per shape class. {} further hunks follow in \
-                             [skim 2/2].",
-                            rest.len()
-                        ),
-                        hunks: exemplars,
-                        meta_files: Vec::new(),
-                    });
-                    plan.push(PlannedCommit {
-                        subject: format!(
-                            "[skim 2/2] {} — {} further hunks, same shapes",
-                            g.label,
-                            rest.len()
-                        ),
-                        body: "Remaining members of the shapes verified in [skim 1/2]. \
-                               Skippable on this subject line."
-                            .to_string(),
-                        hunks: rest,
-                        meta_files: Vec::new(),
-                    });
-                }
+            Deferral::FoldedNoise => plan.push(PlannedCommit {
+                subject: format!(
+                    "[noise] {} — folded, {} hunks",
+                    g.label,
+                    split.deferred.len()
+                ),
+                body,
+                // A folded group still carries every hunk: what a reviewer is
+                // asked to read never decides what the commit contains.
+                hunks: split.all(),
+                meta_files: Vec::new(),
+            }),
+            Deferral::SkimRemainder => {
+                plan.push(PlannedCommit {
+                    subject: format!("[skim 1/2] {} — {} exemplars", g.label, split.shown.len()),
+                    body: format!(
+                        "{body}\n\nOne hunk per shape class. {} further hunks follow in \
+                         [skim 2/2].",
+                        split.deferred.len()
+                    ),
+                    hunks: split.shown,
+                    meta_files: Vec::new(),
+                });
+                plan.push(PlannedCommit {
+                    subject: format!(
+                        "[skim 2/2] {} — {} further hunks, same shapes",
+                        g.label,
+                        split.deferred.len()
+                    ),
+                    body: "Remaining members of the shapes verified in [skim 1/2]. \
+                           Skippable on this subject line."
+                        .to_string(),
+                    hunks: split.deferred,
+                    meta_files: Vec::new(),
+                });
             }
         }
     }
@@ -276,16 +274,23 @@ fn emit(
     let mut commits = Vec::with_capacity(plan.len());
     let trailer = format!(
         "Review-Synthetic: {}..{}",
-        &base[..12.min(base.len())],
-        &head[..12.min(head.len())]
+        plan::short_oid(base),
+        plan::short_oid(head)
     );
 
     for c in plan {
-        let mut touched: Vec<usize> = c.hunks.iter().map(|&h| view.hunks[h].file).collect();
+        let mut touched: Vec<usize> = c
+            .hunks
+            .iter()
+            .map(|&h| view.hunks[h.index()].file)
+            .collect();
         touched.sort_unstable();
         touched.dedup();
         for &h in &c.hunks {
-            applied.entry(view.hunks[h].file).or_default().push(h);
+            applied
+                .entry(view.hunks[h.index()].file)
+                .or_default()
+                .push(h.index());
         }
 
         let mut feed: Vec<u8> = Vec::new();

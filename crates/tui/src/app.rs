@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use differential_engine::ReviewSession;
+use differential_engine::plan::{Fold, HunkId, LineCounts, PlanIndex};
 use differential_engine::review_state::FindingStatus;
 use differential_engine::schema;
 use ratatui::Frame;
@@ -22,7 +23,7 @@ use super::rows::{
     DiffMode, GroupContext, Row, RowContent, RowFactory, RowKind, RowsContext, build_dir_rows,
     build_file_rows, build_group_rows,
 };
-use super::theme::THEME;
+use super::theme::{THEME, Theme};
 use super::vendor::text_utils::truncate_or_pad_spans;
 
 const SCROLL_MARGIN: usize = 3;
@@ -121,6 +122,15 @@ pub struct FileInfo {
     pub dels: usize,
 }
 
+/// A hunk by its wire id, or `None` if the document does not define one.
+///
+/// The group view has always been tolerant here — it already skipped class
+/// references it could not resolve — so a malformed id costs the same thing a
+/// missing class does, rather than taking the process down.
+fn hunk_of<'d>(doc: &'d schema::PlanDocument, hid: &str) -> Option<&'d schema::HunkEntry> {
+    doc.hunks.get(HunkId::parse(hid).ok()?.index())
+}
+
 pub struct App {
     pub session: ReviewSession,
     factory: RowFactory,
@@ -181,13 +191,11 @@ impl App {
                     .iter()
                     .filter_map(|c| class_by_id.get(c.as_str()))
                     .flat_map(|cl| cl.hunk_ids.iter())
-                    .map(|hid| {
-                        let idx: usize = hid[1..].parse().expect("h<N>");
-                        &doc.hunks[idx]
-                    })
+                    .filter_map(|hid| hunk_of(doc, hid))
                     .collect();
                 let files: std::collections::HashSet<&str> =
                     hunks.iter().map(|h| h.file.as_str()).collect();
+                let counts: LineCounts = hunks.iter().map(|h| LineCounts::of_hunk(h)).sum();
                 GroupInfo {
                     id: g.id.clone(),
                     label: g.label.clone(),
@@ -205,8 +213,8 @@ impl App {
                         .collect(),
                     n_hunks: hunks.len(),
                     n_files: files.len(),
-                    adds: hunks.iter().map(|h| h.new_count as usize).sum(),
-                    dels: hunks.iter().map(|h| h.old_count as usize).sum(),
+                    adds: counts.adds,
+                    dels: counts.dels,
                 }
             })
             .collect();
@@ -221,8 +229,9 @@ impl App {
         for c in &doc.classes {
             if let Some(label) = group_of_class.get(c.id.as_str()) {
                 for hid in &c.hunk_ids {
-                    let idx: usize = hid[1..].parse().expect("h<N>");
-                    hunk_labels.insert(idx, label.to_string());
+                    if let Ok(h) = HunkId::parse(hid) {
+                        hunk_labels.insert(h.index(), label.to_string());
+                    }
                 }
             }
         }
@@ -236,18 +245,17 @@ impl App {
                 let hunk_idxs: Vec<usize> = f
                     .hunk_ids
                     .iter()
-                    .map(|hid| hid[1..].parse().expect("h<N>"))
+                    .filter_map(|hid| HunkId::parse(hid).ok())
+                    .map(|h| h.index())
                     .collect();
+                let counts: LineCounts = hunk_idxs
+                    .iter()
+                    .map(|&i| LineCounts::of_hunk(&doc.hunks[i]))
+                    .sum();
                 FileInfo {
                     path: f.path.clone(),
-                    adds: hunk_idxs
-                        .iter()
-                        .map(|&i| doc.hunks[i].new_count as usize)
-                        .sum(),
-                    dels: hunk_idxs
-                        .iter()
-                        .map(|&i| doc.hunks[i].old_count as usize)
-                        .sum(),
+                    adds: counts.adds,
+                    dels: counts.dels,
                     hunk_idxs,
                 }
             })
@@ -447,6 +455,16 @@ impl App {
                     )];
                     return;
                 }
+                // A document whose ids contradict each other can only come from
+                // a corrupt store; say so on screen rather than rendering a
+                // silently short group.
+                let index = match PlanIndex::build(self.session.doc()) {
+                    Ok(index) => index,
+                    Err(e) => {
+                        self.rows = vec![Row::full(RowKind::Blank, Line::from(format!("{e}")))];
+                        return;
+                    }
+                };
                 let g = &groups[self.selected_group.min(groups.len() - 1)];
                 let ctx = GroupContext {
                     core: RowsContext {
@@ -456,9 +474,14 @@ impl App {
                         mode: self.diff_mode(),
                         hunk_labels: None,
                     },
+                    index: &index,
                     group: g,
                     labels: &self.labels,
-                    fold_open: self.folds_open.contains(&g.id),
+                    fold: if self.folds_open.contains(&g.id) {
+                        Fold::Unfolded
+                    } else {
+                        Fold::Folded
+                    },
                 };
                 self.rows = build_group_rows(&mut self.factory, &ctx);
             }
@@ -935,17 +958,17 @@ impl App {
     /// Markdown summary of open findings, for pasting into an agent or PR.
     pub fn findings_summary(&self) -> String {
         let doc = self.session.doc();
-        let group_of_digest: HashMap<&str, &str> = doc
-            .groups
+        // A malformed document costs the group annotation, never the findings
+        // themselves — a reviewer's own words are the last thing to drop.
+        let index = PlanIndex::build(doc).ok();
+        let group_of_digest: HashMap<&str, &str> = index
             .iter()
-            .flatten()
-            .flat_map(|g| {
-                g.class_ids.iter().flat_map(|cid| {
-                    let class = doc.classes.iter().find(|c| &c.id == cid).unwrap();
-                    class.hunk_ids.iter().map(|hid| {
-                        let idx: usize = hid[1..].parse().unwrap();
-                        (doc.hunks[idx].digest.as_str(), g.label.as_str())
-                    })
+            .flat_map(|index| {
+                index.groups().iter().flat_map(move |g| {
+                    index
+                        .group_hunks(g)
+                        .into_iter()
+                        .map(move |h| (index.hunk(h).digest.as_str(), g.label.as_str()))
                 })
             })
             .collect();
@@ -1147,11 +1170,7 @@ impl App {
         let tail_glyph = if idx >= lo && idx < hi { "│" } else { " " };
         let done =
             g.class_keys.iter().all(|k| self.session.is_reviewed(k)) && !g.class_keys.is_empty();
-        let tier = match g.effort {
-            schema::Effort::Focus => "F",
-            schema::Effort::Skim => "S",
-            schema::Effort::Noise => "N",
-        };
+        let tier = Theme::effort_glyph(g.effort);
         let bg = |st: Style| {
             if selected {
                 st.bg(THEME.selected_bg).add_modifier(Modifier::BOLD)
@@ -1186,13 +1205,7 @@ impl App {
             ),
         ])];
 
-        let role = match g.role {
-            Some(schema::Role::Foundation) => " · foundation",
-            Some(schema::Role::Consumer) => " · consumer",
-            Some(schema::Role::Mechanical) => " · mechanical",
-            Some(schema::Role::Noise) => " · noise",
-            None => "",
-        };
+        let role = Theme::role_suffix(g.role);
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{tail_glyph} "),

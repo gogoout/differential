@@ -12,6 +12,7 @@ use differential_engine::gitio::Repo;
 use differential_engine::grouping::GroupingOptions;
 use differential_engine::invariants::InvariantReport;
 use differential_engine::lang::LanguageRegistry;
+use differential_engine::plan;
 use differential_engine::schema::SourceKind;
 use differential_engine::{resolve_range, run_pipeline};
 use differential_stack::{StackOptions, run_stack_pipeline};
@@ -189,14 +190,14 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             for c in &stack.commits {
                 println!(
                     "  {}  {:4}h  {}",
-                    &c.sha[..10.min(c.sha.len())],
+                    plan::short_oid(&c.sha),
                     c.hunks,
                     c.subject
                 );
             }
             println!(
                 "review with: git log --oneline {}..{}",
-                &base[..12.min(base.len())],
+                plan::short_oid(&base),
                 stack.ref_name
             );
             Ok(ExitCode::SUCCESS)
@@ -305,8 +306,8 @@ fn usage_error(msg: &str) -> anyhow::Result<ExitCode> {
 fn print_report(report: &InvariantReport, base: &str, head: &str) {
     println!(
         "range      {}..{}",
-        &base[..12.min(base.len())],
-        &head[..12.min(head.len())]
+        plan::short_oid(base),
+        plan::short_oid(head)
     );
     println!(
         "files      {} ({} binary, checked by oid only — tree assertion is tautological for those)",
