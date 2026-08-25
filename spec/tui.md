@@ -51,27 +51,31 @@ than looking like an empty one. Because a background is what marks a change, the
 cannot be one: it is a `▸` in the leading gutter cell, which reads on any background, and
 that cell is reserved so moving the cursor never shifts the pane sideways.
 
-**A hunk is a box.** Its header band is the top edge — `┌─ C31 · +25 ─────┐`, the shape
+**A hunk is a pill and an edge.** Its header is a filled pill — ` C31 · +25 `, the shape
 class and the size of the change — rather than a `@@ -479,0 +480,25 @@` line: every row
 carries both line numbers in its gutter, so the coordinates repeated what was already on
 screen in a notation you had to decode. What the header uniquely says stays on it: the
-class, the counts, the reviewed mark, the finding count, and the group's label where that
-is not already obvious. It remains a selectable row, so `n`/`N` jump to it and `space` and
-`c` act on it. The box closes under the change; **context flows outside it**, so a merged
-block reads as boxes with file between them.
+class, the counts, the reviewed mark, the finding count, and the group's id and label where
+that is not already obvious. It remains a selectable row, so `n`/`N` jump to it and `space`
+and `c` act on it.
 
-**The box's sides are the pane's own border.** They sit in that column rather than a cell
-inside it, so a box costs the content no width and there are never two vertical lines a
-cell apart. That is also why its corners are junctions (`├`, `┤`): the pane's border
-carries on above and below them.
+Below the pill, a vertical **edge** runs down the hunk's changed rows. Deliberately not a
+box: closing one top and bottom with horizontal rules cut the file into slabs and broke the
+flow of reading down it. An edge says where a hunk begins and ends without chopping up the
+page.
 
-**Only the box the cursor is in wears a colour**; every other one is muted to the gutter,
+**The edge is the pane's own border.** It sits in that column rather than a cell inside it,
+so it costs the content no width and there are never two vertical lines a cell apart.
+
+**Only the hunk the cursor is in wears a colour**; every other edge is muted to the gutter,
 because a screenful of accents is no accent at all. Which box is lit is a cursor question
 and the cursor moves without rebuilding rows, so a row carries the colour it *would* take
 and drawing chooses. The band's chrome — the class, the separators, the label, the rule —
-carries no colour of its own and inherits the box's, while the `+N`/`−M` counts and the
-finding marker keep theirs. A **foreign** hunk takes the pane's border colour rather than a
-tier colour: it has no tier here, and wearing one would say it did.
+**fills with that same colour**, so the marker and the run below it read as one thing
+rather than as a label that happens to sit above a line. The pill's text is a single
+colour for the same reason — green on yellow is not a thing to read, and the `+`/`−` signs
+carry what those colours used to. A **foreign** hunk takes the pane's border colour rather
+than a tier colour: it has no tier here, and wearing one would say it did.
 
 Headers and boundary rows rule out to the pane edge and cross the split separator, because
 what they describe is not one side of the file. A boundary **divides**, so its rule runs on
@@ -79,8 +83,14 @@ both sides of a centred label; a header **labels** what follows it, so it starts
 and stays there — a label that drifted with the pane width would be harder to scan down a
 column.
 
-A **context boundary** is a control, not a caption, so its label is a filled block on the
-rule rather than more dim text.
+A **context boundary** is a control, not a caption, so its label is a pill on the rule
+rather than more dim text — the same shape a hunk header wears, since both are things to
+act on rather than read past. It belongs to no hunk, so it stays in the border's own muted
+grey however the cursor moves.
+
+Pills are square. The half-circle caps that would round them are drawn at inconsistent
+widths across terminals and fonts, and a pill a cell wider in one terminal than another is
+worse than a pill with corners.
 
 **Context is expandable.** Canonical `-U0` hunks carry no context, so it is read out of the
 base and head blobs — three lines either side by default. Where more of the file is
@@ -101,7 +111,7 @@ expansion can never silently swallow someone else's change, and a wall can never
 mistaken for the end of the file. A boundary row disappears at one place only: a real file
 edge.
 
-A crossed hunk is drawn in a **dashed** box carrying its owning group's **id and label**
+A crossed hunk carries a **dashed** edge and its owning group's **id and label**
 (`╌ C31 · +25 · g7 "Rename sweep" ╌`) — real code the reviewer asked to see, plainly not on
 this group's reading list. The id is what the plan pane's rows and their `after:` lines are
 keyed by, so it is what turns "some other group" into a row you can go and look at. It is absorbed whole

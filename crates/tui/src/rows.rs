@@ -48,8 +48,6 @@ pub enum RowKind {
         hunk: usize,
         foreign: bool,
     },
-    /// The closing edge of a hunk's box.
-    HunkFoot,
     /// A diff content row belonging to a hunk.
     Diff(usize),
     /// The edge of what is shown around a hunk: press `z` to pull in more.
@@ -115,13 +113,6 @@ pub enum BoxStyle {
 }
 
 impl BoxStyle {
-    pub const fn horizontal(self) -> char {
-        match self {
-            BoxStyle::Own => '─',
-            BoxStyle::Foreign => '╌',
-        }
-    }
-
     pub const fn vertical(self) -> char {
         match self {
             BoxStyle::Own => '│',
@@ -130,40 +121,31 @@ impl BoxStyle {
     }
 }
 
-/// Which part of a hunk's box a row draws.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Part {
-    Top,
-    Side,
-    Bottom,
-}
-
-/// A row's part in the box drawn around a hunk's changed lines.
+/// A row's edge marking which hunk it belongs to.
 ///
-/// The box's sides ARE the diff pane's own border: they sit in the same column
-/// rather than beside it, so the box costs no width and there are never two
-/// parallel vertical lines a cell apart. That is also why the corners are
-/// junctions (`├`, `┤`) — the pane's border carries on above and below them.
+/// An EDGE, not a box: closing the top and bottom with horizontal rules cut
+/// the file into slabs and broke the flow of reading down it. What a reviewer
+/// needs is to see where a hunk begins and ends without the page being
+/// chopped up, and a vertical run down one side says that on its own.
+///
+/// It sits IN the diff pane's own border column rather than beside it, so it
+/// costs the content no width and there are never two vertical lines a cell
+/// apart.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Border {
-    pub part: Part,
     pub box_style: BoxStyle,
-    /// The hunk this box belongs to — which box is lit is a cursor question,
+    /// The hunk this edge belongs to — which one is lit is a cursor question,
     /// and the cursor moves without a rebuild, so drawing resolves it.
     pub hunk: usize,
-    /// The colour this box takes when it IS the one under the cursor. Every
-    /// other box is muted: a screenful of accents is a screenful of nothing.
+    /// The colour it takes when it IS the one under the cursor. Every other
+    /// edge is muted: a screenful of accents is a screenful of nothing.
     pub active_style: Style,
 }
 
 impl Border {
-    /// The glyph this row puts in each of the pane's border columns.
-    pub fn glyphs(&self) -> (char, char) {
-        match self.part {
-            Part::Top => ('├', '┤'),
-            Part::Bottom => ('├', '┤'),
-            Part::Side => (self.box_style.vertical(), self.box_style.vertical()),
-        }
+    /// The glyph this row puts in the pane's left border column.
+    pub fn glyph(&self) -> char {
+        self.box_style.vertical()
     }
 }
 
@@ -180,15 +162,12 @@ pub enum Fill {
     /// file — a boundary, a hunk header — read as spanning both columns
     /// instead of stopping mid-pane and leaving the split separator broken.
     ///
-    /// `centered` puts the rule on both sides of the text. A boundary DIVIDES,
-    /// so it reads best centred; a hunk header LABELS what follows it, and a
-    /// label that drifts with the pane width is harder to scan down a column.
-    Rule {
-        style: Style,
-        centered: bool,
-        /// `─` normally, `╌` when the rule is a foreign hunk's top edge.
-        glyph: char,
-    },
+    /// A rule out to both pane edges with the content centred on it.
+    ///
+    /// Only a context boundary uses this: it is the one row describing what is
+    /// hidden from BOTH sides of the file at once, so it divides rather than
+    /// labels, and reads best centred.
+    Rule(Style),
 }
 
 /// One side of a diff row: a gutter whose first cell is reserved for the
@@ -234,9 +213,17 @@ impl Row {
         Row::banner(kind, line, Fill::Bg(Style::default()))
     }
 
-    pub fn bordered(mut self, part: Part, box_style: BoxStyle, hunk: usize, active: Style) -> Self {
+    /// Replace a banner's content with pairs built elsewhere — a pill, whose
+    /// caps drawing has to find by position.
+    pub fn with_pairs(mut self, pairs: Vec<(Style, String)>) -> Self {
+        if let RowContent::Unified(half) = &mut self.content {
+            half.pairs = pairs;
+        }
+        self
+    }
+
+    pub fn bordered(mut self, box_style: BoxStyle, hunk: usize, active: Style) -> Self {
         self.border = Some(Border {
-            part,
             box_style,
             hunk,
             active_style: active,
@@ -252,23 +239,11 @@ impl Row {
     /// separator column with a hole in it. The leading cell is the cursor's,
     /// as on every other row.
     pub fn banner(kind: RowKind, line: Line<'static>, fill: Fill) -> Self {
-        Row::banner_with(kind, line, fill, ' ', Style::default())
-    }
-
-    /// A banner whose reserved cell carries something other than a blank —
-    /// a box edge continues its rule through it, so the corner joins up.
-    pub fn banner_with(
-        kind: RowKind,
-        line: Line<'static>,
-        fill: Fill,
-        lead: char,
-        lead_style: Style,
-    ) -> Self {
         Row {
             kind,
             border: None,
             content: RowContent::Unified(Half {
-                gutter: (lead_style, lead.to_string()),
+                gutter: (Style::default(), " ".to_string()),
                 pairs: line
                     .spans
                     .into_iter()
@@ -621,6 +596,24 @@ fn column_header_row() -> Row {
 }
 
 /// Header row for one hunk, plus its findings.
+/// A pill: one padded run of text on a filled block.
+///
+/// Square, not rounded — the half-circle caps that would round it are drawn at
+/// inconsistent widths across terminals and fonts, and a pill that is a cell
+/// wider in one terminal than another is worse than a pill with corners.
+///
+/// A hunk header's pill is built muted and RECOLOURED at draw time, because
+/// whether it is the lit one is a cursor question and the cursor moves without
+/// a rebuild. That recolouring rewrites the whole of a row's content, so a pill
+/// must BE that content with nothing mixed in beside it.
+fn pill(
+    text: String,
+    fg: ratatui::style::Color,
+    bg: ratatui::style::Color,
+) -> Vec<(Style, String)> {
+    vec![(Style::default().fg(fg).bg(bg), format!(" {} ", text.trim()))]
+}
+
 /// The colour a hunk's box takes when the cursor is in it.
 ///
 /// A foreign hunk borrows the pane's own border colour rather than a tier
@@ -663,11 +656,6 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
     } else {
         String::new()
     };
-    // Chrome — the class, the separators, the check, the label, the rule —
-    // carries NO foreground. Drawing supplies one as the line's base style,
-    // which sits under span styles, so the counts and findings keep theirs
-    // while everything else lights up or mutes as one.
-    let header_style = Style::default();
     // A band across the pane rather than a `@@ -a,b +c,d @@` line. Those
     // coordinates were the only way to know where you were when the gutter
     // showed one number; now every row carries both, so the header repeated
@@ -679,41 +667,24 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
     } else {
         BoxStyle::Own
     };
-    let mut spans = vec![
-        Span::styled(" ".to_string(), header_style),
-        Span::styled(hunk.class.clone(), header_style),
-        Span::styled(" · ".to_string(), Style::default().fg(THEME.gutter_fg)),
-        Span::styled(
-            format!("+{}", hunk.new_count),
-            Style::default().fg(THEME.add_fg),
-        ),
-    ];
-    if hunk.old_count > 0 {
-        spans.push(Span::styled(" ".to_string(), header_style));
-        spans.push(Span::styled(
-            format!("−{}", hunk.old_count),
-            Style::default().fg(THEME.del_fg),
-        ));
-    }
-    // The group's name is chrome too, so a foreign hunk's label reads as part
-    // of its title rather than fading into the comment beneath it.
-    spans.push(Span::styled(group_label, header_style));
-    spans.push(Span::styled(check.to_string(), header_style));
-    spans.push(Span::styled(notes, Style::default().fg(THEME.finding_fg)));
-    spans.push(Span::styled(" ".to_string(), header_style));
+    // One run of text, not a row of differently-coloured spans: the pill's
+    // fill follows its edge, and green on yellow is not a thing to read. The
+    // `+`/`−` signs carry what the colours used to.
+    let counts = if hunk.old_count > 0 {
+        format!("+{} −{}", hunk.new_count, hunk.old_count)
+    } else {
+        format!("+{}", hunk.new_count)
+    };
+    let (fg, bg) = THEME.pill(None);
+    let text = format!("{} · {counts}{group_label}{check}{notes}", hunk.class);
     rows.push(
-        Row::banner_with(
+        Row::banner(
             RowKind::HunkHeader { hunk: hi, foreign },
-            Line::from(spans),
-            Fill::Rule {
-                style: header_style,
-                centered: false,
-                glyph: box_style.horizontal(),
-            },
-            box_style.horizontal(),
-            header_style,
+            Line::default(),
+            Fill::Bg(Style::default()),
         )
-        .bordered(Part::Top, box_style, hi, hunk_accent(ctx, hi, foreign)),
+        .with_pairs(pill(text, fg, bg))
+        .bordered(box_style, hi, hunk_accent(ctx, hi, foreign)),
     );
 
     for f in ctx
@@ -843,30 +814,9 @@ fn file_rows(
                                 border: None,
                                 content,
                             }
-                            .bordered(
-                                Part::Side,
-                                box_style,
-                                *hunk,
-                                accent,
-                            ),
+                            .bordered(box_style, *hunk, accent),
                         );
                     }
-                    // The box closes under the change; context flows outside
-                    // it, so a merged block reads as boxes with file between.
-                    rows.push(
-                        Row::banner_with(
-                            RowKind::HunkFoot,
-                            Line::default(),
-                            Fill::Rule {
-                                style: Style::default(),
-                                centered: false,
-                                glyph: box_style.horizontal(),
-                            },
-                            box_style.horizontal(),
-                            Style::default(),
-                        )
-                        .bordered(Part::Bottom, box_style, *hunk, accent),
-                    );
                 }
             }
         }
@@ -911,23 +861,16 @@ fn boundary_row(ctx: &RowsContext, b: &window::Boundary, step: usize) -> Row {
     // the row saying so runs across both of them. The label itself is a BUTTON
     // on that rule, not more rule — it is the one thing on the row a reviewer
     // can act on, and as dim text it read as a divider meant to be ignored.
-    let button = Style::default()
-        .fg(THEME.button_fg)
-        .bg(THEME.button_bg)
-        .add_modifier(Modifier::BOLD);
     Row::banner(
         RowKind::ContextEdge {
             hunk: b.hunk,
             side: b.side,
             crossing: b.next.is_some(),
         },
-        Line::from(Span::styled(format!(" {} ", label.trim()), button)),
-        Fill::Rule {
-            style,
-            centered: true,
-            glyph: '─',
-        },
+        Line::default(),
+        Fill::Rule(style),
     )
+    .with_pairs(pill(label, THEME.context_fg, THEME.gutter_fg))
 }
 
 /// Every line the blocks will draw, as sorted ranges per side.

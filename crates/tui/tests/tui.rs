@@ -14,9 +14,10 @@ use differential_engine::schema::SourceKind;
 use differential_engine::store::{FsGroupingCache, FsReviewStore};
 use differential_testutil::{FakeBackend, TestRepo, json_group};
 use differential_tui::app::{App, Effect, Focus, Mode, ReviewOptions, Viewport};
-use differential_tui::rows::{BoxStyle, Part, RowFactory, RowKind};
+use differential_tui::rows::{BoxStyle, RowFactory, RowKind};
 use differential_tui::theme::THEME;
 use differential_tui::window::Side;
+use ratatui::style::Color;
 
 /// First-listed class (the largest) becomes the skim sweep; the rest are
 /// focus work — so the skim group has a foldable remainder.
@@ -1398,68 +1399,66 @@ fn a_hunk_header_is_a_band_carrying_the_class_and_the_size() {
     assert!(app.rows[header].kind.hunk().is_some());
 }
 
-/// A row that is about the whole file runs across the whole pane. Left as a
-/// bare line it stopped at its last character, which in split mode punched a
-/// hole in the separator column.
+/// A context boundary is the one row describing what is hidden from BOTH sides
+/// of the file, so it rules the whole way across. A hunk header does not: it
+/// labels what follows, and ruling it off broke the flow of reading down.
 #[test]
-fn headers_and_boundaries_rule_across_both_columns() {
+fn a_boundary_rules_across_both_columns_but_a_header_does_not() {
     let (_r, mut app) = app_with_a_long_file();
     app.handle_key(key('s')); // split
+    let buf = buffer_of(&app);
+    let row_text = |y: u16| -> String { (41..99u16).map(|x| buf[(x, y)].symbol()).collect() };
 
-    let backend = ratatui::backend::TestBackend::new(100, 40);
-    let mut terminal = ratatui::Terminal::new(backend).unwrap();
-    terminal.draw(|f| app.draw(f)).unwrap();
-    let buf = terminal.backend().buffer().clone();
-
-    // Rows carrying a rule reach the last CONTENT column of the diff pane (97);
-    // 41 and 98 are the reserved frame cells.
-    let ruled: Vec<u16> = (1..39u16)
-        .filter(|&y| buf[(45, y)].symbol() == "─")
-        .collect();
-    assert!(!ruled.is_empty(), "no ruled row drawn");
-    for y in ruled {
-        assert_eq!(
-            buf[(98, y)].symbol(),
-            "─",
-            "row {y} stops before the pane edge"
-        );
-        assert_ne!(
-            buf[(69, y)].symbol(),
-            "│",
-            "a ruled row crosses the split separator rather than being cut by it"
-        );
-    }
-    // And the separator really is at that column on ordinary rows, so the
-    // assertion above is about crossing it rather than about it never existing.
+    let boundary = (1..39u16)
+        .find(|&y| row_text(y).contains("more"))
+        .expect("a boundary row");
+    // The leading cell is the cursor's, so the rule starts just after it.
+    let text = row_text(boundary);
+    let ruled = text.trim_start_matches([' ', '\u{25b8}']);
     assert!(
-        (1..39u16).any(|y| buf[(69, y)].symbol() == "│"),
+        ruled.starts_with('\u{2500}'),
+        "boundary is not ruled on the left: {text:?}"
+    );
+    assert!(
+        text.ends_with('\u{2500}'),
+        "boundary is not ruled on the right"
+    );
+    assert_ne!(
+        buf[(69, boundary)].symbol(),
+        "\u{2502}",
+        "a ruled row crosses the split separator rather than being cut by it"
+    );
+    // And the separator really is at that column on ordinary rows.
+    assert!(
+        (1..39u16).any(|y| buf[(69, y)].symbol() == "\u{2502}"),
         "no split separator found at column 69"
     );
 
-    // A boundary DIVIDES, so its rule runs on both sides of the text; a hunk
-    // header LABELS what follows, so it starts at the left and stays put.
-    let row_text = |y: u16| -> String { (41..99u16).map(|x| buf[(x, y)].symbol()).collect() };
-    let boundary = (1..39u16)
-        .map(row_text)
-        .find(|t| t.contains("more above") || t.contains("more below"))
-        .expect("a boundary row");
-    let (lead, trail) = (boundary.trim_start_matches([' ', '▸']), boundary.as_str());
-    assert!(lead.starts_with('─'), "boundary is not ruled on the left");
-    assert!(trail.ends_with('─'), "boundary is not ruled on the right");
-    let dashes_left = lead.chars().take_while(|c| *c == '─').count();
-    let dashes_right = trail.chars().rev().take_while(|c| *c == '─').count();
+    // The label sits centred between the two halves of the rule.
+    let lead = ruled.chars().take_while(|c| *c == '\u{2500}').count();
+    let trail = text.chars().rev().take_while(|c| *c == '\u{2500}').count();
     assert!(
-        dashes_left.abs_diff(dashes_right) <= 1,
-        "boundary text is not centred: {dashes_left} left, {dashes_right} right"
+        lead.abs_diff(trail) <= 1,
+        "boundary text is not centred: {lead} left, {trail} right"
     );
 
+    // A hunk header is a pill, with no rule running off either side of it.
     let header = (1..39u16)
-        .map(row_text)
-        .find(|t| t.contains(" · +"))
-        .expect("a hunk header band");
+        .find(|&y| {
+            row_text(y).contains('\u{b7}')
+                && !row_text(y).contains("more")
+                && (41..99u16).any(|x| {
+                    buf[(x, y)]
+                        .style()
+                        .bg
+                        .is_some_and(|b| b != ratatui::style::Color::Reset)
+                })
+        })
+        .expect("a hunk header");
+    let text = row_text(header);
     assert!(
-        header.trim_start_matches([' ', '▸']).starts_with("─ "),
-        "a header band should start at the left, got {header:?}"
+        !text.contains('\u{2500}'),
+        "a header should not be ruled: {text:?}"
     );
 }
 
@@ -1578,49 +1577,50 @@ fn a_foreign_hunk_is_dashed_and_names_its_group() {
     }
 
     // The distinction lives on the model, so assert it there rather than
-    // depending on both boxes happening to share a viewport.
-    let tops: Vec<BoxStyle> = app
+    // depending on both hunks happening to share a viewport.
+    let styles: Vec<BoxStyle> = app
         .rows
         .iter()
+        .filter(|r| matches!(r.kind, RowKind::HunkHeader { .. }))
         .filter_map(|r| r.border)
-        .filter(|b| b.part == Part::Top)
         .map(|b| b.box_style)
         .collect();
     assert!(
-        tops.contains(&BoxStyle::Own),
-        "this group's own hunk should keep a solid box"
+        styles.contains(&BoxStyle::Own),
+        "this group's own hunk should keep a solid edge"
     );
     assert!(
-        tops.contains(&BoxStyle::Foreign),
-        "the crossed hunk should be boxed as foreign"
+        styles.contains(&BoxStyle::Foreign),
+        "the crossed hunk should be edged as foreign"
     );
 
-    // Then look at the pixels, with the foreign box in view.
+    // Then look at the pixels, with the foreign hunk in view and active.
     let pos = app
         .rows
         .iter()
         .position(|r| {
-            r.border
-                .is_some_and(|b| b.part == Part::Top && b.box_style == BoxStyle::Foreign)
+            r.border.is_some_and(|b| b.box_style == BoxStyle::Foreign)
+                && matches!(r.kind, RowKind::Diff(_))
         })
-        .expect("a foreign box top");
-    // Next to the box top, not ON it: the cursor marker takes over the leading
-    // cell, which is exactly the cell the corner joins to.
-    app.cursor = pos + 1;
+        .expect("a foreign hunk row");
+    app.cursor = pos;
     app.focus = Focus::Diff;
     app.set_viewport(Viewport {
         diff_rows: 38,
         plan_rows: 38,
     });
+    let buf = buffer_of(&app);
+    let dashed: Vec<u16> = (1..39u16)
+        .filter(|&y| buf[(40, y)].symbol() == "\u{254e}")
+        .collect();
+    assert!(!dashed.is_empty(), "a foreign hunk's edge should be dashed");
+
+    // A foreign hunk has no tier here, so it takes the pane's own border
+    // colour rather than wearing one.
+    assert_eq!(buf[(40, dashed[0])].style().fg, Some(THEME.header_fg));
+
+    // And it says whose it is, by id and label.
     let text = drawn(&mut app);
-    // `├`, not `┌`: the box's side IS the pane's border, which carries on
-    // above and below the corner.
-    assert!(text.contains("├╌"), "a foreign box is dashed horizontally");
-    assert!(text.contains('╎'), "and vertically");
-    // The foreign hunk says whose it is, even though this is the group view
-    // where labels are otherwise redundant.
-    // The ID as well as the label: the plan pane's rows and their `after:`
-    // lines are keyed by it, so it is what makes the group findable.
     let foreign = app
         .rows
         .iter()
@@ -1637,35 +1637,10 @@ fn a_foreign_hunk_is_dashed_and_names_its_group() {
         .plan()
         .group_of_hunk(differential_engine::plan::HunkId::from_index(foreign))
         .expect("the foreign hunk belongs to a group");
+    let want = format!("\u{b7} {} {}", owner.id, owner.label);
     assert!(
-        text.contains(&format!("· {} {}", owner.id, owner.label)),
-        "a foreign header must name its group by id and label; looked for {:?} in:\n{text}",
-        format!("· {} {}", owner.id, owner.label)
-    );
-
-    // A foreign hunk has no tier here — it is not on this reading list at all —
-    // so its box takes the pane's own border colour rather than wearing one.
-    let buf = buffer_of(&app);
-    let foreign_top = (1..39u16)
-        .find(|&y| {
-            (41..99u16)
-                .map(|x| buf[(x, y)].symbol())
-                .collect::<String>()
-                .contains('╌')
-        })
-        .expect("no foreign box on screen");
-    assert_eq!(buf[(40, foreign_top)].style().fg, Some(THEME.header_fg));
-
-    // And its own hunk, when active, takes the tier colour instead.
-    cursor_into_first_box(&mut app);
-    let buf = buffer_of(&app);
-    let own_side = (1..39u16)
-        .find(|&y| buf[(40, y)].style().fg == Some(THEME.skim_fg))
-        .expect("no lit own box");
-    assert_ne!(
-        buf[(40, own_side)].style().fg,
-        Some(THEME.header_fg),
-        "an own hunk should not borrow the border colour"
+        text.contains(&want),
+        "a foreign header must name its group by id and label; looked for {want:?} in:\n{text}"
     );
 }
 
@@ -1686,7 +1661,7 @@ fn a_box_costs_the_content_no_columns() {
     let framed_row = y_of(
         app.rows
             .iter()
-            .position(|r| r.border.is_some_and(|b| b.part == Part::Side) && r.kind.hunk().is_some())
+            .position(|r| r.border.is_some() && matches!(r.kind, RowKind::Diff(_)))
             .expect("no row inside a box"),
     );
     let framed = row_text(framed_row);
@@ -1775,7 +1750,7 @@ fn cursor_into_first_box(app: &mut App) {
     let pos = app
         .rows
         .iter()
-        .position(|r| r.border.is_some_and(|b| b.part == Part::Side))
+        .position(|r| r.border.is_some() && matches!(r.kind, RowKind::Diff(_)))
         .expect("no row inside a box");
     app.cursor = pos;
     app.focus = Focus::Diff;
@@ -1792,35 +1767,44 @@ fn buffer_of(app: &App) -> ratatui::buffer::Buffer {
     terminal.backend().buffer().clone()
 }
 
-/// A box's sides take the band's colour, not a colour of their own — otherwise
-/// the top reads as one thing and the sides as another that happens to touch it.
+/// A hunk is marked by an EDGE, not a box. Closing it top and bottom cut the
+/// file into slabs; a vertical run down one side says where a hunk begins and
+/// ends without chopping up the page.
 #[test]
-fn a_box_side_matches_its_top_and_shares_the_pane_border() {
+fn a_hunks_edge_runs_down_the_panes_own_border_column() {
     let (_r, mut app) = app_with_two_groups_in_one_file();
     cursor_into_first_box(&mut app);
     let buf = buffer_of(&app);
 
-    // Both live in the pane's own left border column (40).
-    let top = (1..39u16)
-        .find(|&y| buf[(40, y)].symbol() == "├")
-        .expect("no box top");
-    let side = (top + 1..39u16)
-        .find(|&y| buf[(40, y)].symbol() == "│" && buf[(40, y)].style().fg == Some(THEME.skim_fg))
-        .expect("no box side");
-    assert_eq!(
-        buf[(40, side)].style().fg,
-        buf[(40, top)].style().fg,
-        "the side should be the same colour as the top"
+    let lit: Vec<u16> = (1..39u16)
+        .filter(|&y| buf[(40, y)].style().fg == Some(THEME.skim_fg))
+        .collect();
+    assert!(lit.len() > 1, "the edge should run, not mark a single row");
+    assert!(
+        lit.windows(2).all(|w| w[1] == w[0] + 1),
+        "the edge should be continuous, got rows {lit:?}"
     );
-    // And the right-hand side, in the pane's right border column (99).
-    assert_eq!(buf[(99, top)].symbol(), "┤");
-    assert_eq!(buf[(99, side)].style().fg, buf[(40, top)].style().fg);
+    for y in &lit {
+        assert_eq!(buf[(40, *y)].symbol(), "\u{2502}");
+    }
+
+    // No horizontal rule closes it, and the right-hand border is left alone.
+    let text: String = lit
+        .iter()
+        .flat_map(|&y| (41..99u16).map(move |x| (x, y)))
+        .map(|(x, y)| buf[(x, y)].symbol())
+        .collect();
+    assert!(
+        !text.contains('\u{2500}'),
+        "a hunk should not be ruled off: {text:?}"
+    );
+    assert_ne!(buf[(99, lit[0])].style().fg, Some(THEME.skim_fg));
 }
 
-/// Only the box the cursor is in wears a colour. Every box accented at once is
-/// no accent at all.
+/// Only the hunk the cursor is in wears a colour. Every hunk accented at once
+/// is no accent at all.
 #[test]
-fn only_the_active_hunks_box_is_coloured() {
+fn only_the_active_hunks_edge_is_coloured() {
     let (_r, mut app) = app_with_two_groups_in_one_file();
     // With the cursor on a boundary row, no hunk is active and nothing is lit.
     let boundary = app
@@ -1833,15 +1817,15 @@ fn only_the_active_hunks_box_is_coloured() {
     let buf = buffer_of(&app);
     assert!(
         (1..39u16).all(|y| buf[(40, y)].style().fg != Some(THEME.skim_fg)),
-        "no hunk is under the cursor, so no box should be lit"
+        "no hunk is under the cursor, so no edge should be lit"
     );
-    // The boxes are still drawn — muted, not missing.
+    // The edges are still there — muted, not missing.
     assert!(
-        (1..39u16).any(|y| buf[(40, y)].symbol() == "├"),
-        "a muted box is still a box"
+        app.rows.iter().any(|r| r.border.is_some()),
+        "a muted edge is still an edge"
     );
 
-    // Move into a hunk and exactly that box lights up.
+    // Move into a hunk and exactly that edge lights up.
     cursor_into_first_box(&mut app);
     let active = app.rows[app.cursor].border.unwrap().hunk;
     let buf = buffer_of(&app);
@@ -1849,14 +1833,13 @@ fn only_the_active_hunks_box_is_coloured() {
         .filter(|&y| buf[(40, y)].style().fg == Some(THEME.skim_fg))
         .collect();
     assert!(!lit.is_empty(), "the hunk under the cursor should be lit");
-    // And every lit row belongs to that one hunk.
     let rows_on_screen = &app.rows[app.scroll()..];
     for y in lit {
         let row = &rows_on_screen[(y - 1) as usize];
         assert_eq!(
             row.border.map(|b| b.hunk),
             Some(active),
-            "a box other than the active one is lit at row {y}"
+            "a hunk other than the active one is lit at row {y}"
         );
     }
 }
@@ -1880,9 +1863,10 @@ fn a_context_boundary_reads_as_a_button() {
         })
         .expect("no boundary row");
     let cells: Vec<_> = (41..99u16).map(|x| buf[(x, row)].clone()).collect();
+    // The expand pill wears the border's own muted grey.
     let filled: Vec<_> = cells
         .iter()
-        .filter(|c| c.style().bg == Some(THEME.button_bg))
+        .filter(|c| c.style().bg == Some(THEME.gutter_fg))
         .collect();
     assert!(
         filled.len() > 10,
@@ -1892,19 +1876,62 @@ fn a_context_boundary_reads_as_a_button() {
     // The block is contiguous, and the rule either side of it is not filled.
     let first = cells
         .iter()
-        .position(|c| c.style().bg == Some(THEME.button_bg))
+        .position(|c| c.style().bg == Some(THEME.gutter_fg))
         .unwrap();
     let last = cells
         .iter()
-        .rposition(|c| c.style().bg == Some(THEME.button_bg))
+        .rposition(|c| c.style().bg == Some(THEME.gutter_fg))
         .unwrap();
     assert_eq!(
         last - first + 1,
         filled.len(),
         "the block should be contiguous"
     );
-    assert_ne!(cells[first - 1].style().bg, Some(THEME.button_bg));
+    assert_ne!(cells[first - 1].style().bg, Some(THEME.gutter_fg));
     assert_eq!(cells[first].symbol(), " ", "the block is padded, not flush");
+}
+
+/// A hunk's pill follows its edge, so the marker and the run below it read as
+/// one thing rather than as a label that happens to sit above a line.
+#[test]
+fn the_hunk_pill_takes_the_colour_of_its_edge() {
+    let (_r, mut app) = app_with_two_groups_in_one_file();
+
+    // Nothing active: the pill wears the muted colours.
+    let boundary = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::ContextEdge { .. }))
+        .expect("a boundary row");
+    app.cursor = boundary;
+    app.focus = Focus::Diff;
+    let buf = buffer_of(&app);
+    let pill_bg = |buf: &ratatui::buffer::Buffer| -> Option<Color> {
+        (1..39u16)
+            .filter(|&y| {
+                let t: String = (41..99u16).map(|x| buf[(x, y)].symbol()).collect();
+                t.contains('·') && !t.contains("more")
+            })
+            .flat_map(|y| (41..99u16).map(move |x| (x, y)))
+            .find_map(|(x, y)| buf[(x, y)].style().bg.filter(|b| *b != Color::Reset))
+    };
+    assert_eq!(
+        pill_bg(&buf),
+        Some(THEME.button_bg),
+        "an idle pill is muted"
+    );
+
+    // Cursor in the hunk: the pill takes the same colour as the edge beside it.
+    cursor_into_first_box(&mut app);
+    let buf = buffer_of(&app);
+    let edge = (1..39u16)
+        .find_map(|y| buf[(40, y)].style().fg.filter(|c| *c == THEME.skim_fg))
+        .expect("no lit edge");
+    assert_eq!(
+        pill_bg(&buf),
+        Some(edge),
+        "the pill should fill with its edge's colour"
+    );
 }
 
 /// Not an assertion — a readable dump of the pane, so the styling can be

@@ -20,9 +20,12 @@ pub struct Theme {
     pub deleted_word_bg: Color,
     /// Diagonal fill for the side of a split row that has no line at all.
     pub hatch_fg: Color,
-    /// The context-boundary label, which is a control rather than a caption.
+    /// A hunk pill that is not lit: a control, but not the one in hand.
     pub button_fg: Color,
     pub button_bg: Color,
+    /// Text on a LIT pill, whose fill is the hunk's accent — so it has to be
+    /// dark enough to read on yellow, green or cyan alike.
+    pub pill_fg: Color,
     pub gutter_fg: Color,
     pub context_fg: Color,
     pub cursor_bg: Color,
@@ -49,6 +52,7 @@ pub const THEME: Theme = Theme {
     hatch_fg: Color::Rgb(48, 50, 58),
     button_fg: Color::Rgb(198, 204, 220),
     button_bg: Color::Rgb(58, 63, 83),
+    pill_fg: Color::Rgb(20, 22, 28),
     gutter_fg: Color::DarkGray,
     context_fg: Color::Gray,
     cursor_bg: Color::Rgb(48, 52, 70),
@@ -113,6 +117,16 @@ impl Theme {
     pub fn role_suffix(role: Option<differential_engine::schema::Role>) -> String {
         role.map(|r| format!(" · {}", differential_engine::plan::role_name(r)))
             .unwrap_or_default()
+    }
+
+    /// The two colours a pill wears. `accent` is `Some` when this is the hunk
+    /// under the cursor, and the fill then matches its edge so the marker and
+    /// the run below it read as one thing.
+    pub fn pill(&self, accent: Option<Color>) -> (Color, Color) {
+        match accent {
+            Some(bg) => (self.pill_fg, bg),
+            None => (self.button_fg, self.button_bg),
+        }
     }
 
     pub fn word_emphasis(&self, addition: bool) -> Style {

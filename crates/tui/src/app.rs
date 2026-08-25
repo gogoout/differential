@@ -1446,13 +1446,20 @@ impl App {
             .take(inner_h)
             .map(|(i, r)| {
                 let on = i == self.cursor && self.focus == Focus::Diff && r.kind.selectable();
-                let mut line = compose_row(&r.content, inner_w, on);
-                // A box's chrome carries no colour of its own; the line's base
-                // style supplies one, and sits UNDER span styles so the counts
-                // and findings on a header band keep theirs.
-                if let Some(b) = r.border {
-                    line = line.style(chrome(b, active));
-                }
+                // A hunk's pill follows its edge, so the marker and the run
+                // below it read as one thing — and which is lit is a cursor
+                // question, decided here rather than when the row was built.
+                let pill = match (r.border, &r.kind) {
+                    (Some(b), RowKind::HunkHeader { .. }) => Some(
+                        THEME.pill(
+                            (active == Some(b.hunk))
+                                .then_some(b.active_style.fg)
+                                .flatten(),
+                        ),
+                    ),
+                    _ => None,
+                };
+                let mut line = compose_row(&r.content, inner_w, on, pill);
                 if on {
                     // Span backgrounds win over a line style, so this colours
                     // exactly the rows that have no change colour of their own
@@ -1472,21 +1479,16 @@ impl App {
             });
         frame.render_widget(Paragraph::new(lines).block(block), area);
 
-        // A hunk's box shares the pane's border columns rather than sitting a
-        // cell inside them: two columns of code back, one vertical line instead
-        // of two a cell apart, and corners that are junctions because the
-        // pane's own border carries on above and below them. Drawn over the
-        // block, so it has to come after it.
+        // A hunk's edge shares the pane's left border column rather than
+        // sitting a cell inside it: no width lost, and no second vertical line
+        // a cell away from the first. Drawn over the block, so it comes after.
         let buf = frame.buffer_mut();
-        let (left, right) = (area.x, area.x + area.width.saturating_sub(1));
         for (n, row) in self.rows.iter().skip(self.scroll).take(inner_h).enumerate() {
             let Some(border) = row.border else { continue };
             let y = area.y + 1 + n as u16;
-            let (l, r) = border.glyphs();
-            for (x, glyph) in [(left, l), (right, r)] {
-                buf[(x, y)].set_symbol(glyph.encode_utf8(&mut [0u8; 4]));
-                buf[(x, y)].set_style(chrome(border, active));
-            }
+            let cell = &mut buf[(area.x, y)];
+            cell.set_symbol(border.glyph().encode_utf8(&mut [0u8; 4]));
+            cell.set_style(chrome(border, active));
         }
     }
 
@@ -1515,10 +1517,35 @@ impl App {
 /// Every diff row pads HERE rather than at build time: a background that runs
 /// to the pane edge is a width question, and row counts must stay independent
 /// of width or each resize would rebuild them.
-fn compose_row(content: &RowContent, width: usize, cursor: bool) -> Line<'static> {
+fn compose_row(
+    content: &RowContent,
+    width: usize,
+    cursor: bool,
+    pill: Option<(ratatui::style::Color, ratatui::style::Color)>,
+) -> Line<'static> {
     match content {
         RowContent::Full(line) => line.clone(),
-        RowContent::Unified(half) => Line::from(compose_half(half, width, cursor)),
+        RowContent::Unified(half) => {
+            // Recolouring rewrites the row's whole content, which is why a pill
+            // has to be all of it.
+            let repainted;
+            let half = match pill {
+                Some((fg, bg)) => {
+                    repainted = Half {
+                        gutter: half.gutter.clone(),
+                        pairs: half
+                            .pairs
+                            .iter()
+                            .map(|(_, t)| (Style::default().fg(fg).bg(bg), t.clone()))
+                            .collect(),
+                        fill: half.fill,
+                    };
+                    &repainted
+                }
+                None => half,
+            };
+            Line::from(compose_half(half, width, cursor))
+        }
         RowContent::Split { old, new } => {
             let lw = width.saturating_sub(1) / 2;
             let rw = width.saturating_sub(1).saturating_sub(lw);
@@ -1580,20 +1607,14 @@ fn compose_half(half: &Half, width: usize, cursor: bool) -> Vec<Span<'static>> {
         )),
         // A rule carries the row across the whole pane, separator column and
         // all — the row is about the file, not about one side of it.
-        Fill::Rule {
-            style,
-            centered,
-            glyph,
-        } => {
+        Fill::Rule(style) => {
             let used: usize = half.pairs.iter().map(|(_, t)| t.width()).sum();
             if used >= rest {
                 spans.extend(truncate_or_pad_spans(&half.pairs, rest, style));
             } else {
-                let lead = if centered { (rest - used) / 2 } else { 0 };
-                let dash = |n: usize| Span::styled(glyph.to_string().repeat(n), style);
-                if lead > 0 {
-                    spans.push(dash(lead));
-                }
+                let lead = (rest - used) / 2;
+                let dash = |n: usize| Span::styled("─".repeat(n), style);
+                spans.push(dash(lead));
                 spans.extend(half.pairs.iter().map(|(s, t)| Span::styled(t.clone(), *s)));
                 spans.push(dash(rest - used - lead));
             }
