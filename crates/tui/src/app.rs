@@ -1518,6 +1518,17 @@ fn compose_half(half: &Half, width: usize, cursor: bool) -> Vec<Span<'static>> {
             "╱".repeat(rest),
             Style::default().fg(THEME.hatch_fg),
         )),
+        // A rule carries the row across the whole pane, separator column and
+        // all — the row is about the file, not about one side of it.
+        Fill::Rule(style) => {
+            let used: usize = half.pairs.iter().map(|(_, t)| t.width()).sum();
+            if used >= rest {
+                spans.extend(truncate_or_pad_spans(&half.pairs, rest, style));
+            } else {
+                spans.extend(half.pairs.iter().map(|(s, t)| Span::styled(t.clone(), *s)));
+                spans.push(Span::styled("─".repeat(rest - used), style));
+            }
+        }
     }
     spans
 }

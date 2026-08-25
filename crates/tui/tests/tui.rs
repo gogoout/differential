@@ -1346,6 +1346,69 @@ fn space_on_context_marks_the_hunk_that_context_belongs_to() {
     );
 }
 
+/// A hunk header is a band, not a `@@` line: every row already carries both
+/// line numbers, so the coordinates repeated what was on screen in a notation
+/// you had to decode.
+#[test]
+fn a_hunk_header_is_a_band_carrying_the_class_and_the_size() {
+    let (_r, mut app) = app_with_a_long_file();
+    let text = drawn(&mut app);
+    assert!(
+        !text.contains("@@"),
+        "the diff-syntax coordinates should be gone"
+    );
+    // What the header uniquely says survives: the shape class and the change's
+    // size. Each hunk here replaces one line with one line.
+    assert!(text.contains("+1"), "the added count: {text}");
+    assert!(text.contains("−1"), "the removed count");
+    // Still a selectable row, so n/N, space and c keep working on it.
+    let header = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::HunkHeader(_)))
+        .expect("a hunk header row");
+    assert!(app.rows[header].kind.selectable());
+    assert!(app.rows[header].kind.hunk().is_some());
+}
+
+/// A row that is about the whole file runs across the whole pane. Left as a
+/// bare line it stopped at its last character, which in split mode punched a
+/// hole in the separator column.
+#[test]
+fn headers_and_boundaries_rule_across_both_columns() {
+    let (_r, mut app) = app_with_a_long_file();
+    app.handle_key(key('s')); // split
+
+    let backend = ratatui::backend::TestBackend::new(100, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+
+    // Rows carrying a rule reach the last inner column of the diff pane (98).
+    let ruled: Vec<u16> = (1..39u16)
+        .filter(|&y| buf[(45, y)].symbol() == "─")
+        .collect();
+    assert!(!ruled.is_empty(), "no ruled row drawn");
+    for y in ruled {
+        assert_eq!(
+            buf[(98, y)].symbol(),
+            "─",
+            "row {y} stops before the pane edge"
+        );
+        assert_ne!(
+            buf[(69, y)].symbol(),
+            "│",
+            "a ruled row crosses the split separator rather than being cut by it"
+        );
+    }
+    // And the separator really is at that column on ordinary rows, so the
+    // assertion above is about crossing it rather than about it never existing.
+    assert!(
+        (1..39u16).any(|y| buf[(69, y)].symbol() == "│"),
+        "no split separator found at column 69"
+    );
+}
+
 /// Not an assertion — a readable dump of the pane, so the styling can be
 /// eyeballed with `cargo test -- --ignored --nocapture render_dump`.
 #[test]

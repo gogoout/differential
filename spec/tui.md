@@ -51,14 +51,25 @@ than looking like an empty one. Because a background is what marks a change, the
 cannot be one: it is a `▸` in the leading gutter cell, which reads on any background, and
 that cell is reserved so moving the cursor never shifts the pane sideways.
 
+**A row about the file runs across the file.** A hunk header is a band —
+`── C31 · +25 ─────`, the shape class and the size of the change — rather than a
+`@@ -479,0 +480,25 @@` line: every row carries both line numbers in its gutter, so the
+coordinates repeated what was already on screen in a notation you had to decode. What the
+header uniquely says stays on it: the class, the counts, the reviewed mark, the finding
+count, and in the file view the group's label. It remains a selectable row, so `n`/`N`
+jump to it and `space` and `c` act on it. Headers and boundary rows rule out to the pane
+edge and cross the split separator, because what they describe is not one side of the
+file.
+
 **Context is expandable.** Canonical `-U0` hunks carry no context, so it is read out of the
 base and head blobs — three lines either side by default. Where more of the file is
 available, the pane says so on a **boundary row** at each end of what is shown
 (`── ↑ 16 more above — z shows 10 ──`); put the cursor on it and `z` pulls in another step.
 Both numbers come from `[review]` in the user config (`context`, `context_step`). Expand
 two hunks until their windows meet and the boundary rows between them disappear: the file
-reads as one continuous stretch, each hunk keeping its own `@@` header so `n`/`N` and
-findings still work. A boundary row is deliberately **not** a hunk — `space` and `c` ask
+reads as one continuous stretch, each hunk keeping its own header band so `n`/`N` and
+findings still work. A gap between two blocks keeps a boundary at each end rather than
+collapsing to one — a step only reveals part of it, so both ends stay live. A boundary row is deliberately **not** a hunk — `space` and `c` ask
 for one rather than acting on a row that is only about how much of the file is visible.
 
 A window never crosses a neighbouring hunk, shown or not. Between two hunks the old/new

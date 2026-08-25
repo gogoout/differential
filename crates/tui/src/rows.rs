@@ -95,6 +95,10 @@ pub enum Fill {
     /// This side has no line here at all. Hatched rather than blank, so an
     /// absent line is visibly absent instead of looking like empty code.
     Hatch,
+    /// Rule out to the pane edge. What makes a row that is ABOUT the whole
+    /// file — a boundary, a hunk header — read as spanning both columns
+    /// instead of stopping mid-pane and leaving the split separator broken.
+    Rule(Style),
 }
 
 /// One side of a diff row: a gutter whose first cell is reserved for the
@@ -136,9 +140,28 @@ pub struct Row {
 
 impl Row {
     pub fn full(kind: RowKind, line: Line<'static>) -> Self {
+        Row::banner(kind, line, Fill::Bg(Style::default()))
+    }
+
+    /// A row that spans the whole diff pane.
+    ///
+    /// Built as a one-column row rather than a bare `Line` so it pads to the
+    /// pane edge at draw time: a header or a boundary is about the whole file,
+    /// and one that stopped at its last character left the split view's
+    /// separator column with a hole in it. The leading cell is the cursor's,
+    /// as on every other row.
+    pub fn banner(kind: RowKind, line: Line<'static>, fill: Fill) -> Self {
         Row {
             kind,
-            content: RowContent::Full(line),
+            content: RowContent::Unified(Half {
+                gutter: (Style::default(), " ".to_string()),
+                pairs: line
+                    .spans
+                    .into_iter()
+                    .map(|s| (s.style, s.content.into_owned()))
+                    .collect(),
+                fill,
+            }),
         }
     }
 }
@@ -510,18 +533,39 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, rows: &mut Vec<Row>) {
     } else {
         Style::default().fg(THEME.skim_fg)
     };
-    rows.push(Row::full(
+    // A band across the pane rather than a `@@ -a,b +c,d @@` line. Those
+    // coordinates were the only way to know where you were when the gutter
+    // showed one number; now every row carries both, so the header repeated
+    // what was already on screen in a notation you had to decode. What it
+    // uniquely says — the shape class, the size of the change, whether it is
+    // read, what is filed against it — is what stays.
+    let mut spans = vec![
+        Span::styled("── ".to_string(), header_style),
+        Span::styled(hunk.class.clone(), header_style),
+        Span::styled(" · ".to_string(), Style::default().fg(THEME.gutter_fg)),
+        Span::styled(
+            format!("+{}", hunk.new_count),
+            Style::default().fg(THEME.add_fg),
+        ),
+    ];
+    if hunk.old_count > 0 {
+        spans.push(Span::styled(" ".to_string(), header_style));
+        spans.push(Span::styled(
+            format!("−{}", hunk.old_count),
+            Style::default().fg(THEME.del_fg),
+        ));
+    }
+    spans.push(Span::styled(
+        group_label,
+        Style::default().fg(THEME.gutter_fg),
+    ));
+    spans.push(Span::styled(check.to_string(), header_style));
+    spans.push(Span::styled(notes, Style::default().fg(THEME.finding_fg)));
+    spans.push(Span::styled(" ".to_string(), header_style));
+    rows.push(Row::banner(
         RowKind::HunkHeader(hi),
-        Line::from(vec![
-            Span::styled(
-                format!(
-                    "@@ -{},{} +{},{} @@  {}{group_label}{check}",
-                    hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count, hunk.class
-                ),
-                header_style,
-            ),
-            Span::styled(notes, Style::default().fg(THEME.finding_fg)),
-        ]),
+        Line::from(spans),
+        Fill::Rule(header_style),
     ));
 
     for f in ctx
@@ -654,12 +698,16 @@ fn boundary_row(hunk: usize, side: Side, hidden: usize, step: usize) -> Row {
         Side::Down => ("↓", "below"),
     };
     let step = step.min(hidden);
-    Row::full(
+    let style = Style::default().fg(THEME.noise_fg);
+    // A rule to the pane edge: what is hidden is hidden from BOTH sides, so
+    // the row saying so runs across both of them.
+    Row::banner(
         RowKind::ContextEdge(hunk, side),
         Line::from(Span::styled(
-            format!("  ── {arrow} {hidden} more {where_} — z shows {step} ──"),
-            Style::default().fg(THEME.noise_fg),
+            format!("── {arrow} {hidden} more {where_} — z shows {step} "),
+            style,
         )),
+        Fill::Rule(style),
     )
 }
 
