@@ -63,8 +63,15 @@ block reads as boxes with file between them.
 **The box's sides are the pane's own border.** They sit in that column rather than a cell
 inside it, so a box costs the content no width and there are never two vertical lines a
 cell apart. That is also why its corners are junctions (`├`, `┤`): the pane's border
-carries on above and below them. Sides take the header band's colour, so the top and the
-sides read as one shape rather than as two that happen to touch.
+carries on above and below them.
+
+**Only the box the cursor is in wears a colour**; every other one is muted to the gutter,
+because a screenful of accents is no accent at all. Which box is lit is a cursor question
+and the cursor moves without rebuilding rows, so a row carries the colour it *would* take
+and drawing chooses. The band's chrome — the class, the separators, the label, the rule —
+carries no colour of its own and inherits the box's, while the `+N`/`−M` counts and the
+finding marker keep theirs. A **foreign** hunk takes the pane's border colour rather than a
+tier colour: it has no tier here, and wearing one would say it did.
 
 Headers and boundary rows rule out to the pane edge and cross the split separator, because
 what they describe is not one side of the file. A boundary **divides**, so its rule runs on

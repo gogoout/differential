@@ -1623,24 +1623,58 @@ fn a_foreign_hunk_is_dashed_and_names_its_group() {
         text.contains("· Group "),
         "a foreign header must name its group"
     );
+
+    // A foreign hunk has no tier here — it is not on this reading list at all —
+    // so its box takes the pane's own border colour rather than wearing one.
+    let buf = buffer_of(&app);
+    let foreign_top = (1..39u16)
+        .find(|&y| {
+            (41..99u16)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .contains('╌')
+        })
+        .expect("no foreign box on screen");
+    assert_eq!(buf[(40, foreign_top)].style().fg, Some(THEME.header_fg));
+
+    // And its own hunk, when active, takes the tier colour instead.
+    cursor_into_first_box(&mut app);
+    let buf = buffer_of(&app);
+    let own_side = (1..39u16)
+        .find(|&y| buf[(40, y)].style().fg == Some(THEME.skim_fg))
+        .expect("no lit own box");
+    assert_ne!(
+        buf[(40, own_side)].style().fg,
+        Some(THEME.header_fg),
+        "an own hunk should not borrow the border colour"
+    );
 }
 
 /// A box borrows the pane's border columns rather than spending content ones,
 /// so a line number inside a box sits where a line number outside one sits.
 #[test]
 fn a_box_costs_the_content_no_columns() {
-    let (_r, app) = app_with_two_groups_in_one_file();
-    let backend = ratatui::backend::TestBackend::new(100, 40);
-    let mut terminal = ratatui::Terminal::new(backend).unwrap();
-    terminal.draw(|f| app.draw(f)).unwrap();
-    let buf = terminal.backend().buffer().clone();
+    let (_r, mut app) = app_with_two_groups_in_one_file();
+    cursor_into_first_box(&mut app);
+    let buf = buffer_of(&app);
     // Content is 41..=98; the box lives in the pane's own border columns (40
     // and 99), so it costs the content nothing.
     let row_text = |y: u16| -> String { (41..99u16).map(|x| buf[(x, y)].symbol()).collect() };
-    let framed_row = (1..39u16)
-        .find(|&y| buf[(40, y)].style().fg == Some(THEME.skim_fg) && buf[(40, y)].symbol() == "│")
-        .expect("no row inside a box");
+    // Pick the framed row from the MODEL: the pane's own border is `│` too, so
+    // a glyph test would happily match a row outside every box and compare it
+    // with itself.
+    let y_of = |i: usize| 1 + (i - app.scroll()) as u16;
+    let framed_row = y_of(
+        app.rows
+            .iter()
+            .position(|r| r.border.is_some_and(|b| b.part == Part::Side) && r.kind.hunk().is_some())
+            .expect("no row inside a box"),
+    );
     let framed = row_text(framed_row);
+    assert!(
+        framed.contains("let "),
+        "framed row has no code: {framed:?}"
+    );
     let context = (1..39u16)
         .map(row_text)
         .find(|t| t.contains("let filler"))
@@ -1717,15 +1751,35 @@ fn n_skips_a_foreign_hunk_but_space_still_marks_it() {
     assert!(app.session.reviewed_hunks().contains(&hunk));
 }
 
+/// Put the cursor inside the first hunk's box, so that box is the active one.
+fn cursor_into_first_box(app: &mut App) {
+    let pos = app
+        .rows
+        .iter()
+        .position(|r| r.border.is_some_and(|b| b.part == Part::Side))
+        .expect("no row inside a box");
+    app.cursor = pos;
+    app.focus = Focus::Diff;
+    app.set_viewport(Viewport {
+        diff_rows: 38,
+        plan_rows: 38,
+    });
+}
+
+fn buffer_of(app: &App) -> ratatui::buffer::Buffer {
+    let backend = ratatui::backend::TestBackend::new(100, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    terminal.backend().buffer().clone()
+}
+
 /// A box's sides take the band's colour, not a colour of their own — otherwise
 /// the top reads as one thing and the sides as another that happens to touch it.
 #[test]
 fn a_box_side_matches_its_top_and_shares_the_pane_border() {
-    let (_r, app) = app_with_two_groups_in_one_file();
-    let backend = ratatui::backend::TestBackend::new(100, 40);
-    let mut terminal = ratatui::Terminal::new(backend).unwrap();
-    terminal.draw(|f| app.draw(f)).unwrap();
-    let buf = terminal.backend().buffer().clone();
+    let (_r, mut app) = app_with_two_groups_in_one_file();
+    cursor_into_first_box(&mut app);
+    let buf = buffer_of(&app);
 
     // Both live in the pane's own left border column (40).
     let top = (1..39u16)
@@ -1742,12 +1796,50 @@ fn a_box_side_matches_its_top_and_shares_the_pane_border() {
     // And the right-hand side, in the pane's right border column (99).
     assert_eq!(buf[(99, top)].symbol(), "┤");
     assert_eq!(buf[(99, side)].style().fg, buf[(40, top)].style().fg);
+}
 
-    // A row outside any box leaves the pane's border to the pane.
-    let plain = (1..39u16)
-        .find(|&y| buf[(40, y)].style().fg != Some(THEME.skim_fg) && buf[(40, y)].symbol() == "│")
-        .expect("no unboxed row");
-    assert_ne!(buf[(40, plain)].style().fg, Some(THEME.skim_fg));
+/// Only the box the cursor is in wears a colour. Every box accented at once is
+/// no accent at all.
+#[test]
+fn only_the_active_hunks_box_is_coloured() {
+    let (_r, mut app) = app_with_two_groups_in_one_file();
+    // With the cursor on a boundary row, no hunk is active and nothing is lit.
+    let boundary = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::ContextEdge { .. }))
+        .expect("a boundary row");
+    app.cursor = boundary;
+    app.focus = Focus::Diff;
+    let buf = buffer_of(&app);
+    assert!(
+        (1..39u16).all(|y| buf[(40, y)].style().fg != Some(THEME.skim_fg)),
+        "no hunk is under the cursor, so no box should be lit"
+    );
+    // The boxes are still drawn — muted, not missing.
+    assert!(
+        (1..39u16).any(|y| buf[(40, y)].symbol() == "├"),
+        "a muted box is still a box"
+    );
+
+    // Move into a hunk and exactly that box lights up.
+    cursor_into_first_box(&mut app);
+    let active = app.rows[app.cursor].border.unwrap().hunk;
+    let buf = buffer_of(&app);
+    let lit: Vec<u16> = (1..39u16)
+        .filter(|&y| buf[(40, y)].style().fg == Some(THEME.skim_fg))
+        .collect();
+    assert!(!lit.is_empty(), "the hunk under the cursor should be lit");
+    // And every lit row belongs to that one hunk.
+    let rows_on_screen = &app.rows[app.scroll()..];
+    for y in lit {
+        let row = &rows_on_screen[(y - 1) as usize];
+        assert_eq!(
+            row.border.map(|b| b.hunk),
+            Some(active),
+            "a box other than the active one is lit at row {y}"
+        );
+    }
 }
 
 /// The boundary label is the one thing on its row a reviewer can act on. As

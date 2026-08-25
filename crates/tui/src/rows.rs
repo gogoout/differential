@@ -148,9 +148,12 @@ pub enum Part {
 pub struct Border {
     pub part: Part,
     pub box_style: BoxStyle,
-    /// The hunk header band's colour, so the sides match the top rather than
-    /// reading as a different thing that happens to touch it.
-    pub style: Style,
+    /// The hunk this box belongs to — which box is lit is a cursor question,
+    /// and the cursor moves without a rebuild, so drawing resolves it.
+    pub hunk: usize,
+    /// The colour this box takes when it IS the one under the cursor. Every
+    /// other box is muted: a screenful of accents is a screenful of nothing.
+    pub active_style: Style,
 }
 
 impl Border {
@@ -231,11 +234,12 @@ impl Row {
         Row::banner(kind, line, Fill::Bg(Style::default()))
     }
 
-    pub fn bordered(mut self, part: Part, box_style: BoxStyle, style: Style) -> Self {
+    pub fn bordered(mut self, part: Part, box_style: BoxStyle, hunk: usize, active: Style) -> Self {
         self.border = Some(Border {
             part,
             box_style,
-            style,
+            hunk,
+            active_style: active,
         });
         self
     }
@@ -617,14 +621,18 @@ fn column_header_row() -> Row {
 }
 
 /// Header row for one hunk, plus its findings.
-/// A hunk's colour: green once its class is read, otherwise the skim tier's.
-/// Shared by the band and the box sides so the two cannot drift apart.
-fn hunk_style(ctx: &RowsContext, hi: usize) -> Style {
-    if ctx.reviewed.contains(&hi) {
-        Style::default().fg(THEME.reviewed_fg)
-    } else {
-        Style::default().fg(THEME.skim_fg)
-    }
+/// The colour a hunk's box takes when the cursor is in it.
+///
+/// A foreign hunk borrows the pane's own border colour rather than a tier
+/// colour: it has no tier here — it is not on this reading list at all — and
+/// wearing one would say it was.
+fn hunk_accent(ctx: &RowsContext, hi: usize, foreign: bool) -> Style {
+    let fg = match (foreign, ctx.reviewed.contains(&hi)) {
+        (true, _) => THEME.header_fg,
+        (false, true) => THEME.reviewed_fg,
+        (false, false) => THEME.skim_fg,
+    };
+    Style::default().fg(fg)
 }
 
 fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<Row>) {
@@ -652,7 +660,11 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
     } else {
         String::new()
     };
-    let header_style = hunk_style(ctx, hi);
+    // Chrome — the class, the separators, the check, the label, the rule —
+    // carries NO foreground. Drawing supplies one as the line's base style,
+    // which sits under span styles, so the counts and findings keep theirs
+    // while everything else lights up or mutes as one.
+    let header_style = Style::default();
     // A band across the pane rather than a `@@ -a,b +c,d @@` line. Those
     // coordinates were the only way to know where you were when the gutter
     // showed one number; now every row carries both, so the header repeated
@@ -680,10 +692,9 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
             Style::default().fg(THEME.del_fg),
         ));
     }
-    spans.push(Span::styled(
-        group_label,
-        Style::default().fg(THEME.gutter_fg),
-    ));
+    // The group's name is chrome too, so a foreign hunk's label reads as part
+    // of its title rather than fading into the comment beneath it.
+    spans.push(Span::styled(group_label, header_style));
     spans.push(Span::styled(check.to_string(), header_style));
     spans.push(Span::styled(notes, Style::default().fg(THEME.finding_fg)));
     spans.push(Span::styled(" ".to_string(), header_style));
@@ -699,7 +710,7 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
             box_style.horizontal(),
             header_style,
         )
-        .bordered(Part::Top, box_style, header_style),
+        .bordered(Part::Top, box_style, hi, hunk_accent(ctx, hi, foreign)),
     );
 
     for f in ctx
@@ -820,7 +831,7 @@ fn file_rows(
                     } else {
                         BoxStyle::Own
                     };
-                    let header_style = hunk_style(ctx, *hunk);
+                    let accent = hunk_accent(ctx, *hunk, *foreign);
                     hunk_header_rows(ctx, *hunk, *foreign, rows);
                     for content in change_rows(src, old, new, &old_hl, &new_hl, ctx.mode) {
                         rows.push(
@@ -832,7 +843,8 @@ fn file_rows(
                             .bordered(
                                 Part::Side,
                                 box_style,
-                                header_style,
+                                *hunk,
+                                accent,
                             ),
                         );
                     }
@@ -843,14 +855,14 @@ fn file_rows(
                             RowKind::HunkFoot,
                             Line::default(),
                             Fill::Rule {
-                                style: header_style,
+                                style: Style::default(),
                                 centered: false,
                                 glyph: box_style.horizontal(),
                             },
                             box_style.horizontal(),
-                            header_style,
+                            Style::default(),
                         )
-                        .bordered(Part::Bottom, box_style, header_style),
+                        .bordered(Part::Bottom, box_style, *hunk, accent),
                     );
                 }
             }

@@ -19,7 +19,7 @@ use tui_textarea::TextArea;
 use unicode_width::UnicodeWidthStr;
 
 use super::rows::{
-    DiffMode, Fill, GroupContext, Half, Row, RowContent, RowFactory, RowKind, RowsContext,
+    Border, DiffMode, Fill, GroupContext, Half, Row, RowContent, RowFactory, RowKind, RowsContext,
     build_dir_rows, build_file_rows, build_group_rows,
 };
 use super::theme::{THEME, Theme};
@@ -1435,6 +1435,9 @@ impl App {
     fn draw_diff(&self, frame: &mut Frame, area: Rect) {
         let inner_h = area.height.saturating_sub(2) as usize;
         let inner_w = area.width.saturating_sub(2) as usize;
+        // Which box is lit. Only one at a time: a screenful of accents is a
+        // screenful of nothing, so every other box is muted to the gutter.
+        let active = self.current_hunk();
         let lines: Vec<Line> = self
             .rows
             .iter()
@@ -1444,6 +1447,12 @@ impl App {
             .map(|(i, r)| {
                 let on = i == self.cursor && self.focus == Focus::Diff && r.kind.selectable();
                 let mut line = compose_row(&r.content, inner_w, on);
+                // A box's chrome carries no colour of its own; the line's base
+                // style supplies one, and sits UNDER span styles so the counts
+                // and findings on a header band keep theirs.
+                if let Some(b) = r.border {
+                    line = line.style(chrome(b, active));
+                }
                 if on {
                     // Span backgrounds win over a line style, so this colours
                     // exactly the rows that have no change colour of their own
@@ -1476,7 +1485,7 @@ impl App {
             let (l, r) = border.glyphs();
             for (x, glyph) in [(left, l), (right, r)] {
                 buf[(x, y)].set_symbol(glyph.encode_utf8(&mut [0u8; 4]));
-                buf[(x, y)].set_style(border.style);
+                buf[(x, y)].set_style(chrome(border, active));
             }
         }
     }
@@ -1519,6 +1528,19 @@ fn compose_row(content: &RowContent, width: usize, cursor: bool) -> Line<'static
             spans.extend(compose_half(new, rw, false));
             Line::from(spans)
         }
+    }
+}
+
+/// What colour a hunk's box and band take right now.
+///
+/// Deliberately not a flag on the row: the cursor moves without rebuilding
+/// rows, so "is this the active hunk" cannot be decided when the row is built.
+/// The row carries the colour it WOULD take, and drawing chooses.
+fn chrome(border: Border, active: Option<usize>) -> Style {
+    if active == Some(border.hunk) {
+        border.active_style
+    } else {
+        Style::default().fg(THEME.gutter_fg)
     }
 }
 
