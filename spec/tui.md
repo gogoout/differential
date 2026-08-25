@@ -101,8 +101,10 @@ expansion can never silently swallow someone else's change, and a wall can never
 mistaken for the end of the file. A boundary row disappears at one place only: a real file
 edge.
 
-A crossed hunk is drawn in a **dashed** box carrying its owning group's label — real code
-the reviewer asked to see, plainly not on this group's reading list. It is absorbed whole
+A crossed hunk is drawn in a **dashed** box carrying its owning group's **id and label**
+(`╌ C31 · +25 · g7 "Rename sweep" ╌`) — real code the reviewer asked to see, plainly not on
+this group's reading list. The id is what the plan pane's rows and their `after:` lines are
+keyed by, so it is what turns "some other group" into a row you can go and look at. It is absorbed whole
 and costs no context budget, because showing half a change would be worse than showing
 none. `n`/`N` pass over it, but `space` marks it like any other hunk: marks key on class
 content and are shared across groups, so reading it here is reading it everywhere.

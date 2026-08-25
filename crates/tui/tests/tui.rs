@@ -1619,9 +1619,28 @@ fn a_foreign_hunk_is_dashed_and_names_its_group() {
     assert!(text.contains('╎'), "and vertically");
     // The foreign hunk says whose it is, even though this is the group view
     // where labels are otherwise redundant.
+    // The ID as well as the label: the plan pane's rows and their `after:`
+    // lines are keyed by it, so it is what makes the group findable.
+    let foreign = app
+        .rows
+        .iter()
+        .find_map(|r| match r.kind {
+            RowKind::HunkHeader {
+                hunk,
+                foreign: true,
+            } => Some(hunk),
+            _ => None,
+        })
+        .expect("a foreign hunk");
+    let owner = app
+        .session
+        .plan()
+        .group_of_hunk(differential_engine::plan::HunkId::from_index(foreign))
+        .expect("the foreign hunk belongs to a group");
     assert!(
-        text.contains("· Group "),
-        "a foreign header must name its group"
+        text.contains(&format!("· {} {}", owner.id, owner.label)),
+        "a foreign header must name its group by id and label; looked for {:?} in:\n{text}",
+        format!("· {} {}", owner.id, owner.label)
     );
 
     // A foreign hunk has no tier here — it is not on this reading list at all —

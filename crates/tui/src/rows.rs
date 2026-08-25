@@ -642,10 +642,13 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
     // A foreign hunk ALWAYS names its group: that is the whole point of it
     // being on screen at all, and the dashed border says "not yours" without
     // saying whose.
+    // The ID as well as the label: it is what the plan pane's rows and their
+    // `after:` lines are keyed by, so it is what turns "some other group" into
+    // a row you can go and look at.
     let group_label = if ctx.show_group_labels || foreign {
         ctx.plan
             .group_of_hunk(HunkId::from_index(hi))
-            .map(|g| format!(" · {}", g.label))
+            .map(|g| format!(" · {} {}", g.id, g.label))
             .unwrap_or_default()
     } else {
         String::new()
