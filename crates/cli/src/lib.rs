@@ -158,7 +158,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 &langs,
                 &GroupingOptions {
                     backend: &backend,
-                    cache: &cache(&repo, no_cache)?,
+                    cache: &grouping_cache(&repo, no_cache)?,
                     progress: None,
                 },
                 &StackOptions {
@@ -200,7 +200,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             // app layer owns what the pipeline is. Endpoints and review
             // identity per the wiring table in adr/0017.
             let pick = resolved.is_none();
-            let cache = cache(&repo, no_cache)?;
+            let cache = grouping_cache(&repo, no_cache)?;
             let worker_repo = repo.clone();
             differential_tui::review(&repo, pick, move |picked, tx, cancel| {
                 // Which resolver runs is dispatch; what each one decides is
@@ -295,7 +295,7 @@ fn print_range(base: &str, head: &str) {
 ///
 /// `--no-cache` is a state of the cache rather than an absent one, so the
 /// grouping stage never grows a branch for it.
-fn cache(repo: &Repo, no_cache: bool) -> anyhow::Result<FsGroupingCache> {
+fn grouping_cache(repo: &Repo, no_cache: bool) -> anyhow::Result<FsGroupingCache> {
     Ok(if no_cache {
         FsGroupingCache::disabled()
     } else {
@@ -349,7 +349,7 @@ fn grouped(
         langs,
         &GroupingOptions {
             backend: &backend,
-            cache: &cache(repo, no_cache)?,
+            cache: &grouping_cache(repo, no_cache)?,
             progress: None,
         },
     )
