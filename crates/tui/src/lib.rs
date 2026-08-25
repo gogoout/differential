@@ -15,6 +15,7 @@ pub mod theme;
 /// it, and while it was public the compiler could never tell us which of it
 /// was actually reachable — every `pub fn` was exported surface by definition.
 mod vendor;
+pub mod window;
 
 use std::io::Stdout;
 use std::sync::Arc;
@@ -29,6 +30,7 @@ use differential_engine::grouping::Progress;
 use differential_engine::store::FsReviewStore;
 use differential_engine::{PipelineOutput, ReviewSession};
 
+pub use app::ReviewOptions;
 use app::{App, Effect, Viewport};
 use picker::PickedSource;
 use ratatui::layout::Rect;
@@ -49,7 +51,10 @@ pub struct Prepared {
 /// hands the choice to `pipeline`; otherwise `pipeline` gets `None` (the user
 /// typed a range). `pipeline` runs on a worker thread while the splash reports
 /// the stages it publishes on the channel.
-pub fn review<P>(repo: &Repo, pick: bool, pipeline: P) -> anyhow::Result<()>
+///
+/// `opts` is presentation the app layer read from config; this crate owns the
+/// screen, not the configuration.
+pub fn review<P>(repo: &Repo, pick: bool, opts: ReviewOptions, pipeline: P) -> anyhow::Result<()>
 where
     P: FnOnce(
             Option<PickedSource>,
@@ -71,12 +76,18 @@ where
         .keyboard_enhancements_supported(false)
         .enter(std::io::stdout())?;
 
-    let result = review_in(&mut terminal, repo, pick, pipeline);
+    let result = review_in(&mut terminal, repo, pick, opts, pipeline);
     terminal.restore()?;
     result
 }
 
-fn review_in<P>(terminal: &mut Session, repo: &Repo, pick: bool, pipeline: P) -> anyhow::Result<()>
+fn review_in<P>(
+    terminal: &mut Session,
+    repo: &Repo,
+    pick: bool,
+    opts: ReviewOptions,
+    pipeline: P,
+) -> anyhow::Result<()>
 where
     P: FnOnce(
             Option<PickedSource>,
@@ -130,7 +141,7 @@ where
         prepared.out.base.clone(),
         prepared.out.head.clone(),
     );
-    run_app(terminal, App::new(session, factory))
+    run_app(terminal, App::new(session, factory, opts))
 }
 
 /// The terminal's current size, as the model wants it.

@@ -3,10 +3,15 @@
 //!
 //! Trimmed to what this crate actually calls: the module is private, so the
 //! compiler can see what is reachable, and everything it reported unreachable
-//! is gone (a search feature that was never ported, and the suspend/resume
-//! terminal machinery). Keep it that way — do not re-add a helper "for later",
-//! and do not make the module public, which would make every `pub fn` in it
-//! exported surface and silence the dead-code lint entirely.
+//! is gone (a search feature that was never ported, the suspend/resume
+//! terminal machinery, and — once the reviewer stopped highlighting whole
+//! files, ADR 0021 — tuicr's split-diff sequence helpers and its no-op
+//! `plain()` highlighter). Keep it that way — do not re-add a helper "for
+//! later", and do not make the module public, which would make every `pub fn`
+//! in it exported surface and silence the dead-code lint entirely.
+//!
+//! A unit test is not a caller: these had tests, which is why the lint stayed
+//! quiet about them. Reachability means reachable from the crate proper.
 //!
 //! Adapted from:
 //!

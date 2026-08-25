@@ -97,17 +97,24 @@ not_generated = ["important.lock"]
 attributes = ["linguist-generated"]
 ```
 
-User-level: which agent to run is your choice, not the repo's — put it in
-`~/.config/differential/config.toml`:
+User-level: which agent to run, and how much of a file the reviewer shows, are your
+choices rather than the repo's — put them in `~/.config/differential/config.toml`:
 
 ```toml
 [grouping]
 # Any prompt-on-stdin / text-on-stdout command. Default shown.
 command = ["claude", "-p", "--output-format", "text", "--allowed-tools", ""]
 timeout_secs = 1200
+
+[review]
+# Context lines either side of a hunk in `dfr review`. Defaults shown.
+context = 3
+# Lines one `z` on a context boundary row pulls in.
+context_step = 10
 ```
 
-Config can tune classification and the backend — it can never exclude files from analysis.
+Config can tune classification, the backend and the reviewer's presentation — it can never
+exclude files from analysis.
 
 ## Using it as a library
 

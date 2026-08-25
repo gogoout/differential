@@ -41,8 +41,53 @@ grouping, each hunk header carrying its group's label. Reviewed marks are shared
 the views — they key on class content either way.
 
 **Diff pane.** Unified layout by default, `s` toggles a side-by-side split (the layout
-choice persists per review); syntax highlighting, word-level change emphasis, ±3 context
-lines recomputed from the base/head blobs (canonical `-U0` hunks carry none).
+choice persists per review); syntax highlighting and word-level change emphasis.
+
+**Colour carries the change.** There are no `-`/`+` marker columns: a changed line's
+background runs to the pane edge, and its line-number cell is a stronger block of the same
+colour, which is what makes the gutter read as an edge. In split mode a row that exists on
+only one side has its other half filled with `╱` — an absent line is visibly absent rather
+than looking like an empty one. Because a background is what marks a change, the cursor
+cannot be one: it is a `▸` in the leading gutter cell, which reads on any background, and
+that cell is reserved so moving the cursor never shifts the pane sideways.
+
+**A row about the file runs across the file.** A hunk header is a band —
+`── C31 · +25 ─────`, the shape class and the size of the change — rather than a
+`@@ -479,0 +480,25 @@` line: every row carries both line numbers in its gutter, so the
+coordinates repeated what was already on screen in a notation you had to decode. What the
+header uniquely says stays on it: the class, the counts, the reviewed mark, the finding
+count, and in the file view the group's label. It remains a selectable row, so `n`/`N`
+jump to it and `space` and `c` act on it.
+
+Headers and boundary rows rule out to the pane edge and cross the split separator, because
+what they describe is not one side of the file. A boundary **divides**, so its rule runs on
+both sides of a centred label; a header **labels** what follows it, so it starts at the left
+and stays there — a label that drifted with the pane width would be harder to scan down a
+column.
+
+**Context is expandable.** Canonical `-U0` hunks carry no context, so it is read out of the
+base and head blobs — three lines either side by default. Where more of the file is
+available, the pane says so on a **boundary row** at each end of what is shown
+(`── ↑ 16 more above — z shows 10 ──`); put the cursor on it and `z` pulls in another step.
+Both numbers come from `[review]` in the user config (`context`, `context_step`). Expand
+two hunks until their windows meet and the boundary rows between them disappear: the file
+reads as one continuous stretch, each hunk keeping its own header band so `n`/`N` and
+findings still work. A gap between two blocks keeps a boundary at each end rather than
+collapsing to one — a step only reveals part of it, so both ends stay live. A boundary row is deliberately **not** a hunk — `space` and `c` ask
+for one rather than acting on a row that is only about how much of the file is visible.
+
+A window never crosses a neighbouring hunk, shown or not. Between two hunks the old/new
+line offset is constant, which is what lets one context stretch carry both sides' numbers;
+across a hunk it is not. Stopping at the neighbour keeps every rendered line number honest
+and means expanding can never present someone else's change as untouched context. Reaching
+one is the same as reaching the file's edge: the boundary row has nothing left to offer, so
+it is not drawn.
+
+Only the lines actually drawn are diffed and highlighted — per hunk, `similar` runs over
+the changed lines alone and syntect over the window plus a fixed lookback, so a keypress
+costs what is on screen rather than the size of the files the group touches (ADR 0021).
+How far each hunk is expanded is **transient**, like an open fold: a reading aid for this
+sitting, not a finding, so nothing about it reaches the sidecar store.
 
 ## Keys
 
@@ -54,7 +99,7 @@ lines recomputed from the base/head blobs (canonical `-U0` hunks carry none).
 | `ctrl-d`/`ctrl-u` | half page |
 | `g`/`G` | top / bottom |
 | `n`/`N` | next / previous hunk |
-| `z` | fold: the skim remainder or noise group (plan view) · a directory (file view) |
+| `z` | on a `──` context boundary row: show more of the file · elsewhere, fold the skim remainder or noise group (plan view) or a directory (file view) |
 | `s` | toggle unified / side-by-side diff layout (persisted) |
 | `v` | toggle the left pane: reading plan ↔ file tree (persisted) |
 | `f` | file-list modal over the current view (`enter` jumps to the file) |

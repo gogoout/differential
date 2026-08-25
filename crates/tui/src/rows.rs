@@ -1,12 +1,22 @@
 //! The single row builder (tuicr's lesson applied): the row-kind array IS the
 //! output of the builder that renders the lines, so navigation and drawing can
 //! never disagree about what a row is.
+//!
+//! Rows are built from the line ranges `window` plans, read straight out of
+//! the base and head blobs. The reviewer used to diff and syntax-highlight
+//! whole files and then search the result for each hunk; it now touches only
+//! the lines it draws (ADR 0021).
+//!
+//! Row CONTENT still defers its columns to draw time — padding a background to
+//! the pane edge is a width question, and row counts must never depend on
+//! width or every resize would rebuild.
 
 use std::collections::HashMap;
+use std::ops::Range;
 
 use differential_engine::gitio::Repo;
 use differential_engine::plan::{
-    Deferral, Fold, GroupView, HunkId, PlanIndex, ReviewView, reading_split,
+    Deferral, FileView, Fold, GroupView, HunkId, PlanIndex, ReviewView, reading_split,
 };
 use differential_engine::ports::ObjectReader;
 use differential_engine::review_state::Finding;
@@ -18,10 +28,10 @@ use super::theme::{THEME, Theme, highlighter};
 use super::vendor::LineOrigin;
 use super::vendor::diff_algo::compute_side_by_side;
 use super::vendor::diff_types::{ChangeType, DiffLine, InlineSegment, expand_tabs};
-use super::vendor::syntax::HighlightedLines;
+use super::vendor::syntax::HighlightedSpans;
 use super::vendor::text_utils::split_pairs_at_ranges;
+use super::window::{self, Expansion, Segment, Side};
 
-const CONTEXT: usize = 3;
 const TAB_WIDTH: usize = 4;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -29,10 +39,14 @@ pub enum RowKind {
     GroupHeader,
     /// A file header carrying its path (the file-list modal jumps to these).
     FileHeader(String),
+    /// The `old` / `new` column labels above a file in split mode.
+    ColumnHeader,
     /// Canonical hunk index.
     HunkHeader(usize),
     /// A diff content row belonging to a hunk.
     Diff(usize),
+    /// The edge of what is shown around a hunk: press `z` to pull in more.
+    ContextEdge(usize, Side),
     /// A finding attached to a hunk: (finding id, hunk index).
     Finding(String, usize),
     /// Collapsed remainder / noise: press z to unfold.
@@ -44,10 +58,17 @@ impl RowKind {
     pub fn selectable(&self) -> bool {
         matches!(
             self,
-            RowKind::HunkHeader(_) | RowKind::Diff(_) | RowKind::Finding(_, _) | RowKind::Fold
+            RowKind::HunkHeader(_)
+                | RowKind::Diff(_)
+                | RowKind::ContextEdge(_, _)
+                | RowKind::Finding(_, _)
+                | RowKind::Fold
         )
     }
 
+    /// The hunk a row acts on. Deliberately `None` for a context boundary:
+    /// `space` and `c` should ask for a hunk rather than mark a class from a
+    /// row that is only about how much of the file is visible.
     pub fn hunk(&self) -> Option<usize> {
         match self {
             RowKind::HunkHeader(h) | RowKind::Diff(h) | RowKind::Finding(_, h) => Some(*h),
@@ -65,12 +86,54 @@ pub enum DiffMode {
     Split,
 }
 
+/// What a row's padding is filled with, out to the pane edge.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Fill {
+    /// The line's own background, so a change reads as a block rather than
+    /// stopping at its last character.
+    Bg(Style),
+    /// This side has no line here at all. Hatched rather than blank, so an
+    /// absent line is visibly absent instead of looking like empty code.
+    Hatch,
+    /// Rule out to the pane edge. What makes a row that is ABOUT the whole
+    /// file — a boundary, a hunk header — read as spanning both columns
+    /// instead of stopping mid-pane and leaving the split separator broken.
+    ///
+    /// `centered` puts the rule on both sides of the text. A boundary DIVIDES,
+    /// so it reads best centred; a hunk header LABELS what follows it, and a
+    /// label that drifts with the pane width is harder to scan down a column.
+    Rule { style: Style, centered: bool },
+}
+
+/// One side of a diff row: a gutter whose first cell is reserved for the
+/// cursor marker, the content, and what pads the rest.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Half {
+    pub gutter: (Style, String),
+    pub pairs: Vec<(Style, String)>,
+    pub fill: Fill,
+}
+
+impl Half {
+    /// The absent side of a split row.
+    fn hatch() -> Self {
+        Half {
+            gutter: (Style::default(), String::new()),
+            pairs: Vec::new(),
+            fill: Fill::Hatch,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum RowContent {
+    /// Headers, findings, fold and boundary rows — already a full line.
     Full(Line<'static>),
+    /// One unified diff row, spanning the pane.
+    Unified(Half),
     Split {
-        old: Vec<(Style, String)>,
-        new: Vec<(Style, String)>,
+        old: Half,
+        new: Half,
     },
 }
 
@@ -81,26 +144,54 @@ pub struct Row {
 
 impl Row {
     pub fn full(kind: RowKind, line: Line<'static>) -> Self {
+        Row::banner(kind, line, Fill::Bg(Style::default()))
+    }
+
+    /// A row that spans the whole diff pane.
+    ///
+    /// Built as a one-column row rather than a bare `Line` so it pads to the
+    /// pane edge at draw time: a header or a boundary is about the whole file,
+    /// and one that stopped at its last character left the split view's
+    /// separator column with a hole in it. The leading cell is the cursor's,
+    /// as on every other row.
+    pub fn banner(kind: RowKind, line: Line<'static>, fill: Fill) -> Self {
         Row {
             kind,
-            content: RowContent::Full(line),
+            content: RowContent::Unified(Half {
+                gutter: (Style::default(), " ".to_string()),
+                pairs: line
+                    .spans
+                    .into_iter()
+                    .map(|s| (s.style, s.content.into_owned()))
+                    .collect(),
+                fill,
+            }),
         }
     }
 }
 
-/// Per-file computed rows + pre-baked syntax highlighting, cached across
-/// group switches.
-pub struct FileRows {
-    rows: Vec<DiffLine>,
-    old_hl: Option<HighlightedLines>,
-    new_hl: Option<HighlightedLines>,
+/// A file's two sides, as lines.
+///
+/// Normalised ONCE, so the diff and the highlight can no longer disagree about
+/// a line's text — they used to, since the diff trimmed trailing whitespace
+/// and the highlighter did not.
+struct FileSource {
+    old: Vec<String>,
+    new: Vec<String>,
+}
+
+fn source_lines(blob: &str) -> Vec<String> {
+    blob.lines()
+        .map(|l| expand_tabs(l, TAB_WIDTH).trim_end().to_string())
+        .collect()
 }
 
 pub struct RowFactory {
     repo: Repo,
     base: String,
     head: String,
-    cache: HashMap<String, FileRows>,
+    cache: HashMap<String, FileSource>,
+    highlighted: usize,
 }
 
 impl RowFactory {
@@ -110,40 +201,60 @@ impl RowFactory {
             base,
             head,
             cache: HashMap::new(),
+            highlighted: 0,
         }
     }
 
-    fn file_rows(&mut self, path: &str) -> &FileRows {
+    /// Lines syntect has parsed for this factory's lifetime.
+    ///
+    /// The point of the windowed rebuild is that this stays proportional to
+    /// what is drawn rather than to the size of the files touched, and that is
+    /// a property worth asserting rather than timing.
+    pub fn highlighted_lines(&self) -> usize {
+        self.highlighted
+    }
+
+    /// Highlight the requested line ranges of one file, one forward pass per
+    /// side. A method rather than a free function so reading the blobs first
+    /// is not an ordering a caller can get wrong.
+    fn highlight(
+        &mut self,
+        path: &str,
+        old_want: &[Range<usize>],
+        new_want: &[Range<usize>],
+    ) -> (
+        HashMap<usize, HighlightedSpans>,
+        HashMap<usize, HighlightedSpans>,
+    ) {
+        self.source(path);
+        let hl = highlighter();
+        let p = std::path::Path::new(path);
+        let src = &self.cache[path];
+        let old = hl.highlight_ranges(p, &src.old, old_want);
+        let new = hl.highlight_ranges(p, &src.new, new_want);
+        let scanned = old.as_ref().map_or(0, |h| h.lines_scanned)
+            + new.as_ref().map_or(0, |h| h.lines_scanned);
+        self.highlighted += scanned;
+        (
+            old.map(|h| h.spans).unwrap_or_default(),
+            new.map(|h| h.spans).unwrap_or_default(),
+        )
+    }
+
+    fn source(&mut self, path: &str) -> &FileSource {
         if !self.cache.contains_key(path) {
-            let old = self
-                .repo
-                .blob(&self.base, path.as_bytes())
-                .ok()
-                .flatten()
-                .map(|b| String::from_utf8_lossy(&b).into_owned())
-                .unwrap_or_default();
-            let new = self
-                .repo
-                .blob(&self.head, path.as_bytes())
-                .ok()
-                .flatten()
-                .map(|b| String::from_utf8_lossy(&b).into_owned())
-                .unwrap_or_default();
-            let rows = compute_side_by_side(&old, &new, TAB_WIDTH);
-            let hl = highlighter();
-            let expand =
-                |s: &str| -> Vec<String> { s.lines().map(|l| expand_tabs(l, TAB_WIDTH)).collect() };
-            let p = std::path::Path::new(path);
-            let old_hl = hl.highlight_file_lines(p, &expand(&old));
-            let new_hl = hl.highlight_file_lines(p, &expand(&new));
-            self.cache.insert(
-                path.to_string(),
-                FileRows {
-                    rows,
-                    old_hl,
-                    new_hl,
-                },
-            );
+            let read = |rev: &str| -> Vec<String> {
+                let blob = self
+                    .repo
+                    .blob(rev, path.as_bytes())
+                    .ok()
+                    .flatten()
+                    .map(|b| String::from_utf8_lossy(&b).into_owned())
+                    .unwrap_or_default();
+                source_lines(&blob)
+            };
+            let (old, new) = (read(&self.base), read(&self.head));
+            self.cache.insert(path.to_string(), FileSource { old, new });
         }
         &self.cache[path]
     }
@@ -152,13 +263,23 @@ impl RowFactory {
 /// What every hunk-level builder needs, independent of the left-pane view.
 pub struct RowsContext<'a> {
     pub doc: &'a schema::PlanDocument,
+    /// The projection: what resolves a file's full hunk list and a hunk's
+    /// group.
+    pub plan: &'a ReviewView,
     pub findings: &'a [Finding],
     /// Hunk indices whose class is marked reviewed.
     pub reviewed: &'a std::collections::HashSet<usize>,
     pub mode: DiffMode,
-    /// Set in the file view, where a hunk's group membership is otherwise
-    /// invisible; `None` in the group view, where the header already says it.
-    pub labels: Option<&'a ReviewView>,
+    /// Label each hunk with its group. The file view needs it, where a hunk's
+    /// group membership is otherwise invisible; the group view's header
+    /// already says it.
+    pub show_group_labels: bool,
+    /// Context lines either side of a hunk before any expansion.
+    pub context: usize,
+    /// Lines one `z` on a boundary row pulls in.
+    pub context_step: usize,
+    /// How far each hunk has been pulled open, by canonical index.
+    pub expansion: &'a HashMap<usize, Expansion>,
 }
 
 /// The group view's extras on top of the shared core.
@@ -169,7 +290,6 @@ pub struct GroupContext<'a> {
     /// The projected group, carrying resolved dependency edges and the
     /// back-fill flag the header renders.
     pub view: &'a GroupView,
-    pub plan: &'a ReviewView,
     pub fold: Fold,
 }
 
@@ -201,9 +321,9 @@ pub fn build_group_rows(factory: &mut RowFactory, ctx: &GroupContext) -> Vec<Row
     rows
 }
 
-/// Shared hunk-list emitter: sort by (file, new_start), emit a file header on
-/// every file change, then the hunk's rows. Both views feed through here —
-/// one implementation, never two renderers to keep in sync.
+/// Shared hunk-list emitter: sort by (file, new_start), then render each file
+/// once — header, then the blocks its shown hunks form. Both views feed
+/// through here — one implementation, never two renderers to keep in sync.
 fn hunk_list_rows(
     factory: &mut RowFactory,
     ctx: &RowsContext,
@@ -214,20 +334,36 @@ fn hunk_list_rows(
         let (ha, hb) = (&ctx.doc.hunks[a], &ctx.doc.hunks[b]);
         (ha.file.as_str(), ha.new_start).cmp(&(hb.file.as_str(), hb.new_start))
     });
-    let mut current_file: Option<&str> = None;
-    for hi in hunks {
-        let hunk = &ctx.doc.hunks[hi];
-        if current_file != Some(hunk.file.as_str()) {
-            current_file = Some(hunk.file.as_str());
-            rows.push(file_header_row(ctx.doc, &hunk.file));
-        }
-        hunk_rows(factory, ctx, hi, rows);
+    // A window's reach is bounded by the NEXT hunk of the file, shown or not,
+    // so every file needs its full list — by path, once, rather than a scan
+    // per file.
+    let by_path: HashMap<&str, &FileView> = ctx
+        .plan
+        .files
+        .iter()
+        .map(|f| (f.path.as_str(), f))
+        .collect();
+
+    let mut i = 0;
+    while i < hunks.len() {
+        let path = ctx.doc.hunks[hunks[i]].file.as_str();
+        let end = hunks[i..]
+            .iter()
+            .position(|&h| ctx.doc.hunks[h].file != path)
+            .map_or(hunks.len(), |n| i + n);
+        rows.push(file_header_row(ctx.doc, path));
+        file_rows(
+            factory,
+            ctx,
+            path,
+            by_path.get(path).copied(),
+            &hunks[i..end],
+            rows,
+        );
+        i = end;
     }
 }
 
-/// Build the right-pane rows for one file (the flattened view): every hunk of
-/// the file in position order, regardless of grouping; no fold logic — the
-/// flat view's whole point is everything, in file order.
 /// Rows for a directory: every hunk beneath it, in file order. The shared
 /// emitter already writes a file header on each file change.
 pub fn build_dir_rows(factory: &mut RowFactory, ctx: &RowsContext, hunks: Vec<usize>) -> Vec<Row> {
@@ -246,6 +382,9 @@ pub fn build_dir_rows(factory: &mut RowFactory, ctx: &RowsContext, hunks: Vec<us
     rows
 }
 
+/// Build the right-pane rows for one file (the flattened view): every hunk of
+/// the file in position order, regardless of grouping; no fold logic — the
+/// flat view's whole point is everything, in file order.
 pub fn build_file_rows(
     factory: &mut RowFactory,
     ctx: &RowsContext,
@@ -274,7 +413,7 @@ fn header_rows(ctx: &GroupContext, rows: &mut Vec<Row>) {
     // The back-fill group is must-read for a different reason from an ordinary
     // focus group — the model never classified it at all — and the stack has
     // always said so. One source for the label, so both renderers agree.
-    let tier = ctx.plan.tier_name(ctx.view);
+    let tier = ctx.core.plan.tier_name(ctx.view);
     let role = Theme::role_suffix(g.role);
     rows.push(Row::full(
         RowKind::GroupHeader,
@@ -347,15 +486,42 @@ fn file_header_row(doc: &schema::PlanDocument, path: &str) -> Row {
     )
 }
 
-fn hunk_rows(factory: &mut RowFactory, ctx: &RowsContext, hi: usize, rows: &mut Vec<Row>) {
+/// The `old` / `new` labels over a split file. Built as a split row so the two
+/// labels land on the columns through the same arithmetic that places the
+/// content, at any pane width.
+fn column_header_row() -> Row {
+    let label = |text: &str| Half {
+        gutter: (Style::default(), String::new()),
+        pairs: vec![(
+            Style::default()
+                .fg(THEME.gutter_fg)
+                .add_modifier(Modifier::BOLD),
+            format!("  {text}"),
+        )],
+        fill: Fill::Bg(Style::default()),
+    };
+    Row {
+        kind: RowKind::ColumnHeader,
+        content: RowContent::Split {
+            old: label("old"),
+            new: label("new"),
+        },
+    }
+}
+
+/// Header row for one hunk, plus its findings.
+fn hunk_header_rows(ctx: &RowsContext, hi: usize, rows: &mut Vec<Row>) {
     let hunk = &ctx.doc.hunks[hi];
     let reviewed = ctx.reviewed.contains(&hi);
     let check = if reviewed { " ✓ reviewed" } else { "" };
-    let group_label = ctx
-        .labels
-        .and_then(|plan| plan.group_of_hunk(HunkId::from_index(hi)))
-        .map(|g| format!("  · {}", g.label))
-        .unwrap_or_default();
+    let group_label = if ctx.show_group_labels {
+        ctx.plan
+            .group_of_hunk(HunkId::from_index(hi))
+            .map(|g| format!("  · {}", g.label))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     let n_findings = ctx
         .findings
         .iter()
@@ -371,21 +537,44 @@ fn hunk_rows(factory: &mut RowFactory, ctx: &RowsContext, hi: usize, rows: &mut 
     } else {
         Style::default().fg(THEME.skim_fg)
     };
-    rows.push(Row::full(
+    // A band across the pane rather than a `@@ -a,b +c,d @@` line. Those
+    // coordinates were the only way to know where you were when the gutter
+    // showed one number; now every row carries both, so the header repeated
+    // what was already on screen in a notation you had to decode. What it
+    // uniquely says — the shape class, the size of the change, whether it is
+    // read, what is filed against it — is what stays.
+    let mut spans = vec![
+        Span::styled("── ".to_string(), header_style),
+        Span::styled(hunk.class.clone(), header_style),
+        Span::styled(" · ".to_string(), Style::default().fg(THEME.gutter_fg)),
+        Span::styled(
+            format!("+{}", hunk.new_count),
+            Style::default().fg(THEME.add_fg),
+        ),
+    ];
+    if hunk.old_count > 0 {
+        spans.push(Span::styled(" ".to_string(), header_style));
+        spans.push(Span::styled(
+            format!("−{}", hunk.old_count),
+            Style::default().fg(THEME.del_fg),
+        ));
+    }
+    spans.push(Span::styled(
+        group_label,
+        Style::default().fg(THEME.gutter_fg),
+    ));
+    spans.push(Span::styled(check.to_string(), header_style));
+    spans.push(Span::styled(notes, Style::default().fg(THEME.finding_fg)));
+    spans.push(Span::styled(" ".to_string(), header_style));
+    rows.push(Row::banner(
         RowKind::HunkHeader(hi),
-        Line::from(vec![
-            Span::styled(
-                format!(
-                    "@@ -{},{} +{},{} @@  {}{group_label}{check}",
-                    hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count, hunk.class
-                ),
-                header_style,
-            ),
-            Span::styled(notes, Style::default().fg(THEME.finding_fg)),
-        ]),
+        Line::from(spans),
+        Fill::Rule {
+            style: header_style,
+            centered: false,
+        },
     ));
 
-    // Findings under the header.
     for f in ctx
         .findings
         .iter()
@@ -400,202 +589,339 @@ fn hunk_rows(factory: &mut RowFactory, ctx: &RowsContext, hi: usize, rows: &mut 
             )),
         ));
     }
+}
 
+/// One file's rows: the blocks its shown hunks form, each hunk's header sitting
+/// directly on top of the lines it describes.
+fn file_rows(
+    factory: &mut RowFactory,
+    ctx: &RowsContext,
+    path: &str,
+    view: Option<&FileView>,
+    shown: &[usize],
+    rows: &mut Vec<Row>,
+) {
     // Binary / submodule files carry no reconstructable text rows.
-    let file_entry = ctx.doc.files.iter().find(|f| f.path == hunk.file);
+    let file_entry = ctx.doc.files.iter().find(|f| f.path == path);
     if file_entry.is_some_and(|f| f.binary || f.submodule.is_some()) {
-        rows.push(Row::full(
-            RowKind::Diff(hi),
-            Line::from(Span::styled(
-                "  (binary or submodule change)",
-                Style::default().fg(THEME.noise_fg),
-            )),
-        ));
-        return;
-    }
-
-    let file_rows = factory.file_rows(&hunk.file);
-    let range = hunk_row_range(&file_rows.rows, hunk);
-    let Some((start, end)) = range else {
-        rows.push(Row::full(
-            RowKind::Diff(hi),
-            Line::from(Span::styled(
-                "  (content unavailable)",
-                Style::default().fg(THEME.noise_fg),
-            )),
-        ));
-        return;
-    };
-    let from = start.saturating_sub(CONTEXT);
-    let to = (end + CONTEXT + 1).min(file_rows.rows.len());
-    for row in &file_rows.rows[from..to] {
-        for content in render_diff_row(row, file_rows, ctx.mode) {
-            rows.push(Row {
-                kind: RowKind::Diff(hi),
-                content,
-            });
+        for &hi in shown {
+            hunk_header_rows(ctx, hi, rows);
+            rows.push(Row::full(
+                RowKind::Diff(hi),
+                Line::from(Span::styled(
+                    "  (binary or submodule change)",
+                    Style::default().fg(THEME.noise_fg),
+                )),
+            ));
         }
+        return;
     }
-    rows.push(Row::full(RowKind::Blank, Line::default()));
-}
 
-/// Locate the row span covered by a canonical -U0 hunk.
-fn hunk_row_range(rows: &[DiffLine], hunk: &schema::HunkEntry) -> Option<(usize, usize)> {
-    let in_new = |n: usize| {
-        hunk.new_count > 0
-            && n >= hunk.new_start as usize
-            && n < (hunk.new_start + hunk.new_count) as usize
+    if ctx.mode == DiffMode::Split {
+        rows.push(column_header_row());
+    }
+
+    // Every hunk of the file in position order: the ones this view lists, and
+    // the ones that merely bound how far a window may reach.
+    // The projection always has the file; falling back to the shown set keeps
+    // a stale index from silently dropping rows.
+    let mut all: Vec<usize> = match view {
+        Some(f) => f.hunks.iter().map(|h| h.index()).collect(),
+        None => shown.to_vec(),
     };
-    let in_old = |n: usize| {
-        hunk.old_count > 0
-            && n >= hunk.old_start as usize
-            && n < (hunk.old_start + hunk.old_count) as usize
+    all.sort_by_key(|&h| ctx.doc.hunks[h].new_start);
+    let candidates: Vec<window::Candidate> = all
+        .iter()
+        .map(|&h| window::Candidate {
+            index: h,
+            shown: shown.contains(&h),
+            entry: &ctx.doc.hunks[h],
+        })
+        .collect();
+
+    let (old_len, new_len) = {
+        let src = factory.source(path);
+        (src.old.len(), src.new.len())
     };
-    let mut first = None;
-    let mut last = None;
-    for (i, r) in rows.iter().enumerate() {
-        let hit = !matches!(r.change_type, ChangeType::Equal)
-            && (r.new_line.as_ref().is_some_and(|(n, _)| in_new(*n))
-                || r.old_line.as_ref().is_some_and(|(n, _)| in_old(*n)));
-        if hit {
-            if first.is_none() {
-                first = Some(i);
+    let blocks = window::plan(&candidates, ctx.expansion, ctx.context, old_len, new_len);
+
+    let (old_want, new_want) = wanted_lines(&blocks);
+    let (old_hl, new_hl) = factory.highlight(path, &old_want, &new_want);
+    let src = factory.source(path);
+
+    for block in &blocks {
+        if let Some(b) = &block.top {
+            rows.push(boundary_row(b.hunk, Side::Up, b.hidden, ctx.context_step));
+        }
+        // A context row acts on the hunk it sits next to — the one below when
+        // it leads a block, the one above otherwise — so `space` and `c` do
+        // what a reviewer parked on context would expect, even in a merged
+        // block spanning several hunks.
+        let first_hunk = block.segments.iter().find_map(|s| match s {
+            Segment::Change { hunk, .. } => Some(*hunk),
+            _ => None,
+        });
+        let mut above: Option<usize> = None;
+        for segment in &block.segments {
+            match segment {
+                Segment::Context {
+                    old_from,
+                    new_from,
+                    len,
+                } => {
+                    let owner = above.or(first_hunk).unwrap_or(0);
+                    for n in 0..*len {
+                        let (o, w) = (old_from + n, new_from + n);
+                        let text = src.new.get(w - 1).map(String::as_str).unwrap_or("");
+                        let row = context_row(text, o, w, new_hl.get(&(w - 1)), ctx.mode);
+                        rows.push(Row {
+                            kind: RowKind::Diff(owner),
+                            content: row,
+                        });
+                    }
+                }
+                Segment::Change { hunk, old, new } => {
+                    above = Some(*hunk);
+                    hunk_header_rows(ctx, *hunk, rows);
+                    for content in change_rows(src, old, new, &old_hl, &new_hl, ctx.mode) {
+                        rows.push(Row {
+                            kind: RowKind::Diff(*hunk),
+                            content,
+                        });
+                    }
+                }
             }
-            last = Some(i);
         }
+        if let Some(b) = &block.bottom {
+            rows.push(boundary_row(b.hunk, Side::Down, b.hidden, ctx.context_step));
+        }
+        rows.push(Row::full(RowKind::Blank, Line::default()));
     }
-    first.zip(last)
 }
 
-/// One lumen row → row contents. Unified: one or two full lines (Modified →
-/// `-` then `+`). Split: exactly one row carrying both sides.
-fn render_diff_row(row: &DiffLine, file: &FileRows, mode: DiffMode) -> Vec<RowContent> {
-    if mode == DiffMode::Split {
-        return vec![split_row(row, file)];
+fn boundary_row(hunk: usize, side: Side, hidden: usize, step: usize) -> Row {
+    let (arrow, where_) = match side {
+        Side::Up => ("↑", "above"),
+        Side::Down => ("↓", "below"),
+    };
+    let step = step.min(hidden);
+    let style = Style::default().fg(THEME.noise_fg);
+    // A rule to the pane edge: what is hidden is hidden from BOTH sides, so
+    // the row saying so runs across both of them.
+    Row::banner(
+        RowKind::ContextEdge(hunk, side),
+        Line::from(Span::styled(
+            format!(" {arrow} {hidden} more {where_} — z shows {step} "),
+            style,
+        )),
+        Fill::Rule {
+            style,
+            centered: true,
+        },
+    )
+}
+
+/// Every line the blocks will draw, as sorted ranges per side.
+fn wanted_lines(blocks: &[window::Block]) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
+    let mut old_want: Vec<Range<usize>> = Vec::new();
+    let mut new_want: Vec<Range<usize>> = Vec::new();
+    for block in blocks {
+        for segment in &block.segments {
+            match segment {
+                // A context stretch is identical on both sides, so only the
+                // new side is ever highlighted for it.
+                Segment::Context { new_from, len, .. } => {
+                    new_want.push(new_from - 1..new_from - 1 + len);
+                }
+                Segment::Change { old, new, .. } => {
+                    if !old.is_empty() {
+                        old_want.push(old.start - 1..old.end - 1);
+                    }
+                    if !new.is_empty() {
+                        new_want.push(new.start - 1..new.end - 1);
+                    }
+                }
+            }
+        }
     }
+    old_want.sort_by_key(|r| r.start);
+    new_want.sort_by_key(|r| r.start);
+    (old_want, new_want)
+}
+
+/// One unchanged line: the same text on both sides, both numbers in the
+/// gutter, no change colour.
+fn context_row(
+    text: &str,
+    old_n: usize,
+    new_n: usize,
+    hl: Option<&HighlightedSpans>,
+    mode: DiffMode,
+) -> RowContent {
+    let pairs = content_pairs(text, LineOrigin::Context, hl, None);
+    match mode {
+        DiffMode::Unified => RowContent::Unified(Half {
+            gutter: gutter(&format!("{old_n:>4} {new_n:>4}"), LineOrigin::Context),
+            pairs,
+            fill: Fill::Bg(Style::default()),
+        }),
+        DiffMode::Split => RowContent::Split {
+            old: Half {
+                gutter: gutter(&format!("{old_n:>4}"), LineOrigin::Context),
+                pairs: pairs.clone(),
+                fill: Fill::Bg(Style::default()),
+            },
+            new: Half {
+                gutter: gutter(&format!("{new_n:>4}"), LineOrigin::Context),
+                pairs,
+                fill: Fill::Bg(Style::default()),
+            },
+        },
+    }
+}
+
+/// One hunk's changed lines: `similar` over just those lines on each side,
+/// keeping the GitHub-style pairing and the word-level emphasis, with the
+/// returned numbers rebased onto the file.
+fn change_rows(
+    src: &FileSource,
+    old: &Range<usize>,
+    new: &Range<usize>,
+    old_hl: &HashMap<usize, HighlightedSpans>,
+    new_hl: &HashMap<usize, HighlightedSpans>,
+    mode: DiffMode,
+) -> Vec<RowContent> {
+    let slice = |lines: &[String], r: &Range<usize>| -> String {
+        lines
+            .get(r.start.saturating_sub(1)..r.end.saturating_sub(1).min(lines.len()))
+            .unwrap_or_default()
+            .join("\n")
+    };
+    let diff = compute_side_by_side(&slice(&src.old, old), &slice(&src.new, new), TAB_WIDTH);
     let mut out = Vec::new();
-    match row.change_type {
-        ChangeType::Equal => {
-            if let Some((n, text)) = &row.new_line {
-                let old_n = row.old_line.as_ref().map(|(o, _)| *o).unwrap_or(0);
-                out.push(RowContent::Full(side_line(
-                    Some(old_n),
-                    Some(*n),
-                    ' ',
-                    text,
-                    LineOrigin::Context,
-                    file.new_hl.as_ref(),
-                    *n,
-                    None,
-                )));
-            }
-        }
-        ChangeType::Delete | ChangeType::Modified => {
-            if let Some((n, text)) = &row.old_line {
-                out.push(RowContent::Full(side_line(
-                    Some(*n),
-                    None,
-                    '-',
-                    text,
-                    LineOrigin::Deletion,
-                    file.old_hl.as_ref(),
-                    *n,
-                    row.old_segments.as_deref(),
-                )));
-            }
-            if matches!(row.change_type, ChangeType::Modified)
-                && let Some((n, text)) = &row.new_line
-            {
-                out.push(RowContent::Full(side_line(
-                    None,
-                    Some(*n),
-                    '+',
-                    text,
-                    LineOrigin::Addition,
-                    file.new_hl.as_ref(),
-                    *n,
-                    row.new_segments.as_deref(),
-                )));
-            }
-        }
-        ChangeType::Insert => {
-            if let Some((n, text)) = &row.new_line {
-                out.push(RowContent::Full(side_line(
-                    None,
-                    Some(*n),
-                    '+',
-                    text,
-                    LineOrigin::Addition,
-                    file.new_hl.as_ref(),
-                    *n,
-                    row.new_segments.as_deref(),
-                )));
-            }
-        }
+    for row in &diff {
+        // `compute_side_by_side` numbers from 1 within the slice it was given.
+        let old_n = row.old_line.as_ref().map(|(n, _)| n + old.start - 1);
+        let new_n = row.new_line.as_ref().map(|(n, _)| n + new.start - 1);
+        out.extend(render_change_row(row, old_n, new_n, old_hl, new_hl, mode));
     }
     out
 }
 
-/// One lumen row → one split row: old on the left, new on the right, either
-/// half blank when the row only exists on one side.
-fn split_row(row: &DiffLine, file: &FileRows) -> RowContent {
-    let old = row.old_line.as_ref().map(|(n, text)| {
-        let (marker, origin, segments) = match row.change_type {
-            ChangeType::Equal => (' ', LineOrigin::Context, None),
-            _ => ('-', LineOrigin::Deletion, row.old_segments.as_deref()),
-        };
-        half_pairs(*n, marker, text, origin, file.old_hl.as_ref(), segments)
-    });
-    let new = row.new_line.as_ref().map(|(n, text)| {
-        let (marker, origin, segments) = match row.change_type {
-            ChangeType::Equal => (' ', LineOrigin::Context, None),
-            _ => ('+', LineOrigin::Addition, row.new_segments.as_deref()),
-        };
-        half_pairs(*n, marker, text, origin, file.new_hl.as_ref(), segments)
-    });
-    RowContent::Split {
-        old: old.unwrap_or_default(),
-        new: new.unwrap_or_default(),
+/// One lumen row → row contents. Unified: one or two rows (Modified → the old
+/// line then the new). Split: exactly one row carrying both sides.
+fn render_change_row(
+    row: &DiffLine,
+    old_n: Option<usize>,
+    new_n: Option<usize>,
+    old_hl: &HashMap<usize, HighlightedSpans>,
+    new_hl: &HashMap<usize, HighlightedSpans>,
+    mode: DiffMode,
+) -> Vec<RowContent> {
+    let old_half = || {
+        let (n, text) = (old_n?, row.old_line.as_ref()?.1.as_str());
+        Some(half(
+            n,
+            text,
+            LineOrigin::Deletion,
+            old_hl.get(&(n - 1)),
+            row.old_segments.as_deref(),
+        ))
+    };
+    let new_half = || {
+        let (n, text) = (new_n?, row.new_line.as_ref()?.1.as_str());
+        Some(half(
+            n,
+            text,
+            LineOrigin::Addition,
+            new_hl.get(&(n - 1)),
+            row.new_segments.as_deref(),
+        ))
+    };
+
+    // `similar` can find an unchanged line INSIDE a hunk: git decided the
+    // hunk's bounds with its own diff, and the two need not pair the same
+    // lines. Such a row is context — rendering it as a deletion plus an
+    // identical addition would invent a change git never reported.
+    if matches!(row.change_type, ChangeType::Equal) {
+        let text = row
+            .new_line
+            .as_ref()
+            .or(row.old_line.as_ref())
+            .map(|(_, t)| t.as_str())
+            .unwrap_or("");
+        let (o, w) = (old_n.unwrap_or(0), new_n.unwrap_or(0));
+        return vec![context_row(
+            text,
+            o,
+            w,
+            new_hl.get(&w.saturating_sub(1)),
+            mode,
+        )];
+    }
+
+    if mode == DiffMode::Split {
+        return vec![RowContent::Split {
+            old: old_half().unwrap_or_else(Half::hatch),
+            new: new_half().unwrap_or_else(Half::hatch),
+        }];
+    }
+    // Unified: a Modified row is the removed line followed by the added one.
+    let mut out = Vec::new();
+    if !matches!(row.change_type, ChangeType::Insert)
+        && let Some(h) = old_half()
+    {
+        out.push(RowContent::Unified(unify(h, old_n, None)));
+    }
+    if !matches!(row.change_type, ChangeType::Delete)
+        && let Some(h) = new_half()
+    {
+        out.push(RowContent::Unified(unify(h, None, new_n)));
+    }
+    out
+}
+
+/// Widen a split half's gutter to the unified layout's two columns, in the
+/// order they are drawn.
+fn unify(mut h: Half, old_n: Option<usize>, new_n: Option<usize>) -> Half {
+    let num = |n: Option<usize>| n.map(|n| n.to_string()).unwrap_or_default();
+    h.gutter.1 = format!(" {:>4} {:>4} ", num(old_n), num(new_n));
+    h
+}
+
+/// One side's content: the gutter block plus the line, on the change colour.
+fn half(
+    lineno: usize,
+    text: &str,
+    origin: LineOrigin,
+    hl: Option<&HighlightedSpans>,
+    segments: Option<&[InlineSegment]>,
+) -> Half {
+    Half {
+        gutter: gutter(&format!("{lineno:>4}"), origin),
+        pairs: content_pairs(text, origin, hl, segments),
+        fill: Fill::Bg(match THEME.line_bg(origin) {
+            Some(c) => Style::default().bg(c),
+            None => Style::default(),
+        }),
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn side_line(
-    old_n: Option<usize>,
-    new_n: Option<usize>,
-    marker: char,
-    text: &str,
-    origin: LineOrigin,
-    hl: Option<&HighlightedLines>,
-    lineno: usize,
-    segments: Option<&[InlineSegment]>,
-) -> Line<'static> {
-    let gutter = format!(
-        "{:>4} {:>4} {marker} ",
-        old_n.map(|n| n.to_string()).unwrap_or_default(),
-        new_n.map(|n| n.to_string()).unwrap_or_default(),
-    );
-    let pairs = content_pairs(text, origin, hl, lineno, segments);
-    let mut spans = vec![Span::styled(gutter, Style::default().fg(THEME.gutter_fg))];
-    spans.extend(pairs.into_iter().map(|(s, t)| Span::styled(t, s)));
-    Line::from(spans)
-}
-
-/// One half of a split row: single-number gutter + the line's content pairs.
-fn half_pairs(
-    lineno: usize,
-    marker: char,
-    text: &str,
-    origin: LineOrigin,
-    hl: Option<&HighlightedLines>,
-    segments: Option<&[InlineSegment]>,
-) -> Vec<(Style, String)> {
-    let mut pairs = vec![(
-        Style::default().fg(THEME.gutter_fg),
-        format!("{lineno:>4} {marker} "),
-    )];
-    pairs.extend(content_pairs(text, origin, hl, lineno, segments));
-    pairs
+/// The line-number cell.
+///
+/// A leading space is reserved for the cursor marker, so moving the cursor
+/// never shifts the pane sideways. On a changed line the cell carries the
+/// change colour as a solid block, deliberately stronger than the tint over
+/// the code, which is what makes the gutter read as an edge.
+fn gutter(text: &str, origin: LineOrigin) -> (Style, String) {
+    let mut style = Style::default().fg(match origin {
+        LineOrigin::Context => THEME.gutter_fg,
+        _ => THEME.context_fg,
+    });
+    if let Some(bg) = THEME.gutter_bg(origin) {
+        style = style.bg(bg);
+    }
+    (style, format!(" {text} "))
 }
 
 /// Syntax pairs for one line with the per-side background and word-level
@@ -603,17 +929,16 @@ fn half_pairs(
 fn content_pairs(
     text: &str,
     origin: LineOrigin,
-    hl: Option<&HighlightedLines>,
-    lineno: usize,
+    hl: Option<&HighlightedSpans>,
     segments: Option<&[InlineSegment]>,
 ) -> Vec<(Style, String)> {
     // Syntax spans for this line, else plain.
     let mut pairs: Vec<(Style, String)> = hl
-        .and_then(|lines| lines.get(lineno.saturating_sub(1)).cloned().flatten())
+        .cloned()
         .unwrap_or_else(|| vec![(Style::default().fg(THEME.context_fg), text.to_string())]);
 
     // Line background per side.
-    pairs = highlighter_bg(pairs, origin);
+    pairs = highlighter().apply_diff_background(pairs, origin);
 
     // Word-level emphasis over the changed segments.
     if let Some(segs) = segments {
@@ -637,6 +962,81 @@ fn content_pairs(
     pairs
 }
 
-fn highlighter_bg(pairs: Vec<(Style, String)>, origin: LineOrigin) -> Vec<(Style, String)> {
-    super::theme::highlighter().apply_diff_background(pairs, origin)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// git's `-U0` hunks contain only lines git itself considered changed, so
+    /// this is defence rather than a common path — but the two diffs are
+    /// computed over different inputs (git over the whole file, `similar` over
+    /// the hunk's slice), and nothing forces them to agree. If one ever does
+    /// come back Equal, it must render as context.
+    #[test]
+    fn an_equal_row_inside_a_hunk_renders_as_context_not_as_a_delete_and_an_add() {
+        let row = DiffLine {
+            old_line: Some((7, "same()".into())),
+            new_line: Some((9, "same()".into())),
+            change_type: ChangeType::Equal,
+            old_segments: None,
+            new_segments: None,
+        };
+        let (no_hl, mode) = (HashMap::new(), DiffMode::Unified);
+        let out = render_change_row(&row, Some(7), Some(9), &no_hl, &no_hl, mode);
+
+        assert_eq!(out.len(), 1, "one row, not a removal plus an addition");
+        let RowContent::Unified(half) = &out[0] else {
+            panic!("expected a unified row, got {:?}", out[0]);
+        };
+        assert!(
+            matches!(half.fill, Fill::Bg(s) if s.bg.is_none()),
+            "context carries no change colour: {:?}",
+            half.fill
+        );
+        assert!(
+            half.gutter.1.contains('7') && half.gutter.1.contains('9'),
+            "both line numbers belong in a context gutter: {:?}",
+            half.gutter.1
+        );
+        assert!(half.gutter.0.bg.is_none(), "no gutter block on context");
+
+        // Split mode shows it once on each side, neither of them hatched.
+        let out = render_change_row(&row, Some(7), Some(9), &no_hl, &no_hl, DiffMode::Split);
+        let RowContent::Split { old, new } = &out[0] else {
+            panic!("expected a split row");
+        };
+        assert!(matches!(old.fill, Fill::Bg(_)) && matches!(new.fill, Fill::Bg(_)));
+    }
+
+    /// A modification is two rows in unified mode, and the gutter reads
+    /// old-then-new the way the columns are drawn.
+    #[test]
+    fn a_modified_row_is_the_removal_then_the_addition() {
+        let row = DiffLine {
+            old_line: Some((4, "was()".into())),
+            new_line: Some((4, "now()".into())),
+            change_type: ChangeType::Modified,
+            old_segments: None,
+            new_segments: None,
+        };
+        let no_hl = HashMap::new();
+        let out = render_change_row(&row, Some(4), Some(4), &no_hl, &no_hl, DiffMode::Unified);
+        assert_eq!(out.len(), 2);
+        let text = |c: &RowContent| match c {
+            RowContent::Unified(h) => (
+                h.gutter.1.clone(),
+                h.pairs.iter().map(|(_, t)| t.clone()).collect::<String>(),
+            ),
+            other => panic!("expected unified, got {other:?}"),
+        };
+        let (removed_gutter, removed) = text(&out[0]);
+        let (added_gutter, added) = text(&out[1]);
+        assert_eq!(removed, "was()");
+        assert_eq!(added, "now()");
+        // The removal fills the OLD column only, the addition the NEW column,
+        // and both keep the leading cell the cursor marker lives in.
+        assert_eq!(removed_gutter, format!(" {:>4} {:>4} ", "4", ""));
+        assert_eq!(added_gutter, format!(" {:>4} {:>4} ", "", "4"));
+        assert_eq!(removed_gutter.len(), added_gutter.len(), "columns align");
+        assert!(removed_gutter.starts_with(' ') && added_gutter.starts_with(' '));
+    }
 }
