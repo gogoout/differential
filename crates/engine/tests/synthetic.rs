@@ -477,3 +477,28 @@ fn identical_edits_share_a_class_and_document_is_consistent() {
     let re = differential_engine::schema::PlanDocument::from_json(&json).unwrap();
     assert_eq!(&re, d);
 }
+
+/// A newline inside a path.
+///
+/// The invariants read every file's blobs back through `ObjectReader::blob`,
+/// which passes the `<rev>:<path>` spec to `cat-file --batch` on stdin. Line
+/// delimited, such a path would be split into two specs that both come back
+/// "missing" — the blob would read as absent, invariant 1 would reconstruct
+/// nothing, and nothing would say why. `-z` is what makes this pass (ADR 0021).
+#[test]
+fn a_newline_inside_a_path_still_reads_its_blobs() {
+    let r = TestRepo::new();
+    let odd = "we\nird.txt";
+    r.write(odd, b"before\n");
+    r.write("plain.txt", b"x\n");
+    let base = r.commit_all("base");
+    r.write(odd, b"after\n");
+    let head = r.commit_all("head");
+
+    let out = r.pipeline(&base, &head);
+    assert_all_ok(&out);
+    let d = doc(&out);
+    assert_eq!(d.files.len(), 1);
+    assert_eq!(d.files[0].path, odd, "the path survives round-trip");
+    assert_eq!(d.hunks.len(), 1);
+}

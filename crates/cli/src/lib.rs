@@ -202,7 +202,14 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             let pick = resolved.is_none();
             let cache = grouping_cache(&repo, no_cache)?;
             let worker_repo = repo.clone();
-            differential_tui::review(&repo, pick, move |picked, tx, cancel| {
+            // Read before `config` moves into the pipeline closure: how much
+            // context to show is presentation, so it goes to the renderer
+            // rather than through the pipeline's result.
+            let opts = differential_tui::ReviewOptions {
+                context: config.review.context,
+                context_step: config.review.context_step,
+            };
+            differential_tui::review(&repo, pick, opts, move |picked, tx, cancel| {
                 // Which resolver runs is dispatch; what each one decides is
                 // engine policy (ADR 0017).
                 let source = match (resolved, picked) {

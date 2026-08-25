@@ -4,7 +4,7 @@
 //! All review state (reviewed marks, findings, resume cursor) lives in the
 //! engine's `ReviewSession`; this model holds presentation state only.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use differential_engine::FsReviewSession;
@@ -19,13 +19,42 @@ use tui_textarea::TextArea;
 use unicode_width::UnicodeWidthStr;
 
 use super::rows::{
-    DiffMode, GroupContext, Row, RowContent, RowFactory, RowKind, RowsContext, build_dir_rows,
-    build_file_rows, build_group_rows,
+    DiffMode, Fill, GroupContext, Half, Row, RowContent, RowFactory, RowKind, RowsContext,
+    build_dir_rows, build_file_rows, build_group_rows,
 };
 use super::theme::{THEME, Theme};
 use super::vendor::text_utils::truncate_or_pad_spans;
+use super::window::{Expansion, Side};
 
 const SCROLL_MARGIN: usize = 3;
+
+/// The cursor's own cell, at the head of every diff row's gutter.
+///
+/// A background is what marks a change now, and `Line::style` sits UNDER span
+/// styles — so a row-wide cursor colour is invisible on exactly the rows a
+/// reviewer is most likely to be standing on. A glyph reads on any background,
+/// and living inside the reserved gutter cell means moving the cursor never
+/// shifts the pane sideways.
+const CURSOR_MARK: char = '▸';
+
+/// Presentation settings the application layer reads from config and hands to
+/// the renderer. Not review state: nothing here is persisted in the sidecar.
+#[derive(Debug, Clone, Copy)]
+pub struct ReviewOptions {
+    /// Context lines either side of a hunk before any expansion.
+    pub context: usize,
+    /// Lines one `z` on a context boundary row pulls in.
+    pub context_step: usize,
+}
+
+impl Default for ReviewOptions {
+    fn default() -> Self {
+        ReviewOptions {
+            context: 3,
+            context_step: 10,
+        }
+    }
+}
 
 /// Floor for the scroll arithmetic.
 ///
@@ -183,6 +212,13 @@ pub struct App {
     group_scroll: usize,
     /// Group ids whose fold is open.
     pub folds_open: HashSet<String>,
+    /// How far each hunk's context has been pulled open, by canonical index.
+    ///
+    /// Transient, like `folds_open`: how much of a file you are looking at is a
+    /// reading aid for this sitting, not a finding, so nothing here reaches the
+    /// sidecar store.
+    expanded: HashMap<usize, Expansion>,
+    opts: ReviewOptions,
     pub status: String,
     /// Measured geometry. An input to update, never a draw-time output.
     viewport: Viewport,
@@ -190,7 +226,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(session: FsReviewSession, factory: RowFactory) -> Self {
+    pub fn new(session: FsReviewSession, factory: RowFactory, opts: ReviewOptions) -> Self {
         // Resume position: the cursor id is a group id in the semantic view,
         // a file path in the file view (session.file_view() disambiguates).
         let view_mode = if session.file_view() {
@@ -219,6 +255,8 @@ impl App {
             scroll: 0,
             group_scroll: 0,
             folds_open: HashSet::new(),
+            expanded: HashMap::new(),
+            opts,
             status: String::new(),
             viewport: Viewport::default(),
             pending_d: false,
@@ -236,6 +274,15 @@ impl App {
             app.cursor = row.min(app.rows.len().saturating_sub(1));
         }
         app
+    }
+
+    /// Lines syntect has parsed since the reviewer opened.
+    ///
+    /// Exposed so the windowed rebuild's whole point — cost proportional to
+    /// what is drawn, not to the files touched — is a testable property rather
+    /// than a claim in a comment.
+    pub fn highlighted_lines(&self) -> usize {
+        self.factory.highlighted_lines()
     }
 
     /// The document's groups, projected by the engine.
@@ -400,15 +447,18 @@ impl App {
                 let ctx = GroupContext {
                     core: RowsContext {
                         doc: self.session.doc(),
+                        plan: self.session.plan(),
                         findings: self.session.findings(),
                         reviewed: &reviewed,
                         mode: self.diff_mode(),
-                        labels: None,
+                        show_group_labels: false,
+                        context: self.opts.context,
+                        context_step: self.opts.context_step,
+                        expansion: &self.expanded,
                     },
                     index: &index,
                     group: g,
                     view: &self.session.plan().groups[self.selected_group.min(groups.len() - 1)],
-                    plan: self.session.plan(),
                     fold: if self.folds_open.contains(&g.id) {
                         Fold::Unfolded
                     } else {
@@ -429,10 +479,14 @@ impl App {
                 let targets = self.files_of_tree_row(row);
                 let ctx = RowsContext {
                     doc: self.session.doc(),
+                    plan: self.session.plan(),
                     findings: self.session.findings(),
                     reviewed: &reviewed,
                     mode: self.diff_mode(),
-                    labels: Some(self.session.plan()),
+                    show_group_labels: true,
+                    context: self.opts.context,
+                    context_step: self.opts.context_step,
+                    expansion: &self.expanded,
                 };
                 self.rows = match targets.as_slice() {
                     // A single file keeps its dedicated builder (it renders a
@@ -661,6 +715,51 @@ impl App {
         };
     }
 
+    /// Pull more of the file in at the boundary row under the cursor.
+    ///
+    /// Growing upward inserts rows ABOVE the cursor, so the index has to be
+    /// re-found rather than kept: the boundary row moves, and when the window
+    /// reaches the start of the file (or merges into its neighbour) it stops
+    /// existing at all.
+    fn expand_at_cursor(&mut self) {
+        let Some(RowKind::ContextEdge(hunk, side)) =
+            self.rows.get(self.cursor).map(|r| r.kind.clone())
+        else {
+            return;
+        };
+        let step = self.opts.context_step;
+        let e = self.expanded.entry(hunk).or_default();
+        match side {
+            Side::Up => e.up += step,
+            Side::Down => e.down += step,
+        }
+        self.rebuild_rows();
+
+        match self
+            .rows
+            .iter()
+            .position(|r| r.kind == RowKind::ContextEdge(hunk, side))
+        {
+            Some(pos) => self.cursor = pos,
+            None => {
+                // Nothing left to unfold in that direction: land on the hunk
+                // itself and say why the boundary vanished.
+                if let Some(pos) = self
+                    .rows
+                    .iter()
+                    .position(|r| r.kind == RowKind::HunkHeader(hunk))
+                {
+                    self.cursor = pos;
+                }
+                self.status = match side {
+                    Side::Up => "top of what precedes this hunk".into(),
+                    Side::Down => "end of what follows this hunk".into(),
+                };
+            }
+        }
+        self.follow_cursor();
+    }
+
     fn current_hunk(&self) -> Option<usize> {
         self.rows.get(self.cursor).and_then(|r| r.kind.hunk())
     }
@@ -818,6 +917,17 @@ impl App {
                     .next_selectable(self.rows.len().saturating_sub(1), -1)
                     .unwrap_or(0);
                 self.follow_cursor();
+            }
+            // On a context boundary `z` opens the file up; everywhere else it
+            // keeps its existing meaning. One key for "show me what is being
+            // withheld", whatever is withholding it.
+            (KeyCode::Char('z'), _)
+                if matches!(
+                    self.rows.get(self.cursor).map(|r| &r.kind),
+                    Some(RowKind::ContextEdge(_, _))
+                ) =>
+            {
+                self.expand_at_cursor();
             }
             (KeyCode::Char('z'), _) if self.view_mode == ViewMode::Files => {
                 self.toggle_dir();
@@ -978,7 +1088,7 @@ impl App {
                 frame.render_widget(&**textarea, area);
             }
             Mode::Help => {
-                let area = centered_rect(panes.body, 60, 18);
+                let area = centered_rect(panes.body, 66, 30);
                 frame.render_widget(Clear, area);
                 frame.render_widget(help_paragraph(), area);
             }
@@ -1313,8 +1423,12 @@ impl App {
             .skip(self.scroll)
             .take(inner_h)
             .map(|(i, r)| {
-                let mut line = compose_row(&r.content, inner_w);
-                if i == self.cursor && self.focus == Focus::Diff && r.kind.selectable() {
+                let on = i == self.cursor && self.focus == Focus::Diff && r.kind.selectable();
+                let mut line = compose_row(&r.content, inner_w, on);
+                if on {
+                    // Span backgrounds win over a line style, so this colours
+                    // exactly the rows that have no change colour of their own
+                    // — on the rest, CURSOR_MARK in the gutter carries it.
                     line = line.style(Style::default().bg(THEME.cursor_bg));
                 }
                 line
@@ -1341,7 +1455,7 @@ impl App {
             .filter(|f| f.status == FindingStatus::Open)
             .count();
         let text = format!(
-            " {done}/{total} classes reviewed · {open} finding(s) · {} · j/k J/K nav · n/N hunk · space reviewed · c finding · s split · v files · z fold · y copy summary · ? help · q quit",
+            " {done}/{total} classes reviewed · {open} finding(s) · {} · j/k J/K nav · n/N hunk · space reviewed · c finding · s split · v files · z fold/expand · y copy summary · ? help · q quit",
             self.status
         );
         frame.render_widget(
@@ -1351,20 +1465,61 @@ impl App {
     }
 }
 
-/// Render a row at the given pane width. Split rows compose their two halves
-/// here — width is a draw-time concern, so resizes never rebuild rows.
-fn compose_row(content: &RowContent, width: usize) -> Line<'static> {
+/// Render a row at the given pane width.
+///
+/// Every diff row pads HERE rather than at build time: a background that runs
+/// to the pane edge is a width question, and row counts must stay independent
+/// of width or each resize would rebuild them.
+fn compose_row(content: &RowContent, width: usize, cursor: bool) -> Line<'static> {
     match content {
         RowContent::Full(line) => line.clone(),
+        RowContent::Unified(half) => Line::from(compose_half(half, width, cursor)),
         RowContent::Split { old, new } => {
             let lw = width.saturating_sub(1) / 2;
             let rw = width.saturating_sub(1).saturating_sub(lw);
-            let mut spans = truncate_or_pad_spans(old, lw, Style::default());
+            // The marker belongs on the leftmost gutter only.
+            let mut spans = compose_half(old, lw, cursor);
             spans.push(Span::styled("│", Style::default().fg(THEME.gutter_fg)));
-            spans.extend(truncate_or_pad_spans(new, rw, Style::default()));
+            spans.extend(compose_half(new, rw, false));
             Line::from(spans)
         }
     }
+}
+
+/// One side of a diff row at a known column width: the gutter, the content,
+/// and padding out to the edge in whatever the row is filled with.
+fn compose_half(half: &Half, width: usize, cursor: bool) -> Vec<Span<'static>> {
+    let mut gutter = half.gutter.1.clone();
+    if cursor && !gutter.is_empty() {
+        // The leading cell is reserved for exactly this, so the substitution is
+        // width-preserving and the pane never shifts as the cursor moves.
+        gutter = format!("{CURSOR_MARK}{}", &gutter[1..]);
+    }
+    let used = UnicodeWidthStr::width(gutter.as_str());
+    let rest = width.saturating_sub(used);
+    let style = if cursor {
+        half.gutter
+            .0
+            .fg(THEME.header_fg)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        half.gutter.0
+    };
+
+    let mut spans = Vec::new();
+    if !gutter.is_empty() {
+        spans.push(Span::styled(gutter, style));
+    }
+    match half.fill {
+        Fill::Bg(bg) => spans.extend(truncate_or_pad_spans(&half.pairs, rest, bg)),
+        // An absent side is hatched rather than blank, so a line that does not
+        // exist here cannot be mistaken for one that is empty.
+        Fill::Hatch => spans.push(Span::styled(
+            "╱".repeat(rest),
+            Style::default().fg(THEME.hatch_fg),
+        )),
+    }
+    spans
 }
 
 /// Extend `line` with blank, styled cells so a selection background covers
@@ -1414,12 +1569,15 @@ fn help_paragraph() -> Paragraph<'static> {
         Line::from("  tab/enter  switch pane focus"),
         Line::from("  ctrl-d/u   half page"),
         Line::from("  g/G        top / bottom"),
-        Line::from("  z          unfold skim remainder / noise"),
+        Line::from("  z          on a ── boundary row: show more of the file"),
+        Line::from("             elsewhere: unfold skim remainder / noise"),
         Line::from("  n/N        next / previous hunk"),
         Line::from(""),
         Line::from("  plan rows: <id> <tier> label · after: what it follows"),
         Line::from("  the line links the selected group to what it follows;"),
         Line::from("  ↓ marks a dependency listed later (mutual dependency)"),
+        Line::from("  colour marks the change; there are no -/+ columns,"),
+        Line::from("  and ╱╱╱ is a line the other side does not have"),
         Line::from("  s          toggle unified / split diff"),
         Line::from("  v          toggle reading plan / file view"),
         Line::from("  f          file list of the current view (enter jumps)"),

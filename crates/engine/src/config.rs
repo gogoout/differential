@@ -3,8 +3,9 @@
 //! - **Repo-level** `.differential.toml` at the target repo's root —
 //!   classification hints only. Shared by everyone reviewing the repo.
 //! - **User-level** `~/.config/differential/config.toml` (XDG) — `[grouping]`:
-//!   which agent CLI to run and its timeout. Agents are a per-user choice, so
-//!   this never lives in the repo.
+//!   which agent CLI to run and its timeout, and `[review]`: how much context
+//!   the reviewer shows around a hunk. Both are per-user choices, not
+//!   properties of the repo, so neither lives in it.
 //!
 //! HARD RULE (ADR 0012): config tunes classification hints and tool behaviour.
 //! It can never remove a file or hunk from enumeration — enumeration runs before
@@ -37,12 +38,22 @@ struct RawConfig {
     stack: toml::Table,
 }
 
-/// The user-level file: `[grouping]` only (for now).
+/// The user-level file: `[grouping]` and `[review]`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawUserConfig {
     #[serde(default)]
     grouping: GroupingConfig,
+    #[serde(default)]
+    review: ReviewConfig,
+}
+
+/// Everything `parse_user` reads, so `load` assigns one value rather than
+/// growing a second assignment every time the user file gains a table.
+#[derive(Debug, Default)]
+pub struct UserConfig {
+    pub grouping: GroupingConfig,
+    pub review: ReviewConfig,
 }
 
 /// `[grouping]` — pure data; the pipeline turns it into an LLM backend.
@@ -55,6 +66,39 @@ pub struct GroupingConfig {
     pub command: Option<Vec<String>>,
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+}
+
+/// `[review]` — how much of a file the terminal reviewer shows around a hunk.
+///
+/// Presentation only: it can widen what is *displayed* around a hunk and can
+/// never change which hunks exist. Enumeration is total and runs before any of
+/// this (ADR 0005, 0012).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewConfig {
+    /// Context lines shown either side of a hunk before any expansion.
+    #[serde(default = "default_context")]
+    pub context: usize,
+    /// Lines one `z` at a context boundary row pulls in.
+    #[serde(default = "default_context_step")]
+    pub context_step: usize,
+}
+
+const fn default_context() -> usize {
+    3
+}
+
+const fn default_context_step() -> usize {
+    10
+}
+
+impl Default for ReviewConfig {
+    fn default() -> Self {
+        ReviewConfig {
+            context: default_context(),
+            context_step: default_context_step(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -78,6 +122,8 @@ pub struct Config {
     pub attributes: Vec<String>,
     /// From the USER config, never the repo (agents differ per user).
     pub grouping: GroupingConfig,
+    /// From the USER config: how much context the reviewer shows.
+    pub review: ReviewConfig,
 }
 
 impl Default for Config {
@@ -87,6 +133,7 @@ impl Default for Config {
             not_generated: GlobSet::empty(),
             attributes: vec!["linguist-generated".to_string()],
             grouping: GroupingConfig::default(),
+            review: ReviewConfig::default(),
         }
     }
 }
@@ -125,7 +172,9 @@ impl Config {
             .user_config_dir()
             .map(|d| d.join(USER_CONFIG_DIR).join(USER_CONFIG_FILE_NAME));
         if let Some((text, origin)) = resolve(src, user_override, user_default)? {
-            config.grouping = Self::parse_user(&text, &origin)?;
+            let user = Self::parse_user(&text, &origin)?;
+            config.grouping = user.grouping;
+            config.review = user.review;
         }
         Ok(config)
     }
@@ -155,16 +204,20 @@ impl Config {
                 .attributes
                 .unwrap_or_else(|| vec!["linguist-generated".to_string()]),
             grouping: GroupingConfig::default(),
+            review: ReviewConfig::default(),
         })
     }
 
-    /// Parse the USER file: `[grouping]` only.
-    pub fn parse_user(text: &str, origin: &str) -> Result<GroupingConfig, EngineError> {
+    /// Parse the USER file: `[grouping]` and `[review]`.
+    pub fn parse_user(text: &str, origin: &str) -> Result<UserConfig, EngineError> {
         let raw: RawUserConfig = toml::from_str(text).map_err(|e| EngineError::Config {
             path: origin.to_string(),
             msg: e.to_string(),
         })?;
-        Ok(raw.grouping)
+        Ok(UserConfig {
+            grouping: raw.grouping,
+            review: raw.review,
+        })
     }
 }
 
@@ -257,19 +310,28 @@ attributes = ["linguist-generated", "custom-generated"]
     }
 
     #[test]
-    fn user_config_parses_grouping_only() {
-        let g = Config::parse_user(
+    fn user_config_parses_grouping_and_review() {
+        let u = Config::parse_user(
             "[grouping]\ncommand = [\"my-llm\", \"--flag\"]\ntimeout_secs = 60",
             "test",
         )
         .unwrap();
         assert_eq!(
-            g.command.as_deref(),
+            u.grouping.command.as_deref(),
             Some(&["my-llm".to_string(), "--flag".to_string()][..])
         );
-        assert_eq!(g.timeout_secs, Some(60));
+        assert_eq!(u.grouping.timeout_secs, Some(60));
+        // An absent [review] means the defaults, not zero context.
+        assert_eq!(u.review.context, 3);
+        assert_eq!(u.review.context_step, 10);
+
+        let u = Config::parse_user("[review]\ncontext_step = 25", "test").unwrap();
+        assert_eq!(u.review.context_step, 25);
+        assert_eq!(u.review.context, 3, "one key set must not zero the other");
+
         // Unknown keys and unknown sections stay hard errors.
         assert!(Config::parse_user("[grouping]\nmodel = \"x\"", "test").is_err());
+        assert!(Config::parse_user("[review]\nlines = 5", "test").is_err());
         assert!(Config::parse_user("[classify]\ngenerated = []", "test").is_err());
     }
 
@@ -279,7 +341,11 @@ attributes = ["linguist-generated", "custom-generated"]
         let repo_file = tmp.path().join("repo.toml");
         let user_file = tmp.path().join("user.toml");
         std::fs::write(&repo_file, "[classify]\ngenerated = [\"gen/**\"]").unwrap();
-        std::fs::write(&user_file, "[grouping]\ncommand = [\"agent\"]").unwrap();
+        std::fs::write(
+            &user_file,
+            "[grouping]\ncommand = [\"agent\"]\n[review]\ncontext = 8",
+        )
+        .unwrap();
         let c = Config::load(
             &crate::store::OsConfigSource,
             tmp.path(),
@@ -292,6 +358,7 @@ attributes = ["linguist-generated", "custom-generated"]
             c.grouping.command.as_deref(),
             Some(&["agent".to_string()][..])
         );
+        assert_eq!(c.review.context, 8);
 
         // Explicit-but-missing paths are hard errors; absent defaults are not.
         assert!(

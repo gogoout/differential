@@ -118,6 +118,9 @@ pub fn split_pairs_at_ranges(
     out
 }
 
+// A slice holding one `Range` is exactly what `highlight_ranges` takes; the
+// lint is about `vec![0..n]` written where a list of numbers was meant.
+#[allow(clippy::single_range_in_vec_init)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,9 +134,9 @@ mod tests {
         let highlighter = crate::vendor::syntax::SyntaxHighlighter::default();
         let lines = vec!["let x = 1;".to_string()];
         let highlighted = highlighter
-            .highlight_file_lines(std::path::Path::new("test.rs"), &lines)
+            .highlight_ranges(std::path::Path::new("test.rs"), &lines, &[0..1])
             .unwrap();
-        let spans = highlighted[0].as_ref().unwrap();
+        let spans = &highlighted.spans[&0];
 
         let width = 80;
 
