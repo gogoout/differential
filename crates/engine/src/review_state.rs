@@ -8,15 +8,12 @@
 //! moved; otherwise the finding is orphaned and listed.
 
 use std::collections::BTreeSet;
-use std::io::Write;
-use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 
 use crate::schema;
 
-use crate::EngineError;
 use crate::model::DiffView;
 
 // Review identity and class keys are domain policy and live in `plan`; they
@@ -76,8 +73,7 @@ pub struct Finding {
 }
 
 impl Finding {
-    pub fn new(body: String, plan_hash: String, anchor: Anchor) -> Self {
-        let created = now_unix();
+    pub fn new(created: u64, body: String, plan_hash: String, anchor: Anchor) -> Self {
         let mut h = Sha1::new();
         h.update(anchor.hunk_digest.as_bytes());
         h.update(created.to_le_bytes());
@@ -94,116 +90,18 @@ impl Finding {
     }
 }
 
-fn now_unix() -> u64 {
+/// Wall-clock seconds. The one reader is `ReviewSession::add_finding`, which
+/// passes the value into `Finding::new` — so the constructor stays a pure
+/// function of its arguments and the ids it produces are reproducible.
+///
+/// Not a `Clock` port: one reader, `SystemTime` is std rather than a project
+/// adapter, and nothing tests timestamps. That fails the bar for a new
+/// abstraction, and would cost `ReviewSession` a second type parameter.
+pub fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
-}
-
-/// One review's directory under `<git-common-dir>/differential/reviews/<id>/`.
-pub struct ReviewStore {
-    dir: PathBuf,
-}
-
-impl ReviewStore {
-    pub fn open<L: crate::ports::RepoLayout>(
-        layout: &L,
-        base_sha: &str,
-        head_spec: &str,
-    ) -> Result<Self, EngineError> {
-        let dir = crate::plan::review_dir(&layout.common_dir()?, &review_id(base_sha, head_spec));
-        Self::open_at(dir)
-    }
-
-    /// Test/tooling entry: open at an explicit directory.
-    pub fn open_at(dir: PathBuf) -> Result<Self, EngineError> {
-        std::fs::create_dir_all(dir.join("plans")).map_err(|e| io_err(&dir, e))?;
-        Ok(ReviewStore { dir })
-    }
-
-    pub fn dir(&self) -> &Path {
-        &self.dir
-    }
-
-    /// Persist a plan document (content-addressed, immutable) and point
-    /// `current` at it. Returns the plan hash.
-    pub fn save_plan(&self, doc: &schema::PlanDocument) -> Result<String, EngineError> {
-        let json = doc.to_json()?;
-        let hash = crate::plan::plan_hash(&json);
-        let path = self.dir.join("plans").join(format!("{hash}.json"));
-        if !path.exists() {
-            std::fs::write(&path, &json).map_err(|e| io_err(&path, e))?;
-        }
-        std::fs::write(self.dir.join("current"), &hash).map_err(|e| io_err(&self.dir, e))?;
-        Ok(hash)
-    }
-
-    pub fn load_state(&self) -> Result<ReviewState, EngineError> {
-        let path = self.dir.join("state.json");
-        match std::fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str(&text).map_err(|e| EngineError::Cache {
-                path: path.display().to_string(),
-                source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-            }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ReviewState::default()),
-            Err(e) => Err(io_err(&path, e)),
-        }
-    }
-
-    pub fn save_state(&self, state: &ReviewState) -> Result<(), EngineError> {
-        let path = self.dir.join("state.json");
-        let text = serde_json::to_string_pretty(state).expect("state serialises");
-        std::fs::write(&path, text).map_err(|e| io_err(&path, e))
-    }
-
-    pub fn load_findings(&self) -> Result<Vec<Finding>, EngineError> {
-        let path = self.dir.join("findings.jsonl");
-        let text = match std::fs::read_to_string(&path) {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(io_err(&path, e)),
-        };
-        let mut out = Vec::new();
-        for (n, line) in text.lines().enumerate() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            let f: Finding = serde_json::from_str(line).map_err(|e| EngineError::Cache {
-                path: format!("{}:{}", path.display(), n + 1),
-                source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-            })?;
-            out.push(f);
-        }
-        Ok(out)
-    }
-
-    pub fn append_finding(&self, finding: &Finding) -> Result<(), EngineError> {
-        let path = self.dir.join("findings.jsonl");
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(|e| io_err(&path, e))?;
-        writeln!(
-            file,
-            "{}",
-            serde_json::to_string(finding).expect("serialises")
-        )
-        .map_err(|e| io_err(&path, e))
-    }
-
-    /// Rewrite the whole findings file (status changes, deletions, re-anchor
-    /// results). The set is small; simplicity beats cleverness here.
-    pub fn save_findings(&self, findings: &[Finding]) -> Result<(), EngineError> {
-        let path = self.dir.join("findings.jsonl");
-        let mut text = String::new();
-        for f in findings {
-            text.push_str(&serde_json::to_string(f).expect("serialises"));
-            text.push('\n');
-        }
-        std::fs::write(&path, text).map_err(|e| io_err(&path, e))
-    }
 }
 
 /// Re-anchor findings onto a (possibly regenerated) plan. Never drops:
@@ -268,12 +166,5 @@ pub fn reanchor(
         } else {
             f.status = FindingStatus::Orphaned;
         }
-    }
-}
-
-fn io_err(path: &Path, source: std::io::Error) -> EngineError {
-    EngineError::Cache {
-        path: path.display().to_string(),
-        source,
     }
 }

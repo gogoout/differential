@@ -26,12 +26,18 @@ pub mod review_session;
 pub mod review_state;
 pub mod schema;
 pub mod shape;
+pub mod store;
 pub mod tree;
 pub mod worktree;
 
 pub use grouping::GroupingOptions;
 pub use pipeline::{PipelineOutput, resolve_range, run_grouped_pipeline, run_pipeline};
 pub use review_session::ReviewSession;
+
+/// The production session: a review over the on-disk sidecar. Renderers name
+/// this one concrete type rather than carrying a generic parameter for a
+/// choice they never make.
+pub type FsReviewSession = ReviewSession<store::FsReviewStore>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {

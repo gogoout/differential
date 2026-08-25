@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use differential_engine::ReviewSession;
+use differential_engine::FsReviewSession;
 use differential_engine::plan::{Fold, PlanIndex};
 use differential_engine::review_state::FindingStatus;
 use ratatui::Frame;
@@ -94,7 +94,7 @@ pub enum TreeKind {
 }
 
 pub struct App {
-    pub session: ReviewSession,
+    pub session: FsReviewSession,
     factory: RowFactory,
 
     /// Visible rows of the file tree (rebuilt when a directory folds).
@@ -120,7 +120,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(session: ReviewSession, factory: RowFactory) -> Self {
+    pub fn new(session: FsReviewSession, factory: RowFactory) -> Self {
         // Resume position: the cursor id is a group id in the semantic view,
         // a file path in the file view (session.file_view() disambiguates).
         let view_mode = if session.file_view() {

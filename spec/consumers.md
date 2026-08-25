@@ -30,10 +30,10 @@ dfr check [--repo <path>] [--config <path>] [--json] <range>
 
 ```rust
 use differential_engine::{gitio::Repo, config::Config, lang::LanguageRegistry,
-                          resolve_range, run_pipeline};
+                          store::OsConfigSource, resolve_range, run_pipeline};
 
 let repo = Repo::open(path)?;                       // any dir inside the repo
-let config = Config::load(repo.root(), None, None)?; // repo + user config, or defaults
+let config = Config::load(&OsConfigSource, repo.root(), None, None)?; // or defaults
 let src = resolve_range(&repo, &["main..feature"])?;   // a ReviewSource
 let out = run_pipeline(&repo, &src.base, &src.head, src.kind, &config,
                        &LanguageRegistry::builtin())?;
@@ -49,10 +49,13 @@ let out = run_pipeline(&repo, &src.base, &src.head, src.kind, &config,
   same type from the picker's answer.
 - `run_pipeline` runs all invariants before emitting anything; on a violation there is no
   document, only the report saying what failed.
-- `run_grouped_pipeline(…, &GroupingOptions { backend, cache_dir })` additionally runs the
-  grouping stage ([grouping.md](grouping.md)): `backend: None` builds one from
-  `[grouping].command` (default: the tools-denied claude invocation), and the cache
-  directory is conventionally `plan::grouping_cache_dir(&repo.common_dir()?)`.
+- `run_grouped_pipeline(…, &GroupingOptions { backend, cache, progress })` additionally
+  runs the grouping stage ([grouping.md](grouping.md)). Both are **injected**: the engine
+  no longer builds a backend from `[grouping].command` — composition is the application
+  layer's job (ADR 0020) — and disabling the cache is
+  `store::FsGroupingCache::disabled()` rather than an absent one, so the stage never grows
+  a branch for `--no-cache`. Cancellation belongs to the backend
+  (`CommandBackend::with_cancel`), since the thing that needs killing is the subprocess.
 - Language plugins (ADR 0015) and LLM backends (`engine::llm`, ADR 0016/0018) are injected
   by the consumer; `LanguageRegistry::builtin()` and `CommandBackend::claude_cli()` are the
   defaults.

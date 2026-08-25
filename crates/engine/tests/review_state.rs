@@ -1,14 +1,21 @@
 //! Review-state store tests: persistence, class content keys, and the
 //! re-anchoring guarantees across a regenerated plan.
 
-use differential_engine::ReviewSession;
 use differential_engine::config::Config;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::run_grouped_pipeline;
+use differential_engine::ports::ReviewStore;
 use differential_engine::review_state::{
-    Anchor, Finding, FindingStatus, ReviewStore, class_content_key, reanchor, review_id,
+    Anchor, Finding, FindingStatus, class_content_key, reanchor, review_id,
 };
 use differential_engine::schema::SourceKind;
+use differential_engine::store::FsGroupingCache;
+use differential_engine::store::FsReviewStore;
+use differential_engine::{FsReviewSession, ReviewSession};
+/// Findings hash their creation time into their id; pinning it keeps these
+/// assertions about anchoring rather than about the clock.
+const FIXED_TIME: u64 = 1_700_000_000;
+
 use differential_testutil::{FakeBackend, TestRepo, grouped, json_group};
 
 fn focus_all_backend() -> FakeBackend {
@@ -46,11 +53,14 @@ fn store_roundtrips_state_plans_and_findings() {
     let doc = grouped(&r, &base, &head, &focus_all_backend());
 
     let tmp = tempfile::TempDir::new().unwrap();
-    let store = ReviewStore::open_at(tmp.path().join("rev1")).unwrap();
+    let store = FsReviewStore::at(tmp.path().join("rev1")).unwrap();
 
-    let hash = store.save_plan(&doc).unwrap();
+    let json = doc.to_json().unwrap();
+    let hash = differential_engine::plan::plan_hash(&json);
+    store.save_plan(&hash, &json).unwrap();
     // Idempotent: same doc, same hash, `current` points at it.
-    assert_eq!(store.save_plan(&doc).unwrap(), hash);
+    // Content-addressed and idempotent: re-saving the same hash is a no-op.
+    store.save_plan(&hash, &json).unwrap();
 
     let mut state = store.load_state().unwrap();
     assert!(state.reviewed_classes.is_empty());
@@ -62,6 +72,7 @@ fn store_roundtrips_state_plans_and_findings() {
     assert_eq!(reloaded.cursor, Some(("g0".into(), 4)));
 
     let f = Finding::new(
+        FIXED_TIME,
         "off by one".into(),
         hash.clone(),
         Anchor {
@@ -72,7 +83,7 @@ fn store_roundtrips_state_plans_and_findings() {
             line_text: "alpha_value = 2".into(),
         },
     );
-    store.append_finding(&f).unwrap();
+    store.save_findings(std::slice::from_ref(&f)).unwrap();
     let loaded = store.load_findings().unwrap();
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].body, "off by one");
@@ -107,6 +118,7 @@ fn findings_reanchor_across_regeneration() {
     // Finding on a.txt's hunk, and one on b.txt's hunk.
     let mut findings = vec![
         Finding::new(
+            FIXED_TIME,
             "check a".into(),
             plan1.to_string(),
             Anchor {
@@ -118,6 +130,7 @@ fn findings_reanchor_across_regeneration() {
             },
         ),
         Finding::new(
+            FIXED_TIME,
             "check b".into(),
             plan1.to_string(),
             Anchor {
@@ -145,10 +158,9 @@ fn findings_reanchor_across_regeneration() {
         &Config::default(),
         &LanguageRegistry::builtin(),
         &differential_engine::grouping::GroupingOptions {
-            backend: Some(&focus_all_backend()),
-            cache_dir: None,
+            backend: &focus_all_backend(),
+            cache: &FsGroupingCache::disabled(),
             progress: None,
-            cancel: None,
         },
     )
     .unwrap();
@@ -183,10 +195,9 @@ fn findings_reanchor_across_regeneration() {
         &Config::default(),
         &LanguageRegistry::builtin(),
         &differential_engine::grouping::GroupingOptions {
-            backend: Some(&focus_all_backend()),
-            cache_dir: None,
+            backend: &focus_all_backend(),
+            cache: &FsGroupingCache::disabled(),
             progress: None,
-            cancel: None,
         },
     )
     .unwrap();
@@ -219,10 +230,9 @@ fn session_persists_every_mutation() {
         &Config::default(),
         &LanguageRegistry::builtin(),
         &differential_engine::grouping::GroupingOptions {
-            backend: Some(&focus_all_backend()),
-            cache_dir: None,
+            backend: &focus_all_backend(),
+            cache: &FsGroupingCache::disabled(),
             progress: None,
-            cancel: None,
         },
     )
     .unwrap();
@@ -230,8 +240,9 @@ fn session_persists_every_mutation() {
 
     let tmp = tempfile::TempDir::new().unwrap();
     let dir = tmp.path().join("rev1");
-    let mut session = ReviewSession::open_at(dir.clone(), doc, out.view).unwrap();
-    let reread = || ReviewStore::open_at(dir.clone()).unwrap();
+    let mut session =
+        ReviewSession::open(FsReviewStore::at(dir.clone()).unwrap(), doc, out.view).unwrap();
+    let reread = || FsReviewStore::at(dir.clone()).unwrap();
 
     // The plan is persisted on open, `current` pointing at it.
     assert!(dir.join("current").exists());
@@ -294,7 +305,7 @@ fn session_persists_every_mutation() {
 }
 
 /// Class content keys of every class in the session's document.
-fn doc_class_keys(session: &ReviewSession) -> Vec<String> {
+fn doc_class_keys(session: &FsReviewSession) -> Vec<String> {
     session
         .doc()
         .classes

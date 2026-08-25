@@ -38,18 +38,16 @@ const ADAPTERS: &[(&str, &str)] = &[
 /// depend on the domain freely — that is the direction the rule wants.
 const ADAPTER_MODULES: &[&str] = &["gitio.rs", "llm.rs", "store.rs"];
 
-/// Domain modules the ports migration has not reached yet (ADR 0020, stages
-/// 4 and 5). Every line here is a known inversion still to do.
+/// Domain modules that still reach for an adapter.
 ///
-/// **This list may only shrink.** Deleting a line is the last step of
-/// inverting a module; adding one is never correct — a new domain module that
-/// needs the outside world takes a port instead.
-const NOT_YET_INVERTED: &[(&str, &str)] = &[
-    ("config.rs", "etcetera"),
-    ("config.rs", "std::fs"),
-    ("grouping/cache.rs", "std::fs"),
-    ("review_state.rs", "std::fs"),
-];
+/// **Empty, and that is the point** — the ports migration is complete
+/// (ADR 0020), so this test is now an unconditional statement of the rule
+/// rather than a ratchet with debt left in it.
+///
+/// If you find yourself adding a line here, that is the signal you have the
+/// arrow backwards: a domain module that needs the outside world declares a
+/// port in `engine::ports` and lets `gitio`/`store` implement it.
+const NOT_YET_INVERTED: &[(&str, &str)] = &[];
 
 #[test]
 fn domain_modules_do_not_depend_on_adapters() {

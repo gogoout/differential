@@ -6,6 +6,7 @@ use differential_engine::grouping::GroupingOptions;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::llm::LlmBackend;
 use differential_engine::plan::ReviewSource;
+use differential_engine::store::FsGroupingCache;
 use differential_stack::run_stack_pipeline;
 use differential_stack::{StackOptions, StackResult};
 use differential_testutil::{FakeBackend, TestRepo, json_group};
@@ -17,10 +18,9 @@ fn stacked(r: &TestRepo, base: &str, head: &str, backend: &dyn LlmBackend) -> St
         &Config::default(),
         &LanguageRegistry::builtin(),
         &GroupingOptions {
-            backend: Some(backend),
-            cache_dir: None,
+            backend,
+            cache: &FsGroupingCache::disabled(),
             progress: None,
-            cancel: None,
         },
         &StackOptions::default(),
     )
@@ -235,10 +235,9 @@ fn custom_ref_name_is_honoured_and_rerun_is_idempotent() {
         &Config::default(),
         &LanguageRegistry::builtin(),
         &GroupingOptions {
-            backend: Some(&backend),
-            cache_dir: None,
+            backend: &backend,
+            cache: &FsGroupingCache::disabled(),
             progress: None,
-            cancel: None,
         },
         &StackOptions {
             ref_name: Some("refs/review/custom/stack"),
