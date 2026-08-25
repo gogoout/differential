@@ -2,6 +2,10 @@
 
 Status: accepted, implemented (refines 0003; constrains 0002, 0011)
 
+**Amended.** The "a window stops at the neighbouring hunk" rule below was stated as though
+it were forced by the arithmetic. It is not — it is a policy, and a later change replaced
+it. See *Amendment: crossing* at the end.
+
 ## Context
 
 The terminal reviewer showed ±3 context lines around each hunk, recomputed from the base
@@ -57,7 +61,7 @@ than re-priming, and more accurate. Cost is proportional to the lines drawn.
 line offset is constant, which is what lets one context stretch carry both sides' numbers
 from a single length; across a hunk it is not. Stopping at the neighbour keeps every
 rendered line number honest and means expanding can never quietly present someone else's
-change as untouched context.
+change as untouched context. (Superseded — see the amendment.)
 
 **`Repo::blob` is one process, not two.** `cat-file --batch` states absence as the word
 `missing`, so the existence probe is not merely saved but replaced by something more
@@ -86,3 +90,34 @@ surface and about holding a subprocess across calls, so neither is taken here.
 The blob-line cache is per path and unbounded, as its predecessor was, but strictly
 smaller: two vectors of lines instead of a full `DiffLine` vector plus two complete
 highlight passes.
+
+## Amendment: crossing
+
+The stopping rule was reasoned about backwards. What the constant-offset argument actually
+forbids is rendering a crossed hunk's region as **context** — there, one side's numbers
+would be wrong. It says nothing about rendering that hunk as a **change** segment, where
+each side carries its own range explicitly, and `plan` already emitted blocks holding
+several change segments with joining context between them. The mechanism was there; the
+bound was a choice.
+
+The choice had a cost. Grouping is by shape class, so one file routinely holds hunks from
+several groups. A window that stopped at one simply lost its boundary row, which is exactly
+what reaching the end of the file looks like — a wall the reviewer could not see and was
+never told about.
+
+So a window still stops, but the boundary **names** what stopped it, and a further `z`
+crosses. Two properties are deliberate:
+
+- **Crossing is never implicit.** The boundary keeps its old meaning while the gap has
+  lines in it; only when the gap is spent does it offer the hunk. A long expansion cannot
+  swallow someone else's change on the way past.
+- **A hunk is atomic.** It is absorbed whole and costs no context budget. Half a change is
+  worse than none.
+
+A crossed hunk is drawn in a dashed box naming its owning group. `n`/`N` skip it — it is
+context the reviewer asked for, not an entry on this group's reading list — while `space`
+marks it like any other, because marks key on class content and are already shared across
+groups.
+
+ADR 0006's skim contract is unaffected and clarified there: deferring a remainder is an
+opinion about what is worth reading by default, not a rule that it stay unreachable.

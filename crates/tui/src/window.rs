@@ -12,22 +12,32 @@
 //! hidden — are arithmetic, and arithmetic is worth testing without a terminal
 //! or a repository.
 //!
-//! **A window never crosses another hunk.** Between two hunks the old/new line
-//! offset is constant, which is what lets a context stretch carry both sides'
-//! numbers from one length; across a hunk it is not. Stopping at the neighbour
-//! keeps every rendered line number honest, and means expanding can never
-//! quietly present someone else's change as untouched context.
+//! **A window stops at the neighbouring hunk until told to cross it.** Between
+//! two hunks the old/new line offset is constant, which is what lets a context
+//! stretch carry both sides' numbers from one length; across a hunk it is not.
+//! So a crossed hunk is emitted as a `Change` segment, where both sides carry
+//! their own numbers explicitly, rather than being flattened into context —
+//! and a reviewer asks for it by name, never receives it by accident.
 
 use std::collections::HashMap;
 use std::ops::Range;
 
 use differential_engine::schema;
 
-/// How far one hunk's context has been pulled open past the default, in lines.
+/// How far one hunk has been pulled open past the defaults.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Expansion {
+    /// Extra context lines in the CURRENT outermost gap, on top of `context`.
     pub up: usize,
     pub down: usize,
+    /// Neighbouring hunks absorbed in that direction.
+    ///
+    /// Crossing one resets the gap counter above it, because the gap that
+    /// counter measured is no longer the outermost one. A hunk is absorbed
+    /// whole or not at all and never costs context budget: showing half a
+    /// change would be worse than showing none.
+    pub crossed_up: usize,
+    pub crossed_down: usize,
 }
 
 /// Which end of a block a boundary row sits on.
@@ -37,14 +47,25 @@ pub enum Side {
     Down,
 }
 
-/// A boundary row: press `z` here and `hunk` grows on `side`. `hidden` is how
-/// many lines are still available in that direction — always more than zero,
-/// because a boundary with nothing left behind it is not drawn at all.
+/// A boundary row: press `z` here and `hunk` grows on `side`.
+///
+/// Two states, and the row is drawn in both. `hidden > 0` means context lines
+/// remain in the current gap. `hidden == 0` with `next: Some(..)` means the
+/// gap is exhausted and the thing beyond it is another hunk — the row then
+/// NAMES it, so crossing is always a deliberate second press rather than
+/// something a long expansion does silently.
+///
+/// Both zero and `next: None` is a real file edge, and the only case where no
+/// boundary row is drawn at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Boundary {
+    /// The shown hunk whose expansion state this edge grows.
     pub hunk: usize,
     pub side: Side,
+    /// Context lines still hidden in the current gap.
     pub hidden: usize,
+    /// The hunk immediately past the gap, once the gap is exhausted.
+    pub next: Option<usize>,
 }
 
 /// One stretch of the file to render.
@@ -60,6 +81,9 @@ pub enum Segment {
     /// deletion.
     Change {
         hunk: usize,
+        /// This view does not list the hunk — it was pulled in by expanding
+        /// across it, and is rendered as belonging to another group.
+        foreign: bool,
         old: Range<usize>,
         new: Range<usize>,
     },
@@ -164,49 +188,75 @@ pub fn plan(
         (context + e.up, context + e.down)
     };
 
-    // Group the shown hunks into blocks: two of them join when they are
-    // neighbours in the file AND their windows cover the whole gap between.
-    let shown: Vec<usize> = (0..hunks.len()).filter(|&i| hunks[i].shown).collect();
-    let mut groups: Vec<Vec<usize>> = Vec::new();
-    for &i in &shown {
-        let joins = groups
-            .last()
-            .and_then(|g| g.last().copied())
-            .is_some_and(|prev| prev + 1 == i && want(prev).1 + want(i).0 >= avail_down(prev));
-        if joins {
-            groups
-                .last_mut()
-                .expect("joins implies a last group")
-                .push(i);
-        } else {
-            groups.push(vec![i]);
+    // Which hunks each shown hunk's block covers: itself, plus the ones it has
+    // been told to cross. Absorbing is by hunk, so the span is an index range.
+    let span = |i: usize| -> (usize, usize) {
+        let e = expansion.get(&hunks[i].index).copied().unwrap_or_default();
+        (
+            i.saturating_sub(e.crossed_up),
+            (i + e.crossed_down).min(hunks.len() - 1),
+        )
+    };
+    // Context reach beyond a span's ends, clamped to the gap that is there.
+    let reach_up = |i: usize, lo: usize| want(i).0.min(avail_up(lo));
+    let reach_down = |i: usize, hi: usize| want(i).1.min(avail_down(hi));
+
+    // Merge the spans. Two join when their hunk ranges overlap, or when they
+    // are adjacent and their context reaches cover the whole gap between.
+    struct Span {
+        lo: usize,
+        hi: usize,
+        /// The shown hunks whose expansion governs each end — what `z` grows.
+        up_owner: usize,
+        down_owner: usize,
+    }
+    let mut spans: Vec<Span> = Vec::new();
+    for i in (0..hunks.len()).filter(|&i| hunks[i].shown) {
+        let (lo, hi) = span(i);
+        let joins = spans.last().is_some_and(|s| {
+            lo <= s.hi
+                || (lo == s.hi + 1
+                    && reach_down(s.down_owner, s.hi) + reach_up(i, lo) >= avail_down(s.hi))
+        });
+        match spans.last_mut() {
+            Some(s) if joins => {
+                if hi > s.hi {
+                    s.hi = hi;
+                    s.down_owner = i;
+                }
+            }
+            _ => spans.push(Span {
+                lo,
+                hi,
+                up_owner: i,
+                down_owner: i,
+            }),
         }
     }
 
-    groups
+    spans
         .into_iter()
-        .map(|group| {
-            let first = group[0];
-            let last = *group.last().expect("a group is never empty");
-            let (up_avail, down_avail) = (avail_up(first), avail_down(last));
-            let up = want(first).0.min(up_avail);
-            let down = want(last).1.min(down_avail);
+        .map(|s| {
+            let (up_avail, down_avail) = (avail_up(s.lo), avail_down(s.hi));
+            let up = reach_up(s.up_owner, s.lo);
+            let down = reach_down(s.down_owner, s.hi);
 
             let mut segments = Vec::new();
             if up > 0 {
-                let (old, new) = (&cuts[first].0, &cuts[first].1);
+                let (old, new) = (&cuts[s.lo].0, &cuts[s.lo].1);
                 segments.push(Segment::Context {
                     old_from: old.above_end - up,
                     new_from: new.above_end - up,
                     len: up,
                 });
             }
-            for (n, &i) in group.iter().enumerate() {
-                if n > 0 {
-                    // The gap to the previous hunk, which the merge condition
-                    // guarantees is fully covered.
-                    let (prev_old, prev_new) = (&cuts[group[n - 1]].0, &cuts[group[n - 1]].1);
-                    let len = avail_down(group[n - 1]);
+            for i in s.lo..=s.hi {
+                if i > s.lo {
+                    // The gap to the previous hunk. Fully covered, either
+                    // because the two windows met or because crossing takes
+                    // everything up to the hunk it absorbed.
+                    let (prev_old, prev_new) = (&cuts[i - 1].0, &cuts[i - 1].1);
+                    let len = avail_down(i - 1);
                     if len > 0 {
                         segments.push(Segment::Context {
                             old_from: prev_old.below_start,
@@ -218,12 +268,13 @@ pub fn plan(
                 let (old, new) = (&cuts[i].0, &cuts[i].1);
                 segments.push(Segment::Change {
                     hunk: hunks[i].index,
+                    foreign: !hunks[i].shown,
                     old: old.changed.clone(),
                     new: new.changed.clone(),
                 });
             }
             if down > 0 {
-                let (old, new) = (&cuts[last].0, &cuts[last].1);
+                let (old, new) = (&cuts[s.hi].0, &cuts[s.hi].1);
                 segments.push(Segment::Context {
                     old_from: old.below_start,
                     new_from: new.below_start,
@@ -231,18 +282,31 @@ pub fn plan(
                 });
             }
 
+            // An edge with lines left offers them; an edge with none offers the
+            // hunk beyond, if there is one. Nothing at all only at a file edge.
+            let edge = |hidden: usize, side: Side, owner: usize, beyond: Option<usize>| {
+                let next = (hidden == 0).then_some(beyond).flatten();
+                (hidden > 0 || next.is_some()).then(|| Boundary {
+                    hunk: hunks[owner].index,
+                    side,
+                    hidden,
+                    next,
+                })
+            };
             Block {
-                top: (up_avail > up).then(|| Boundary {
-                    hunk: hunks[first].index,
-                    side: Side::Up,
-                    hidden: up_avail - up,
-                }),
+                top: edge(
+                    up_avail - up,
+                    Side::Up,
+                    s.up_owner,
+                    s.lo.checked_sub(1).map(|p| hunks[p].index),
+                ),
                 segments,
-                bottom: (down_avail > down).then(|| Boundary {
-                    hunk: hunks[last].index,
-                    side: Side::Down,
-                    hidden: down_avail - down,
-                }),
+                bottom: edge(
+                    down_avail - down,
+                    Side::Down,
+                    s.down_owner,
+                    hunks.get(s.hi + 1).map(|c| c.index),
+                ),
             }
         })
         .collect()
@@ -280,6 +344,25 @@ mod tests {
         }
     }
 
+    /// Context expansion only — the common case in these tests.
+    fn grow(up: usize, down: usize) -> Expansion {
+        Expansion {
+            up,
+            down,
+            ..Expansion::default()
+        }
+    }
+
+    /// A change segment for a hunk this view lists.
+    fn own(hunk: usize, old: Range<usize>, new: Range<usize>) -> Segment {
+        Segment::Change {
+            hunk,
+            foreign: false,
+            old,
+            new,
+        }
+    }
+
     fn ctx(seg: &Segment) -> (usize, usize, usize) {
         match seg {
             Segment::Context {
@@ -300,14 +383,7 @@ mod tests {
         assert_eq!(blocks.len(), 1);
         let b = &blocks[0];
         assert_eq!(ctx(&b.segments[0]), (17, 17, 3));
-        assert_eq!(
-            b.segments[1],
-            Segment::Change {
-                hunk: 7,
-                old: 20..23,
-                new: 20..24
-            }
-        );
+        assert_eq!(b.segments[1], own(7, 20..23, 20..24));
         assert_eq!(ctx(&b.segments[2]), (23, 24, 3));
         // 16 lines above, 78 below, still hidden.
         assert_eq!(b.top.as_ref().unwrap().hidden, 16);
@@ -322,14 +398,7 @@ mod tests {
         let blocks = plan(&[shown(0, &e)], &HashMap::new(), 2, 50, 53);
         let b = &blocks[0];
         assert_eq!(ctx(&b.segments[0]), (4, 4, 2));
-        assert_eq!(
-            b.segments[1],
-            Segment::Change {
-                hunk: 0,
-                old: 5..5,
-                new: 6..9
-            }
-        );
+        assert_eq!(b.segments[1], own(0, 5..5, 6..9));
         assert_eq!(ctx(&b.segments[2]), (6, 9, 2));
     }
 
@@ -340,14 +409,7 @@ mod tests {
         let blocks = plan(&[shown(0, &e)], &HashMap::new(), 2, 53, 50);
         let b = &blocks[0];
         assert_eq!(ctx(&b.segments[0]), (4, 4, 2));
-        assert_eq!(
-            b.segments[1],
-            Segment::Change {
-                hunk: 0,
-                old: 6..9,
-                new: 5..5
-            }
-        );
+        assert_eq!(b.segments[1], own(0, 6..9, 5..5));
         assert_eq!(ctx(&b.segments[2]), (9, 6, 2));
     }
 
@@ -363,7 +425,7 @@ mod tests {
         assert!(b.bottom.is_some());
 
         // Expanding past the end of the file clamps rather than overruns.
-        let far = HashMap::from([(0, Expansion { up: 0, down: 999 })]);
+        let far = HashMap::from([(0, grow(0, 999))]);
         let b = &plan(&[shown(0, &e)], &far, 3, 10, 10)[0];
         assert!(b.bottom.is_none());
         assert_eq!(ctx(b.segments.last().unwrap()), (3, 3, 8));
@@ -372,7 +434,7 @@ mod tests {
     #[test]
     fn expansion_grows_one_side_only() {
         let e = entry(50, 2, 50, 2);
-        let up = HashMap::from([(4, Expansion { up: 10, down: 0 })]);
+        let up = HashMap::from([(4, grow(10, 0))]);
         let b = &plan(&[shown(4, &e)], &up, 3, 200, 200)[0];
         assert_eq!(ctx(&b.segments[0]), (37, 37, 13));
         assert_eq!(ctx(&b.segments[2]), (52, 52, 3), "down is untouched");
@@ -392,7 +454,7 @@ mod tests {
         assert!(blocks[0].bottom.is_some() && blocks[1].top.is_some());
 
         // Pull the first one down far enough to close the gap.
-        let merged = HashMap::from([(0, Expansion { up: 0, down: 8 })]);
+        let merged = HashMap::from([(0, grow(0, 8))]);
         let blocks = plan(&hunks, &merged, 3, 100, 100);
         assert_eq!(blocks.len(), 1, "the windows touch, so the block is one");
         let b = &blocks[0];
@@ -405,21 +467,13 @@ mod tests {
                     new_from: 17,
                     len: 3
                 },
-                Segment::Change {
-                    hunk: 0,
-                    old: 20..22,
-                    new: 20..22
-                },
+                own(0, 20..22, 20..22),
                 Segment::Context {
                     old_from: 22,
                     new_from: 22,
                     len: 8
                 },
-                Segment::Change {
-                    hunk: 1,
-                    old: 30..32,
-                    new: 30..32
-                },
+                own(1, 30..32, 30..32),
                 Segment::Context {
                     old_from: 32,
                     new_from: 32,
@@ -441,19 +495,12 @@ mod tests {
         assert_eq!(blocks.len(), 1);
         let b = &blocks[0];
         assert!(b.top.is_none(), "there is no line above line 1");
-        assert_eq!(
-            b.segments[0],
-            Segment::Change {
-                hunk: 0,
-                old: 0..0,
-                new: 1..2
-            }
-        );
+        assert_eq!(b.segments[0], own(0, 0..0, 1..2));
         // Below, the old side resumes at line 1 while the new side is at 2.
         assert_eq!(ctx(&b.segments[1]), (1, 2, 3));
 
         // And asking for a hundred lines up cannot conjure any.
-        let huge = HashMap::from([(0, Expansion { up: 100, down: 0 })]);
+        let huge = HashMap::from([(0, grow(100, 0))]);
         assert!(plan(&[shown(0, &e)], &huge, 3, 4, 5)[0].top.is_none());
     }
 
@@ -463,21 +510,14 @@ mod tests {
         let e = entry(1, 3, 0, 0);
         let b = &plan(&[shown(0, &e)], &HashMap::new(), 3, 3, 0)[0];
         assert!(b.top.is_none() && b.bottom.is_none());
-        assert_eq!(
-            b.segments,
-            vec![Segment::Change {
-                hunk: 0,
-                old: 1..4,
-                new: 0..0
-            }]
-        );
+        assert_eq!(b.segments, vec![own(0, 1..4, 0..0)]);
     }
 
-    /// The reason a window stops at its neighbour: across a hunk the old/new
-    /// offset changes, so lines past it are not shared context and cannot be
-    /// numbered on both sides at once.
+    /// A window stops at its neighbour, and SAYS so: the boundary survives
+    /// with nothing left to show and the hunk beyond it named. Silently
+    /// vanishing here was indistinguishable from the end of the file.
     #[test]
-    fn a_window_never_crosses_an_unlisted_hunk() {
+    fn a_window_stops_at_an_unlisted_hunk_until_told_to_cross() {
         let a = entry(20, 2, 20, 2);
         let hidden = entry(26, 1, 26, 4);
         let z = entry(40, 2, 43, 2);
@@ -491,28 +531,145 @@ mod tests {
             shown(2, &z),
         ];
         // Even asking for a hundred lines each way, neither window reaches past
-        // the unlisted hunk, and the two never merge.
-        let huge = HashMap::from([
-            (0, Expansion { up: 100, down: 100 }),
-            (2, Expansion { up: 100, down: 100 }),
-        ]);
+        // the unlisted hunk on its own, and the two never merge.
+        let huge = HashMap::from([(0, grow(100, 100)), (2, grow(100, 100))]);
         let blocks = plan(&hunks, &huge, 3, 200, 203);
         assert_eq!(blocks.len(), 2);
         // Below the first hunk: lines 22..25 only — four, up to `above_end` 26.
         assert_eq!(ctx(blocks[0].segments.last().unwrap()), (22, 22, 4));
         assert!(
-            blocks[0].bottom.is_none(),
-            "the gap is fully shown, so there is nothing left to unfold"
-        );
-        // Above the second: from the unlisted hunk's resume points, 27/30.
-        assert_eq!(ctx(&blocks[1].segments[0]), (27, 30, 13));
-        assert!(blocks[1].top.is_none());
-        assert!(
             blocks[0]
                 .segments
                 .iter()
                 .all(|s| !matches!(s, Segment::Change { hunk: 1, .. })),
-            "an unlisted hunk must never render as a change"
+            "an unlisted hunk must not render until it is asked for"
         );
+        // The wall is visible: nothing left in the gap, and the hunk named.
+        assert_eq!(
+            blocks[0].bottom,
+            Some(Boundary {
+                hunk: 0,
+                side: Side::Down,
+                hidden: 0,
+                next: Some(1),
+            })
+        );
+        // And from the other side, the same wall.
+        assert_eq!(ctx(&blocks[1].segments[0]), (27, 30, 13));
+        assert_eq!(blocks[1].top.as_ref().unwrap().next, Some(1));
+    }
+
+    #[test]
+    fn crossing_absorbs_the_hunk_whole_and_opens_the_gap_beyond() {
+        let a = entry(20, 2, 20, 2);
+        let hidden = entry(26, 1, 26, 4);
+        let hunks = [
+            shown(0, &a),
+            Candidate {
+                index: 1,
+                shown: false,
+                entry: &hidden,
+            },
+        ];
+        let crossed = HashMap::from([(
+            0,
+            Expansion {
+                crossed_down: 1,
+                ..Expansion::default()
+            },
+        )]);
+        let blocks = plan(&hunks, &crossed, 3, 200, 203);
+        assert_eq!(blocks.len(), 1, "the crossed hunk joins the block");
+        let b = &blocks[0];
+        assert_eq!(
+            b.segments,
+            vec![
+                Segment::Context {
+                    old_from: 17,
+                    new_from: 17,
+                    len: 3
+                },
+                own(0, 20..22, 20..22),
+                // The whole gap comes with it — crossing takes everything up to
+                // the hunk it absorbed.
+                Segment::Context {
+                    old_from: 22,
+                    new_from: 22,
+                    len: 4
+                },
+                // Marked foreign: real code, but not on this reading list.
+                Segment::Change {
+                    hunk: 1,
+                    foreign: true,
+                    old: 26..27,
+                    new: 26..30
+                },
+                Segment::Context {
+                    old_from: 27,
+                    new_from: 30,
+                    len: 3
+                },
+            ]
+        );
+        // A fresh gap beyond it, counted from the crossed hunk's far edge.
+        let bottom = b.bottom.as_ref().unwrap();
+        assert_eq!(bottom.hunk, 0, "z still grows the hunk the reviewer owns");
+        assert_eq!(bottom.hidden, 200 - 27 + 1 - 3);
+        assert_eq!(bottom.next, None, "nothing beyond but the file's end");
+    }
+
+    /// A hunk is absorbed whole and costs no context budget — showing half a
+    /// change would be worse than showing none.
+    #[test]
+    fn crossing_costs_no_context_budget() {
+        let a = entry(20, 2, 20, 2);
+        let hidden = entry(26, 1, 26, 4);
+        let hunks = [
+            shown(0, &a),
+            Candidate {
+                index: 1,
+                shown: false,
+                entry: &hidden,
+            },
+        ];
+        let crossed = HashMap::from([(
+            0,
+            Expansion {
+                crossed_down: 1,
+                down: 5,
+                ..Expansion::default()
+            },
+        )]);
+        let b = &plan(&hunks, &crossed, 3, 200, 203)[0];
+        // The 5 extra lines land ENTIRELY beyond the crossed hunk: 3 + 5 = 8.
+        assert_eq!(ctx(b.segments.last().unwrap()), (27, 30, 8));
+    }
+
+    /// Crossing everything leaves a plain file edge, and only then does the
+    /// boundary disappear.
+    #[test]
+    fn crossing_all_the_way_to_the_file_edge_removes_the_boundary() {
+        let a = entry(2, 1, 2, 1);
+        let b = entry(5, 1, 5, 1);
+        let hunks = [
+            shown(0, &a),
+            Candidate {
+                index: 1,
+                shown: false,
+                entry: &b,
+            },
+        ];
+        let all = HashMap::from([(
+            0,
+            Expansion {
+                crossed_down: 1,
+                down: 99,
+                up: 99,
+                ..Expansion::default()
+            },
+        )]);
+        let block = &plan(&hunks, &all, 3, 8, 8)[0];
+        assert!(block.top.is_none(), "line 1 is the top of the file");
+        assert!(block.bottom.is_none(), "and line 8 is the end of it");
     }
 }

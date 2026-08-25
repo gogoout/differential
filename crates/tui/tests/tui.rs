@@ -14,7 +14,7 @@ use differential_engine::schema::SourceKind;
 use differential_engine::store::{FsGroupingCache, FsReviewStore};
 use differential_testutil::{FakeBackend, TestRepo, json_group};
 use differential_tui::app::{App, Effect, Focus, Mode, ReviewOptions, Viewport};
-use differential_tui::rows::{RowFactory, RowKind};
+use differential_tui::rows::{Border, BoxStyle, RowFactory, RowKind};
 use differential_tui::window::Side;
 
 /// First-listed class (the largest) becomes the skim sweep; the rest are
@@ -265,7 +265,7 @@ fn file_view_lists_all_files_and_shares_review_marks() {
     assert!(
         app.rows
             .iter()
-            .any(|row| matches!(row.kind, RowKind::HunkHeader(_)))
+            .any(|row| matches!(row.kind, RowKind::HunkHeader { .. }))
     );
 
     // space in file view marks the class — visible back in group view too.
@@ -300,7 +300,7 @@ fn file_view_shows_hunks_across_groups_with_labels() {
     let hunk_headers = app
         .rows
         .iter()
-        .filter(|row| matches!(row.kind, RowKind::HunkHeader(_)))
+        .filter(|row| matches!(row.kind, RowKind::HunkHeader { .. }))
         .count();
     assert_eq!(
         hunk_headers, 2,
@@ -521,7 +521,7 @@ fn n_and_shift_n_jump_between_hunks() {
         .rows
         .iter()
         .enumerate()
-        .filter(|(_, r)| matches!(r.kind, RowKind::HunkHeader(_)))
+        .filter(|(_, r)| matches!(r.kind, RowKind::HunkHeader { .. }))
         .map(|(i, _)| i)
         .collect();
     assert!(hunk_rows.len() >= 2, "fixture needs multiple hunks");
@@ -567,7 +567,7 @@ fn file_view_is_a_collapsible_tree() {
     let hunks_under_dir = app
         .rows
         .iter()
-        .filter(|r| matches!(r.kind, RowKind::HunkHeader(_)))
+        .filter(|r| matches!(r.kind, RowKind::HunkHeader { .. }))
         .count();
     assert!(hunks_under_dir >= 4, "directory view spans its files");
 
@@ -961,7 +961,7 @@ fn edges(app: &App) -> Vec<(usize, Side)> {
     app.rows
         .iter()
         .filter_map(|r| match r.kind {
-            RowKind::ContextEdge(h, side) => Some((h, side)),
+            RowKind::ContextEdge { hunk, side, .. } => Some((hunk, side)),
             _ => None,
         })
         .collect()
@@ -1004,7 +1004,9 @@ fn context_boundary_rows_appear_and_z_expands_there() {
     assert!(text.contains("z shows"), "the boundary says how to open it");
 
     // Stand on the first upward boundary and open it.
-    put_cursor_on(&mut app, |k| matches!(k, RowKind::ContextEdge(_, Side::Up)));
+    put_cursor_on(&mut app, |k| {
+        matches!(k, RowKind::ContextEdge { side: Side::Up, .. })
+    });
     app.handle_key(key('z'));
 
     assert_eq!(
@@ -1016,7 +1018,7 @@ fn context_boundary_rows_appear_and_z_expands_there() {
     // its boundary row rather than kept its index.
     assert!(matches!(
         app.rows[app.cursor].kind,
-        RowKind::ContextEdge(_, Side::Up)
+        RowKind::ContextEdge { side: Side::Up, .. }
     ));
 }
 
@@ -1037,7 +1039,10 @@ fn expanding_to_the_edge_of_the_gap_drops_the_boundary() {
         {
             break;
         }
-        put_cursor_on(&mut app, |k| *k == RowKind::ContextEdge(hunk, Side::Up));
+        put_cursor_on(
+            &mut app,
+            |k| matches!(*k, RowKind::ContextEdge { hunk: h, side: Side::Up, .. } if h == hunk),
+        );
         app.handle_key(key('z'));
     }
 
@@ -1076,7 +1081,10 @@ fn expanded_windows_that_meet_merge_into_one_block() {
         {
             break;
         }
-        put_cursor_on(&mut app, |k| *k == RowKind::ContextEdge(lower, Side::Up));
+        put_cursor_on(
+            &mut app,
+            |k| matches!(*k, RowKind::ContextEdge { hunk: h, side: Side::Up, .. } if h == lower),
+        );
         app.handle_key(key('z'));
     }
 
@@ -1099,7 +1107,7 @@ fn expanded_windows_that_meet_merge_into_one_block() {
     assert_eq!(
         app.rows
             .iter()
-            .filter(|r| matches!(r.kind, RowKind::HunkHeader(_)))
+            .filter(|r| matches!(r.kind, RowKind::HunkHeader { .. }))
             .count(),
         2
     );
@@ -1175,8 +1183,9 @@ fn diff_pane_row(app: &App, y: u16) -> Vec<(String, Option<ratatui::style::Color
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|f| app.draw(f)).unwrap();
     let buf = terminal.backend().buffer().clone();
-    // The diff pane starts at column 40; its border is 40, inner 41..=98.
-    (41..99u16)
+    // The diff pane starts at column 40; its border is 40, and 41/98 are the
+    // reserved frame cells, so a row's CONTENT is 42..=97.
+    (42..98u16)
         .map(|x| (buf[(x, y)].symbol().to_string(), buf[(x, y)].style().bg))
         .collect()
 }
@@ -1290,7 +1299,7 @@ fn the_cursor_stays_visible_on_a_changed_row() {
 #[test]
 fn a_context_boundary_row_is_not_a_hunk_for_marking_or_findings() {
     let (_r, mut app) = app_with_a_long_file();
-    put_cursor_on(&mut app, |k| matches!(k, RowKind::ContextEdge(_, _)));
+    put_cursor_on(&mut app, |k| matches!(k, RowKind::ContextEdge { .. }));
     app.handle_key(key('c'));
     assert!(
         matches!(app.mode, Mode::Normal),
@@ -1318,7 +1327,10 @@ fn space_on_context_marks_the_hunk_that_context_belongs_to() {
         {
             break;
         }
-        put_cursor_on(&mut app, |k| *k == RowKind::ContextEdge(lower, Side::Up));
+        put_cursor_on(
+            &mut app,
+            |k| matches!(*k, RowKind::ContextEdge { hunk: h, side: Side::Up, .. } if h == lower),
+        );
         app.handle_key(key('z'));
     }
 
@@ -1365,7 +1377,7 @@ fn a_hunk_header_is_a_band_carrying_the_class_and_the_size() {
     let header = app
         .rows
         .iter()
-        .position(|r| matches!(r.kind, RowKind::HunkHeader(_)))
+        .position(|r| matches!(r.kind, RowKind::HunkHeader { .. }))
         .expect("a hunk header row");
     assert!(app.rows[header].kind.selectable());
     assert!(app.rows[header].kind.hunk().is_some());
@@ -1384,14 +1396,15 @@ fn headers_and_boundaries_rule_across_both_columns() {
     terminal.draw(|f| app.draw(f)).unwrap();
     let buf = terminal.backend().buffer().clone();
 
-    // Rows carrying a rule reach the last inner column of the diff pane (98).
+    // Rows carrying a rule reach the last CONTENT column of the diff pane (97);
+    // 41 and 98 are the reserved frame cells.
     let ruled: Vec<u16> = (1..39u16)
         .filter(|&y| buf[(45, y)].symbol() == "─")
         .collect();
     assert!(!ruled.is_empty(), "no ruled row drawn");
     for y in ruled {
         assert_eq!(
-            buf[(98, y)].symbol(),
+            buf[(97, y)].symbol(),
             "─",
             "row {y} stops before the pane edge"
         );
@@ -1410,7 +1423,7 @@ fn headers_and_boundaries_rule_across_both_columns() {
 
     // A boundary DIVIDES, so its rule runs on both sides of the text; a hunk
     // header LABELS what follows, so it starts at the left and stays put.
-    let row_text = |y: u16| -> String { (41..99u16).map(|x| buf[(x, y)].symbol()).collect() };
+    let row_text = |y: u16| -> String { (42..98u16).map(|x| buf[(x, y)].symbol()).collect() };
     let boundary = (1..39u16)
         .map(row_text)
         .find(|t| t.contains("more above") || t.contains("more below"))
@@ -1430,9 +1443,245 @@ fn headers_and_boundaries_rule_across_both_columns() {
         .find(|t| t.contains(" · +"))
         .expect("a hunk header band");
     assert!(
-        header.trim_start_matches([' ', '▸']).starts_with("── "),
+        header.trim_start_matches([' ', '▸']).starts_with("─ "),
         "a header band should start at the left, got {header:?}"
     );
+}
+
+// ------------------------------------------- crossing into another group (#21)
+
+/// A file whose two changes land in DIFFERENT groups, which is what makes one
+/// of them foreign to the other's view.
+fn app_with_two_groups_in_one_file() -> (TestRepo, App) {
+    let r = TestRepo::new();
+    let body = |a: &str, b: &str| -> Vec<u8> {
+        let mut out = String::new();
+        for i in 1..=40 {
+            match i {
+                10 => out.push_str(a),
+                22 => out.push_str(b),
+                _ => out.push_str(&format!("let filler{i} = {i};\n")),
+            }
+        }
+        out.into_bytes()
+    };
+    r.write("src/f.rs", &body("let one = 1;\n", "let two = 2;\n"));
+    r.commit_all("base");
+    r.write("src/f.rs", &body("let one = 111;\n", "let two = 222;\n"));
+    r.commit_all("head");
+
+    // One class per group, so the two hunks cannot share one.
+    let backend = FakeBackend::new("fake", |ids| {
+        let groups: Vec<String> = ids
+            .iter()
+            .enumerate()
+            .map(|(n, id)| json_group(&format!("Group {n}"), "focus", &[id.as_str()]))
+            .collect();
+        format!(r#"{{"groups": [{}]}}"#, groups.join(", "))
+    });
+    let app = open_app_with(&r, &backend, ".dfr-cross-store");
+    (r, app)
+}
+
+/// Has a hunk from another group been pulled in?
+fn shows_a_foreign_hunk(app: &App) -> bool {
+    app.rows
+        .iter()
+        .any(|r| matches!(r.kind, RowKind::HunkHeader { foreign: true, .. }))
+}
+
+/// Walk the Down boundary open until it offers the hunk beyond, pressing `z`.
+fn press_z_on_down_boundary(app: &mut App) -> bool {
+    let Some(pos) = app.rows.iter().position(|r| {
+        matches!(
+            r.kind,
+            RowKind::ContextEdge {
+                side: Side::Down,
+                ..
+            }
+        )
+    }) else {
+        return false;
+    };
+    app.cursor = pos;
+    app.focus = Focus::Diff;
+    app.handle_key(key('z'));
+    true
+}
+
+#[test]
+fn a_wall_is_named_rather_than_silent_and_z_crosses_it() {
+    let (_r, mut app) = app_with_two_groups_in_one_file();
+    assert!(
+        !shows_a_foreign_hunk(&app),
+        "nothing foreign is shown by default"
+    );
+
+    // Expand until the gap is spent. The boundary must NOT disappear — that is
+    // the whole defect: a wall that looked like the end of the file.
+    let mut crossed = false;
+    for _ in 0..6 {
+        let prompting = app.rows.iter().any(|r| {
+            matches!(
+                r.kind,
+                RowKind::ContextEdge {
+                    side: Side::Down,
+                    crossing: true,
+                    ..
+                }
+            )
+        });
+        if prompting {
+            assert!(
+                drawn(&mut app).contains("next:"),
+                "the boundary should name what is beyond it"
+            );
+            press_z_on_down_boundary(&mut app);
+            crossed = true;
+            break;
+        }
+        assert!(
+            press_z_on_down_boundary(&mut app),
+            "boundary vanished early"
+        );
+    }
+    assert!(crossed, "never reached the crossing prompt");
+    assert!(
+        shows_a_foreign_hunk(&app),
+        "z on the prompt should have pulled the hunk in"
+    );
+}
+
+#[test]
+fn a_foreign_hunk_is_dashed_and_names_its_group() {
+    let (_r, mut app) = app_with_two_groups_in_one_file();
+    for _ in 0..6 {
+        if shows_a_foreign_hunk(&app) {
+            break;
+        }
+        press_z_on_down_boundary(&mut app);
+    }
+
+    // The distinction lives on the model, so assert it there rather than
+    // depending on both boxes happening to share a viewport.
+    let borders: Vec<Border> = app.rows.iter().map(|r| r.border).collect();
+    assert!(
+        borders.contains(&Border::Top(BoxStyle::Own)),
+        "this group's own hunk should keep a solid box"
+    );
+    assert!(
+        borders.contains(&Border::Top(BoxStyle::Foreign)),
+        "the crossed hunk should be boxed as foreign"
+    );
+
+    // Then look at the pixels, with the foreign box in view.
+    let pos = app
+        .rows
+        .iter()
+        .position(|r| r.border == Border::Top(BoxStyle::Foreign))
+        .expect("a foreign box top");
+    // Next to the box top, not ON it: the cursor marker takes over the leading
+    // cell, which is exactly the cell the corner joins to.
+    app.cursor = pos + 1;
+    app.focus = Focus::Diff;
+    app.set_viewport(Viewport {
+        diff_rows: 38,
+        plan_rows: 38,
+    });
+    let text = drawn(&mut app);
+    assert!(text.contains("┌╌"), "a foreign box is dashed horizontally");
+    assert!(text.contains('╎'), "and vertically");
+    // The foreign hunk says whose it is, even though this is the group view
+    // where labels are otherwise redundant.
+    assert!(
+        text.contains("· Group "),
+        "a foreign header must name its group"
+    );
+}
+
+/// The reason the frame's two columns are reserved on EVERY row: a line number
+/// inside a box must sit where a line number outside one sits.
+#[test]
+fn the_frame_keeps_line_numbers_aligned() {
+    let (_r, app) = app_with_two_groups_in_one_file();
+    let backend = ratatui::backend::TestBackend::new(100, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let row_text = |y: u16| -> String { (41..99u16).map(|x| buf[(x, y)].symbol()).collect() };
+
+    // A framed row (inside a box) and a context row (outside one).
+    let framed = (1..39u16)
+        .map(row_text)
+        .find(|t| t.starts_with('│') && t.contains("let "))
+        .expect("no framed row");
+    let context = (1..39u16)
+        .map(row_text)
+        .find(|t| t.starts_with(' ') && t.contains("let filler"))
+        .expect("no context row");
+
+    // Line numbers are right-aligned in a fixed field, so what must match is
+    // where the CODE starts — i.e. that the gutter occupies the same columns.
+    // By CHARACTER: `str::find` counts bytes, and `│` is three of them.
+    let code_col = |t: &str| {
+        let at = t.find("let ").expect("no code on the row");
+        t[..at].chars().count()
+    };
+    assert_eq!(
+        code_col(&framed),
+        code_col(&context),
+        "content must start in the same column inside and outside a box:\n{framed}\n{context}"
+    );
+}
+
+#[test]
+fn n_skips_a_foreign_hunk_but_space_still_marks_it() {
+    let (_r, mut app) = app_with_two_groups_in_one_file();
+    for _ in 0..6 {
+        if shows_a_foreign_hunk(&app) {
+            break;
+        }
+        press_z_on_down_boundary(&mut app);
+    }
+
+    // n never lands on a foreign header: it is context the reviewer asked for,
+    // not an entry on this group's reading list.
+    app.cursor = 0;
+    app.focus = Focus::Diff;
+    for _ in 0..8 {
+        app.handle_key(key('n'));
+        assert!(
+            !matches!(
+                app.rows[app.cursor].kind,
+                RowKind::HunkHeader { foreign: true, .. }
+            ),
+            "n landed on a foreign hunk header"
+        );
+    }
+
+    // But space still marks it — the mark keys on class content and is shared
+    // across groups, so reading it here is reading it everywhere.
+    let (pos, hunk) = app
+        .rows
+        .iter()
+        .enumerate()
+        .find_map(|(i, r)| match r.kind {
+            RowKind::HunkHeader {
+                hunk,
+                foreign: true,
+            } => Some((i, hunk)),
+            _ => None,
+        })
+        .expect("a foreign header");
+    let before = app.session.reviewed_count();
+    app.cursor = pos;
+    app.handle_key(key(' '));
+    assert_eq!(
+        app.session.reviewed_count(),
+        before + 1,
+        "space on a foreign hunk should mark its class"
+    );
+    assert!(app.session.reviewed_hunks().contains(&hunk));
 }
 
 /// Not an assertion — a readable dump of the pane, so the styling can be

@@ -51,13 +51,18 @@ than looking like an empty one. Because a background is what marks a change, the
 cannot be one: it is a `▸` in the leading gutter cell, which reads on any background, and
 that cell is reserved so moving the cursor never shifts the pane sideways.
 
-**A row about the file runs across the file.** A hunk header is a band —
-`── C31 · +25 ─────`, the shape class and the size of the change — rather than a
-`@@ -479,0 +480,25 @@` line: every row carries both line numbers in its gutter, so the
-coordinates repeated what was already on screen in a notation you had to decode. What the
-header uniquely says stays on it: the class, the counts, the reviewed mark, the finding
-count, and in the file view the group's label. It remains a selectable row, so `n`/`N`
-jump to it and `space` and `c` act on it.
+**A hunk is a box.** Its header band is the top edge — `┌─ C31 · +25 ─────┐`, the shape
+class and the size of the change — rather than a `@@ -479,0 +480,25 @@` line: every row
+carries both line numbers in its gutter, so the coordinates repeated what was already on
+screen in a notation you had to decode. What the header uniquely says stays on it: the
+class, the counts, the reviewed mark, the finding count, and the group's label where that
+is not already obvious. It remains a selectable row, so `n`/`N` jump to it and `space` and
+`c` act on it. The box closes under the change; **context flows outside it**, so a merged
+block reads as boxes with file between them.
+
+One column at each pane edge is reserved on **every** row, blank where there is no box.
+That is the point: a line number inside a hunk must sit in the same column as one in the
+context above it, or the eye cannot run down either.
 
 Headers and boundary rows rule out to the pane edge and cross the split separator, because
 what they describe is not one side of the file. A boundary **divides**, so its rule runs on
@@ -76,12 +81,24 @@ findings still work. A gap between two blocks keeps a boundary at each end rathe
 collapsing to one — a step only reveals part of it, so both ends stay live. A boundary row is deliberately **not** a hunk — `space` and `c` ask
 for one rather than acting on a row that is only about how much of the file is visible.
 
-A window never crosses a neighbouring hunk, shown or not. Between two hunks the old/new
-line offset is constant, which is what lets one context stretch carry both sides' numbers;
-across a hunk it is not. Stopping at the neighbour keeps every rendered line number honest
-and means expanding can never present someone else's change as untouched context. Reaching
-one is the same as reaching the file's edge: the boundary row has nothing left to offer, so
-it is not drawn.
+**A window stops at a neighbouring hunk, and says so.** Grouping is by shape class, so one
+file routinely holds hunks belonging to several groups. When a window reaches one this view
+does not list, the boundary row does not vanish — it **names** it
+(`↓ next: C31 "Rename sweep" — z shows it`), and another `z` pulls that hunk in. So a long
+expansion can never silently swallow someone else's change, and a wall can never be
+mistaken for the end of the file. A boundary row disappears at one place only: a real file
+edge.
+
+A crossed hunk is drawn in a **dashed** box carrying its owning group's label — real code
+the reviewer asked to see, plainly not on this group's reading list. It is absorbed whole
+and costs no context budget, because showing half a change would be worse than showing
+none. `n`/`N` pass over it, but `space` marks it like any other hunk: marks key on class
+content and are shared across groups, so reading it here is reading it everywhere.
+
+That a crossed hunk is a **change** segment, never flattened into context, is what keeps
+the numbers honest. Between two hunks the old/new line offset is constant, which is what
+lets one context stretch carry both sides' numbers from a single length; across a hunk it
+is not, and a change segment carries each side explicitly.
 
 Only the lines actually drawn are diffed and highlighted — per hunk, `similar` runs over
 the changed lines alone and syntect over the window plus a fixed lookback, so a keypress
@@ -98,8 +115,8 @@ sitting, not a finding, so nothing about it reaches the sidecar store.
 | `tab`, `enter` | switch pane focus |
 | `ctrl-d`/`ctrl-u` | half page |
 | `g`/`G` | top / bottom |
-| `n`/`N` | next / previous hunk |
-| `z` | on a `──` context boundary row: show more of the file · elsewhere, fold the skim remainder or noise group (plan view) or a directory (file view) |
+| `n`/`N` | next / previous hunk (skipping hunks crossed in from other groups) |
+| `z` | on a `──` context boundary row: show more of the file, or cross into the hunk it names · elsewhere, fold the skim remainder or noise group (plan view) or a directory (file view) |
 | `s` | toggle unified / side-by-side diff layout (persisted) |
 | `v` | toggle the left pane: reading plan ↔ file tree (persisted) |
 | `f` | file-list modal over the current view (`enter` jumps to the file) |

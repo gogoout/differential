@@ -41,12 +41,28 @@ pub enum RowKind {
     FileHeader(String),
     /// The `old` / `new` column labels above a file in split mode.
     ColumnHeader,
-    /// Canonical hunk index.
-    HunkHeader(usize),
+    /// Canonical hunk index, and whether this view lists the hunk. A foreign
+    /// header is skipped by `n`/`N`: it is not on this group's reading list,
+    /// even though `space` and `c` still act on it.
+    HunkHeader {
+        hunk: usize,
+        foreign: bool,
+    },
+    /// The closing edge of a hunk's box.
+    HunkFoot,
     /// A diff content row belonging to a hunk.
     Diff(usize),
     /// The edge of what is shown around a hunk: press `z` to pull in more.
-    ContextEdge(usize, Side),
+    ///
+    /// `crossing` distinguishes the two offers — more of the current gap, or
+    /// the hunk beyond it once the gap is spent. It lives HERE rather than
+    /// being read back off the rendered label, so the key handler and the
+    /// renderer cannot disagree about what `z` does.
+    ContextEdge {
+        hunk: usize,
+        side: Side,
+        crossing: bool,
+    },
     /// A finding attached to a hunk: (finding id, hunk index).
     Finding(String, usize),
     /// Collapsed remainder / noise: press z to unfold.
@@ -58,9 +74,9 @@ impl RowKind {
     pub fn selectable(&self) -> bool {
         matches!(
             self,
-            RowKind::HunkHeader(_)
+            RowKind::HunkHeader { .. }
                 | RowKind::Diff(_)
-                | RowKind::ContextEdge(_, _)
+                | RowKind::ContextEdge { .. }
                 | RowKind::Finding(_, _)
                 | RowKind::Fold
         )
@@ -71,7 +87,8 @@ impl RowKind {
     /// row that is only about how much of the file is visible.
     pub fn hunk(&self) -> Option<usize> {
         match self {
-            RowKind::HunkHeader(h) | RowKind::Diff(h) | RowKind::Finding(_, h) => Some(*h),
+            RowKind::HunkHeader { hunk, .. } => Some(*hunk),
+            RowKind::Diff(h) | RowKind::Finding(_, h) => Some(*h),
             _ => None,
         }
     }
@@ -84,6 +101,47 @@ impl RowKind {
 pub enum DiffMode {
     Unified,
     Split,
+}
+
+/// Whose box a hunk sits in.
+///
+/// A foreign hunk was pulled in by expanding across it: it is real code the
+/// reviewer asked to see, but it is not on this group's reading list, and a
+/// dashed border is what says so at a glance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoxStyle {
+    Own,
+    Foreign,
+}
+
+impl BoxStyle {
+    pub const fn horizontal(self) -> char {
+        match self {
+            BoxStyle::Own => '─',
+            BoxStyle::Foreign => '╌',
+        }
+    }
+
+    pub const fn vertical(self) -> char {
+        match self {
+            BoxStyle::Own => '│',
+            BoxStyle::Foreign => '╎',
+        }
+    }
+}
+
+/// A row's part in the box drawn around a hunk's changed lines.
+///
+/// The two edge columns are reserved on EVERY row, blank where there is no
+/// box — otherwise a line number would sit two columns further left inside a
+/// hunk than in the context above it, and the eye could not run down either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Border {
+    #[default]
+    None,
+    Top(BoxStyle),
+    Side(BoxStyle),
+    Bottom(BoxStyle),
 }
 
 /// What a row's padding is filled with, out to the pane edge.
@@ -102,7 +160,12 @@ pub enum Fill {
     /// `centered` puts the rule on both sides of the text. A boundary DIVIDES,
     /// so it reads best centred; a hunk header LABELS what follows it, and a
     /// label that drifts with the pane width is harder to scan down a column.
-    Rule { style: Style, centered: bool },
+    Rule {
+        style: Style,
+        centered: bool,
+        /// `─` normally, `╌` when the rule is a foreign hunk's top edge.
+        glyph: char,
+    },
 }
 
 /// One side of a diff row: a gutter whose first cell is reserved for the
@@ -140,11 +203,17 @@ pub enum RowContent {
 pub struct Row {
     pub kind: RowKind,
     pub content: RowContent,
+    pub border: Border,
 }
 
 impl Row {
     pub fn full(kind: RowKind, line: Line<'static>) -> Self {
         Row::banner(kind, line, Fill::Bg(Style::default()))
+    }
+
+    pub fn bordered(mut self, border: Border) -> Self {
+        self.border = border;
+        self
     }
 
     /// A row that spans the whole diff pane.
@@ -155,10 +224,23 @@ impl Row {
     /// separator column with a hole in it. The leading cell is the cursor's,
     /// as on every other row.
     pub fn banner(kind: RowKind, line: Line<'static>, fill: Fill) -> Self {
+        Row::banner_with(kind, line, fill, ' ', Style::default())
+    }
+
+    /// A banner whose reserved cell carries something other than a blank —
+    /// a box edge continues its rule through it, so the corner joins up.
+    pub fn banner_with(
+        kind: RowKind,
+        line: Line<'static>,
+        fill: Fill,
+        lead: char,
+        lead_style: Style,
+    ) -> Self {
         Row {
             kind,
+            border: Border::None,
             content: RowContent::Unified(Half {
-                gutter: (Style::default(), " ".to_string()),
+                gutter: (lead_style, lead.to_string()),
                 pairs: line
                     .spans
                     .into_iter()
@@ -502,6 +584,7 @@ fn column_header_row() -> Row {
     };
     Row {
         kind: RowKind::ColumnHeader,
+        border: Border::None,
         content: RowContent::Split {
             old: label("old"),
             new: label("new"),
@@ -510,14 +593,17 @@ fn column_header_row() -> Row {
 }
 
 /// Header row for one hunk, plus its findings.
-fn hunk_header_rows(ctx: &RowsContext, hi: usize, rows: &mut Vec<Row>) {
+fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<Row>) {
     let hunk = &ctx.doc.hunks[hi];
     let reviewed = ctx.reviewed.contains(&hi);
     let check = if reviewed { " ✓ reviewed" } else { "" };
-    let group_label = if ctx.show_group_labels {
+    // A foreign hunk ALWAYS names its group: that is the whole point of it
+    // being on screen at all, and the dashed border says "not yours" without
+    // saying whose.
+    let group_label = if ctx.show_group_labels || foreign {
         ctx.plan
             .group_of_hunk(HunkId::from_index(hi))
-            .map(|g| format!("  · {}", g.label))
+            .map(|g| format!(" · {}", g.label))
             .unwrap_or_default()
     } else {
         String::new()
@@ -543,8 +629,13 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, rows: &mut Vec<Row>) {
     // what was already on screen in a notation you had to decode. What it
     // uniquely says — the shape class, the size of the change, whether it is
     // read, what is filed against it — is what stays.
+    let box_style = if foreign {
+        BoxStyle::Foreign
+    } else {
+        BoxStyle::Own
+    };
     let mut spans = vec![
-        Span::styled("── ".to_string(), header_style),
+        Span::styled(" ".to_string(), header_style),
         Span::styled(hunk.class.clone(), header_style),
         Span::styled(" · ".to_string(), Style::default().fg(THEME.gutter_fg)),
         Span::styled(
@@ -566,14 +657,20 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, rows: &mut Vec<Row>) {
     spans.push(Span::styled(check.to_string(), header_style));
     spans.push(Span::styled(notes, Style::default().fg(THEME.finding_fg)));
     spans.push(Span::styled(" ".to_string(), header_style));
-    rows.push(Row::banner(
-        RowKind::HunkHeader(hi),
-        Line::from(spans),
-        Fill::Rule {
-            style: header_style,
-            centered: false,
-        },
-    ));
+    rows.push(
+        Row::banner_with(
+            RowKind::HunkHeader { hunk: hi, foreign },
+            Line::from(spans),
+            Fill::Rule {
+                style: header_style,
+                centered: false,
+                glyph: box_style.horizontal(),
+            },
+            box_style.horizontal(),
+            header_style,
+        )
+        .bordered(Border::Top(box_style)),
+    );
 
     for f in ctx
         .findings
@@ -605,7 +702,7 @@ fn file_rows(
     let file_entry = ctx.doc.files.iter().find(|f| f.path == path);
     if file_entry.is_some_and(|f| f.binary || f.submodule.is_some()) {
         for &hi in shown {
-            hunk_header_rows(ctx, hi, rows);
+            hunk_header_rows(ctx, hi, false, rows);
             rows.push(Row::full(
                 RowKind::Diff(hi),
                 Line::from(Span::styled(
@@ -651,7 +748,7 @@ fn file_rows(
 
     for block in &blocks {
         if let Some(b) = &block.top {
-            rows.push(boundary_row(b.hunk, Side::Up, b.hidden, ctx.context_step));
+            rows.push(boundary_row(ctx, b, ctx.context_step));
         }
         // A context row acts on the hunk it sits next to — the one below when
         // it leads a block, the one above otherwise — so `space` and `c` do
@@ -676,47 +773,101 @@ fn file_rows(
                         let row = context_row(text, o, w, new_hl.get(&(w - 1)), ctx.mode);
                         rows.push(Row {
                             kind: RowKind::Diff(owner),
+                            border: Border::None,
                             content: row,
                         });
                     }
                 }
-                Segment::Change { hunk, old, new } => {
+                Segment::Change {
+                    hunk,
+                    foreign,
+                    old,
+                    new,
+                } => {
                     above = Some(*hunk);
-                    hunk_header_rows(ctx, *hunk, rows);
+                    let box_style = if *foreign {
+                        BoxStyle::Foreign
+                    } else {
+                        BoxStyle::Own
+                    };
+                    hunk_header_rows(ctx, *hunk, *foreign, rows);
                     for content in change_rows(src, old, new, &old_hl, &new_hl, ctx.mode) {
                         rows.push(Row {
                             kind: RowKind::Diff(*hunk),
+                            border: Border::Side(box_style),
                             content,
                         });
                     }
+                    // The box closes under the change; context flows outside
+                    // it, so a merged block reads as boxes with file between.
+                    let foot = Style::default().fg(THEME.gutter_fg);
+                    rows.push(
+                        Row::banner_with(
+                            RowKind::HunkFoot,
+                            Line::default(),
+                            Fill::Rule {
+                                style: foot,
+                                centered: false,
+                                glyph: box_style.horizontal(),
+                            },
+                            box_style.horizontal(),
+                            foot,
+                        )
+                        .bordered(Border::Bottom(box_style)),
+                    );
                 }
             }
         }
         if let Some(b) = &block.bottom {
-            rows.push(boundary_row(b.hunk, Side::Down, b.hidden, ctx.context_step));
+            rows.push(boundary_row(ctx, b, ctx.context_step));
         }
         rows.push(Row::full(RowKind::Blank, Line::default()));
     }
 }
 
-fn boundary_row(hunk: usize, side: Side, hidden: usize, step: usize) -> Row {
-    let (arrow, where_) = match side {
-        Side::Up => ("↑", "above"),
-        Side::Down => ("↓", "below"),
+fn boundary_row(ctx: &RowsContext, b: &window::Boundary, step: usize) -> Row {
+    let arrow = match b.side {
+        Side::Up => "↑",
+        Side::Down => "↓",
     };
-    let step = step.min(hidden);
     let style = Style::default().fg(THEME.noise_fg);
+    let label = match b.next {
+        // The gap is exhausted and a hunk stands beyond it. Name it, so the
+        // wall is visible and crossing is a deliberate press.
+        Some(next) => {
+            let class = &ctx.doc.hunks[next].class;
+            let group = ctx
+                .plan
+                .group_of_hunk(HunkId::from_index(next))
+                .map(|g| format!(" “{}”", g.label))
+                .unwrap_or_default();
+            format!(" {arrow} next: {class}{group} — z shows it ")
+        }
+        None => {
+            let where_ = match b.side {
+                Side::Up => "above",
+                Side::Down => "below",
+            };
+            format!(
+                " {arrow} {} more {where_} — z shows {} ",
+                b.hidden,
+                step.min(b.hidden)
+            )
+        }
+    };
     // A rule to the pane edge: what is hidden is hidden from BOTH sides, so
     // the row saying so runs across both of them.
     Row::banner(
-        RowKind::ContextEdge(hunk, side),
-        Line::from(Span::styled(
-            format!(" {arrow} {hidden} more {where_} — z shows {step} "),
-            style,
-        )),
+        RowKind::ContextEdge {
+            hunk: b.hunk,
+            side: b.side,
+            crossing: b.next.is_some(),
+        },
+        Line::from(Span::styled(label, style)),
         Fill::Rule {
             style,
             centered: true,
+            glyph: '─',
         },
     )
 }
