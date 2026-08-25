@@ -34,20 +34,25 @@ use differential_engine::{gitio::Repo, config::Config, lang::LanguageRegistry,
 
 let repo = Repo::open(path)?;                       // any dir inside the repo
 let config = Config::load(repo.root(), None, None)?; // repo + user config, or defaults
-let (base, head, kind) = resolve_range(&repo, &["main..feature"])?;
-let out = run_pipeline(&repo, &base, &head, kind, &config, &LanguageRegistry::builtin())?;
+let src = resolve_range(&repo, &["main..feature"])?;   // a ReviewSource
+let out = run_pipeline(&repo, &src.base, &src.head, src.kind, &config,
+                       &LanguageRegistry::builtin())?;
 // out.report: InvariantReport — always present
 // out.document: Option<PlanDocument> — None iff an invariant failed
 ```
 
 - `resolve_range` accepts `a..b`, `a...b` (base = merge-base — what an MR/PR diff is), or
-  two revs.
+  two revs, and returns a `plan::ReviewSource`: the endpoints (`base`, `head`, `kind`) plus
+  the review's **identity** (`head_spec`, the head as typed, and `identity_base`). The two
+  are separate because reviewing uncommitted work diffs against synthesized trees that churn
+  on every edit while the review itself must survive (ADR 0017). `resolve_picked` builds the
+  same type from the picker's answer.
 - `run_pipeline` runs all invariants before emitting anything; on a violation there is no
   document, only the report saying what failed.
 - `run_grouped_pipeline(…, &GroupingOptions { backend, cache_dir })` additionally runs the
   grouping stage ([grouping.md](grouping.md)): `backend: None` builds one from
   `[grouping].command` (default: the tools-denied claude invocation), and the cache
-  directory is conventionally `repo.common_dir()?/differential/cache/grouping`.
+  directory is conventionally `plan::grouping_cache_dir(&repo.common_dir()?)`.
 - Language plugins (ADR 0015) and LLM backends (`engine::llm`, ADR 0016/0018) are injected
   by the consumer; `LanguageRegistry::builtin()` and `CommandBackend::claude_cli()` are the
   defaults.

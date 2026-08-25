@@ -359,37 +359,25 @@ fn stage_file(
     base_blobs: &mut HashMap<usize, Option<Vec<u8>>>,
 ) -> Result<Vec<u8>, EngineError> {
     let f = &view.files[fi];
-    let done = applied.get(&fi).map_or(0, Vec::len) == f.hunks.len();
+    let applied_here = applied.get(&fi).map_or(0, Vec::len);
 
-    if f.disposition == Disposition::Deleted && done {
-        return Ok(removal_entry(&f.path));
+    match plan::cumulative_state(f, applied_here)? {
+        plan::Staged::Remove => Ok(removal_entry(&f.path)),
+        plan::Staged::Recorded { mode, oid } => Ok(index_entry(mode, oid, &f.path)),
+        plan::Staged::Apply { mode } => {
+            if let std::collections::hash_map::Entry::Vacant(e) = base_blobs.entry(fi) {
+                e.insert(repo.blob(base, &f.path)?);
+            }
+            let hunks: Vec<&differential_engine::model::Hunk> = applied
+                .get(&fi)
+                .map(|v| v.iter().map(|&h| &view.hunks[h]).collect())
+                .unwrap_or_default();
+            let content = apply_hunks(base_blobs[&fi].as_deref(), &hunks);
+            let out = repo.run(["hash-object", "-w", "--stdin"], Some(&content))?;
+            let oid = String::from_utf8_lossy(&out).trim().to_string();
+            Ok(index_entry(mode, &oid, &f.path))
+        }
     }
-    if let Some((_, new)) = &f.submodule {
-        let oid = new.as_deref().or(f.new_oid.as_deref()).ok_or_else(|| {
-            EngineError::Invariant(format!(
-                "submodule {} has no new commit id",
-                String::from_utf8_lossy(&f.path)
-            ))
-        })?;
-        return Ok(index_entry("160000", oid, &f.path));
-    }
-
-    let mode = f
-        .new_mode
-        .as_deref()
-        .or(f.old_mode.as_deref())
-        .ok_or_else(|| missing_mode(f))?;
-    if let std::collections::hash_map::Entry::Vacant(e) = base_blobs.entry(fi) {
-        e.insert(repo.blob(base, &f.path)?);
-    }
-    let hunks: Vec<&differential_engine::model::Hunk> = applied
-        .get(&fi)
-        .map(|v| v.iter().map(|&h| &view.hunks[h]).collect())
-        .unwrap_or_default();
-    let content = apply_hunks(base_blobs[&fi].as_deref(), &hunks);
-    let out = repo.run(["hash-object", "-w", "--stdin"], Some(&content))?;
-    let oid = String::from_utf8_lossy(&out).trim().to_string();
-    Ok(index_entry(mode, &oid, &f.path))
 }
 
 fn missing_mode(f: &differential_engine::model::FileChange) -> EngineError {
@@ -408,21 +396,22 @@ pub struct StackOutput {
 
 /// Full production path for the shadow-branch renderer: grouped pipeline
 /// (core -> group -> order, in the engine) -> commit stack.
-// Mirrors run_grouped_pipeline plus the stack options; bundling the two option
-// structs further would be indirection for the lint's sake.
-#[allow(clippy::too_many_arguments)]
 pub fn run_stack_pipeline(
     repo: &Repo,
-    base_rev: &str,
-    head_rev: &str,
-    kind: schema::SourceKind,
+    source: &plan::ReviewSource,
     config: &differential_engine::config::Config,
     langs: &differential_engine::lang::LanguageRegistry,
     grouping: &differential_engine::grouping::GroupingOptions,
     stack: &StackOptions,
 ) -> Result<StackOutput, EngineError> {
     let out = differential_engine::run_grouped_pipeline(
-        repo, base_rev, head_rev, kind, config, langs, grouping,
+        repo,
+        &source.base,
+        &source.head,
+        source.kind,
+        config,
+        langs,
+        grouping,
     )?;
     let Some(doc) = &out.document else {
         return Ok(StackOutput {

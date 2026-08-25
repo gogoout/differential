@@ -6,13 +6,11 @@ use crate::schema;
 
 use crate::EngineError;
 use crate::config::Config;
-use crate::document::{SourceInfo, assemble, mark_generated};
+use crate::document::{SourceInfo, assemble};
 use crate::gitio::Repo;
 use crate::invariants::{InvariantReport, check_all};
 use crate::lang::LanguageRegistry;
-use crate::parse::parse_canonical;
-use crate::rename_view::{merge_raw, merge_renames, parse_raw_z, parse_renames_z};
-use crate::shape::partition;
+use crate::plan;
 
 pub struct PipelineOutput {
     pub base: String,
@@ -26,37 +24,54 @@ pub struct PipelineOutput {
     pub view: crate::model::DiffView,
 }
 
-/// Resolve a revision-range spec into fully qualified endpoints.
+/// Resolve a revision-range spec into a review source.
+///
 /// Accepts `a..b`, `a...b` (base = merge-base, what an MR/PR diff is), or two
-/// separate revs.
-pub fn resolve_range(
-    repo: &Repo,
-    spec: &[&str],
-) -> Result<(String, String, schema::SourceKind), EngineError> {
-    match spec {
-        [one] => {
-            if let Some((a, b)) = one.split_once("...") {
-                let base = repo.merge_base(a, b)?;
-                Ok((base, b.to_string(), schema::SourceKind::Range))
-            } else if let Some((a, b)) = one.split_once("..") {
-                Ok((a.to_string(), b.to_string(), schema::SourceKind::Range))
-            } else {
-                Err(EngineError::Range(format!(
-                    "single argument must be <base>..<head> or <a>...<b>, got {one:?}"
-                )))
-            }
-        }
-        [a, b] => Ok((
-            (*a).to_string(),
-            (*b).to_string(),
-            schema::SourceKind::Range,
-        )),
-        other => Err(EngineError::Range(format!(
-            "expected one range or two revs, got {} arguments",
-            other.len()
-        ))),
-    }
+/// separate revs. The spec is parsed once, in `plan::parse_range`, so the
+/// endpoints and the review's identity cannot disagree about which side is the
+/// head.
+pub fn resolve_range(repo: &Repo, spec: &[&str]) -> Result<plan::ReviewSource, EngineError> {
+    let parsed = plan::parse_range(spec)?;
+    let head_spec = parsed.head_spec().to_string();
+    let (base, head) = match &parsed {
+        plan::RangeSpec::Direct { base, head } => (base.clone(), head.clone()),
+        plan::RangeSpec::MergeBase { a, b } => (repo.merge_base(a, b)?, b.clone()),
+    };
+    Ok(plan::ReviewSource::range(base, head, head_spec))
 }
+
+/// Resolve the review picker's answer: a base commit, plus whether uncommitted
+/// work is included (ADR 0017).
+///
+/// With it, the head is a snapshot of the worktree and the review is filed
+/// under the base sha plus a stable literal, so it survives that snapshot tree
+/// churning under it on every edit. Without it, the head is `HEAD`.
+pub fn resolve_picked(
+    repo: &Repo,
+    base: String,
+    include_worktree: bool,
+) -> Result<plan::ReviewSource, EngineError> {
+    if !include_worktree {
+        return Ok(plan::ReviewSource::range(
+            base,
+            HEAD_SPEC.to_string(),
+            HEAD_SPEC.to_string(),
+        ));
+    }
+    let head = crate::worktree::worktree_tree(repo)?;
+    Ok(plan::ReviewSource {
+        identity_base: Some(base.clone()),
+        base,
+        head,
+        kind: schema::SourceKind::Worktree,
+        head_spec: WORKTREE_SPEC.to_string(),
+    })
+}
+
+/// Identity literals for picked sources (ADR 0017). Not endpoints — they name
+/// what the review is *of* while its synthesized endpoints move.
+const HEAD_SPEC: &str = "HEAD";
+const WORKTREE_SPEC: &str = "WORKTREE";
 
 /// Run the core pipeline (stages: enumerate, classify) over `base..head`.
 ///
@@ -178,8 +193,10 @@ fn run_core_with_progress(
     let base = repo.rev_parse_commit_or_tree(base_rev)?;
     let head = repo.rev_parse_commit_or_tree(head_rev)?;
 
-    // Canonical metadata: authoritative modes, full oids, dispositions.
-    let raw = repo.run(
+    // FROZEN ARGV. These three byte formats are what the parsers — and
+    // ultimately the frozen normaliser — were validated against; a changed
+    // flag changes shape hashes and breaks real-corpus parity (ADR 0002).
+    let raw_records = repo.run(
         [
             "diff-tree",
             "-r",
@@ -192,14 +209,7 @@ fn run_core_with_progress(
         ],
         None,
     )?;
-    let records = parse_raw_z(&raw)?;
-    let dispositions = records
-        .iter()
-        .map(|r| (r.path.clone(), r.disposition()))
-        .collect();
-
-    // Canonical enumeration: every file, no exclusions (ADR 0005).
-    let patch = repo.run(
+    let canonical_patch = repo.run(
         [
             "diff-tree",
             "-r",
@@ -212,25 +222,25 @@ fn run_core_with_progress(
         ],
         None,
     )?;
-    let mut view = parse_canonical(&patch, &dispositions)?;
-    merge_raw(&mut view, &records)?;
-
-    // Rename-detected annotations (ADR 0003).
-    let renames_raw = repo.run(
+    let rename_records = repo.run(
         ["diff-tree", "-r", "-M", "-z", "--name-status", &base, &head],
         None,
     )?;
-    merge_renames(&mut view, &parse_renames_z(&renames_raw)?);
 
-    // Generated hints: gitattributes + config + builtins.
+    // Enumeration is total and knows nothing about config (ADR 0012) — see
+    // `plan::build_view`'s parameter list, which is where that is enforced.
+    let mut view = plan::build_view(&plan::Enumeration {
+        raw_records: &raw_records,
+        canonical_patch: &canonical_patch,
+        rename_records: &rename_records,
+    })?;
+
+    // Only now do config and languages get a say, and only over description.
     let attr_marked = attr_marked_paths(repo, config, &view)?;
-    mark_generated(&mut view, config, &attr_marked);
-
-    // Mechanical partition: 100% coverage by construction.
     if let Some(f) = progress {
         f(crate::grouping::Progress::Classifying);
     }
-    let part = partition(&view, langs);
+    let part = plan::classify(&mut view, config, &attr_marked, langs);
 
     // Invariants 1–4; no document on violation.
     let report = check_all(repo, &base, &head, &view)?;
@@ -281,7 +291,7 @@ fn attr_marked_paths(
         let fields: Vec<&[u8]> = out.split(|&b| b == 0).collect();
         for triple in fields.chunks_exact(3) {
             let (path, value) = (triple[0], triple[2]);
-            if value != b"unspecified" && value != b"unset" && value != b"false" {
+            if plan::attr_marks_generated(value) {
                 marked.insert(path.to_vec());
             }
         }

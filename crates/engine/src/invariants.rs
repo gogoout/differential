@@ -54,16 +54,19 @@ pub fn check_all(
     let mut binary_checked = 0usize;
 
     for f in &view.files {
-        if f.submodule.is_some() {
-            continue;
-        }
-        if f.binary {
-            // Verified by oid: the recorded object must exist in the odb.
-            if let Some(oid) = &f.new_oid {
+        match fidelity(f) {
+            Fidelity::Skip => continue,
+            Fidelity::ByOid(oid) => {
+                // The recorded object must exist in the odb.
                 repo.run(["cat-file", "-e", oid], None)?;
+                binary_checked += 1;
+                continue;
             }
-            binary_checked += 1;
-            continue;
+            Fidelity::NoOid => {
+                binary_checked += 1;
+                continue;
+            }
+            Fidelity::Reconstruct => {}
         }
         applier_total += 1;
         let hunks: Vec<&Hunk> = f.hunks.iter().map(|&i| &view.hunks[i]).collect();
@@ -87,26 +90,13 @@ pub fn check_all(
     }
 
     // ---- Invariant 2: hunk accounting --------------------------------------
-    let mut seen = vec![false; view.hunks.len()];
-    let mut accounting_ok = true;
-    let mut carried = 0usize;
-    for (fi, f) in view.files.iter().enumerate() {
-        for &hi in &f.hunks {
-            if hi >= seen.len() || seen[hi] || view.hunks[hi].file != fi {
-                accounting_ok = false;
-                continue;
-            }
-            seen[hi] = true;
-            carried += 1;
-        }
-    }
-    accounting_ok &= carried == view.hunks.len();
+    let accounting_ok = check_accounting(view);
 
     let head_tree = repo.rev_parse_raw(&format!("{head}^{{tree}}"))?;
 
     // ---- Invariant 3: non-tautological tree assertion ----------------------
     // Refuse to build on a broken applier (the prototype's rule).
-    let (built_tree, tree_ok) = if mismatches.is_empty() && applier_ok == applier_total {
+    let (built_tree, tree_ok) = if may_build_tree(applier_total, applier_ok, &mismatches) {
         let built = build_tree(repo, base, view)?;
         let ok = built == head_tree;
         (Some(built), ok)
@@ -145,6 +135,60 @@ pub fn check_all(
     })
 }
 
+/// How invariant 1 verifies one file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fidelity<'a> {
+    /// Submodules: a gitlink has no content to reconstruct.
+    Skip,
+    /// Binary: no hunks exist, so the recorded oid is all there is to check.
+    ByOid(&'a str),
+    /// Binary with nothing recorded — counted, but there is nothing to assert.
+    NoOid,
+    /// Text: rebuild from base + hunks and compare byte for byte.
+    Reconstruct,
+}
+
+fn fidelity(f: &crate::model::FileChange) -> Fidelity<'_> {
+    if f.submodule.is_some() {
+        return Fidelity::Skip;
+    }
+    if f.binary {
+        return match f.new_oid.as_deref() {
+            Some(oid) => Fidelity::ByOid(oid),
+            None => Fidelity::NoOid,
+        };
+    }
+    Fidelity::Reconstruct
+}
+
+/// Invariant 2, entire: every hunk belongs to exactly one file, that file
+/// agrees, and the per-file lists sum to the canonical count.
+///
+/// Touches no git — it is a statement about the view's internal consistency,
+/// which is why it can be exercised against a hand-built view.
+fn check_accounting(view: &DiffView) -> bool {
+    let mut seen = vec![false; view.hunks.len()];
+    let mut ok = true;
+    let mut carried = 0usize;
+    for (fi, f) in view.files.iter().enumerate() {
+        for &hi in &f.hunks {
+            if hi >= seen.len() || seen[hi] || view.hunks[hi].file != fi {
+                ok = false;
+                continue;
+            }
+            seen[hi] = true;
+            carried += 1;
+        }
+    }
+    ok && carried == view.hunks.len()
+}
+
+/// Whether invariant 3 may run: never build a tree on a broken applier, or the
+/// tree assertion is being made on top of a failure it cannot see.
+fn may_build_tree(applier_total: usize, applier_ok: usize, mismatches: &[String]) -> bool {
+    mismatches.is_empty() && applier_ok == applier_total
+}
+
 /// The deliberately dumb `@@` counter. Must never share code with `parse.rs` —
 /// a shared bug would make invariant 4 circular.
 pub fn dumb_hunk_count(patch: &[u8]) -> usize {
@@ -156,7 +200,114 @@ pub fn dumb_hunk_count(patch: &[u8]) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::dumb_hunk_count;
+    use super::{Fidelity, check_accounting, dumb_hunk_count, fidelity, may_build_tree};
+    use crate::model::{DiffView, Disposition, FileChange, Hunk};
+
+    fn hunk(file: usize) -> Hunk {
+        Hunk {
+            file,
+            old_start: 1,
+            old_count: 1,
+            new_start: 1,
+            new_count: 1,
+            removed: vec![],
+            added: vec![],
+            nonl_old: false,
+            nonl_new: false,
+        }
+    }
+
+    fn file(hunks: Vec<usize>) -> FileChange {
+        FileChange {
+            path: b"f".to_vec(),
+            disposition: Disposition::Modified,
+            new_mode: Some("100644".into()),
+            old_mode: None,
+            binary: false,
+            submodule: None,
+            old_oid: None,
+            new_oid: None,
+            hunks,
+            rename_similarity: None,
+            rename_from: None,
+            rename_to: None,
+            generated: None,
+        }
+    }
+
+    /// Invariant 2 was 14 lines inlined in a function that needed a repository,
+    /// so none of these cases had ever been asserted directly.
+    #[test]
+    fn accounting_holds_when_every_hunk_belongs_to_exactly_one_file() {
+        let view = DiffView {
+            files: vec![file(vec![0, 1]), file(vec![2])],
+            hunks: vec![hunk(0), hunk(0), hunk(1)],
+        };
+        assert!(check_accounting(&view));
+    }
+
+    #[test]
+    fn accounting_catches_a_hunk_claimed_twice() {
+        let view = DiffView {
+            files: vec![file(vec![0]), file(vec![0])],
+            hunks: vec![hunk(0)],
+        };
+        assert!(!check_accounting(&view), "one hunk in two files");
+    }
+
+    #[test]
+    fn accounting_catches_a_hunk_no_file_claims() {
+        let view = DiffView {
+            files: vec![file(vec![0])],
+            hunks: vec![hunk(0), hunk(0)],
+        };
+        assert!(!check_accounting(&view), "h1 is carried by nothing");
+    }
+
+    #[test]
+    fn accounting_catches_a_file_claiming_another_files_hunk() {
+        // The disagreement that matters: the file lists it, the hunk denies it.
+        let view = DiffView {
+            files: vec![file(vec![0]), file(vec![1])],
+            hunks: vec![hunk(0), hunk(0)],
+        };
+        assert!(!check_accounting(&view));
+    }
+
+    #[test]
+    fn accounting_catches_an_out_of_range_index() {
+        let view = DiffView {
+            files: vec![file(vec![7])],
+            hunks: vec![hunk(0)],
+        };
+        assert!(!check_accounting(&view));
+    }
+
+    #[test]
+    fn binary_and_submodule_files_are_verified_differently_from_text() {
+        let mut f = file(vec![]);
+        assert_eq!(fidelity(&f), Fidelity::Reconstruct);
+
+        f.binary = true;
+        f.new_oid = Some("abc".into());
+        assert_eq!(fidelity(&f), Fidelity::ByOid("abc"));
+
+        f.new_oid = None;
+        assert_eq!(fidelity(&f), Fidelity::NoOid);
+
+        f.binary = false;
+        f.submodule = Some((None, Some("s".into())));
+        assert_eq!(fidelity(&f), Fidelity::Skip);
+    }
+
+    /// The prototype's rule: a tree built on a broken applier would assert
+    /// nothing, so invariant 3 does not run at all.
+    #[test]
+    fn a_broken_applier_stops_the_tree_from_being_built() {
+        assert!(may_build_tree(3, 3, &[]));
+        assert!(!may_build_tree(3, 2, &[]));
+        assert!(!may_build_tree(3, 3, &["f: mismatch".to_string()]));
+    }
 
     #[test]
     fn dumb_counter_counts_headers_only() {

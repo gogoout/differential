@@ -20,27 +20,10 @@ use crate::EngineError;
 use crate::gitio::Repo;
 use crate::model::DiffView;
 
-/// A review's identity: the resolved base sha plus the head spec AS TYPED
-/// (a branch name stays stable while its tip moves; a raw sha pins one state).
-pub fn review_id(base_sha: &str, head_spec: &str) -> String {
-    let mut h = Sha1::new();
-    h.update(base_sha.as_bytes());
-    h.update([0]);
-    h.update(head_spec.as_bytes());
-    hex::encode(h.finalize())[..16].to_string()
-}
-
-/// Reviewed marks key on what the class IS, not what it is called.
-pub fn class_content_key(member_digests: &[String]) -> String {
-    let mut sorted: Vec<&String> = member_digests.iter().collect();
-    sorted.sort_unstable();
-    let mut h = Sha1::new();
-    for d in sorted {
-        h.update(d.as_bytes());
-        h.update([0]);
-    }
-    hex::encode(h.finalize())[..16].to_string()
-}
+// Review identity and class keys are domain policy and live in `plan`; they
+// are re-exported here because this is where consumers of the store expect to
+// find them, and moving the names would break them for no gain.
+pub use crate::plan::{class_content_key, review_id};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReviewState {
@@ -148,7 +131,7 @@ impl ReviewStore {
     /// `current` at it. Returns the plan hash.
     pub fn save_plan(&self, doc: &schema::PlanDocument) -> Result<String, EngineError> {
         let json = doc.to_json()?;
-        let hash = hex::encode(Sha1::digest(json.as_bytes()))[..16].to_string();
+        let hash = crate::plan::plan_hash(&json);
         let path = self.dir.join("plans").join(format!("{hash}.json"));
         if !path.exists() {
             std::fs::write(&path, &json).map_err(|e| io_err(&path, e))?;

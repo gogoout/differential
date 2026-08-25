@@ -12,8 +12,8 @@ use differential_engine::gitio::Repo;
 use differential_engine::grouping::GroupingOptions;
 use differential_engine::invariants::InvariantReport;
 use differential_engine::lang::LanguageRegistry;
+use differential_engine::pipeline::resolve_picked;
 use differential_engine::plan;
-use differential_engine::schema::SourceKind;
 use differential_engine::{resolve_range, run_pipeline};
 use differential_stack::{StackOptions, run_stack_pipeline};
 
@@ -123,9 +123,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Ok(c) => c,
         Err(e) => return usage_error(&e.to_string()),
     };
-    let common_range: Vec<String> = common.range.clone();
     // Only `review` may omit the range (it opens the picker instead).
-    let resolved = if common_range.is_empty() {
+    let resolved = if common.range.is_empty() {
         if !matches!(cli.command, Command::Review { .. }) {
             return usage_error(
                 "a revision range is required: <base>..<head>, <a>...<b>, or two revs",
@@ -145,22 +144,11 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Stack {
             ref_name, no_cache, ..
         } => {
-            let (base, head, kind) = resolved.expect("range checked above");
-            let cache_dir = if no_cache {
-                None
-            } else {
-                Some(
-                    repo.common_dir()?
-                        .join("differential")
-                        .join("cache")
-                        .join("grouping"),
-                )
-            };
+            let source = resolved.expect("range checked above");
+            let cache_dir = cache_dir(&repo, no_cache)?;
             let out = run_stack_pipeline(
                 &repo,
-                &base,
-                &head,
-                kind,
+                &source,
                 &config,
                 &langs,
                 &GroupingOptions {
@@ -197,7 +185,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             }
             println!(
                 "review with: git log --oneline {}..{}",
-                plan::short_oid(&base),
+                plan::short_oid(&source.base),
                 stack.ref_name
             );
             Ok(ExitCode::SUCCESS)
@@ -210,31 +198,11 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             let cache_dir = cache_dir(&repo, no_cache)?;
             let worker_repo = repo.clone();
             differential_tui::review(&repo, pick, move |picked, tx, cancel| {
-                let (base, head, kind, head_spec, identity_base) = match (resolved, picked) {
-                    (Some((base, head, kind)), _) => {
-                        (base, head, kind, head_spec_of(&common_range), None)
-                    }
-                    // Base commit + "include uncommitted changes": the head is
-                    // the worktree snapshot or HEAD. Identity keys on the base
-                    // sha plus a stable literal, so the review survives the
-                    // worktree churning under it.
-                    (None, Some(p)) if p.include_worktree => {
-                        let wt = differential_engine::worktree::worktree_tree(&worker_repo)?;
-                        (
-                            p.base.clone(),
-                            wt,
-                            SourceKind::Worktree,
-                            "WORKTREE".to_string(),
-                            Some(p.base),
-                        )
-                    }
-                    (None, Some(p)) => (
-                        p.base,
-                        "HEAD".to_string(),
-                        SourceKind::Range,
-                        "HEAD".to_string(),
-                        None,
-                    ),
+                // Which resolver runs is dispatch; what each one decides is
+                // engine policy (ADR 0017).
+                let source = match (resolved, picked) {
+                    (Some(source), _) => source,
+                    (None, Some(p)) => resolve_picked(&worker_repo, p.base, p.include_worktree)?,
                     (None, None) => anyhow::bail!("no review source picked"),
                 };
                 let report = move |p| {
@@ -242,9 +210,9 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 };
                 let out = differential_engine::run_grouped_pipeline(
                     &worker_repo,
-                    &base,
-                    &head,
-                    kind,
+                    &source.base,
+                    &source.head,
+                    source.kind,
                     &config,
                     &langs,
                     &GroupingOptions {
@@ -255,25 +223,25 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     },
                 )
                 .context("grouped pipeline failed")?;
-                let review_base = identity_base.unwrap_or_else(|| out.base.clone());
+                let review_base = source.identity_base.unwrap_or_else(|| out.base.clone());
                 Ok(differential_tui::Prepared {
                     out,
                     review_base,
-                    head_spec,
+                    head_spec: source.head_spec,
                 })
             })?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Findings { no_cache, .. } => {
-            let (base, head, kind) = resolved.expect("range checked above");
-            let out = grouped(&repo, &base, &head, kind, &config, &langs, no_cache)?;
+            let source = resolved.expect("range checked above");
+            let out = grouped(&repo, &source, &config, &langs, no_cache)?;
             let doc = out
                 .document
                 .context("invariants failed; no plan available")?;
             let session = differential_engine::ReviewSession::open(
                 &repo,
                 &out.base,
-                &head_spec_of(&common_range),
+                &source.head_spec,
                 doc,
                 out.view,
             )?;
@@ -281,9 +249,16 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Check { json, .. } => {
-            let (base, head, kind) = resolved.expect("range checked above");
-            let out = run_pipeline(&repo, &base, &head, kind, &config, &langs)
-                .context("pipeline failed")?;
+            let source = resolved.expect("range checked above");
+            let out = run_pipeline(
+                &repo,
+                &source.base,
+                &source.head,
+                source.kind,
+                &config,
+                &langs,
+            )
+            .context("pipeline failed")?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&out.report)?);
             } else {
@@ -350,20 +325,13 @@ fn cache_dir(repo: &Repo, no_cache: bool) -> anyhow::Result<Option<PathBuf>> {
     if no_cache {
         return Ok(None);
     }
-    Ok(Some(
-        repo.common_dir()?
-            .join("differential")
-            .join("cache")
-            .join("grouping"),
-    ))
+    Ok(Some(plan::grouping_cache_dir(&repo.common_dir()?)))
 }
 
 /// Grouped pipeline with the on-disk cache (unless bypassed).
 fn grouped(
     repo: &Repo,
-    base: &str,
-    head: &str,
-    kind: differential_engine::schema::SourceKind,
+    source: &differential_engine::plan::ReviewSource,
     config: &Config,
     langs: &LanguageRegistry,
     no_cache: bool,
@@ -371,9 +339,9 @@ fn grouped(
     let cache_dir = cache_dir(repo, no_cache)?;
     differential_engine::run_grouped_pipeline(
         repo,
-        base,
-        head,
-        kind,
+        &source.base,
+        &source.head,
+        source.kind,
         config,
         langs,
         &GroupingOptions {
@@ -384,18 +352,4 @@ fn grouped(
         },
     )
     .context("grouped pipeline failed")
-}
-
-/// The head endpoint AS TYPED — a branch name keeps the review's identity
-/// stable while its tip moves.
-fn head_spec_of(range: &[String]) -> String {
-    match range {
-        [one] => one
-            .split_once("...")
-            .or_else(|| one.split_once(".."))
-            .map(|(_, b)| b.to_string())
-            .unwrap_or_else(|| one.clone()),
-        [_, b] => b.clone(),
-        _ => String::new(),
-    }
 }

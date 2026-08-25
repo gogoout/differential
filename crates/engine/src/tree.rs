@@ -13,7 +13,8 @@ use std::ffi::OsStr;
 use crate::EngineError;
 use crate::apply::apply_hunks;
 use crate::gitio::Repo;
-use crate::model::{DiffView, Disposition, Hunk};
+use crate::model::{DiffView, Hunk};
+use crate::plan;
 
 pub(crate) const ZERO_OID: &str = "0000000000000000000000000000000000000000";
 
@@ -49,6 +50,8 @@ pub fn build_tree(repo: &Repo, base: &str, view: &DiffView) -> Result<String, En
     Ok(String::from_utf8_lossy(&out).trim().to_string())
 }
 
+/// Compute one file's index record: decide with `plan::final_state`, then
+/// perform whatever that decision implies.
 fn staging_entry(
     repo: &Repo,
     base: &str,
@@ -56,47 +59,16 @@ fn staging_entry(
     f: &crate::model::FileChange,
 ) -> Result<Vec<u8>, EngineError> {
     let path = f.path.as_slice();
-
-    if f.disposition == Disposition::Deleted {
-        return Ok(removal_entry(path));
+    match plan::final_state(f)? {
+        plan::Staged::Remove => Ok(removal_entry(path)),
+        plan::Staged::Recorded { mode, oid } => Ok(index_entry(mode, oid, path)),
+        plan::Staged::Apply { mode } => {
+            let hunks: Vec<&Hunk> = f.hunks.iter().map(|&i| &view.hunks[i]).collect();
+            let base_content = repo.blob(base, path)?;
+            let content = apply_hunks(base_content.as_deref(), &hunks);
+            let out = repo.run(["hash-object", "-w", "--stdin"], Some(&content))?;
+            let oid = String::from_utf8_lossy(&out).trim().to_string();
+            Ok(index_entry(mode, &oid, path))
+        }
     }
-
-    let mode = f.new_mode.as_deref().ok_or_else(|| {
-        EngineError::Invariant(format!(
-            "no new mode recorded for {}",
-            String::from_utf8_lossy(path)
-        ))
-    })?;
-
-    let oid = if f.submodule.is_some() {
-        // Gitlink: the commit id from the pseudo-hunk (cross-checked against the
-        // raw record's oid when both exist).
-        f.submodule
-            .as_ref()
-            .and_then(|(_, new)| new.clone())
-            .or_else(|| f.new_oid.clone())
-            .ok_or_else(|| {
-                EngineError::Invariant(format!(
-                    "submodule {} has no new commit id",
-                    String::from_utf8_lossy(path)
-                ))
-            })?
-    } else if f.binary {
-        // The one documented tautology: binary files carry zero hunks, so the
-        // head oid is the only available content. the invariant report says so.
-        f.new_oid.clone().ok_or_else(|| {
-            EngineError::Invariant(format!(
-                "binary file {} has no recorded oid",
-                String::from_utf8_lossy(path)
-            ))
-        })?
-    } else {
-        let hunks: Vec<&Hunk> = f.hunks.iter().map(|&i| &view.hunks[i]).collect();
-        let base_content = repo.blob(base, path)?;
-        let content = apply_hunks(base_content.as_deref(), &hunks);
-        let out = repo.run(["hash-object", "-w", "--stdin"], Some(&content))?;
-        String::from_utf8_lossy(&out).trim().to_string()
-    };
-
-    Ok(index_entry(mode, &oid, path))
 }
