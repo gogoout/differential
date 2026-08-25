@@ -5,7 +5,9 @@
 use std::collections::HashMap;
 
 use differential_engine::gitio::Repo;
-use differential_engine::plan::{Deferral, Fold, GroupView, PlanIndex, ReviewView, reading_split};
+use differential_engine::plan::{
+    Deferral, Fold, GroupView, HunkId, PlanIndex, ReviewView, reading_split,
+};
 use differential_engine::review_state::Finding;
 use differential_engine::schema;
 use ratatui::style::{Modifier, Style};
@@ -153,9 +155,9 @@ pub struct RowsContext<'a> {
     /// Hunk indices whose class is marked reviewed.
     pub reviewed: &'a std::collections::HashSet<usize>,
     pub mode: DiffMode,
-    /// Hunk index -> owning group label, shown on hunk headers in the file
-    /// view (where group membership is otherwise invisible).
-    pub hunk_labels: Option<&'a HashMap<usize, String>>,
+    /// Set in the file view, where a hunk's group membership is otherwise
+    /// invisible; `None` in the group view, where the header already says it.
+    pub labels: Option<&'a ReviewView>,
 }
 
 /// The group view's extras on top of the shared core.
@@ -349,9 +351,9 @@ fn hunk_rows(factory: &mut RowFactory, ctx: &RowsContext, hi: usize, rows: &mut 
     let reviewed = ctx.reviewed.contains(&hi);
     let check = if reviewed { " ✓ reviewed" } else { "" };
     let group_label = ctx
-        .hunk_labels
-        .and_then(|m| m.get(&hi))
-        .map(|l| format!("  · {l}"))
+        .labels
+        .and_then(|plan| plan.group_of_hunk(HunkId::from_index(hi)))
+        .map(|g| format!("  · {}", g.label))
         .unwrap_or_default();
     let n_findings = ctx
         .findings

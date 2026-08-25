@@ -4,7 +4,7 @@
 //! All review state (reviewed marks, findings, resume cursor) lives in the
 //! engine's `ReviewSession`; this model holds presentation state only.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use differential_engine::ReviewSession;
@@ -97,8 +97,6 @@ pub struct App {
     pub session: ReviewSession,
     factory: RowFactory,
 
-    /// Hunk index -> owning group label, for file-view hunk headers.
-    hunk_labels: HashMap<usize, String>,
     /// Visible rows of the file tree (rebuilt when a directory folds).
     pub tree: Vec<TreeEntry>,
     /// Directory paths currently collapsed.
@@ -123,15 +121,6 @@ pub struct App {
 
 impl App {
     pub fn new(session: ReviewSession, factory: RowFactory) -> Self {
-        // Hunk -> owning group label, for file-view hunk headers (the flat
-        // view is the one place group membership is otherwise invisible).
-        let hunk_labels: HashMap<usize, String> = session
-            .plan()
-            .groups
-            .iter()
-            .flat_map(|g| g.hunks.iter().map(move |h| (h.index(), g.label.clone())))
-            .collect();
-
         // Resume position: the cursor id is a group id in the semantic view,
         // a file path in the file view (session.file_view() disambiguates).
         let view_mode = if session.file_view() {
@@ -148,7 +137,6 @@ impl App {
         let mut app = App {
             session,
             factory,
-            hunk_labels,
             tree: Vec::new(),
             collapsed: HashSet::new(),
             focus: Focus::Groups,
@@ -344,7 +332,7 @@ impl App {
                         findings: self.session.findings(),
                         reviewed: &reviewed,
                         mode: self.diff_mode(),
-                        hunk_labels: None,
+                        labels: None,
                     },
                     index: &index,
                     group: g,
@@ -373,7 +361,7 @@ impl App {
                     findings: self.session.findings(),
                     reviewed: &reviewed,
                     mode: self.diff_mode(),
-                    hunk_labels: Some(&self.hunk_labels),
+                    labels: Some(self.session.plan()),
                 };
                 self.rows = match targets.as_slice() {
                     // A single file keeps its dedicated builder (it renders a
@@ -832,21 +820,7 @@ impl App {
 
     /// Markdown summary of open findings, for pasting into an agent or PR.
     pub fn findings_summary(&self) -> String {
-        let doc = self.session.doc();
-        // A malformed document costs the group annotation, never the findings
-        // themselves — a reviewer's own words are the last thing to drop.
-        let index = PlanIndex::build(doc).ok();
-        let group_of_digest: HashMap<&str, &str> = index
-            .iter()
-            .flat_map(|index| {
-                index.groups().iter().flat_map(move |g| {
-                    index
-                        .group_hunks(g)
-                        .into_iter()
-                        .map(move |h| (index.hunk(h).digest.as_str(), g.label.as_str()))
-                })
-            })
-            .collect();
+        let plan = self.session.plan();
         let mut out = String::new();
         for f in self
             .session
@@ -854,9 +828,12 @@ impl App {
             .iter()
             .filter(|f| f.status == FindingStatus::Open)
         {
-            let label = group_of_digest
-                .get(f.anchor.hunk_digest.as_str())
-                .map(|l| format!(" ({l})"))
+            // Findings anchor on digests, which survive regeneration; the
+            // projection resolves one to its owning group.
+            let label = plan
+                .hunk_by_digest(&f.anchor.hunk_digest)
+                .and_then(|h| plan.group_of_hunk(h))
+                .map(|g| format!(" ({})", g.label))
                 .unwrap_or_default();
             out.push_str(&format!(
                 "- {}:{}{label}: {}\n",
