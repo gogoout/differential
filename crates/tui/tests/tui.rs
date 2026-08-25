@@ -9,7 +9,9 @@ use differential_engine::config::Config;
 use differential_engine::gitio::Repo;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::run_grouped_pipeline;
+use differential_engine::ports::ReviewStore;
 use differential_engine::schema::SourceKind;
+use differential_engine::store::{FsGroupingCache, FsReviewStore};
 use differential_testutil::{FakeBackend, TestRepo, json_group};
 use differential_tui::app::{App, Effect, Focus, Mode};
 use differential_tui::rows::{RowFactory, RowKind};
@@ -41,16 +43,19 @@ fn open_app_with(r: &TestRepo, backend: &FakeBackend, store: &str) -> App {
         &Config::default(),
         &LanguageRegistry::builtin(),
         &differential_engine::grouping::GroupingOptions {
-            backend: Some(backend),
-            cache_dir: None,
+            backend,
+            cache: &FsGroupingCache::disabled(),
             progress: None,
-            cancel: None,
         },
     )
     .unwrap();
     let factory = RowFactory::new(repo, out.base.clone(), out.head.clone());
-    let session =
-        ReviewSession::open_at(r.root.join(store), out.document.unwrap(), out.view).unwrap();
+    let session = ReviewSession::open(
+        FsReviewStore::at(r.root.join(store)).unwrap(),
+        out.document.unwrap(),
+        out.view,
+    )
+    .unwrap();
     App::new(session, factory)
 }
 
@@ -69,16 +74,15 @@ fn open_app(r: &TestRepo) -> App {
         &Config::default(),
         &LanguageRegistry::builtin(),
         &differential_engine::grouping::GroupingOptions {
-            backend: Some(&backend),
-            cache_dir: None,
+            backend: &backend,
+            cache: &FsGroupingCache::disabled(),
             progress: None,
-            cancel: None,
         },
     )
     .unwrap();
     let factory = RowFactory::new(repo, out.base.clone(), out.head.clone());
-    let session = ReviewSession::open_at(
-        r.root.join(".dfr-test-store"),
+    let session = ReviewSession::open(
+        FsReviewStore::at(r.root.join(".dfr-test-store")).unwrap(),
         out.document.unwrap(),
         out.view,
     )
@@ -151,9 +155,7 @@ fn space_toggles_class_reviewed_and_persists() {
     assert_eq!(app.session.reviewed_count(), 1);
 
     // The renderer is stateless: the mark is already on disk.
-    let store =
-        differential_engine::review_state::ReviewStore::open_at(r.root.join(".dfr-test-store"))
-            .unwrap();
+    let store = FsReviewStore::at(r.root.join(".dfr-test-store")).unwrap();
     assert_eq!(store.load_state().unwrap().reviewed_classes.len(), 1);
 
     // Toggling again clears it.
@@ -223,9 +225,7 @@ fn quit_saves_cursor() {
     let (r, mut app) = make_app();
     let effects = app.handle_key(key('q'));
     assert_eq!(effects, vec![Effect::Quit]);
-    let store =
-        differential_engine::review_state::ReviewStore::open_at(r.root.join(".dfr-test-store"))
-            .unwrap();
+    let store = FsReviewStore::at(r.root.join(".dfr-test-store")).unwrap();
     assert!(store.load_state().unwrap().cursor.is_some());
 }
 
@@ -252,9 +252,7 @@ fn file_view_lists_all_files_and_shares_review_marks() {
     app.handle_key(key('v'));
     assert_eq!(app.view_mode, ViewMode::Files);
     assert_eq!(app.files().len(), 4);
-    let store =
-        differential_engine::review_state::ReviewStore::open_at(r.root.join(".dfr-test-store"))
-            .unwrap();
+    let store = FsReviewStore::at(r.root.join(".dfr-test-store")).unwrap();
     assert!(store.load_state().unwrap().file_view);
 
     // The right pane shows the selected file: one header + its hunks.
@@ -389,9 +387,7 @@ fn split_view_toggles_and_keeps_cursor_on_hunk() {
         .count();
     assert!(split_diff_rows < unified_diff_rows);
     assert_eq!(app.rows[app.cursor].kind.hunk(), hunk_before);
-    let store =
-        differential_engine::review_state::ReviewStore::open_at(r.root.join(".dfr-test-store"))
-            .unwrap();
+    let store = FsReviewStore::at(r.root.join(".dfr-test-store")).unwrap();
     assert!(store.load_state().unwrap().split_diff);
 
     // Toggling back restores the unified layout.

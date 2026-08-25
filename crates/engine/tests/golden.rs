@@ -27,6 +27,7 @@ use differential_engine::grouping::GroupingOptions;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::run_grouped_pipeline;
 use differential_engine::schema::SourceKind;
+use differential_engine::store::{FsGroupingCache, FsReviewStore};
 use differential_engine::{ReviewSession, review_state};
 use differential_testutil::{FakeBackend, TestRepo, grouped_with_cache, json_group};
 
@@ -205,18 +206,17 @@ fn review_sidecar_layout_is_frozen() {
         &Config::default(),
         &LanguageRegistry::builtin(),
         &GroupingOptions {
-            backend: Some(&backend),
-            cache_dir: None,
+            backend: &backend,
+            cache: &FsGroupingCache::disabled(),
             progress: None,
-            cancel: None,
         },
     )
     .unwrap();
 
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path().join("review");
-    let mut session =
-        ReviewSession::open_at(root.clone(), out.document.unwrap(), out.view).unwrap();
+    let store = FsReviewStore::at(root.clone()).unwrap();
+    let mut session = ReviewSession::open(store, out.document.unwrap(), out.view).unwrap();
     let plan_hash = session.plan_hash().to_string();
     session.toggle_reviewed(0).unwrap();
     session.add_finding(0, "a finding".into()).unwrap();

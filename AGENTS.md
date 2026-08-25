@@ -37,10 +37,9 @@ code must change together — or the change is wrong.
    still pointing the wrong way.
 
    This is enforced, not merely stated: `crates/engine/tests/layering.rs` fails if a
-   domain module names an adapter. Its `NOT_YET_INVERTED` list is the migration's
-   remaining debt and **only shrinks** — never add to it, and delete a line the moment
-   its module is inverted (a stale entry silently re-permits what it names, and the test
-   fails for that too).
+   domain module names an adapter. Its `NOT_YET_INVERTED` list is **empty** — the
+   migration is complete — so the test is now an unconditional statement of the rule.
+   Needing to add a line to it is the signal you have the arrow backwards.
 
    **Generics for inversion, `dyn` for polymorphism.** A trait with one production
    implementation, chosen at compile time, exists to invert a dependency: take it as a

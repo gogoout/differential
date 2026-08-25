@@ -114,16 +114,17 @@ where
 /// grouping runs in-process with internal access to the diff view. On any
 /// invariant failure the grouping stage is skipped and `document` is `None`,
 /// exactly like the core pipeline.
-pub fn run_grouped_pipeline<G>(
+pub fn run_grouped_pipeline<G, C>(
     git: &G,
     base_rev: &str,
     head_rev: &str,
     kind: schema::SourceKind,
     config: &Config,
     langs: &LanguageRegistry,
-    grouping: &crate::grouping::GroupingOptions,
+    grouping: &crate::grouping::GroupingOptions<C>,
 ) -> Result<PipelineOutput, EngineError>
 where
+    C: crate::ports::GroupingCache,
     G: RangeResolver
         + DiffSource
         + AttributeSource
@@ -144,20 +145,11 @@ where
     )?;
 
     if let Some(core_doc) = &out.document {
-        // Backend: injected, or built from [grouping] config.
-        let built;
-        let backend: &dyn crate::llm::LlmBackend = match grouping.backend {
-            Some(b) => b,
-            None => {
-                built = backend_from_config(&config.grouping, grouping.cancel.clone());
-                &built
-            }
-        };
         let mut grouped = crate::grouping::run(
             core_doc,
             &out.view,
-            backend,
-            grouping.cache_dir,
+            grouping.backend,
+            grouping.cache,
             &langs.fingerprint(),
             grouping.progress,
         )?;
@@ -172,26 +164,6 @@ where
         f(crate::grouping::Progress::Done);
     }
     Ok(out)
-}
-
-fn backend_from_config(
-    cfg: &crate::config::GroupingConfig,
-    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-) -> crate::llm::CommandBackend {
-    let backend = match &cfg.command {
-        Some(argv) if !argv.is_empty() => {
-            crate::llm::CommandBackend::new(argv.clone(), std::time::Duration::from_secs(1200))
-        }
-        _ => crate::llm::CommandBackend::claude_cli(),
-    };
-    let backend = match cfg.timeout_secs {
-        Some(s) => backend.with_timeout(std::time::Duration::from_secs(s)),
-        None => backend,
-    };
-    match cancel {
-        Some(flag) => backend.with_cancel(flag),
-        None => backend,
-    }
 }
 
 fn run_core<G>(

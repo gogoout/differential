@@ -13,7 +13,6 @@
 
 use std::path::{Path, PathBuf};
 
-use etcetera::BaseStrategy;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::Deserialize;
 
@@ -92,13 +91,13 @@ impl Default for Config {
     }
 }
 
-/// `~/.config/differential/config.toml` (honours `XDG_CONFIG_HOME`).
-/// `None` when no home directory can be determined.
-pub fn user_config_path() -> Option<PathBuf> {
-    let strategy = etcetera::choose_base_strategy().ok()?;
+/// `<user config dir>/differential/config.toml`.
+///
+/// The directory comes from `ConfigSource`; the two path components are
+/// contract, not adapter, so they stay here.
+pub fn user_config_path<S: crate::ports::ConfigSource>(src: &S) -> Option<PathBuf> {
     Some(
-        strategy
-            .config_dir()
+        src.user_config_dir()?
             .join(USER_CONFIG_DIR)
             .join(USER_CONFIG_FILE_NAME),
     )
@@ -111,16 +110,21 @@ impl Config {
     ///
     /// Repo file: `<repo-root>/.differential.toml` — classification hints.
     /// User file: `~/.config/differential/config.toml` — `[grouping]`.
-    pub fn load(
+    pub fn load<S: crate::ports::ConfigSource>(
+        src: &S,
         repo_root: &Path,
         repo_override: Option<&Path>,
         user_override: Option<&Path>,
     ) -> Result<Config, EngineError> {
-        let mut config = match resolve(repo_override, || Some(repo_root.join(CONFIG_FILE_NAME)))? {
+        let repo_default = Some(repo_root.join(CONFIG_FILE_NAME));
+        let mut config = match resolve(src, repo_override, repo_default)? {
             Some((text, origin)) => Self::parse(&text, &origin)?,
             None => Config::default(),
         };
-        if let Some((text, origin)) = resolve(user_override, user_config_path)? {
+        let user_default = src
+            .user_config_dir()
+            .map(|d| d.join(USER_CONFIG_DIR).join(USER_CONFIG_FILE_NAME));
+        if let Some((text, origin)) = resolve(src, user_override, user_default)? {
             config.grouping = Self::parse_user(&text, &origin)?;
         }
         Ok(config)
@@ -164,27 +168,26 @@ impl Config {
     }
 }
 
-/// Read (contents, origin) for `explicit > default_path()`, where a missing
-/// default is fine but a missing EXPLICIT path is a hard error.
-fn resolve(
+/// Read (contents, origin) for `explicit > default`, where a missing default
+/// is fine but a missing EXPLICIT path is a hard error.
+///
+/// The policy — which file, what precedence, what absence means — is here; the
+/// port only hands back bytes. The two read methods exist so that an
+/// explicit-but-missing path reports the same message it always did.
+fn resolve<S: crate::ports::ConfigSource>(
+    src: &S,
     explicit: Option<&Path>,
-    default_path: impl FnOnce() -> Option<PathBuf>,
+    default: Option<PathBuf>,
 ) -> Result<Option<(String, String)>, EngineError> {
-    let (path, explicit) = match explicit {
-        Some(p) => (p.to_path_buf(), true),
-        None => match default_path() {
-            Some(p) => (p, false),
-            None => return Ok(None),
-        },
-    };
-    if !explicit && !path.exists() {
-        return Ok(None);
+    match explicit {
+        Some(p) => Ok(Some((src.read_required(p)?, p.display().to_string()))),
+        None => {
+            let Some(p) = default else {
+                return Ok(None);
+            };
+            Ok(src.read(&p)?.map(|text| (text, p.display().to_string())))
+        }
     }
-    let text = std::fs::read_to_string(&path).map_err(|e| EngineError::Config {
-        path: path.display().to_string(),
-        msg: e.to_string(),
-    })?;
-    Ok(Some((text, path.display().to_string())))
 }
 
 fn build_globs(patterns: &[String], origin: &str) -> Result<GlobSet, EngineError> {
@@ -204,6 +207,10 @@ fn build_globs(patterns: &[String], origin: &str) -> Result<GlobSet, EngineError
 
 #[cfg(test)]
 mod tests {
+    /// The real filesystem: these assertions are about resolution policy
+    /// (precedence, what absence means), which is what `load` owns.
+    const SRC: crate::store::OsConfigSource = crate::store::OsConfigSource;
+
     use super::*;
 
     #[test]
@@ -273,7 +280,13 @@ attributes = ["linguist-generated", "custom-generated"]
         let user_file = tmp.path().join("user.toml");
         std::fs::write(&repo_file, "[classify]\ngenerated = [\"gen/**\"]").unwrap();
         std::fs::write(&user_file, "[grouping]\ncommand = [\"agent\"]").unwrap();
-        let c = Config::load(tmp.path(), Some(&repo_file), Some(&user_file)).unwrap();
+        let c = Config::load(
+            &crate::store::OsConfigSource,
+            tmp.path(),
+            Some(&repo_file),
+            Some(&user_file),
+        )
+        .unwrap();
         assert!(c.generated.is_match("gen/x"));
         assert_eq!(
             c.grouping.command.as_deref(),
@@ -281,7 +294,9 @@ attributes = ["linguist-generated", "custom-generated"]
         );
 
         // Explicit-but-missing paths are hard errors; absent defaults are not.
-        assert!(Config::load(tmp.path(), Some(Path::new("/nope")), Some(&user_file)).is_err());
-        assert!(Config::load(tmp.path(), None, Some(&user_file)).is_ok());
+        assert!(
+            Config::load(&SRC, tmp.path(), Some(Path::new("/nope")), Some(&user_file)).is_err()
+        );
+        assert!(Config::load(&SRC, tmp.path(), None, Some(&user_file)).is_ok());
     }
 }

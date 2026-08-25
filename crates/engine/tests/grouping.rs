@@ -1,6 +1,7 @@
 //! Grouping-stage tests: real temp repos, fake LLM backend. No model runs.
 
 use differential_engine::schema::{Effort, PlanDocument, ReadAction};
+use differential_engine::store::FsGroupingCache;
 use differential_testutil::{
     FakeBackend, TestRepo, grouped, grouped_with_cache, ids_in_prompt, json_group,
 };
@@ -502,7 +503,8 @@ fn progress_reports_stages_and_cache_state() {
         let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
         format!(r#"{{"groups": [{}]}}"#, json_group("All", "focus", &refs))
     });
-    let cache = tempfile::TempDir::new().unwrap();
+    let dir = tempfile::TempDir::new().unwrap();
+    let cache = FsGroupingCache::at(dir.path().to_path_buf());
 
     let run = || {
         let seen: Mutex<Vec<Progress>> = Mutex::new(Vec::new());
@@ -515,10 +517,9 @@ fn progress_reports_stages_and_cache_state() {
             &Config::default(),
             &LanguageRegistry::builtin(),
             &differential_engine::grouping::GroupingOptions {
-                backend: Some(&backend),
-                cache_dir: Some(cache.path()),
+                backend: &backend,
+                cache: &cache,
                 progress: Some(&cb),
-                cancel: None,
             },
         )
         .unwrap();

@@ -4,17 +4,20 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 use differential_engine::config::Config;
 use differential_engine::gitio::Repo;
 use differential_engine::grouping::GroupingOptions;
-use differential_engine::invariants::InvariantReport;
 use differential_engine::lang::LanguageRegistry;
+use differential_engine::llm::CommandBackend;
 use differential_engine::pipeline::resolve_picked;
 use differential_engine::plan;
-use differential_engine::ports::RepoLayout;
+use differential_engine::store::{FsGroupingCache, FsReviewStore, OsConfigSource};
 use differential_engine::{resolve_range, run_pipeline};
 use differential_stack::{StackOptions, run_stack_pipeline};
 
@@ -117,6 +120,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Err(e) => return usage_error(&e.to_string()),
     };
     let config = match Config::load(
+        &OsConfigSource,
         repo.root(),
         common.config.as_deref(),
         common.user_config.as_deref(),
@@ -146,17 +150,16 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             ref_name, no_cache, ..
         } => {
             let source = resolved.expect("range checked above");
-            let cache_dir = cache_dir(&repo, no_cache)?;
+            let backend = backend_from(&config.grouping, None);
             let out = run_stack_pipeline(
                 &repo,
                 &source,
                 &config,
                 &langs,
                 &GroupingOptions {
-                    backend: None, // from [grouping].command, default claude
-                    cache_dir: cache_dir.as_deref(),
+                    backend: &backend,
+                    cache: &grouping_cache(&repo, no_cache)?,
                     progress: None,
-                    cancel: None,
                 },
                 &StackOptions {
                     ref_name: ref_name.as_deref(),
@@ -166,7 +169,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
 
             let Some(stack) = out.stack else {
                 eprintln!("error: invariants failed; nothing rendered");
-                print_report(&out.pipeline.report, &out.pipeline.base, &out.pipeline.head);
+                print_range(&out.pipeline.base, &out.pipeline.head);
+                println!("{}", out.pipeline.report);
                 return Ok(ExitCode::from(1));
             };
             println!(
@@ -196,7 +200,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             // app layer owns what the pipeline is. Endpoints and review
             // identity per the wiring table in adr/0017.
             let pick = resolved.is_none();
-            let cache_dir = cache_dir(&repo, no_cache)?;
+            let cache = grouping_cache(&repo, no_cache)?;
             let worker_repo = repo.clone();
             differential_tui::review(&repo, pick, move |picked, tx, cancel| {
                 // Which resolver runs is dispatch; what each one decides is
@@ -217,10 +221,11 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     &config,
                     &langs,
                     &GroupingOptions {
-                        backend: None,
-                        cache_dir: cache_dir.as_deref(),
+                        // The cancel flag lives on the backend: the thing that
+                        // needs killing is the subprocess.
+                        backend: &backend_from(&config.grouping, Some(cancel)),
+                        cache: &cache,
                         progress: Some(&report),
-                        cancel: Some(cancel),
                     },
                 )
                 .context("grouped pipeline failed")?;
@@ -239,13 +244,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             let doc = out
                 .document
                 .context("invariants failed; no plan available")?;
-            let session = differential_engine::ReviewSession::open(
-                &repo,
-                &out.base,
-                &source.head_spec,
-                doc,
-                out.view,
-            )?;
+            let store = FsReviewStore::for_review(&repo, &out.base, &source.head_spec)?;
+            let session = differential_engine::ReviewSession::open(store, doc, out.view)?;
             println!("{}", serde_json::to_string_pretty(session.findings())?);
             Ok(ExitCode::SUCCESS)
         }
@@ -263,7 +263,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&out.report)?);
             } else {
-                print_report(&out.report, &out.base, &out.head);
+                print_range(&out.base, &out.head);
+                println!("{}", out.report);
             }
             Ok(if out.report.all_ok() {
                 ExitCode::SUCCESS
@@ -279,55 +280,56 @@ fn usage_error(msg: &str) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::from(2))
 }
 
-fn print_report(report: &InvariantReport, base: &str, head: &str) {
+/// The reviewed range. Not part of `InvariantReport` — that struct is
+/// serialised by `dfr check --json`, and growing it for a presentation
+/// convenience is exactly the leak this refactor removes.
+fn print_range(base: &str, head: &str) {
     println!(
         "range      {}..{}",
         plan::short_oid(base),
         plan::short_oid(head)
     );
-    println!(
-        "files      {} ({} binary, checked by oid only — tree assertion is tautological for those)",
-        report.files_total, report.binary_oid_checked
-    );
-    println!("hunks      {}", report.hunks_total);
-    println!(
-        "inv1 applier fidelity   {}  {}",
-        report.applier_exact(),
-        if report.applier_mismatches.is_empty() {
-            "PASS"
-        } else {
-            "FAIL"
-        }
-    );
-    for m in &report.applier_mismatches {
-        println!("           mismatch: {m}");
-    }
-    println!(
-        "inv2 hunk accounting    {}",
-        if report.accounting_ok { "PASS" } else { "FAIL" }
-    );
-    println!(
-        "inv3 tree assertion     {}  built {} head {}",
-        if report.tree_ok { "PASS" } else { "FAIL" },
-        report.built_tree.as_deref().unwrap_or("(not built)"),
-        report.head_tree
-    );
-    println!(
-        "inv4 independent recount {} of {}  {}",
-        report.recount,
-        report.hunks_total,
-        if report.recount_ok { "PASS" } else { "FAIL" }
-    );
-    println!("note: tree building writes unreferenced loose objects into the odb (gc-able)");
 }
 
-/// The on-disk grouping cache (spec/persistence.md), unless bypassed.
-fn cache_dir(repo: &Repo, no_cache: bool) -> anyhow::Result<Option<PathBuf>> {
-    if no_cache {
-        return Ok(None);
-    }
-    Ok(Some(plan::grouping_cache_dir(&repo.common_dir()?)))
+/// The on-disk grouping cache, unless bypassed.
+///
+/// `--no-cache` is a state of the cache rather than an absent one, so the
+/// grouping stage never grows a branch for it.
+fn grouping_cache(repo: &Repo, no_cache: bool) -> anyhow::Result<FsGroupingCache> {
+    Ok(if no_cache {
+        FsGroupingCache::disabled()
+    } else {
+        FsGroupingCache::for_repo(repo)?
+    })
 }
+
+/// Turn `[grouping]` config into a backend.
+///
+/// Composition, so it belongs to the application layer rather than the engine
+/// (ADR 0018, 0020). Cancellation rides along here because killing an
+/// in-flight subprocess is a property of the backend, not of the pipeline.
+fn backend_from(
+    cfg: &differential_engine::config::GroupingConfig,
+    cancel: Option<Arc<AtomicBool>>,
+) -> CommandBackend {
+    let backend = match &cfg.command {
+        Some(argv) if !argv.is_empty() => {
+            CommandBackend::new(argv.clone(), Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+        }
+        _ => CommandBackend::claude_cli(),
+    };
+    let backend = match cfg.timeout_secs {
+        Some(s) => backend.with_timeout(Duration::from_secs(s)),
+        None => backend,
+    };
+    match cancel {
+        Some(flag) => backend.with_cancel(flag),
+        None => backend,
+    }
+}
+
+/// Fallback when `[grouping].command` is set without a timeout.
+const DEFAULT_TIMEOUT_SECS: u64 = 1200;
 
 /// Grouped pipeline with the on-disk cache (unless bypassed).
 fn grouped(
@@ -337,7 +339,7 @@ fn grouped(
     langs: &LanguageRegistry,
     no_cache: bool,
 ) -> anyhow::Result<differential_engine::PipelineOutput> {
-    let cache_dir = cache_dir(repo, no_cache)?;
+    let backend = backend_from(&config.grouping, None);
     differential_engine::run_grouped_pipeline(
         repo,
         &source.base,
@@ -346,10 +348,9 @@ fn grouped(
         config,
         langs,
         &GroupingOptions {
-            backend: None,
-            cache_dir: cache_dir.as_deref(),
+            backend: &backend,
+            cache: &grouping_cache(repo, no_cache)?,
             progress: None,
-            cancel: None,
         },
     )
     .context("grouped pipeline failed")

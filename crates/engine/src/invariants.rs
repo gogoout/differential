@@ -39,6 +39,51 @@ impl InvariantReport {
     }
 }
 
+impl std::fmt::Display for InvariantReport {
+    /// The human form of the report: totals and invariants 1-4, one per line.
+    ///
+    /// Formatting, not printing — the engine still writes nothing. The
+    /// endpoints are deliberately absent: they are not part of the report (nor
+    /// of `--json`), so a caller that wants a range header prints its own.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let verdict = |ok: bool| if ok { "PASS" } else { "FAIL" };
+        writeln!(
+            f,
+            "files      {} ({} binary, checked by oid only — tree assertion is tautological for those)",
+            self.files_total, self.binary_oid_checked
+        )?;
+        writeln!(f, "hunks      {}", self.hunks_total)?;
+        writeln!(
+            f,
+            "inv1 applier fidelity   {}  {}",
+            self.applier_exact(),
+            verdict(self.applier_mismatches.is_empty())
+        )?;
+        for m in &self.applier_mismatches {
+            writeln!(f, "           mismatch: {m}")?;
+        }
+        writeln!(f, "inv2 hunk accounting    {}", verdict(self.accounting_ok))?;
+        writeln!(
+            f,
+            "inv3 tree assertion     {}  built {} head {}",
+            verdict(self.tree_ok),
+            self.built_tree.as_deref().unwrap_or("(not built)"),
+            self.head_tree
+        )?;
+        writeln!(
+            f,
+            "inv4 independent recount {} of {}  {}",
+            self.recount,
+            self.hunks_total,
+            verdict(self.recount_ok)
+        )?;
+        write!(
+            f,
+            "note: tree building writes unreferenced loose objects into the odb (gc-able)"
+        )
+    }
+}
+
 /// Run invariants 1–4. Invariant 1 (applier fidelity) is asserted BEFORE the
 /// tree is built; if it fails, nothing is built on top of it.
 pub fn check_all<G>(

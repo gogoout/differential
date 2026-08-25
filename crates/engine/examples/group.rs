@@ -14,8 +14,8 @@ use differential_engine::config::Config;
 use differential_engine::gitio::Repo;
 use differential_engine::grouping::GroupingOptions;
 use differential_engine::lang::LanguageRegistry;
-use differential_engine::ports::RepoLayout;
 use differential_engine::schema::Effort;
+use differential_engine::store::{FsGroupingCache, OsConfigSource};
 use differential_engine::{resolve_range, run_grouped_pipeline};
 
 fn main() -> ExitCode {
@@ -47,7 +47,7 @@ fn main() -> ExitCode {
         Ok(r) => r,
         Err(e) => return usage_error(&e.to_string()),
     };
-    let config = match Config::load(repo.root(), config_path.as_deref(), None) {
+    let config = match Config::load(&OsConfigSource, repo.root(), config_path.as_deref(), None) {
         Ok(c) => c,
         Err(e) => return usage_error(&e.to_string()),
     };
@@ -57,14 +57,17 @@ fn main() -> ExitCode {
         Err(e) => return usage_error(&e.to_string()),
     };
 
-    let cache_dir = if use_cache {
-        match repo.common_dir() {
-            Ok(d) => Some(differential_engine::plan::grouping_cache_dir(&d)),
+    let cache = if use_cache {
+        match FsGroupingCache::for_repo(&repo) {
+            Ok(c) => c,
             Err(e) => return usage_error(&e.to_string()),
         }
     } else {
-        None
+        FsGroupingCache::disabled()
     };
+    // Composition is the application layer's job, so the example builds its
+    // own backend rather than the pipeline reaching into config for one.
+    let backend = differential_engine::llm::CommandBackend::claude_cli();
 
     let out = match run_grouped_pipeline(
         &repo,
@@ -74,10 +77,9 @@ fn main() -> ExitCode {
         &config,
         &LanguageRegistry::builtin(),
         &GroupingOptions {
-            backend: None, // built from [grouping].command / claude default
-            cache_dir: cache_dir.as_deref(),
+            backend: &backend,
+            cache: &cache,
             progress: None,
-            cancel: None,
         },
     ) {
         Ok(o) => o,

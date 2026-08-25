@@ -10,14 +10,14 @@
 //!   group — they are extracted into a synthesized focus group (ADR 0003).
 
 mod assemble;
-mod cache;
+mod key;
 mod parse;
 mod payload;
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 use crate::llm::LlmBackend;
+use crate::ports::GroupingCache;
 use crate::schema;
 
 use crate::EngineError;
@@ -25,19 +25,20 @@ use crate::model::DiffView;
 
 pub use payload::PROMPT_VERSION;
 
-pub struct GroupingOptions<'a> {
-    /// Injected backend; `None` lets the pipeline build one from
-    /// `[grouping].command` (default: the validated claude invocation).
-    pub backend: Option<&'a dyn LlmBackend>,
-    /// Cache directory (spec/persistence.md suggests
-    /// `<git-common-dir>/differential/cache/grouping`). `None` disables caching.
-    pub cache_dir: Option<&'a Path>,
+pub struct GroupingOptions<'a, C: GroupingCache> {
+    /// The backend, always injected. `dyn` because config picks which command
+    /// to run — the one runtime-open seam in this stage (ADR 0016, 0020).
+    ///
+    /// Cancellation is a property of the backend the caller built
+    /// (`CommandBackend::with_cancel`), not of the pipeline: killing an
+    /// in-flight subprocess was never a pipeline concern.
+    pub backend: &'a dyn LlmBackend,
+    /// Where groupings are pinned. Disabling is a state of the cache
+    /// (`FsGroupingCache::disabled()`), not an `Option` here.
+    pub cache: &'a C,
     /// Stage notifications for renderers that show progress while the
     /// pipeline runs (the TUI's splash screen). `None` reports nothing.
     pub progress: Option<&'a (dyn Fn(Progress) + Send + Sync)>,
-    /// Set to abandon the run: the in-flight agent subprocess is killed
-    /// rather than left running after its caller has walked away.
-    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// Pipeline stage notifications, in the order they occur. `Grouping` carries
@@ -87,11 +88,11 @@ const RELOCATION_THRESHOLD: u8 = 95;
 /// Run the grouping stage over a core-only document. Returns the same document
 /// with `groups`, `reading_plan` and the grouping audit fields filled, and
 /// `"group"` appended to `generator.stages`.
-pub fn run(
+pub fn run<C: GroupingCache>(
     doc: &schema::PlanDocument,
     view: &DiffView,
     backend: &dyn LlmBackend,
-    cache_dir: Option<&Path>,
+    cache: &C,
     lang_fingerprint: &str,
     progress: Option<&(dyn Fn(Progress) + Send + Sync)>,
 ) -> Result<schema::PlanDocument, EngineError> {
@@ -114,7 +115,7 @@ pub fn run(
             &prompt,
             &offered,
             backend,
-            cache_dir,
+            cache,
             lang_fingerprint,
             progress,
         )?;
@@ -320,35 +321,29 @@ fn class_infos(doc: &schema::PlanDocument) -> Vec<ClassInfo> {
 
 /// Cache-or-call: the cached value is the raw model response, so the audit and
 /// assembly stay pure functions replayed on every load.
-fn fetch_response(
+fn fetch_response<C: GroupingCache>(
     prompt: &str,
     offered: &[&ClassInfo],
     backend: &dyn LlmBackend,
-    cache_dir: Option<&Path>,
+    cache: &C,
     lang_fingerprint: &str,
     progress: Option<&(dyn Fn(Progress) + Send + Sync)>,
 ) -> Result<String, EngineError> {
-    let key = cache::cache_key(offered, backend.name(), lang_fingerprint);
-    if let Some(dir) = cache_dir
-        && let Some(hit) = cache::load(dir, &key)?
-    {
+    let key = key::cache_key(offered, backend.name(), lang_fingerprint);
+    let report = |cached: bool| {
         if let Some(f) = progress {
             f(Progress::Grouping {
                 backend: backend.name().to_string(),
-                cached: true,
+                cached,
             });
         }
+    };
+    if let Some(hit) = cache.get(&key)? {
+        report(true);
         return Ok(hit);
     }
-    if let Some(f) = progress {
-        f(Progress::Grouping {
-            backend: backend.name().to_string(),
-            cached: false,
-        });
-    }
+    report(false);
     let response = backend.complete(prompt)?;
-    if let Some(dir) = cache_dir {
-        cache::store(dir, &key, &response)?;
-    }
+    cache.put(&key, &response)?;
     Ok(response)
 }

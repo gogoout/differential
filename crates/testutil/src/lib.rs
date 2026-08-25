@@ -110,6 +110,7 @@ use differential_engine::grouping::GroupingOptions;
 use differential_engine::llm::{LlmBackend, LlmError};
 use differential_engine::pipeline::run_grouped_pipeline;
 use differential_engine::schema::PlanDocument;
+use differential_engine::store::FsGroupingCache;
 
 pub type Responder = Box<dyn Fn(&[String]) -> String + Send + Sync>;
 
@@ -193,6 +194,10 @@ pub fn grouped_with_cache(
     backend: &dyn LlmBackend,
     cache_dir: Option<&std::path::Path>,
 ) -> PlanDocument {
+    let cache = match cache_dir {
+        Some(dir) => FsGroupingCache::at(dir.to_path_buf()),
+        None => FsGroupingCache::disabled(),
+    };
     let out = run_grouped_pipeline(
         &r.repo(),
         base,
@@ -201,10 +206,9 @@ pub fn grouped_with_cache(
         &Config::default(),
         &LanguageRegistry::builtin(),
         &GroupingOptions {
-            backend: Some(backend),
-            cache_dir,
+            backend,
+            cache: &cache,
             progress: None,
-            cancel: None,
         },
     )
     .unwrap();

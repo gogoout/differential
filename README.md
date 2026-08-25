@@ -116,10 +116,10 @@ renderer consumes:
 
 ```rust
 use differential_engine::{gitio::Repo, config::Config, lang::LanguageRegistry,
-                          resolve_range, run_pipeline};
+                          store::OsConfigSource, resolve_range, run_pipeline};
 
 let repo = Repo::open(path)?;
-let config = Config::load(repo.root(), None)?;
+let config = Config::load(&OsConfigSource, repo.root(), None, None)?;
 let src = resolve_range(&repo, &["main..feature"])?;   // a ReviewSource
 let out = run_pipeline(&repo, &src.base, &src.head, src.kind, &config,
                        &LanguageRegistry::builtin())?;

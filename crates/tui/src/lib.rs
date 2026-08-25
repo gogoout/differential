@@ -23,6 +23,7 @@ use anyhow::Context;
 use crossterm::event::{self, Event};
 use differential_engine::gitio::Repo;
 use differential_engine::grouping::Progress;
+use differential_engine::store::FsReviewStore;
 use differential_engine::{PipelineOutput, ReviewSession};
 
 use app::{App, Effect};
@@ -116,13 +117,10 @@ where
         .out
         .document
         .context("invariants failed; nothing to review")?;
-    let session = ReviewSession::open(
-        repo,
-        &prepared.review_base,
-        &prepared.head_spec,
-        doc,
-        prepared.out.view,
-    )?;
+    // The renderer is an adapter: it composes the concrete store rather than
+    // carrying a generic parameter for a choice it never makes.
+    let store = FsReviewStore::for_review(repo, &prepared.review_base, &prepared.head_spec)?;
+    let session = ReviewSession::open(store, doc, prepared.out.view)?;
     let factory = RowFactory::new(
         repo.clone(),
         prepared.out.base.clone(),

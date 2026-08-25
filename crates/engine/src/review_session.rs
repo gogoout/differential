@@ -7,17 +7,17 @@
 //! without losing anything, and never touches the store itself.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 
 use crate::schema;
 
 use crate::EngineError;
 use crate::model::DiffView;
 use crate::plan;
-use crate::review_state::{Anchor, Finding, ReviewState, ReviewStore, reanchor};
+use crate::ports::ReviewStore;
+use crate::review_state::{Anchor, Finding, ReviewState, reanchor};
 
-pub struct ReviewSession {
-    store: ReviewStore,
+pub struct ReviewSession<S: ReviewStore> {
+    store: S,
     doc: schema::PlanDocument,
     /// Hunk BYTES. Not to be confused with `plan`, which is the document's
     /// arithmetic — see `view()` and `plan()`.
@@ -28,39 +28,17 @@ pub struct ReviewSession {
     findings: Vec<Finding>,
 }
 
-impl ReviewSession {
+impl<S: ReviewStore> ReviewSession<S> {
     /// Open (or resume) the review identified by `(review_base, head_spec)`:
     /// persist the plan, load and re-anchor findings, load state.
     ///
     /// `review_base`/`head_spec` are the review's IDENTITY, not necessarily
     /// the diff endpoints: reviewing uncommitted changes keys on the HEAD sha
     /// plus a stable literal while the synthesized trees churn.
-    pub fn open<L: crate::ports::RepoLayout>(
-        layout: &L,
-        review_base: &str,
-        head_spec: &str,
-        doc: schema::PlanDocument,
-        view: DiffView,
-    ) -> Result<Self, EngineError> {
-        let store = ReviewStore::open(layout, review_base, head_spec)?;
-        Self::from_store(store, doc, view)
-    }
-
-    /// Test/tooling entry: open at an explicit directory.
-    pub fn open_at(
-        dir: PathBuf,
-        doc: schema::PlanDocument,
-        view: DiffView,
-    ) -> Result<Self, EngineError> {
-        Self::from_store(ReviewStore::open_at(dir)?, doc, view)
-    }
-
-    fn from_store(
-        store: ReviewStore,
-        doc: schema::PlanDocument,
-        view: DiffView,
-    ) -> Result<Self, EngineError> {
-        let plan_hash = store.save_plan(&doc)?;
+    pub fn open(store: S, doc: schema::PlanDocument, view: DiffView) -> Result<Self, EngineError> {
+        let json = doc.to_json()?;
+        let plan_hash = plan::plan_hash(&json);
+        store.save_plan(&plan_hash, &json)?;
         let mut findings = store.load_findings()?;
         reanchor(&mut findings, &doc, &view, &plan_hash);
         store.save_findings(&findings)?;
@@ -216,6 +194,7 @@ impl ReviewSession {
             .map(|l| String::from_utf8_lossy(l).into_owned())
             .unwrap_or_default();
         let finding = Finding::new(
+            crate::review_state::now_unix(),
             body,
             self.plan_hash.clone(),
             Anchor {

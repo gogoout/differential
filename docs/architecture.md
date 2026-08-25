@@ -68,7 +68,7 @@ The report is honest about the saving: skim exemplars still get read, so documen
 
 | path | what |
 |---|---|
-| `crates/engine` | the backend: git io, diff parsing, byte-exact applier, shape classes, language registry, grouping, ordering, invariants, review sessions — plus `engine::schema` (the frozen JSON contract, serde-only), `engine::plan` (shared domain policy over the schema), `engine::ports` (the traits domain owns, implemented by `gitio`) and `engine::llm` (the backend abstraction, tools denied) |
+| `crates/engine` | the backend: git io, diff parsing, byte-exact applier, shape classes, language registry, grouping, ordering, invariants, review sessions — plus `engine::schema` (the frozen JSON contract, serde-only), `engine::plan` (shared domain policy over the schema), `engine::ports` (the traits domain owns) and `engine::store` (their filesystem adapters, alongside `gitio`) and `engine::llm` (the backend abstraction, tools denied) |
 | `crates/stack` | the shadow-branch renderer — the diff as a synthetic commit stack |
 | `crates/tui` | the terminal reviewer (vendored tuicr/lumen pieces live here) |
 | `crates/cli` | the application layer: the `dfr` / `differential` binaries, argument parsing and dispatch only |
