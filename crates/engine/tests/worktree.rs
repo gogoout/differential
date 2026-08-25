@@ -4,6 +4,7 @@
 use differential_engine::config::Config;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::run_pipeline;
+use differential_engine::ports::ObjectReader;
 use differential_engine::schema::SourceKind;
 use differential_engine::worktree::{index_tree, worktree_tree};
 use differential_testutil::{TestRepo, assert_all_ok};

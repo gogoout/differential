@@ -8,67 +8,55 @@
 //! tautology), and submodules are staged as gitlinks from the pseudo-hunk's
 //! commit id.
 
-use std::ffi::OsStr;
-
 use crate::EngineError;
 use crate::apply::apply_hunks;
-use crate::gitio::Repo;
 use crate::model::{DiffView, Hunk};
 use crate::plan;
-
-pub(crate) const ZERO_OID: &str = "0000000000000000000000000000000000000000";
-
-/// One `update-index -z --index-info` record: `<mode> <oid>\t<path>`.
-pub fn index_entry(mode: &str, oid: &str, path: &[u8]) -> Vec<u8> {
-    let mut line = format!("{mode} {oid}\t").into_bytes();
-    line.extend_from_slice(path);
-    line
-}
-
-/// Removal record (mode 0).
-pub fn removal_entry(path: &[u8]) -> Vec<u8> {
-    index_entry("0", ZERO_OID, path)
-}
+use crate::ports::{IndexEntry, IndexSession, ObjectReader, ObjectWriter, TreeBuilder};
 
 /// Stage every file's final state on top of `base` and return the written tree.
-pub fn build_tree(repo: &Repo, base: &str, view: &DiffView) -> Result<String, EngineError> {
-    let idx = tempfile::NamedTempFile::new().map_err(|e| EngineError::GitSpawn { source: e })?;
-    let env: [(&str, &OsStr); 1] = [("GIT_INDEX_FILE", idx.path().as_os_str())];
-
-    repo.run_env(["read-tree", base], None, &env)?;
-
-    // One bulk `update-index -z --index-info` feed: quoting-proof and fast.
-    let mut feed: Vec<u8> = Vec::new();
+pub fn build_tree<G>(git: &G, base: &str, view: &DiffView) -> Result<String, EngineError>
+where
+    G: ObjectReader + ObjectWriter + TreeBuilder,
+{
+    let mut session = git.begin_from_tree(base)?;
+    // One batch: quoting-proof, and one subprocess instead of one per file.
+    let mut entries = Vec::with_capacity(view.files.len());
     for f in &view.files {
-        let entry = staging_entry(repo, base, view, f)?;
-        feed.extend_from_slice(&entry);
-        feed.push(0);
+        entries.push(staging_entry(git, base, view, f)?);
     }
-    repo.run_env(["update-index", "-z", "--index-info"], Some(&feed), &env)?;
-
-    let out = repo.run_env(["write-tree"], None, &env)?;
-    Ok(String::from_utf8_lossy(&out).trim().to_string())
+    session.stage(&entries)?;
+    session.write_tree()
 }
 
 /// Compute one file's index record: decide with `plan::final_state`, then
 /// perform whatever that decision implies.
-fn staging_entry(
-    repo: &Repo,
+fn staging_entry<G>(
+    git: &G,
     base: &str,
     view: &DiffView,
     f: &crate::model::FileChange,
-) -> Result<Vec<u8>, EngineError> {
-    let path = f.path.as_slice();
+) -> Result<IndexEntry, EngineError>
+where
+    G: ObjectReader + ObjectWriter,
+{
+    let path = f.path.clone();
     match plan::final_state(f)? {
-        plan::Staged::Remove => Ok(removal_entry(path)),
-        plan::Staged::Recorded { mode, oid } => Ok(index_entry(mode, oid, path)),
+        plan::Staged::Remove => Ok(IndexEntry::Remove { path }),
+        plan::Staged::Recorded { mode, oid } => Ok(IndexEntry::Set {
+            mode: mode.to_string(),
+            oid: oid.to_string(),
+            path,
+        }),
         plan::Staged::Apply { mode } => {
             let hunks: Vec<&Hunk> = f.hunks.iter().map(|&i| &view.hunks[i]).collect();
-            let base_content = repo.blob(base, path)?;
+            let base_content = git.blob(base, &path)?;
             let content = apply_hunks(base_content.as_deref(), &hunks);
-            let out = repo.run(["hash-object", "-w", "--stdin"], Some(&content))?;
-            let oid = String::from_utf8_lossy(&out).trim().to_string();
-            Ok(index_entry(mode, &oid, path))
+            Ok(IndexEntry::Set {
+                mode: mode.to_string(),
+                oid: git.write_blob(&content)?,
+                path,
+            })
         }
     }
 }

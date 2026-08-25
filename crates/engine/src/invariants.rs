@@ -2,8 +2,8 @@
 //! emitted; every one caught a real bug during prototype validation.
 
 use crate::EngineError;
-use crate::gitio::Repo;
 use crate::model::{DiffView, Disposition, Hunk};
+use crate::ports::{ObjectReader, ObjectWriter, RecountSource, TreeBuilder, TreeResolver};
 use crate::tree::build_tree;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -41,12 +41,15 @@ impl InvariantReport {
 
 /// Run invariants 1–4. Invariant 1 (applier fidelity) is asserted BEFORE the
 /// tree is built; if it fails, nothing is built on top of it.
-pub fn check_all(
-    repo: &Repo,
+pub fn check_all<G>(
+    git: &G,
     base: &str,
     head: &str,
     view: &DiffView,
-) -> Result<InvariantReport, EngineError> {
+) -> Result<InvariantReport, EngineError>
+where
+    G: ObjectReader + ObjectWriter + TreeResolver + TreeBuilder + RecountSource,
+{
     // ---- Invariant 1: applier fidelity ------------------------------------
     let mut applier_total = 0usize;
     let mut applier_ok = 0usize;
@@ -58,7 +61,7 @@ pub fn check_all(
             Fidelity::Skip => continue,
             Fidelity::ByOid(oid) => {
                 // The recorded object must exist in the odb.
-                repo.run(["cat-file", "-e", oid], None)?;
+                git.require_object(oid)?;
                 binary_checked += 1;
                 continue;
             }
@@ -70,12 +73,12 @@ pub fn check_all(
         }
         applier_total += 1;
         let hunks: Vec<&Hunk> = f.hunks.iter().map(|&i| &view.hunks[i]).collect();
-        let base_content = repo.blob(base, &f.path)?;
+        let base_content = git.blob(base, &f.path)?;
         let got = crate::apply::apply_hunks(base_content.as_deref(), &hunks);
         let want = if f.disposition == Disposition::Deleted {
             Vec::new()
         } else {
-            repo.blob(head, &f.path)?.unwrap_or_default()
+            git.blob(head, &f.path)?.unwrap_or_default()
         };
         if got == want {
             applier_ok += 1;
@@ -92,12 +95,12 @@ pub fn check_all(
     // ---- Invariant 2: hunk accounting --------------------------------------
     let accounting_ok = check_accounting(view);
 
-    let head_tree = repo.rev_parse_raw(&format!("{head}^{{tree}}"))?;
+    let head_tree = git.tree_of(head)?;
 
     // ---- Invariant 3: non-tautological tree assertion ----------------------
     // Refuse to build on a broken applier (the prototype's rule).
     let (built_tree, tree_ok) = if may_build_tree(applier_total, applier_ok, &mismatches) {
-        let built = build_tree(repo, base, view)?;
+        let built = build_tree(git, base, view)?;
         let ok = built == head_tree;
         (Some(built), ok)
     } else {
@@ -109,10 +112,9 @@ pub fn check_all(
     // deliberately not the parser.
     let (recount, recount_ok) = match &built_tree {
         Some(t) => {
-            let out = repo.run(
-                ["diff-tree", "-r", "-U0", "--no-renames", base, t.as_str()],
-                None,
-            )?;
+            // Invariant 4's own port, never enumeration's: a change to one
+            // cannot move both sides of this comparison.
+            let out = git.recount_patch(base, t.as_str())?;
             let n = dumb_hunk_count(&out);
             (n, n == view.hunks.len())
         }

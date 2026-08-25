@@ -17,7 +17,6 @@ use sha1::{Digest, Sha1};
 use crate::schema;
 
 use crate::EngineError;
-use crate::gitio::Repo;
 use crate::model::DiffView;
 
 // Review identity and class keys are domain policy and live in `plan`; they
@@ -108,12 +107,12 @@ pub struct ReviewStore {
 }
 
 impl ReviewStore {
-    pub fn open(repo: &Repo, base_sha: &str, head_spec: &str) -> Result<Self, EngineError> {
-        let dir = repo
-            .common_dir()?
-            .join("differential")
-            .join("reviews")
-            .join(review_id(base_sha, head_spec));
+    pub fn open<L: crate::ports::RepoLayout>(
+        layout: &L,
+        base_sha: &str,
+        head_spec: &str,
+    ) -> Result<Self, EngineError> {
+        let dir = crate::plan::review_dir(&layout.common_dir()?, &review_id(base_sha, head_spec));
         Self::open_at(dir)
     }
 

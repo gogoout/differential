@@ -12,7 +12,6 @@ use std::path::PathBuf;
 use crate::schema;
 
 use crate::EngineError;
-use crate::gitio::Repo;
 use crate::model::DiffView;
 use crate::plan;
 use crate::review_state::{Anchor, Finding, ReviewState, ReviewStore, reanchor};
@@ -36,14 +35,14 @@ impl ReviewSession {
     /// `review_base`/`head_spec` are the review's IDENTITY, not necessarily
     /// the diff endpoints: reviewing uncommitted changes keys on the HEAD sha
     /// plus a stable literal while the synthesized trees churn.
-    pub fn open(
-        repo: &Repo,
+    pub fn open<L: crate::ports::RepoLayout>(
+        layout: &L,
         review_base: &str,
         head_spec: &str,
         doc: schema::PlanDocument,
         view: DiffView,
     ) -> Result<Self, EngineError> {
-        let store = ReviewStore::open(repo, review_base, head_spec)?;
+        let store = ReviewStore::open(layout, review_base, head_spec)?;
         Self::from_store(store, doc, view)
     }
 

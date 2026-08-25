@@ -725,7 +725,7 @@ fn picker_reads_real_branch_and_tag_names() {
     // A remote-tracking ref, without needing a remote.
     r.git(&["update-ref", "refs/remotes/origin/main", &first]);
 
-    let refs = differential_tui::picker::ref_names(&r.repo());
+    let refs = differential_engine::ports::CommitHistory::refs_by_commit(&r.repo());
     let names = refs.get(&first).expect("refs for the commit");
     for want in ["main", "feature", "v0.1.0", "v0.2.0", "origin/main"] {
         assert!(

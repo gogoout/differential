@@ -7,10 +7,13 @@ use crate::schema;
 use crate::EngineError;
 use crate::config::Config;
 use crate::document::{SourceInfo, assemble};
-use crate::gitio::Repo;
 use crate::invariants::{InvariantReport, check_all};
 use crate::lang::LanguageRegistry;
 use crate::plan;
+use crate::ports::{
+    AttributeSource, DiffSource, ObjectReader, ObjectWriter, RangeResolver, RecountSource,
+    TreeBuilder, TreeResolver, WorkingCopy,
+};
 
 pub struct PipelineOutput {
     pub base: String,
@@ -30,12 +33,15 @@ pub struct PipelineOutput {
 /// separate revs. The spec is parsed once, in `plan::parse_range`, so the
 /// endpoints and the review's identity cannot disagree about which side is the
 /// head.
-pub fn resolve_range(repo: &Repo, spec: &[&str]) -> Result<plan::ReviewSource, EngineError> {
+pub fn resolve_range<G: RangeResolver>(
+    git: &G,
+    spec: &[&str],
+) -> Result<plan::ReviewSource, EngineError> {
     let parsed = plan::parse_range(spec)?;
     let head_spec = parsed.head_spec().to_string();
     let (base, head) = match &parsed {
         plan::RangeSpec::Direct { base, head } => (base.clone(), head.clone()),
-        plan::RangeSpec::MergeBase { a, b } => (repo.merge_base(a, b)?, b.clone()),
+        plan::RangeSpec::MergeBase { a, b } => (git.merge_base(a, b)?, b.clone()),
     };
     Ok(plan::ReviewSource::range(base, head, head_spec))
 }
@@ -46,11 +52,14 @@ pub fn resolve_range(repo: &Repo, spec: &[&str]) -> Result<plan::ReviewSource, E
 /// With it, the head is a snapshot of the worktree and the review is filed
 /// under the base sha plus a stable literal, so it survives that snapshot tree
 /// churning under it on every edit. Without it, the head is `HEAD`.
-pub fn resolve_picked(
-    repo: &Repo,
+pub fn resolve_picked<G>(
+    git: &G,
     base: String,
     include_worktree: bool,
-) -> Result<plan::ReviewSource, EngineError> {
+) -> Result<plan::ReviewSource, EngineError>
+where
+    G: TreeBuilder + WorkingCopy,
+{
     if !include_worktree {
         return Ok(plan::ReviewSource::range(
             base,
@@ -58,7 +67,7 @@ pub fn resolve_picked(
             HEAD_SPEC.to_string(),
         ));
     }
-    let head = crate::worktree::worktree_tree(repo)?;
+    let head = crate::worktree::worktree_tree(git)?;
     Ok(plan::ReviewSource {
         identity_base: Some(base.clone()),
         base,
@@ -78,15 +87,25 @@ const WORKTREE_SPEC: &str = "WORKTREE";
 /// Config is consulted ONLY for classification hints; enumeration is total and
 /// runs before config is even looked at (ADR 0012). Languages (ADR 0015) only
 /// influence classification, never enumeration.
-pub fn run_pipeline(
-    repo: &Repo,
+pub fn run_pipeline<G>(
+    git: &G,
     base_rev: &str,
     head_rev: &str,
     kind: schema::SourceKind,
     config: &Config,
     langs: &LanguageRegistry,
-) -> Result<PipelineOutput, EngineError> {
-    run_core(repo, base_rev, head_rev, kind, config, langs)
+) -> Result<PipelineOutput, EngineError>
+where
+    G: RangeResolver
+        + DiffSource
+        + AttributeSource
+        + ObjectReader
+        + ObjectWriter
+        + TreeResolver
+        + TreeBuilder
+        + RecountSource,
+{
+    run_core(git, base_rev, head_rev, kind, config, langs)
 }
 
 /// Core pipeline + the grouping stage (stages: enumerate, classify, group).
@@ -95,17 +114,27 @@ pub fn run_pipeline(
 /// grouping runs in-process with internal access to the diff view. On any
 /// invariant failure the grouping stage is skipped and `document` is `None`,
 /// exactly like the core pipeline.
-pub fn run_grouped_pipeline(
-    repo: &Repo,
+pub fn run_grouped_pipeline<G>(
+    git: &G,
     base_rev: &str,
     head_rev: &str,
     kind: schema::SourceKind,
     config: &Config,
     langs: &LanguageRegistry,
     grouping: &crate::grouping::GroupingOptions,
-) -> Result<PipelineOutput, EngineError> {
+) -> Result<PipelineOutput, EngineError>
+where
+    G: RangeResolver
+        + DiffSource
+        + AttributeSource
+        + ObjectReader
+        + ObjectWriter
+        + TreeResolver
+        + TreeBuilder
+        + RecountSource,
+{
     let mut out = run_core_with_progress(
-        repo,
+        git,
         base_rev,
         head_rev,
         kind,
@@ -165,67 +194,59 @@ fn backend_from_config(
     }
 }
 
-fn run_core(
-    repo: &Repo,
+fn run_core<G>(
+    git: &G,
     base_rev: &str,
     head_rev: &str,
     kind: schema::SourceKind,
     config: &Config,
     langs: &LanguageRegistry,
-) -> Result<PipelineOutput, EngineError> {
-    run_core_with_progress(repo, base_rev, head_rev, kind, config, langs, None)
+) -> Result<PipelineOutput, EngineError>
+where
+    G: RangeResolver
+        + DiffSource
+        + AttributeSource
+        + ObjectReader
+        + ObjectWriter
+        + TreeResolver
+        + TreeBuilder
+        + RecountSource,
+{
+    run_core_with_progress(git, base_rev, head_rev, kind, config, langs, None)
 }
 
-fn run_core_with_progress(
-    repo: &Repo,
+fn run_core_with_progress<G>(
+    git: &G,
     base_rev: &str,
     head_rev: &str,
     kind: schema::SourceKind,
     config: &Config,
     langs: &LanguageRegistry,
     progress: Option<&(dyn Fn(crate::grouping::Progress) + Send + Sync)>,
-) -> Result<PipelineOutput, EngineError> {
+) -> Result<PipelineOutput, EngineError>
+where
+    G: RangeResolver
+        + DiffSource
+        + AttributeSource
+        + ObjectReader
+        + ObjectWriter
+        + TreeResolver
+        + TreeBuilder
+        + RecountSource,
+{
     if let Some(f) = progress {
         f(crate::grouping::Progress::Enumerating);
     }
     // Commits normally; raw tree oids for uncommitted-state reviews
     // (ADR 0017) — every later stage treats the endpoints as trees anyway.
-    let base = repo.rev_parse_commit_or_tree(base_rev)?;
-    let head = repo.rev_parse_commit_or_tree(head_rev)?;
+    let base = git.resolve_endpoint(base_rev)?;
+    let head = git.resolve_endpoint(head_rev)?;
 
-    // FROZEN ARGV. These three byte formats are what the parsers — and
-    // ultimately the frozen normaliser — were validated against; a changed
-    // flag changes shape hashes and breaks real-corpus parity (ADR 0002).
-    let raw_records = repo.run(
-        [
-            "diff-tree",
-            "-r",
-            "-z",
-            "--raw",
-            "--full-index",
-            "--no-renames",
-            &base,
-            &head,
-        ],
-        None,
-    )?;
-    let canonical_patch = repo.run(
-        [
-            "diff-tree",
-            "-r",
-            "-U0",
-            "--no-renames",
-            "--no-color",
-            "--no-ext-diff",
-            &base,
-            &head,
-        ],
-        None,
-    )?;
-    let rename_records = repo.run(
-        ["diff-tree", "-r", "-M", "-z", "--name-status", &base, &head],
-        None,
-    )?;
+    // The argv for these three is FROZEN and lives in the adapter, where a
+    // reviewer can see all of it at once (ADR 0002).
+    let raw_records = git.raw_records(&base, &head)?;
+    let canonical_patch = git.canonical_patch(&base, &head)?;
+    let rename_records = git.rename_records(&base, &head)?;
 
     // Enumeration is total and knows nothing about config (ADR 0012) — see
     // `plan::build_view`'s parameter list, which is where that is enforced.
@@ -236,14 +257,14 @@ fn run_core_with_progress(
     })?;
 
     // Only now do config and languages get a say, and only over description.
-    let attr_marked = attr_marked_paths(repo, config, &view)?;
+    let attr_marked = attr_marked_paths(git, config, &view)?;
     if let Some(f) = progress {
         f(crate::grouping::Progress::Classifying);
     }
     let part = plan::classify(&mut view, config, &attr_marked, langs);
 
     // Invariants 1–4; no document on violation.
-    let report = check_all(repo, &base, &head, &view)?;
+    let report = check_all(git, &base, &head, &view)?;
     let document = if report.all_ok() {
         Some(assemble(
             &view,
@@ -271,28 +292,19 @@ fn run_core_with_progress(
 /// Paths marked generated by any of the configured gitattributes names.
 /// Note: `check-attr` consults the worktree/index `.gitattributes`, not the
 /// reviewed revisions — acceptable for a hint that never affects enumeration.
-fn attr_marked_paths(
-    repo: &Repo,
+fn attr_marked_paths<G: AttributeSource>(
+    git: &G,
     config: &Config,
     view: &crate::model::DiffView,
 ) -> Result<HashSet<Vec<u8>>, EngineError> {
     let mut marked = HashSet::new();
-    if view.files.is_empty() {
-        return Ok(marked);
-    }
-    let mut stdin: Vec<u8> = Vec::new();
-    for f in &view.files {
-        stdin.extend_from_slice(&f.path);
-        stdin.push(0);
-    }
+    let paths: Vec<&[u8]> = view.files.iter().map(|f| f.path.as_slice()).collect();
     for attr in &config.attributes {
-        let out = repo.run(["check-attr", "-z", "--stdin", attr.as_str()], Some(&stdin))?;
-        // -z output: path NUL attr NUL value NUL ...
-        let fields: Vec<&[u8]> = out.split(|&b| b == 0).collect();
-        for triple in fields.chunks_exact(3) {
-            let (path, value) = (triple[0], triple[2]);
-            if plan::attr_marks_generated(value) {
-                marked.insert(path.to_vec());
+        for answer in git.check_attr(attr, &paths)? {
+            // Which attributes to ask about is config's business; what the
+            // answers mean is domain policy.
+            if plan::attr_marks_generated(&answer.value) {
+                marked.insert(answer.path);
             }
         }
     }

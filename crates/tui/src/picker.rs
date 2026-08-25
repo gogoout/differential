@@ -5,11 +5,11 @@
 //! bar marks the rows inside the selected range, so what is covered is
 //! visible while choosing.
 
-use std::collections::HashMap;
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode};
 use differential_engine::gitio::Repo;
+use differential_engine::ports::{CommitHistory, CommitSummary};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -25,85 +25,16 @@ pub struct PickedSource {
     pub include_worktree: bool,
 }
 
+/// A commit as the picker shows it: the engine's summary plus the ref names
+/// pointing at it, which are decoration the picker adds.
 struct CommitEntry {
-    sha: String,
-    short: String,
-    subject: String,
-    author: String,
+    summary: CommitSummary,
     /// Branch/tag names pointing at this commit, for orientation.
     refs: Vec<String>,
 }
 
-/// `rev-list --no-commit-header --format=%H%x00%h%x00%s%x00%an` output: one
-/// record per line, fields NUL-separated (subjects are single-line by
-/// definition, so the line split is safe; bytes decode lossily).
-fn parse_rev_list(bytes: &[u8]) -> Vec<CommitEntry> {
-    bytes
-        .split(|&b| b == b'\n')
-        .filter(|l| !l.is_empty())
-        .filter_map(|line| {
-            let fields: Vec<String> = line
-                .split(|&b| b == 0)
-                .map(|f| String::from_utf8_lossy(f).into_owned())
-                .collect();
-            match fields.as_slice() {
-                [sha, short, subject, author] => Some(CommitEntry {
-                    sha: sha.clone(),
-                    short: short.clone(),
-                    subject: subject.clone(),
-                    author: author.clone(),
-                    refs: Vec::new(),
-                }),
-                _ => None,
-            }
-        })
-        .collect()
-}
-
-/// `for-each-ref --format='%(objectname)%00%(*objectname)%00%(refname:short)'`
-/// output → sha -> ref names. Plumbing, so unaffected by log.decorate config;
-/// annotated tags carry the peeled commit in the second field.
-///
-/// NOTE the escape: for-each-ref's format language spells NUL `%00`. `%x00`
-/// is a rev-list/log spelling and passes through as literal text here, which
-/// is exactly how this silently produced no decorations at all.
-fn parse_refs(bytes: &[u8]) -> HashMap<String, Vec<String>> {
-    let mut out: HashMap<String, Vec<String>> = HashMap::new();
-    for line in bytes.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
-        let fields: Vec<String> = line
-            .split(|&b| b == 0)
-            .map(|f| String::from_utf8_lossy(f).into_owned())
-            .collect();
-        let [oid, peeled, name] = fields.as_slice() else {
-            continue;
-        };
-        if name.is_empty() {
-            continue;
-        }
-        // An annotated tag's own object id is the tag; the commit it points at
-        // is the peeled one.
-        let target = if peeled.is_empty() { oid } else { peeled };
-        out.entry(target.clone()).or_default().push(name.clone());
-    }
-    out
-}
-
-/// Branch and tag names by commit sha. An unreadable ref list costs
-/// decoration, never the picker.
-pub fn ref_names(repo: &Repo) -> HashMap<String, Vec<String>> {
-    repo.run(
-        [
-            "for-each-ref",
-            "--format=%(objectname)%00%(*objectname)%00%(refname:short)",
-            "refs/heads",
-            "refs/tags",
-            "refs/remotes",
-        ],
-        None,
-    )
-    .map(|out| parse_refs(&out))
-    .unwrap_or_default()
-}
+/// How many commits the picker offers as bases.
+const RECENT: usize = 30;
 
 /// Open the picker inside an existing terminal session. `Ok(None)` =
 /// cancelled.
@@ -112,26 +43,23 @@ pub fn pick_source(
     repo: &Repo,
 ) -> anyhow::Result<Option<PickedSource>> {
     // An unborn HEAD has nothing to diff against.
-    if repo.rev_parse("HEAD").is_err() {
+    if !repo.has_commits() {
         anyhow::bail!("no commits yet — commit something first, then review");
     }
     // HEAD is a legitimate base: with the box ticked it means "just my
     // uncommitted work", so it is NOT skipped.
-    let raw = repo.run(
-        [
-            "rev-list",
-            "--max-count=30",
-            "--no-commit-header",
-            "--format=%H%x00%h%x00%s%x00%an",
-            "HEAD",
-        ],
-        None,
-    )?;
-    let mut commits = parse_rev_list(&raw);
+    let mut commits: Vec<CommitEntry> = repo
+        .recent_commits("HEAD", RECENT)?
+        .into_iter()
+        .map(|summary| CommitEntry {
+            summary,
+            refs: Vec::new(),
+        })
+        .collect();
 
-    let refs = ref_names(repo);
+    let refs = repo.refs_by_commit();
     for c in &mut commits {
-        if let Some(names) = refs.get(&c.sha) {
+        if let Some(names) = refs.get(&c.summary.sha) {
             c.refs = names.clone();
         }
     }
@@ -162,7 +90,7 @@ pub fn pick_source(
             KeyCode::Enter => {
                 if let Some(c) = commits.get(state.selected) {
                     picked = Some(PickedSource {
-                        base: c.sha.clone(),
+                        base: c.summary.sha.clone(),
                         include_worktree: state.include_worktree,
                     });
                 }
@@ -259,7 +187,7 @@ fn draw(frame: &mut ratatui::Frame, commits: &[CommitEntry], state: &mut PickerS
         };
         let mut spans = vec![
             Span::styled(gutter, bar),
-            Span::styled(format!("{}  ", c.short), style),
+            Span::styled(format!("{}  ", c.summary.short), style),
         ];
         if !c.refs.is_empty() {
             spans.push(Span::styled(
@@ -269,9 +197,9 @@ fn draw(frame: &mut ratatui::Frame, commits: &[CommitEntry], state: &mut PickerS
                     .add_modifier(Modifier::BOLD),
             ));
         }
-        spans.push(Span::styled(format!("{}  ", c.subject), style));
+        spans.push(Span::styled(format!("{}  ", c.summary.subject), style));
         spans.push(Span::styled(
-            format!("({})", c.author),
+            format!("({})", c.summary.author),
             Style::default().fg(THEME.gutter_fg),
         ));
         if at_base {
@@ -296,7 +224,7 @@ fn draw(frame: &mut ratatui::Frame, commits: &[CommitEntry], state: &mut PickerS
     };
     let base = commits
         .get(state.selected)
-        .map(|c| c.short.as_str())
+        .map(|c| c.summary.short.as_str())
         .unwrap_or("?");
     let empty = if is_empty_range(state.selected, state.include_worktree) {
         " — nothing to review "
@@ -316,48 +244,6 @@ fn draw(frame: &mut ratatui::Frame, commits: &[CommitEntry], state: &mut PickerS
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_refs, parse_rev_list};
-
-    #[test]
-    fn parses_nul_separated_records() {
-        let raw = b"aaaa\0a1\0fix the thing\0Alice\nbbbb\0b2\0subject with \xe2\x9c\x93 unicode\0B\xc3\xb6b\n";
-        let entries = parse_rev_list(raw);
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].sha, "aaaa");
-        assert_eq!(entries[0].short, "a1");
-        assert_eq!(entries[0].subject, "fix the thing");
-        assert_eq!(entries[0].author, "Alice");
-        assert!(entries[0].refs.is_empty());
-        assert_eq!(entries[1].subject, "subject with ✓ unicode");
-        assert_eq!(entries[1].author, "Böb");
-    }
-
-    #[test]
-    fn tolerates_empty_and_malformed_lines() {
-        assert!(parse_rev_list(b"").is_empty());
-        assert!(parse_rev_list(b"\n\n").is_empty());
-        assert!(parse_rev_list(b"only-two\0fields\n").is_empty());
-    }
-
-    #[test]
-    fn refs_group_by_commit_and_peel_annotated_tags() {
-        // Lightweight ref: own oid is the commit. Annotated tag: the peeled
-        // field carries the commit.
-        let raw = b"aaaa\0\0main\naaaa\0\0origin/main\ntagobj\0aaaa\0v1.0\nbbbb\0\0feature\n";
-        let refs = parse_refs(raw);
-        assert_eq!(
-            refs.get("aaaa").unwrap(),
-            &vec![
-                "main".to_string(),
-                "origin/main".to_string(),
-                "v1.0".to_string()
-            ]
-        );
-        assert_eq!(refs.get("bbbb").unwrap(), &vec!["feature".to_string()]);
-        // The tag object's own id is never a key.
-        assert!(!refs.contains_key("tagobj"));
-    }
-
     #[test]
     fn the_range_excludes_the_base_commit() {
         // base..head is exclusive: with row 3 picked, rows 0-2 (newer
@@ -378,14 +264,5 @@ mod tests {
         // ...unless uncommitted work is included.
         assert!(!super::is_empty_range(0, true));
         assert!(!super::is_empty_range(1, false));
-    }
-
-    #[test]
-    fn refs_tolerate_junk() {
-        assert!(parse_refs(b"").is_empty());
-        assert!(parse_refs(b"\n\n").is_empty());
-        assert!(parse_refs(b"two\0fields\n").is_empty());
-        // An empty ref name is skipped rather than stored.
-        assert!(parse_refs(b"aaaa\0\0\n").is_empty());
     }
 }
