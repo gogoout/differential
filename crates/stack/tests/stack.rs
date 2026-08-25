@@ -5,7 +5,7 @@ use differential_engine::config::Config;
 use differential_engine::grouping::GroupingOptions;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::llm::LlmBackend;
-use differential_engine::schema::SourceKind;
+use differential_engine::plan::ReviewSource;
 use differential_stack::run_stack_pipeline;
 use differential_stack::{StackOptions, StackResult};
 use differential_testutil::{FakeBackend, TestRepo, json_group};
@@ -13,9 +13,7 @@ use differential_testutil::{FakeBackend, TestRepo, json_group};
 fn stacked(r: &TestRepo, base: &str, head: &str, backend: &dyn LlmBackend) -> StackResult {
     let out = run_stack_pipeline(
         &r.repo(),
-        base,
-        head,
-        SourceKind::Range,
+        &ReviewSource::range(base.into(), head.into(), head.into()),
         &Config::default(),
         &LanguageRegistry::builtin(),
         &GroupingOptions {
@@ -233,9 +231,7 @@ fn custom_ref_name_is_honoured_and_rerun_is_idempotent() {
     let backend = focus_skim_backend();
     let out = run_stack_pipeline(
         &r.repo(),
-        &base,
-        &head,
-        SourceKind::Range,
+        &ReviewSource::range(base.clone(), head.clone(), head.clone()),
         &Config::default(),
         &LanguageRegistry::builtin(),
         &GroupingOptions {

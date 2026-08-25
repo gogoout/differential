@@ -120,8 +120,9 @@ use differential_engine::{gitio::Repo, config::Config, lang::LanguageRegistry,
 
 let repo = Repo::open(path)?;
 let config = Config::load(repo.root(), None)?;
-let (base, head, kind) = resolve_range(&repo, &["main..feature"])?;
-let out = run_pipeline(&repo, &base, &head, kind, &config, &LanguageRegistry::builtin())?;
+let src = resolve_range(&repo, &["main..feature"])?;   // a ReviewSource
+let out = run_pipeline(&repo, &src.base, &src.head, src.kind, &config,
+                       &LanguageRegistry::builtin())?;
 ```
 
 Full surface: [`spec/consumers.md`](spec/consumers.md).

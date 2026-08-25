@@ -51,14 +51,14 @@ fn main() -> ExitCode {
         Err(e) => return usage_error(&e.to_string()),
     };
     let spec: Vec<&str> = revs.iter().map(String::as_str).collect();
-    let (base, head, kind) = match resolve_range(&repo, &spec) {
-        Ok(t) => t,
+    let source = match resolve_range(&repo, &spec) {
+        Ok(s) => s,
         Err(e) => return usage_error(&e.to_string()),
     };
 
     let cache_dir = if use_cache {
         match repo.common_dir() {
-            Ok(d) => Some(d.join("differential").join("cache").join("grouping")),
+            Ok(d) => Some(differential_engine::plan::grouping_cache_dir(&d)),
             Err(e) => return usage_error(&e.to_string()),
         }
     } else {
@@ -67,9 +67,9 @@ fn main() -> ExitCode {
 
     let out = match run_grouped_pipeline(
         &repo,
-        &base,
-        &head,
-        kind,
+        &source.base,
+        &source.head,
+        source.kind,
         &config,
         &LanguageRegistry::builtin(),
         &GroupingOptions {
