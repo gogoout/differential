@@ -3,6 +3,13 @@
 A dedicated reviewer over the grouped, ordered document. Two panes: the reading plan and
 the diff for the selected entry.
 
+**Geometry is model state.** The event loop measures the terminal and pushes the pane
+heights into the model before any key is handled, so scrolling is arithmetic over a known
+height and drawing is a pure function of the model. A resize is folded in like any other
+event, in stream order — keys before and after it each see the geometry that was true when
+they were pressed. Row *contents* still compose their columns at draw time from the pane
+width, which is why a resize never rebuilds rows.
+
 **Reading plan.** Groups in rank order, each a small block: the group **id**, effort tier
 and label, then file count with added/removed line totals (in their own colours), the
 role, and `after: <ids>` naming the groups it follows — the id column is what makes those
