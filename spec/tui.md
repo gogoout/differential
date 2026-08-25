@@ -118,8 +118,10 @@ A crossed hunk carries a **dashed** edge and its owning group's **id and label**
 this group's reading list. The id is what the plan pane's rows and their `after:` lines are
 keyed by, so it is what turns "some other group" into a row you can go and look at. It is absorbed whole
 and costs no context budget, because showing half a change would be worse than showing
-none. `n`/`N` pass over it, but `space` marks it like any other hunk: marks key on class
-content and are shared across groups, so reading it here is reading it everywhere.
+none. `n`/`N` pass over it, since it is not on this reading list. `space` and `c` treat it like
+any other hunk: a reviewed mark keys on class content and a finding anchors on the hunk's
+digest, and both are group-independent — so reading it here is reading it everywhere, and
+a finding filed here is filed against the hunk itself rather than against this view of it.
 
 That a crossed hunk is a **change** segment, never flattened into context, is what keeps
 the numbers honest. Between two hunks the old/new line offset is constant, which is what

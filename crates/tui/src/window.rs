@@ -143,6 +143,13 @@ fn cut(start: u32, count: u32) -> Cut {
 /// `hunks` must be every hunk of the file in position order — including the
 /// ones this view does not list, because they are what bounds a window.
 /// `context` is the default either side; `expansion` adds to it per hunk.
+///
+/// `Expansion::crossed_up`/`crossed_down` count HUNKS to absorb, and they
+/// **saturate**: asking to cross further than there are hunks yields everything
+/// to that end of the file rather than panicking or wrapping. A reviewer only
+/// reaches a count by pressing `z` on a boundary that named the next hunk, so
+/// in practice they stay in range — but that is the caller's habit, not a
+/// precondition this function imposes, and it is total either way.
 pub fn plan(
     hunks: &[Candidate],
     expansion: &HashMap<usize, Expansion>,
@@ -620,6 +627,47 @@ mod tests {
 
     /// A hunk is absorbed whole and costs no context budget — showing half a
     /// change would be worse than showing none.
+    /// `crossed_*` is a count of hunks, and it saturates. The UI can only
+    /// reach a count by pressing `z` on a boundary that offered the next hunk,
+    /// so it never asks for more than exist — but that is the caller's habit,
+    /// and `plan` is total regardless of it.
+    #[test]
+    fn crossing_further_than_there_are_hunks_saturates() {
+        let a = entry(20, 2, 20, 2);
+        let b = entry(30, 2, 30, 2);
+        let hunks = [
+            shown(0, &a),
+            Candidate {
+                index: 1,
+                shown: false,
+                entry: &b,
+            },
+        ];
+        let absurd = HashMap::from([(
+            0,
+            Expansion {
+                crossed_up: 999,
+                crossed_down: 999,
+                ..Expansion::default()
+            },
+        )]);
+        let blocks = plan(&hunks, &absurd, 3, 100, 100);
+        assert_eq!(blocks.len(), 1, "everything lands in one block");
+        // Both hunks are in it, the far one marked foreign, and neither end
+        // claims there is another hunk beyond.
+        let changes: Vec<(usize, bool)> = blocks[0]
+            .segments
+            .iter()
+            .filter_map(|s| match s {
+                Segment::Change { hunk, foreign, .. } => Some((*hunk, *foreign)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(changes, vec![(0, false), (1, true)]);
+        assert_eq!(blocks[0].top.as_ref().and_then(|b| b.next), None);
+        assert_eq!(blocks[0].bottom.as_ref().and_then(|b| b.next), None);
+    }
+
     #[test]
     fn crossing_costs_no_context_budget() {
         let a = entry(20, 2, 20, 2);
