@@ -19,7 +19,7 @@ use tui_textarea::TextArea;
 use unicode_width::UnicodeWidthStr;
 
 use super::rows::{
-    DiffMode, Fill, GroupContext, Half, Row, RowContent, RowFactory, RowKind, RowsContext,
+    Border, DiffMode, Fill, GroupContext, Half, Row, RowContent, RowFactory, RowKind, RowsContext,
     build_dir_rows, build_file_rows, build_group_rows,
 };
 use super::theme::{THEME, Theme};
@@ -36,6 +36,13 @@ const SCROLL_MARGIN: usize = 3;
 /// and living inside the reserved gutter cell means moving the cursor never
 /// shifts the pane sideways.
 const CURSOR_MARK: char = '▸';
+
+/// How far a context boundary's rule reaches either side of its label.
+///
+/// A stub, not a line across the screen: the row is a note about what is
+/// missing, and a full-width rule read as a chapter break in a file that has
+/// not ended.
+const RULE_ARM: usize = 10;
 
 /// Presentation settings the application layer reads from config and hands to
 /// the renderer. Not review state: nothing here is persisted in the sidecar.
@@ -700,7 +707,13 @@ impl App {
     fn jump_hunk(&mut self, dir: isize) {
         let mut i = self.cursor as isize + dir;
         while i >= 0 && (i as usize) < self.rows.len() {
-            if matches!(self.rows[i as usize].kind, RowKind::HunkHeader(_)) {
+            // A foreign hunk is context the reviewer asked for, not an entry
+            // on this group's reading list, so hunk-to-hunk navigation passes
+            // over it.
+            if matches!(
+                self.rows[i as usize].kind,
+                RowKind::HunkHeader { foreign: false, .. }
+            ) {
                 self.cursor = i as usize;
                 self.focus = Focus::Diff;
                 self.follow_cursor();
@@ -722,24 +735,37 @@ impl App {
     /// reaches the start of the file (or merges into its neighbour) it stops
     /// existing at all.
     fn expand_at_cursor(&mut self) {
-        let Some(RowKind::ContextEdge(hunk, side)) =
-            self.rows.get(self.cursor).map(|r| r.kind.clone())
+        let Some(RowKind::ContextEdge {
+            hunk,
+            side,
+            crossing,
+        }) = self.rows.get(self.cursor).map(|r| r.kind.clone())
         else {
             return;
         };
         let step = self.opts.context_step;
         let e = self.expanded.entry(hunk).or_default();
-        match side {
-            Side::Up => e.up += step,
-            Side::Down => e.down += step,
+        match (side, crossing) {
+            (Side::Up, false) => e.up += step,
+            (Side::Down, false) => e.down += step,
+            // Crossing resets that side's context counter: the gap it measured
+            // is not the outermost one any more.
+            (Side::Up, true) => {
+                e.crossed_up += 1;
+                e.up = 0;
+            }
+            (Side::Down, true) => {
+                e.crossed_down += 1;
+                e.down = 0;
+            }
         }
         self.rebuild_rows();
 
-        match self
-            .rows
-            .iter()
-            .position(|r| r.kind == RowKind::ContextEdge(hunk, side))
-        {
+        // Match on the edge, not on what it offers: crossing turns a "next:"
+        // boundary back into a context one, and the cursor should follow it.
+        match self.rows.iter().position(
+            |r| matches!(r.kind, RowKind::ContextEdge { hunk: h, side: sd, .. } if h == hunk && sd == side),
+        ) {
             Some(pos) => self.cursor = pos,
             None => {
                 // Nothing left to unfold in that direction: land on the hunk
@@ -747,7 +773,7 @@ impl App {
                 if let Some(pos) = self
                     .rows
                     .iter()
-                    .position(|r| r.kind == RowKind::HunkHeader(hunk))
+                    .position(|r| matches!(r.kind, RowKind::HunkHeader { hunk: h, .. } if h == hunk))
                 {
                     self.cursor = pos;
                 }
@@ -924,7 +950,7 @@ impl App {
             (KeyCode::Char('z'), _)
                 if matches!(
                     self.rows.get(self.cursor).map(|r| &r.kind),
-                    Some(RowKind::ContextEdge(_, _))
+                    Some(RowKind::ContextEdge { .. })
                 ) =>
             {
                 self.expand_at_cursor();
@@ -1416,6 +1442,9 @@ impl App {
     fn draw_diff(&self, frame: &mut Frame, area: Rect) {
         let inner_h = area.height.saturating_sub(2) as usize;
         let inner_w = area.width.saturating_sub(2) as usize;
+        // Which box is lit. Only one at a time: a screenful of accents is a
+        // screenful of nothing, so every other box is muted to the gutter.
+        let active = self.current_hunk();
         let lines: Vec<Line> = self
             .rows
             .iter()
@@ -1424,7 +1453,20 @@ impl App {
             .take(inner_h)
             .map(|(i, r)| {
                 let on = i == self.cursor && self.focus == Focus::Diff && r.kind.selectable();
-                let mut line = compose_row(&r.content, inner_w, on);
+                // A hunk's pill follows its edge, so the marker and the run
+                // below it read as one thing — and which is lit is a cursor
+                // question, decided here rather than when the row was built.
+                let pill = match (r.border, &r.kind) {
+                    (Some(b), RowKind::HunkHeader { .. }) => Some(
+                        THEME.pill(
+                            (active == Some(b.hunk))
+                                .then_some(b.active_style.fg)
+                                .flatten(),
+                        ),
+                    ),
+                    _ => None,
+                };
+                let mut line = compose_row(&r.content, inner_w, on, pill);
                 if on {
                     // Span backgrounds win over a line style, so this colours
                     // exactly the rows that have no change colour of their own
@@ -1443,6 +1485,18 @@ impl App {
                 Style::default().fg(THEME.gutter_fg)
             });
         frame.render_widget(Paragraph::new(lines).block(block), area);
+
+        // A hunk's edge shares the pane's left border column rather than
+        // sitting a cell inside it: no width lost, and no second vertical line
+        // a cell away from the first. Drawn over the block, so it comes after.
+        let buf = frame.buffer_mut();
+        for (n, row) in self.rows.iter().skip(self.scroll).take(inner_h).enumerate() {
+            let Some(border) = row.border else { continue };
+            let y = area.y + 1 + n as u16;
+            let cell = &mut buf[(area.x, y)];
+            cell.set_symbol(border.glyph().encode_utf8(&mut [0u8; 4]));
+            cell.set_style(chrome(border, active));
+        }
     }
 
     fn draw_status(&self, frame: &mut Frame, area: Rect) {
@@ -1470,10 +1524,44 @@ impl App {
 /// Every diff row pads HERE rather than at build time: a background that runs
 /// to the pane edge is a width question, and row counts must stay independent
 /// of width or each resize would rebuild them.
-fn compose_row(content: &RowContent, width: usize, cursor: bool) -> Line<'static> {
+fn compose_row(
+    content: &RowContent,
+    width: usize,
+    cursor: bool,
+    pill: Option<(ratatui::style::Color, ratatui::style::Color)>,
+) -> Line<'static> {
     match content {
         RowContent::Full(line) => line.clone(),
-        RowContent::Unified(half) => Line::from(compose_half(half, width, cursor)),
+        RowContent::Unified(half) => {
+            // Recolouring rewrites the row's whole content, which is why a pill
+            // has to be all of it.
+            let repainted;
+            let half = match pill {
+                Some((fg, bg)) => {
+                    repainted = Half {
+                        gutter: half.gutter.clone(),
+                        pairs: half
+                            .pairs
+                            .iter()
+                            .map(|(st, t)| {
+                                // The counts keep saying added and removed; the
+                                // theme picks the pair that reads on this fill.
+                                let ink = if bg == THEME.button_bg {
+                                    st.fg.unwrap_or(fg)
+                                } else {
+                                    THEME.lit_ink(st.fg)
+                                };
+                                (Style::default().fg(ink).bg(bg), t.clone())
+                            })
+                            .collect(),
+                        fill: half.fill,
+                    };
+                    &repainted
+                }
+                None => half,
+            };
+            Line::from(compose_half(half, width, cursor))
+        }
         RowContent::Split { old, new } => {
             let lw = width.saturating_sub(1) / 2;
             let rw = width.saturating_sub(1).saturating_sub(lw);
@@ -1486,14 +1574,29 @@ fn compose_row(content: &RowContent, width: usize, cursor: bool) -> Line<'static
     }
 }
 
+/// What colour a hunk's box and band take right now.
+///
+/// Deliberately not a flag on the row: the cursor moves without rebuilding
+/// rows, so "is this the active hunk" cannot be decided when the row is built.
+/// The row carries the colour it WOULD take, and drawing chooses.
+fn chrome(border: Border, active: Option<usize>) -> Style {
+    if active == Some(border.hunk) {
+        border.active_style
+    } else {
+        Style::default().fg(THEME.gutter_fg)
+    }
+}
+
 /// One side of a diff row at a known column width: the gutter, the content,
 /// and padding out to the edge in whatever the row is filled with.
 fn compose_half(half: &Half, width: usize, cursor: bool) -> Vec<Span<'static>> {
     let mut gutter = half.gutter.1.clone();
-    if cursor && !gutter.is_empty() {
+    if cursor && let Some(first) = gutter.chars().next() {
         // The leading cell is reserved for exactly this, so the substitution is
-        // width-preserving and the pane never shifts as the cursor moves.
-        gutter = format!("{CURSOR_MARK}{}", &gutter[1..]);
+        // width-preserving and the pane never shifts as the cursor moves. By
+        // CHARACTER, not by byte: on a box edge that cell holds `─`, and a
+        // byte slice would cut it in half.
+        gutter = format!("{CURSOR_MARK}{}", &gutter[first.len_utf8()..]);
     }
     let used = UnicodeWidthStr::width(gutter.as_str());
     let rest = width.saturating_sub(used);
@@ -1520,17 +1623,22 @@ fn compose_half(half: &Half, width: usize, cursor: bool) -> Vec<Span<'static>> {
         )),
         // A rule carries the row across the whole pane, separator column and
         // all — the row is about the file, not about one side of it.
-        Fill::Rule { style, centered } => {
+        Fill::Rule(style) => {
             let used: usize = half.pairs.iter().map(|(_, t)| t.width()).sum();
-            if used >= rest {
+            let ruled = used + 2 * RULE_ARM;
+            if ruled >= rest {
                 spans.extend(truncate_or_pad_spans(&half.pairs, rest, style));
             } else {
-                let lead = if centered { (rest - used) / 2 } else { 0 };
-                if lead > 0 {
-                    spans.push(Span::styled("─".repeat(lead), style));
-                }
+                // Dotted, and only a stub either side; the rest is left blank
+                // so the row does not draw a line across the whole screen.
+                let lead = (rest - ruled) / 2;
+                let blank = |n: usize| Span::styled(" ".repeat(n), Style::default());
+                let dots = Span::styled("┈".repeat(RULE_ARM), style);
+                spans.push(blank(lead));
+                spans.push(dots.clone());
                 spans.extend(half.pairs.iter().map(|(s, t)| Span::styled(t.clone(), *s)));
-                spans.push(Span::styled("─".repeat(rest - used - lead), style));
+                spans.push(dots);
+                spans.push(blank(rest - ruled - lead));
             }
         }
     }

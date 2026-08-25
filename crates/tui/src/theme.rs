@@ -20,6 +20,22 @@ pub struct Theme {
     pub deleted_word_bg: Color,
     /// Diagonal fill for the side of a split row that has no line at all.
     pub hatch_fg: Color,
+    /// A hunk pill that is not lit: a control, but not the one in hand.
+    pub button_fg: Color,
+    pub button_bg: Color,
+    /// The context-boundary pill and its rule. Present, but not competing with
+    /// the code — it marks where the file was cut, and the file is the point.
+    pub hint_fg: Color,
+    pub hint_bg: Color,
+    /// Text on a LIT pill, whose fill is the hunk's accent — so it has to be
+    /// dark enough to read on yellow, green or cyan alike.
+    pub pill_fg: Color,
+    /// The counts on a lit pill. `add_fg`/`del_fg` are chosen to glow on a dark
+    /// background and are illegible on a bright one, so a lit pill needs its
+    /// own pair — dark enough to read on the accent, saturated enough to still
+    /// say added and removed.
+    pub add_on_pill: Color,
+    pub del_on_pill: Color,
     pub gutter_fg: Color,
     pub context_fg: Color,
     pub cursor_bg: Color,
@@ -44,6 +60,13 @@ pub const THEME: Theme = Theme {
     added_word_bg: Color::Rgb(28, 92, 42),
     deleted_word_bg: Color::Rgb(110, 38, 38),
     hatch_fg: Color::Rgb(48, 50, 58),
+    button_fg: Color::Rgb(198, 204, 220),
+    button_bg: Color::Rgb(58, 63, 83),
+    hint_fg: Color::Rgb(108, 114, 126),
+    hint_bg: Color::Rgb(38, 41, 48),
+    pill_fg: Color::Rgb(20, 22, 28),
+    add_on_pill: Color::Rgb(14, 72, 28),
+    del_on_pill: Color::Rgb(112, 20, 20),
     gutter_fg: Color::DarkGray,
     context_fg: Color::Gray,
     cursor_bg: Color::Rgb(48, 52, 70),
@@ -108,6 +131,30 @@ impl Theme {
     pub fn role_suffix(role: Option<differential_engine::schema::Role>) -> String {
         role.map(|r| format!(" · {}", differential_engine::plan::role_name(r)))
             .unwrap_or_default()
+    }
+
+    /// The two colours a pill wears. `accent` is `Some` when this is the hunk
+    /// under the cursor, and the fill then matches its edge so the marker and
+    /// the run below it read as one thing.
+    pub fn pill(&self, accent: Option<Color>) -> (Color, Color) {
+        match accent {
+            Some(bg) => (self.pill_fg, bg),
+            None => (self.button_fg, self.button_bg),
+        }
+    }
+
+    /// Re-ink one span of a pill for a LIT fill.
+    ///
+    /// A pill is built in its muted palette because whether it is lit is a
+    /// cursor question; this maps each ink to its bright-background twin. The
+    /// mapping is by colour, so it is the one place that knows a pill's inks —
+    /// adding a third means adding it here, not just at the call site.
+    pub fn lit_ink(&self, muted: Option<Color>) -> Color {
+        match muted {
+            Some(c) if c == self.add_fg => self.add_on_pill,
+            Some(c) if c == self.del_fg => self.del_on_pill,
+            _ => self.pill_fg,
+        }
     }
 
     pub fn word_emphasis(&self, addition: bool) -> Style {
