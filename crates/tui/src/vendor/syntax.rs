@@ -3,8 +3,10 @@
 // supplied by the vendor module. MIT License — Copyright (c) 2025 tuicr
 // contributors. See LICENSE-MIT.
 //
-// `highlight_ranges` and `Highlighted` are OURS, not tuicr's: the whole-file
-// entry point they replace was the reviewer's dominant cost (ADR 0021).
+// `highlight_ranges`, `Highlighted` and `LOOKBACK` are OURS, not tuicr's: the
+// whole-file entry point they replace was the reviewer's dominant cost
+// (ADR 0021). Taking it out left tuicr's split-diff sequence helpers and its
+// no-op `plain()` highlighter with no caller at all, so they went with it.
 
 use ratatui::style::{Color, Modifier, Style};
 use std::collections::HashMap;
@@ -47,13 +49,6 @@ pub struct SyntaxHighlighter {
     pub del_bg: Color,
 }
 
-pub struct DiffHighlightSequences {
-    pub old_lines: Vec<String>,
-    pub new_lines: Vec<String>,
-    pub old_line_indices: Vec<Option<usize>>,
-    pub new_line_indices: Vec<Option<usize>>,
-}
-
 impl Default for SyntaxHighlighter {
     fn default() -> Self {
         Self::new(
@@ -81,24 +76,6 @@ impl SyntaxHighlighter {
             theme,
             add_bg,
             del_bg,
-        }
-    }
-
-    /// A highlighter that resolves no syntax at all, so `highlight_file_lines`
-    /// returns `None` for every path without doing any syntect work.
-    ///
-    /// The diff watcher uses this to parse a diff when it needs the content but not
-    /// the colours. `DiffFile::compute_content_hash` runs during parsing over line
-    /// text alone, and highlighting only ever assigns spans, so a diff parsed this
-    /// way fingerprints identically to a highlighted one. Measured at 3.1ms against
-    /// 197ms for the same 4,000-line diff.
-    pub fn plain() -> Self {
-        let theme = syntect::highlighting::Theme::default();
-        Self {
-            syntax_set: syntect::parsing::SyntaxSet::new(),
-            theme,
-            add_bg: Color::Reset,
-            del_bg: Color::Reset,
         }
     }
 
@@ -190,77 +167,6 @@ impl SyntaxHighlighter {
                 }
                 spans
             })
-    }
-
-    fn highlighted_line_at(
-        highlighted_lines: Option<&[Option<HighlightedSpans>]>,
-        line_idx: Option<usize>,
-    ) -> Option<HighlightedSpans> {
-        line_idx
-            .and_then(|idx| highlighted_lines.and_then(|all| all.get(idx)))
-            .and_then(|line_highlight| line_highlight.as_ref().cloned())
-    }
-
-    pub fn split_diff_lines_for_highlighting(
-        line_contents: &[String],
-        line_origins: &[LineOrigin],
-    ) -> DiffHighlightSequences {
-        debug_assert_eq!(line_contents.len(), line_origins.len());
-
-        let mut old_lines = Vec::new();
-        let mut new_lines = Vec::new();
-        let mut old_line_indices = Vec::with_capacity(line_origins.len());
-        let mut new_line_indices = Vec::with_capacity(line_origins.len());
-
-        for (content, origin) in line_contents.iter().zip(line_origins.iter()) {
-            match origin {
-                LineOrigin::Context => {
-                    let old_idx = old_lines.len();
-                    old_lines.push(content.clone());
-                    old_line_indices.push(Some(old_idx));
-
-                    let new_idx = new_lines.len();
-                    new_lines.push(content.clone());
-                    new_line_indices.push(Some(new_idx));
-                }
-                LineOrigin::Addition => {
-                    let new_idx = new_lines.len();
-                    new_lines.push(content.clone());
-                    old_line_indices.push(None);
-                    new_line_indices.push(Some(new_idx));
-                }
-                LineOrigin::Deletion => {
-                    let old_idx = old_lines.len();
-                    old_lines.push(content.clone());
-                    old_line_indices.push(Some(old_idx));
-                    new_line_indices.push(None);
-                }
-            }
-        }
-
-        DiffHighlightSequences {
-            old_lines,
-            new_lines,
-            old_line_indices,
-            new_line_indices,
-        }
-    }
-
-    pub fn highlighted_line_for_diff_with_background(
-        &self,
-        old_highlighted_lines: Option<&[Option<HighlightedSpans>]>,
-        new_highlighted_lines: Option<&[Option<HighlightedSpans>]>,
-        old_line_idx: Option<usize>,
-        new_line_idx: Option<usize>,
-        origin: LineOrigin,
-    ) -> Option<HighlightedSpans> {
-        let spans = match origin {
-            LineOrigin::Addition => Self::highlighted_line_at(new_highlighted_lines, new_line_idx),
-            LineOrigin::Deletion => Self::highlighted_line_at(old_highlighted_lines, old_line_idx),
-            LineOrigin::Context => Self::highlighted_line_at(new_highlighted_lines, new_line_idx),
-        }?;
-
-        Some(self.apply_diff_background(spans, origin))
     }
 
     fn syntect_to_ratatui_style(style: syntect::highlighting::Style) -> Style {
@@ -426,15 +332,6 @@ mod tests {
                 .map(|i| got.spans.get(&i).cloned())
                 .collect(),
         )
-    }
-
-    #[test]
-    fn should_resolve_no_syntax_for_any_path() {
-        let plain = SyntaxHighlighter::plain();
-        assert!(
-            all_lines(&plain, "a.rs", &["fn main() {}".to_string()]).is_none(),
-            "plain highlighter must not resolve a syntax, or the probe is not cheap"
-        );
     }
 
     #[test]
@@ -646,87 +543,6 @@ mod tests {
         for ext in &["toml", "hcl", "tf", "tfvars", "nix", "swift", "zig", "v"] {
             assert_eq!(SyntaxHighlighter::fallback_extension(ext), None);
         }
-    }
-
-    #[test]
-    fn split_diff_lines_for_highlighting_should_build_old_and_new_sequences() {
-        let contents = vec![
-            "ctx".to_string(),
-            "del".to_string(),
-            "add".to_string(),
-            "ctx2".to_string(),
-        ];
-        let origins = vec![
-            LineOrigin::Context,
-            LineOrigin::Deletion,
-            LineOrigin::Addition,
-            LineOrigin::Context,
-        ];
-
-        let seq = SyntaxHighlighter::split_diff_lines_for_highlighting(&contents, &origins);
-        assert_eq!(seq.old_lines, vec!["ctx", "del", "ctx2"]);
-        assert_eq!(seq.new_lines, vec!["ctx", "add", "ctx2"]);
-        assert_eq!(seq.old_line_indices, vec![Some(0), Some(1), None, Some(2)]);
-        assert_eq!(seq.new_line_indices, vec![Some(0), None, Some(1), Some(2)]);
-    }
-
-    #[test]
-    fn highlighted_line_for_diff_with_background_should_handle_none_per_line() {
-        let highlighter = SyntaxHighlighter::default();
-        let old_lines = vec![None];
-        let new_lines = vec![None];
-        let highlighted = highlighter.highlighted_line_for_diff_with_background(
-            Some(&old_lines),
-            Some(&new_lines),
-            Some(0),
-            Some(0),
-            LineOrigin::Addition,
-        );
-        assert!(highlighted.is_none());
-    }
-
-    #[test]
-    fn highlighted_line_for_diff_with_background_should_apply_background_on_success() {
-        let highlighter = SyntaxHighlighter::default();
-        let old_lines = vec![Some(vec![(Style::default(), "old".to_string())])];
-        let new_lines = vec![Some(vec![(Style::default(), "new".to_string())])];
-
-        let deletion = highlighter.highlighted_line_for_diff_with_background(
-            Some(&old_lines),
-            Some(&new_lines),
-            Some(0),
-            Some(0),
-            LineOrigin::Deletion,
-        );
-        let addition = highlighter.highlighted_line_for_diff_with_background(
-            Some(&old_lines),
-            Some(&new_lines),
-            Some(0),
-            Some(0),
-            LineOrigin::Addition,
-        );
-        let context = highlighter.highlighted_line_for_diff_with_background(
-            Some(&old_lines),
-            Some(&new_lines),
-            Some(0),
-            Some(0),
-            LineOrigin::Context,
-        );
-
-        let deletion = deletion.unwrap();
-        assert_eq!(deletion.len(), 1);
-        assert_eq!(deletion[0].0.bg, Some(highlighter.del_bg));
-        assert_eq!(deletion[0].1, "old");
-
-        let addition = addition.unwrap();
-        assert_eq!(addition.len(), 1);
-        assert_eq!(addition[0].0.bg, Some(highlighter.add_bg));
-        assert_eq!(addition[0].1, "new");
-
-        let context = context.unwrap();
-        assert_eq!(context.len(), 1);
-        assert_eq!(context[0].0.bg, None);
-        assert_eq!(context[0].1, "new");
     }
 
     #[test]
