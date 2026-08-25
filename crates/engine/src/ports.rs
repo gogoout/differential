@@ -199,6 +199,18 @@ pub trait WorkingCopy {
     fn tracked_paths(&self) -> Result<Vec<u8>, EngineError>;
     /// NUL-terminated untracked-but-not-ignored paths.
     fn untracked_paths(&self) -> Result<Vec<u8>, EngineError>;
+
+    /// Whether any tracked file differs from `HEAD`, staged or unstaged.
+    ///
+    /// Untracked files are a separate question — `untracked_paths` answers
+    /// that — because a snapshot admits them via `--add`, and the two are
+    /// detected by different plumbing.
+    ///
+    /// May answer `true` for a merely stat-dirty index, where a content
+    /// comparison would say otherwise. That is the safe direction: a spurious
+    /// `true` costs a no-op checkbox, a spurious `false` would hide an option
+    /// the reviewer needs.
+    fn has_tracked_changes(&self) -> Result<bool, EngineError>;
 }
 
 // ------------------------------------------------------ writes that publish

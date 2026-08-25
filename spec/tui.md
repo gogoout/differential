@@ -26,8 +26,9 @@ even contain cycles (two groups that each define symbols the other uses). The or
 stage breaks a cycle deterministically, which means some edge cannot be honoured; the
 plan says so rather than hiding it — a dependency listed **later** than the group that
 follows it is marked `↓`. Selecting a group draws a connector in the left gutter linking
-it (`◆`) to every group it follows and every group that follows it, so the shape of the
-graph is visible without reading ids. Counts derive from hunks, so binary/submodule
+it (`◆`) to every group it **follows**, so what has to be read first is visible without
+reading ids. One direction only: the reverse edge is deliberately not drawn, so the gutter
+says the same thing as the `after:` line beneath it rather than something different. Counts derive from hunks, so binary/submodule
 changes contribute zero and a rename counts as two files (the canonical view is
 `--no-renames`). Skim groups show one exemplar per shape class with the remainder folded
 behind a single line; noise groups are folded entirely.
@@ -66,14 +67,23 @@ lines recomputed from the base/head blobs (canonical `-U0` hunks carry none).
 
 ## No range: the picker
 
-`dfr review` with no arguments opens a picker instead of failing. It has one checkbox —
-**include uncommitted changes (worktree)** — and a list of recent commits from which you
-pick the **base**. The review then runs from that commit to the worktree snapshot (box
-ticked) or to `HEAD` (unticked), which is how "everything on my branch since `main`,
-including what I haven't committed" is expressed. The range is `base..head`, so it
+`dfr review` with no arguments opens a picker instead of failing. It has a list of recent
+commits from which you pick the **base**, and — **only when the worktree has uncommitted
+changes** — a checkbox, **include uncommitted changes (worktree)**, ticked by default. The
+review then runs from that commit to the worktree snapshot (box ticked) or to `HEAD`
+(unticked or absent), which is how "everything on my branch since `main`, including what I
+haven't committed" is expressed.
+
+The checkbox is hidden on a clean worktree because it could not change anything: with
+nothing outstanding the snapshot is `HEAD`'s own tree, so ticking it would re-hash every
+tracked file to produce an identical review, filed under a different identity. Cleanliness
+is detected with plumbing — `diff-index` for tracked changes, `ls-files --others` for
+untracked ones — and errs toward showing the box, since a wrong "clean" would hide an
+option you need while a wrong "dirty" costs one harmless row. The range is `base..head`, so it
 **excludes the base commit's own changes**: the bar covers the commits above the cursor,
 and the selected row is marked as the boundary. Picking the newest commit with the box
-unticked therefore reviews nothing, and the title says so. Commits show the branch and tag names
+unticked therefore reviews nothing, and the title says so — which on a clean worktree is
+the only thing picking the newest commit can mean. Commits show the branch and tag names
 pointing at them (read with `for-each-ref`, plumbing, so no dependence on
 `log.decorate` config), and a leading bar marks every row inside the range as the cursor
 moves, so what is covered is visible while choosing. `HEAD` itself is a valid base: with
@@ -83,6 +93,11 @@ Uncommitted sources run the full grouped pipeline like any range (ADR 0017); the
 identity keys on the base sha plus the stable literal `WORKTREE`, so marks and findings
 survive while the snapshot tree churns with every edit. A committed pick keys on `HEAD`
 as typed, so the review survives new commits landing.
+
+A clean worktree is therefore a committed pick, filed under `HEAD`. One consequence worth
+knowing: commit your outstanding work mid-review and the next `dfr review` opens the
+`HEAD`-keyed review, not the `WORKTREE`-keyed one you were in. Nothing is lost — the old
+review is still on disk under its own id — but its marks are not the ones you see.
 
 ## While the pipeline runs
 

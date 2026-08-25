@@ -586,63 +586,137 @@ fn file_view_is_a_collapsible_tree() {
     assert_eq!(files_visible(&app), 4, "unfold restores them");
 }
 
-#[test]
-fn the_plan_gutter_links_the_selected_group_to_its_neighbours() {
-    use differential_tui::app::Relation;
-    let (_r, mut app) = make_app();
+/// A repo whose two groups have a real symbol def -> use edge between them, so
+/// the ordering stage fills `depends_on` and the gutter has something to draw.
+///
+/// `make_app`'s fixture has no such edge, which is why the gutter test used to
+/// pass while asserting nothing. Mirrors the engine's `def_use_repo`.
+fn app_with_dependency_edge() -> (TestRepo, App) {
+    let r = TestRepo::new();
+    r.write("src/a_core.txt", b"placeholder\n");
+    r.write("src/b_user.txt", b"placeholder\n");
+    r.commit_all("base");
+    r.write(
+        "src/a_core.txt",
+        b"placeholder\npub struct WidgetCore { pub retries: u32 }\n",
+    );
+    r.write(
+        "src/b_user.txt",
+        b"placeholder\nlet core = WidgetCore { retries: 3 };\n",
+    );
+    r.commit_all("head");
 
-    // Land on a group that actually has an edge, so the connector has
-    // something to draw.
-    let with_edge = app
+    // One focus group per class, so each stays its own node in the DAG.
+    let backend = FakeBackend::new("fake", |ids| {
+        let groups: Vec<String> = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| json_group(&format!("Group {i}"), "focus", &[id.as_str()]))
+            .collect();
+        format!(r#"{{"groups": [{}]}}"#, groups.join(", "))
+    });
+    let app = open_app_with(&r, &backend, ".dfr-edge-store");
+    (r, app)
+}
+
+#[test]
+fn the_plan_gutter_links_the_selected_group_to_what_it_follows() {
+    use differential_tui::app::Relation;
+    let (_r, mut app) = app_with_dependency_edge();
+
+    // `expect`, not an early return: the previous version skipped silently
+    // when the fixture had no edges — which is what it did, so it passed while
+    // asserting nothing at all.
+    let consumer = app
         .groups()
         .iter()
         .position(|g| !g.depends_on.is_empty())
-        .or_else(|| {
-            let ids: Vec<String> = app.groups().iter().map(|g| g.id.clone()).collect();
-            ids.iter().position(|id| {
-                app.groups()
-                    .iter()
-                    .any(|o| o.depends_on.iter().any(|d| &d.id == id))
-            })
-        });
-    let Some(target) = with_edge else {
-        return; // no edges in this fixture: nothing to assert
-    };
-    while app.selected_group != target {
-        app.handle_key(key('j'));
-    }
+        .expect("the fixture must produce a dependency edge, or this asserts nothing");
+    let consumer_id = app.groups()[consumer].id.clone();
+    let foundation = app
+        .groups()
+        .iter()
+        .position(|g| g.depends_on.iter().any(|d| d.id != consumer_id) || g.depends_on.is_empty())
+        .filter(|&i| i != consumer)
+        .expect("the fixture must have a group the consumer follows");
 
-    // The relation model matches depends_on in both directions, and the
-    // selected row is the anchor.
-    assert_eq!(app.relation_to_selected(target), Relation::Selected);
-    for (i, g) in app.groups().iter().enumerate() {
-        match app.relation_to_selected(i) {
-            Relation::Dependency => assert!(
-                app.groups()[target].depends_on.iter().any(|d| d.id == g.id),
-                "{} marked as a dependency but the selected group does not follow it",
-                g.id
-            ),
-            Relation::Dependent => assert!(
-                g.depends_on.iter().any(|d| d.id == app.groups()[target].id),
-                "{} marked as a dependent but does not follow the selected group",
-                g.id
-            ),
-            _ => {}
+    // j moves down, k up — a one-directional walk would spin forever when the
+    // target is above the cursor, and the foundation sits above its consumer.
+    let select = |app: &mut App, want: usize| {
+        for _ in 0..64 {
+            if app.selected_group == want {
+                return;
+            }
+            app.handle_key(key(if app.selected_group < want { 'j' } else { 'k' }));
         }
+        panic!("could not reach group {want}");
+    };
+
+    // --- selecting the consumer: what it follows is marked ------------------
+    select(&mut app, consumer);
+    assert_eq!(app.relation_to_selected(consumer), Relation::Selected);
+
+    // Biconditional, so a relation that wrongly returned None fails too. The
+    // previous version only checked that a claimed edge was backed by
+    // depends_on, never that a real edge produced a mark.
+    let follows: Vec<String> = app.groups()[consumer]
+        .depends_on
+        .iter()
+        .map(|d| d.id.clone())
+        .collect();
+    assert!(follows.contains(&app.groups()[foundation].id));
+    for (i, g) in app
+        .groups()
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != consumer)
+    {
+        let marked = app.relation_to_selected(i) == Relation::Dependency;
+        assert_eq!(
+            marked,
+            follows.contains(&g.id),
+            "{} marked={marked} but the selected group follows it = {}",
+            g.id,
+            follows.contains(&g.id)
+        );
     }
 
-    // It reaches the screen.
+    let content = drawn(&mut app);
+    assert!(content.contains("◆"), "selected group marker missing");
+    assert!(
+        content.contains("├"),
+        "the selected group follows something, so a connector must be drawn"
+    );
+
+    // --- selecting the foundation: the group that follows IT is not marked --
+    // This is the change: the reverse edge used to be drawn, in a second
+    // colour of the same glyph.
+    select(&mut app, foundation);
+    assert_eq!(
+        app.relation_to_selected(consumer),
+        Relation::None,
+        "the consumer follows the selected group and must not be marked"
+    );
+    let content = drawn(&mut app);
+    assert!(content.contains("◆"));
+    assert!(
+        !content.contains("├"),
+        "nothing is followed from here, so no connector should be drawn"
+    );
+}
+
+/// Render at a fixed size and flatten the buffer to text.
+fn drawn(app: &mut App) -> String {
     let backend = ratatui::backend::TestBackend::new(100, 40);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|f| app.draw(f)).unwrap();
-    let content: String = terminal
+    terminal
         .backend()
         .buffer()
         .content()
         .iter()
         .map(|c| c.symbol())
-        .collect();
-    assert!(content.contains("◆"), "selected group marker missing");
+        .collect()
 }
 
 #[test]

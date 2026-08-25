@@ -10,6 +10,7 @@ use std::time::Duration;
 use crossterm::event::{self, Event, KeyCode};
 use differential_engine::gitio::Repo;
 use differential_engine::ports::{CommitHistory, CommitSummary};
+use differential_engine::worktree::is_clean;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -46,6 +47,12 @@ pub fn pick_source(
     if !repo.has_commits() {
         anyhow::bail!("no commits yet — commit something first, then review");
     }
+    // Whether including the worktree could change anything. Asked once, up
+    // front: on a clean tree the snapshot is HEAD's own tree, so the option
+    // would cost a full re-hash of every tracked file to produce an identical
+    // review — filed under a different identity.
+    let dirty = !is_clean(repo)?;
+
     // HEAD is a legitimate base: with the box ticked it means "just my
     // uncommitted work", so it is NOT skipped.
     let mut commits: Vec<CommitEntry> = repo
@@ -66,7 +73,9 @@ pub fn pick_source(
 
     let mut state = PickerState {
         selected: 0,
-        include_worktree: true,
+        // Ticked by default only when it would do something.
+        include_worktree: dirty,
+        dirty,
         scroll: 0,
     };
     let mut picked: Option<PickedSource> = None;
@@ -86,7 +95,10 @@ pub fn pick_source(
                 state.selected = (state.selected + 1).min(commits.len().saturating_sub(1));
             }
             KeyCode::Char('k') | KeyCode::Up => state.selected = state.selected.saturating_sub(1),
-            KeyCode::Char(' ') => state.include_worktree = !state.include_worktree,
+            // No-op on a clean tree, where the row is not drawn at all.
+            KeyCode::Char(' ') if state.dirty => {
+                state.include_worktree = !state.include_worktree;
+            }
             KeyCode::Enter => {
                 if let Some(c) = commits.get(state.selected) {
                     picked = Some(PickedSource {
@@ -106,6 +118,9 @@ pub fn pick_source(
 struct PickerState {
     selected: usize,
     include_worktree: bool,
+    /// Whether the worktree has anything uncommitted. When false the checkbox
+    /// is not drawn and `include_worktree` stays false.
+    dirty: bool,
     scroll: usize,
 }
 
@@ -115,6 +130,11 @@ struct PickerState {
 const IN_RANGE: &str = "▌ ";
 const OUT_RANGE: &str = "  ";
 const AT_BASE: &str = "└ ";
+
+/// Block border, top and bottom.
+const BORDER_ROWS: usize = 2;
+/// The blank line plus the key hints under the commit list.
+const FOOTER_ROWS: usize = 2;
 
 /// Rows strictly newer than the base are reviewed — the base commit's own
 /// changes are not.
@@ -128,26 +148,30 @@ fn is_empty_range(base: usize, include_worktree: bool) -> bool {
     base == 0 && !include_worktree
 }
 
-fn draw(frame: &mut ratatui::Frame, commits: &[CommitEntry], state: &mut PickerState) {
-    let area: Rect = frame.area();
-    let bar = Style::default().fg(THEME.reviewed_fg);
+/// The rows above the commit list. Its length drives the scroll viewport, so
+/// it is a function rather than inline pushes — the checkbox row is
+/// conditional, and a hard-coded count would mis-scroll the list without it.
+fn header(state: &PickerState, bar: Style) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = Vec::new();
-
-    // The checkbox: itself inside the range when ticked.
-    let (check_bar, check_style) = if state.include_worktree {
-        (IN_RANGE, Style::default().fg(THEME.header_fg))
-    } else {
-        (OUT_RANGE, Style::default().fg(THEME.gutter_fg))
-    };
-    let mark = if state.include_worktree { "x" } else { " " };
-    lines.push(Line::from(vec![
-        Span::styled(check_bar, bar),
-        Span::styled(
-            format!("[{mark}] uncommitted changes (worktree)"),
-            check_style,
-        ),
-        Span::styled("   space toggles", Style::default().fg(THEME.gutter_fg)),
-    ]));
+    // The checkbox, only when there is something to include: itself inside
+    // the range when ticked. On a clean tree it would be a no-op that also
+    // files the review under a different identity, so it is not offered.
+    if state.dirty {
+        let (check_bar, check_style) = if state.include_worktree {
+            (IN_RANGE, Style::default().fg(THEME.header_fg))
+        } else {
+            (OUT_RANGE, Style::default().fg(THEME.gutter_fg))
+        };
+        let mark = if state.include_worktree { "x" } else { " " };
+        lines.push(Line::from(vec![
+            Span::styled(check_bar, bar),
+            Span::styled(
+                format!("[{mark}] uncommitted changes (worktree)"),
+                check_style,
+            ),
+            Span::styled("   space toggles", Style::default().fg(THEME.gutter_fg)),
+        ]));
+    }
     lines.push(Line::from(vec![
         Span::styled(
             if state.include_worktree {
@@ -163,9 +187,26 @@ fn draw(frame: &mut ratatui::Frame, commits: &[CommitEntry], state: &mut PickerS
         ),
     ]));
 
-    // Scroll the commit list to keep the cursor visible; 4 chrome lines
-    // (2 header + border top/bottom) plus the footer.
-    let viewport = (area.height as usize).saturating_sub(6).max(1);
+    lines
+}
+
+/// Rows the chrome occupies around the commit list.
+fn chrome_rows(header_rows: usize) -> usize {
+    header_rows + BORDER_ROWS + FOOTER_ROWS
+}
+
+fn draw(frame: &mut ratatui::Frame, commits: &[CommitEntry], state: &mut PickerState) {
+    let area: Rect = frame.area();
+    let bar = Style::default().fg(THEME.reviewed_fg);
+
+    let mut lines = header(state, bar);
+
+    // Scroll the commit list to keep the cursor visible. The chrome height is
+    // DERIVED from the header just built — the checkbox row is conditional, so
+    // a hard-coded count would silently mis-scroll the list without it.
+    let viewport = (area.height as usize)
+        .saturating_sub(chrome_rows(lines.len()))
+        .max(1);
     if state.selected < state.scroll {
         state.scroll = state.selected;
     } else if state.selected >= state.scroll + viewport {
@@ -213,7 +254,11 @@ fn draw(frame: &mut ratatui::Frame, commits: &[CommitEntry], state: &mut PickerS
 
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
-        "  j/k move · space uncommitted · enter review · q cancel",
+        if state.dirty {
+            "  j/k move · space uncommitted · enter review · q cancel"
+        } else {
+            "  j/k move · enter review · q cancel"
+        },
         Style::default().fg(THEME.gutter_fg),
     )));
 
@@ -244,6 +289,39 @@ fn draw(frame: &mut ratatui::Frame, commits: &[CommitEntry], state: &mut PickerS
 
 #[cfg(test)]
 mod tests {
+    fn state(dirty: bool) -> super::PickerState {
+        super::PickerState {
+            selected: 0,
+            include_worktree: dirty,
+            dirty,
+            scroll: 0,
+        }
+    }
+
+    /// The checkbox is only offered when it would change something.
+    #[test]
+    fn the_checkbox_row_appears_only_when_the_worktree_is_dirty() {
+        let bar = ratatui::style::Style::default();
+        assert_eq!(super::header(&state(true), bar).len(), 2);
+        assert_eq!(super::header(&state(false), bar).len(), 1);
+    }
+
+    /// The commit list's viewport is derived from the header, so hiding a row
+    /// widens it rather than silently mis-scrolling. 6 is what the constant
+    /// used to be hard-coded to, back when the header was always two rows.
+    #[test]
+    fn chrome_height_tracks_the_header() {
+        let bar = ratatui::style::Style::default();
+        assert_eq!(
+            super::chrome_rows(super::header(&state(true), bar).len()),
+            6
+        );
+        assert_eq!(
+            super::chrome_rows(super::header(&state(false), bar).len()),
+            5
+        );
+    }
+
     #[test]
     fn the_range_excludes_the_base_commit() {
         // base..head is exclusive: with row 3 picked, rows 0-2 (newer

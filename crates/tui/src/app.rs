@@ -130,13 +130,15 @@ pub enum Effect {
 
 /// A plan row's relation to the selected group — what the gutter connector
 /// draws. The plan is a DAG (a group can follow several others), not a tree.
+///
+/// One direction only: what the selected group *follows*. The reverse edge was
+/// drawn too, in a second colour of the same glyph, which meant the gutter said
+/// something different from the `after:` line directly beneath it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Relation {
     Selected,
     /// The selected group follows this one.
     Dependency,
-    /// This one follows the selected group.
-    Dependent,
     None,
 }
 
@@ -1083,24 +1085,30 @@ impl App {
     /// How a plan row relates to the selected one — what the connector line
     /// in the left gutter is drawing.
     pub fn relation_to_selected(&self, idx: usize) -> Relation {
-        let selected = self.selected_group;
-        if idx == selected {
+        if idx == self.selected_group {
             return Relation::Selected;
         }
-        let Some(sel) = self.groups().get(selected) else {
+        // Both indices are guarded: `idx` comes from callers that iterate the
+        // rendered blocks, but `relation_to_selected` is public and a stale
+        // index should not be a panic.
+        let (Some(sel), Some(row)) = (
+            self.groups().get(self.selected_group),
+            self.groups().get(idx),
+        ) else {
             return Relation::None;
         };
-        if sel.depends_on.iter().any(|d| d.id == self.groups()[idx].id) {
+        if sel.depends_on.iter().any(|d| d.id == row.id) {
             return Relation::Dependency;
-        }
-        if self.groups()[idx].depends_on.iter().any(|d| d.id == sel.id) {
-            return Relation::Dependent;
         }
         Relation::None
     }
 
-    /// Rows spanned by the selected group's edges, so the connector can be
-    /// drawn as one continuous line.
+    /// Rows spanned by the selected group and everything it follows, so the
+    /// connector is one continuous line.
+    ///
+    /// Usually that runs upward — foundation-first ordering puts a dependency
+    /// above its consumer — but a broken cycle can put one below, and the span
+    /// covers that too.
     fn edge_span(&self) -> (usize, usize) {
         let mut lo = self.selected_group;
         let mut hi = self.selected_group;
@@ -1118,14 +1126,11 @@ impl App {
         let g = &self.groups()[idx];
         let relation = self.relation_to_selected(idx);
         let (lo, hi) = self.edge_span();
-        // The connector: a line running between the selected group and every
-        // group it links to, so the DAG is visible without reading ids.
+        // The connector: a line from the selected group to each group it
+        // follows, so what must be read first is visible without reading ids.
         let (head_glyph, head_style) = match relation {
             Relation::Selected => ("◆", Style::default().fg(THEME.header_fg)),
-            // Read before the selected group.
             Relation::Dependency => ("├", Style::default().fg(THEME.reviewed_fg)),
-            // Reads after it.
-            Relation::Dependent => ("├", Style::default().fg(THEME.skim_fg)),
             Relation::None if idx > lo && idx < hi => ("│", Style::default().fg(THEME.gutter_fg)),
             Relation::None => (" ", Style::default().fg(THEME.gutter_fg)),
         };
@@ -1413,7 +1418,7 @@ fn help_paragraph() -> Paragraph<'static> {
         Line::from("  n/N        next / previous hunk"),
         Line::from(""),
         Line::from("  plan rows: <id> <tier> label · after: what it follows"),
-        Line::from("  the line links the selected group to its neighbours;"),
+        Line::from("  the line links the selected group to what it follows;"),
         Line::from("  ↓ marks a dependency listed later (mutual dependency)"),
         Line::from("  s          toggle unified / split diff"),
         Line::from("  v          toggle reading plan / file view"),
