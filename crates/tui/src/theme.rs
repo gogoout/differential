@@ -26,6 +26,12 @@ pub struct Theme {
     /// Text on a LIT pill, whose fill is the hunk's accent — so it has to be
     /// dark enough to read on yellow, green or cyan alike.
     pub pill_fg: Color,
+    /// The counts on a lit pill. `add_fg`/`del_fg` are chosen to glow on a dark
+    /// background and are illegible on a bright one, so a lit pill needs its
+    /// own pair — dark enough to read on the accent, saturated enough to still
+    /// say added and removed.
+    pub add_on_pill: Color,
+    pub del_on_pill: Color,
     pub gutter_fg: Color,
     pub context_fg: Color,
     pub cursor_bg: Color,
@@ -53,6 +59,8 @@ pub const THEME: Theme = Theme {
     button_fg: Color::Rgb(198, 204, 220),
     button_bg: Color::Rgb(58, 63, 83),
     pill_fg: Color::Rgb(20, 22, 28),
+    add_on_pill: Color::Rgb(14, 72, 28),
+    del_on_pill: Color::Rgb(112, 20, 20),
     gutter_fg: Color::DarkGray,
     context_fg: Color::Gray,
     cursor_bg: Color::Rgb(48, 52, 70),
@@ -126,6 +134,20 @@ impl Theme {
         match accent {
             Some(bg) => (self.pill_fg, bg),
             None => (self.button_fg, self.button_bg),
+        }
+    }
+
+    /// Re-ink one span of a pill for a LIT fill.
+    ///
+    /// A pill is built in its muted palette because whether it is lit is a
+    /// cursor question; this maps each ink to its bright-background twin. The
+    /// mapping is by colour, so it is the one place that knows a pill's inks —
+    /// adding a third means adding it here, not just at the call site.
+    pub fn lit_ink(&self, muted: Option<Color>) -> Color {
+        match muted {
+            Some(c) if c == self.add_fg => self.add_on_pill,
+            Some(c) if c == self.del_fg => self.del_on_pill,
+            _ => self.pill_fg,
         }
     }
 

@@ -607,11 +607,18 @@ fn column_header_row() -> Row {
 /// a rebuild. That recolouring rewrites the whole of a row's content, so a pill
 /// must BE that content with nothing mixed in beside it.
 fn pill(
-    text: String,
-    fg: ratatui::style::Color,
+    parts: Vec<(ratatui::style::Color, String)>,
     bg: ratatui::style::Color,
 ) -> Vec<(Style, String)> {
-    vec![(Style::default().fg(fg).bg(bg), format!(" {} ", text.trim()))]
+    let pad = || (Style::default().bg(bg), " ".to_string());
+    let mut out = vec![pad()];
+    out.extend(
+        parts
+            .into_iter()
+            .map(|(fg, t)| (Style::default().fg(fg).bg(bg), t)),
+    );
+    out.push(pad());
+    out
 }
 
 /// The colour a hunk's box takes when the cursor is in it.
@@ -667,23 +674,28 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
     } else {
         BoxStyle::Own
     };
-    // One run of text, not a row of differently-coloured spans: the pill's
-    // fill follows its edge, and green on yellow is not a thing to read. The
-    // `+`/`−` signs carry what the colours used to.
-    let counts = if hunk.old_count > 0 {
-        format!("+{} −{}", hunk.new_count, hunk.old_count)
-    } else {
-        format!("+{}", hunk.new_count)
-    };
+    // Built in the MUTED palette: whether this pill is the lit one is a cursor
+    // question, and drawing re-inks it through `Theme::lit_ink`.
     let (fg, bg) = THEME.pill(None);
-    let text = format!("{} · {counts}{group_label}{check}{notes}", hunk.class);
+    let mut parts = vec![
+        (fg, format!("{} · ", hunk.class)),
+        (THEME.add_fg, format!("+{}", hunk.new_count)),
+    ];
+    if hunk.old_count > 0 {
+        parts.push((fg, " ".to_string()));
+        parts.push((THEME.del_fg, format!("−{}", hunk.old_count)));
+    }
+    parts.push((fg, format!("{group_label}{check}")));
+    if !notes.is_empty() {
+        parts.push((THEME.finding_fg, notes));
+    }
     rows.push(
         Row::banner(
             RowKind::HunkHeader { hunk: hi, foreign },
             Line::default(),
             Fill::Bg(Style::default()),
         )
-        .with_pairs(pill(text, fg, bg))
+        .with_pairs(pill(parts, bg))
         .bordered(box_style, hi, hunk_accent(ctx, hi, foreign)),
     );
 
@@ -870,7 +882,10 @@ fn boundary_row(ctx: &RowsContext, b: &window::Boundary, step: usize) -> Row {
         Line::default(),
         Fill::Rule(style),
     )
-    .with_pairs(pill(label, THEME.context_fg, THEME.gutter_fg))
+    .with_pairs(pill(
+        vec![(THEME.context_fg, label.trim().to_string())],
+        THEME.gutter_fg,
+    ))
 }
 
 /// Every line the blocks will draw, as sorted ranges per side.

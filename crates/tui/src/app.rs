@@ -1536,7 +1536,16 @@ fn compose_row(
                         pairs: half
                             .pairs
                             .iter()
-                            .map(|(_, t)| (Style::default().fg(fg).bg(bg), t.clone()))
+                            .map(|(st, t)| {
+                                // The counts keep saying added and removed; the
+                                // theme picks the pair that reads on this fill.
+                                let ink = if bg == THEME.button_bg {
+                                    st.fg.unwrap_or(fg)
+                                } else {
+                                    THEME.lit_ink(st.fg)
+                                };
+                                (Style::default().fg(ink).bg(bg), t.clone())
+                            })
                             .collect(),
                         fill: half.fill,
                     };

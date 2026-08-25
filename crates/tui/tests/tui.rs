@@ -1934,6 +1934,49 @@ fn the_hunk_pill_takes_the_colour_of_its_edge() {
     );
 }
 
+/// The counts keep saying added and removed on either fill. `add_fg`/`del_fg`
+/// glow on a dark background and vanish on a bright one, so a lit pill needs
+/// its own pair rather than dropping the colours altogether.
+#[test]
+fn the_counts_stay_coloured_on_both_pill_fills() {
+    let (_r, mut app) = app_with_two_groups_in_one_file();
+    let inks = |app: &App| -> Vec<Color> {
+        let buf = buffer_of(app);
+        (1..39u16)
+            .filter(|&y| {
+                let t: String = (41..99u16).map(|x| buf[(x, y)].symbol()).collect();
+                t.contains('·') && !t.contains("more")
+            })
+            .flat_map(|y| (41..99u16).map(move |x| (x, y)))
+            .filter(|&(x, y)| matches!(buf[(x, y)].symbol(), "+" | "−"))
+            .filter_map(|(x, y)| buf[(x, y)].style().fg)
+            .collect()
+    };
+
+    // Idle: the ordinary bright pair, on the dark muted fill.
+    let boundary = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::ContextEdge { .. }))
+        .expect("a boundary row");
+    app.cursor = boundary;
+    app.focus = Focus::Diff;
+    let idle = inks(&app);
+    assert!(idle.contains(&THEME.add_fg), "no + colour idle: {idle:?}");
+    assert!(idle.contains(&THEME.del_fg), "no − colour idle: {idle:?}");
+
+    // Lit: the pair that reads on the accent, and still two distinct colours.
+    cursor_into_first_box(&mut app);
+    let lit = inks(&app);
+    assert!(lit.contains(&THEME.add_on_pill), "no + colour lit: {lit:?}");
+    assert!(lit.contains(&THEME.del_on_pill), "no − colour lit: {lit:?}");
+    assert_ne!(THEME.add_on_pill, THEME.del_on_pill);
+    assert_ne!(
+        THEME.add_on_pill, THEME.pill_fg,
+        "a count that matches the pill's own text is not a colour"
+    );
+}
+
 /// Not an assertion — a readable dump of the pane, so the styling can be
 /// eyeballed with `cargo test -- --ignored --nocapture render_dump`.
 #[test]
