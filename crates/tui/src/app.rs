@@ -177,8 +177,8 @@ pub struct App {
     pub selected_file: usize,
     pub rows: Vec<Row>,
     pub cursor: usize,
-    pub scroll: usize,
-    pub group_scroll: usize,
+    scroll: usize,
+    group_scroll: usize,
     /// Group ids whose fold is open.
     pub folds_open: HashSet<String>,
     pub status: String,
@@ -493,16 +493,10 @@ impl App {
         self.follow_plan_scroll();
     }
 
-    pub fn viewport(&self) -> Viewport {
-        self.viewport
-    }
-
+    /// Diff-pane scroll offset. Decided in update, never at draw time — which
+    /// is why the field itself is private.
     pub fn scroll(&self) -> usize {
         self.scroll
-    }
-
-    pub fn plan_scroll(&self) -> usize {
-        self.group_scroll
     }
 
     /// Rows one left-pane entry occupies.
@@ -971,26 +965,24 @@ impl App {
 
     pub fn draw(&self, frame: &mut Frame) {
         let panes = layout(frame.area());
-        let outer = [panes.body, panes.status];
-
         self.draw_groups(frame, panes.plan);
         self.draw_diff(frame, panes.diff);
         self.draw_status(frame, panes.status);
 
         match &self.mode {
             Mode::Editing(_, textarea) => {
-                let area = bottom_rect(outer[0], 8);
+                let area = bottom_rect(panes.body, 8);
                 frame.render_widget(Clear, area);
                 frame.render_widget(&**textarea, area);
             }
             Mode::Help => {
-                let area = centered_rect(outer[0], 60, 18);
+                let area = centered_rect(panes.body, 60, 18);
                 frame.render_widget(Clear, area);
                 frame.render_widget(help_paragraph(), area);
             }
             Mode::FileList { entries, selected } => {
-                let height = (entries.len() as u16 + 2).min(outer[0].height);
-                let area = centered_rect(outer[0], 70, height);
+                let height = (entries.len() as u16 + 2).min(panes.body.height);
+                let area = centered_rect(panes.body, 70, height);
                 let lines: Vec<Line> = entries
                     .iter()
                     .enumerate()
