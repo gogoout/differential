@@ -13,7 +13,7 @@ use differential_engine::ports::ReviewStore;
 use differential_engine::schema::SourceKind;
 use differential_engine::store::{FsGroupingCache, FsReviewStore};
 use differential_testutil::{FakeBackend, TestRepo, json_group};
-use differential_tui::app::{App, Effect, Focus, Mode};
+use differential_tui::app::{App, Effect, Focus, Mode, Viewport};
 use differential_tui::rows::{RowFactory, RowKind};
 
 /// First-listed class (the largest) becomes the skim sweep; the rest are
@@ -416,7 +416,7 @@ fn split_view_draw_smoke_shows_separator() {
 
 #[test]
 fn draw_smoke_test_renders_group_label() {
-    let (_r, mut app) = make_app();
+    let (_r, app) = make_app();
     let backend = ratatui::backend::TestBackend::new(100, 30);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|f| app.draw(f)).unwrap();
@@ -429,7 +429,7 @@ fn draw_smoke_test_renders_group_label() {
 
 #[test]
 fn reading_plan_shows_ids_and_flags_unsatisfiable_dependencies() {
-    let (_r, mut app) = make_app();
+    let (_r, app) = make_app();
 
     // Every dependency names a real group id — the id column makes them
     // resolvable, which is the whole point of showing it.
@@ -647,7 +647,7 @@ fn the_plan_gutter_links_the_selected_group_to_its_neighbours() {
 
 #[test]
 fn the_selected_plan_row_is_highlighted_edge_to_edge() {
-    let (_r, mut app) = make_app();
+    let (_r, app) = make_app();
     let backend = ratatui::backend::TestBackend::new(100, 40);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|f| app.draw(f)).unwrap();
@@ -675,7 +675,10 @@ fn scrolling_back_up_reveals_the_group_header() {
     app.handle_key(key('z')); // unfold, so there is enough to scroll through
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     // A short pane, as a small terminal would give: the rows now overflow it.
-    app.viewport_hint = 8;
+    app.set_viewport(Viewport {
+        diff_rows: 8,
+        plan_rows: 8,
+    });
 
     // The header block above the first selectable row carries the label,
     // description and dependencies — the cursor can never enter it.
@@ -692,19 +695,20 @@ fn scrolling_back_up_reveals_the_group_header() {
 
     // Scroll to the bottom, then all the way back up.
     app.handle_key(key('G'));
-    assert!(app.scroll > 0, "should have scrolled away from the top");
+    assert!(app.scroll() > 0, "should have scrolled away from the top");
     for _ in 0..40 {
         app.handle_key(ctrl('u'));
     }
     assert_eq!(
-        app.scroll, 0,
+        app.scroll(),
+        0,
         "scrolling up must reach row 0, not stop below it"
     );
 
     // g (top) lands there too.
     app.handle_key(key('G'));
     app.handle_key(key('g'));
-    assert_eq!(app.scroll, 0);
+    assert_eq!(app.scroll(), 0);
 }
 
 /// The ref decoration runs a real `git for-each-ref` and parses its real
@@ -788,3 +792,50 @@ fn a_backfilled_group_renders_as_unclassified() {
         "the back-fill group must be labelled, not shown as ordinary focus work"
     );
 }
+
+/// Geometry is state, not a draw-time discovery.
+///
+/// Before this, scroll math used `viewport_hint.max(8)` — a guess that `draw`
+/// corrected one frame later — so a shrunk window kept a stale scroll offset
+/// until something else happened to repaint. The clamp now runs in update,
+/// with no key pressed and nothing drawn.
+#[test]
+fn shrinking_the_viewport_re_clamps_scroll_without_a_draw() {
+    let (_r, mut app) = make_app();
+    app.handle_key(key('z'));
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+    // Tall enough that the whole diff fits, so nothing has scrolled yet.
+    let tall = app.rows.len() + SCROLL_MARGIN + 2;
+    app.set_viewport(Viewport {
+        diff_rows: tall,
+        plan_rows: tall,
+    });
+    app.handle_key(key('G'));
+    assert_eq!(app.scroll(), 0, "everything fits, so nothing scrolled");
+
+    // Now shrink — above MIN_VIEWPORT, so the floor cannot mask it. No key is
+    // pressed and nothing is drawn between here and the assertion.
+    app.set_viewport(Viewport {
+        diff_rows: SHORT,
+        plan_rows: SHORT,
+    });
+    assert!(
+        app.scroll() > 0,
+        "a shrunk viewport must scroll the cursor back into view immediately, \
+         not on the next repaint"
+    );
+    assert!(
+        app.cursor >= app.scroll() && app.cursor < app.scroll() + SHORT,
+        "cursor {} outside the visible rows {}..{}",
+        app.cursor,
+        app.scroll(),
+        app.scroll() + SHORT
+    );
+}
+
+/// A pane height above the app's `MIN_VIEWPORT` floor, so the clamp cannot
+/// mask the shrink.
+const SHORT: usize = 9;
+/// Mirrors the app's own scroll margin.
+const SCROLL_MARGIN: usize = 3;

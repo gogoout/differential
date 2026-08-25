@@ -26,8 +26,9 @@ use differential_engine::grouping::Progress;
 use differential_engine::store::FsReviewStore;
 use differential_engine::{PipelineOutput, ReviewSession};
 
-use app::{App, Effect};
+use app::{App, Effect, Viewport};
 use picker::PickedSource;
+use ratatui::layout::Rect;
 use rows::RowFactory;
 
 type Session = vendor::terminal::TerminalSession<Stdout>;
@@ -129,9 +130,20 @@ where
     run_app(terminal, App::new(session, factory))
 }
 
+/// The terminal's current size, as the model wants it.
+fn measure() -> anyhow::Result<Viewport> {
+    let (w, h) = crossterm::terminal::size()?;
+    Ok(Viewport::measure(Rect::new(0, 0, w, h)))
+}
+
 /// The reviewer's event loop.
+///
+/// Geometry is measured and pushed into the model BEFORE any key reaches it,
+/// so scroll state is decided in update and `draw` is a pure function of the
+/// model.
 fn run_app(terminal: &mut Session, mut app: App) -> anyhow::Result<()> {
     let mut clipboard: Option<arboard::Clipboard> = arboard::Clipboard::new().ok();
+    app.set_viewport(measure()?);
     let mut dirty = true;
     loop {
         if dirty {
@@ -150,7 +162,13 @@ fn run_app(terminal: &mut Session, mut app: App) -> anyhow::Result<()> {
                     effects.extend(app.handle_key(key));
                     dirty = true;
                 }
-                Event::Resize(_, _) => dirty = true,
+                // A resize is state, folded in HERE rather than at draw time
+                // — and in stream order, so keys before and after it each see
+                // the geometry that was true when they were pressed.
+                Event::Resize(w, h) => {
+                    app.set_viewport(Viewport::measure(Rect::new(0, 0, w, h)));
+                    dirty = true;
+                }
                 _ => {}
             }
             drained += 1;

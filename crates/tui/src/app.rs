@@ -27,6 +27,74 @@ use super::vendor::text_utils::truncate_or_pad_spans;
 
 const SCROLL_MARGIN: usize = 3;
 
+/// Floor for the scroll arithmetic.
+///
+/// Not a guess about the terminal — geometry is measured — but a clamp so a
+/// three-row window cannot produce nonsense.
+const MIN_VIEWPORT: usize = 8;
+
+/// The reviewer's panes: a fixed-width plan pane, the diff, a status row.
+pub struct Panes {
+    pub body: Rect,
+    pub plan: Rect,
+    pub diff: Rect,
+    pub status: Rect,
+}
+
+/// The one layout. `draw` places widgets with it and the event loop measures
+/// with it, so the two can never disagree about how tall the diff pane is.
+pub fn layout(area: Rect) -> Panes {
+    let outer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(area);
+    let panes = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(40), Constraint::Min(0)])
+        .split(outer[0]);
+    Panes {
+        body: outer[0],
+        plan: panes[0],
+        diff: panes[1],
+        status: outer[1],
+    }
+}
+
+/// Measured terminal geometry, pushed into the model BEFORE any key is
+/// handled — so scroll math is arithmetic over a known height rather than a
+/// guess corrected one frame later.
+///
+/// Deliberately carries no WIDTH. Row building must never depend on width
+/// (`RowContent::Split` defers its columns to draw time precisely so a resize
+/// never rebuilds rows), and a width here would be an invitation to break
+/// that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Viewport {
+    pub diff_rows: usize,
+    pub plan_rows: usize,
+}
+
+impl Viewport {
+    pub fn measure(area: Rect) -> Self {
+        let panes = layout(area);
+        Viewport {
+            // Both panes are bordered.
+            diff_rows: panes.diff.height.saturating_sub(2) as usize,
+            plan_rows: panes.plan.height.saturating_sub(2) as usize,
+        }
+    }
+}
+
+impl Default for Viewport {
+    /// Before the first measurement.
+    fn default() -> Self {
+        Viewport {
+            diff_rows: 24,
+            plan_rows: 24,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Groups,
@@ -114,8 +182,8 @@ pub struct App {
     /// Group ids whose fold is open.
     pub folds_open: HashSet<String>,
     pub status: String,
-    /// Diff-pane inner height, updated at draw time for paging math.
-    pub viewport_hint: usize,
+    /// Measured geometry. An input to update, never a draw-time output.
+    viewport: Viewport,
     pending_d: bool,
 }
 
@@ -150,7 +218,7 @@ impl App {
             group_scroll: 0,
             folds_open: HashSet::new(),
             status: String::new(),
-            viewport_hint: 24,
+            viewport: Viewport::default(),
             pending_d: false,
         };
         app.rebuild_tree();
@@ -296,6 +364,7 @@ impl App {
             .iter()
             .position(|e| matches!(&e.kind, TreeKind::Dir { path: p } if *p == path))
             .unwrap_or(0);
+        self.follow_plan_scroll();
         self.rebuild_rows();
         true
     }
@@ -414,10 +483,60 @@ impl App {
         self.follow_cursor();
     }
 
+    /// Fold measured geometry into the model.
+    ///
+    /// A resize is an event like any other: both scroll offsets are re-clamped
+    /// here, in update, rather than discovered while rendering.
+    pub fn set_viewport(&mut self, viewport: Viewport) {
+        self.viewport = viewport;
+        self.follow_cursor();
+        self.follow_plan_scroll();
+    }
+
+    pub fn viewport(&self) -> Viewport {
+        self.viewport
+    }
+
+    pub fn scroll(&self) -> usize {
+        self.scroll
+    }
+
+    pub fn plan_scroll(&self) -> usize {
+        self.group_scroll
+    }
+
+    /// Rows one left-pane entry occupies.
+    ///
+    /// Arithmetic, not rendering, so the scroll math does not need a `Frame` —
+    /// which is what lets it move out of `draw_groups`. A `debug_assert` there
+    /// checks the two still agree.
+    fn plan_block_height(&self, idx: usize) -> usize {
+        match self.view_mode {
+            // group_lines: a title row, a counts row, and an `after:` row only
+            // when the group has edges.
+            ViewMode::Groups => self
+                .groups()
+                .get(idx)
+                .map_or(0, |g| 2 + usize::from(!g.depends_on.is_empty())),
+            ViewMode::Files => usize::from(idx < self.tree.len()),
+        }
+    }
+
+    /// Keep the whole selected plan block in view. Lifted out of `draw_groups`.
+    fn follow_plan_scroll(&mut self) {
+        let h = self.viewport.plan_rows.max(MIN_VIEWPORT);
+        let selected = self.selected_entry();
+        let start_row: usize = (0..selected).map(|i| self.plan_block_height(i)).sum();
+        let end_row = start_row + self.plan_block_height(selected);
+        if start_row < self.group_scroll {
+            self.group_scroll = start_row;
+        } else if end_row > self.group_scroll + h {
+            self.group_scroll = end_row.saturating_sub(h);
+        }
+    }
+
     fn follow_cursor(&mut self) {
-        // Viewport height is only known at draw time; use a conservative page
-        // guess updated by draw().
-        let h = self.viewport_hint.max(8);
+        let h = self.viewport.diff_rows.max(MIN_VIEWPORT);
         if self.cursor < self.scroll + SCROLL_MARGIN {
             self.scroll = self.cursor.saturating_sub(SCROLL_MARGIN);
         } else if self.cursor + SCROLL_MARGIN + 1 > self.scroll + h {
@@ -453,6 +572,7 @@ impl App {
         }
         self.cursor = 0;
         self.scroll = 0;
+        self.follow_plan_scroll();
         self.rebuild_rows();
     }
 
@@ -477,6 +597,7 @@ impl App {
         };
         self.cursor = 0;
         self.scroll = 0;
+        self.follow_plan_scroll();
         self.rebuild_rows();
         self.status = if on { "file view" } else { "reading plan view" }.into();
     }
@@ -681,13 +802,13 @@ impl App {
                 self.select_entry(self.selected_entry().saturating_sub(1))
             }
             (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
-                let h = self.viewport_hint.max(8) / 2;
+                let h = self.viewport.diff_rows.max(MIN_VIEWPORT) / 2;
                 self.cursor = (self.cursor + h).min(self.rows.len().saturating_sub(1));
                 self.cursor = self.next_selectable(self.cursor, -1).unwrap_or(self.cursor);
                 self.follow_cursor();
             }
             (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
-                let h = self.viewport_hint.max(8) / 2;
+                let h = self.viewport.diff_rows.max(MIN_VIEWPORT) / 2;
                 self.cursor = self.cursor.saturating_sub(h);
                 self.cursor = self.next_selectable(self.cursor, 1).unwrap_or(self.cursor);
                 self.follow_cursor();
@@ -848,19 +969,13 @@ impl App {
 
     // ------------------------------------------------------------- drawing
 
-    pub fn draw(&mut self, frame: &mut Frame) {
-        let outer = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(1)])
-            .split(frame.area());
-        let panes = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(40), Constraint::Min(0)])
-            .split(outer[0]);
+    pub fn draw(&self, frame: &mut Frame) {
+        let panes = layout(frame.area());
+        let outer = [panes.body, panes.status];
 
-        self.draw_groups(frame, panes[0]);
-        self.draw_diff(frame, panes[1]);
-        self.draw_status(frame, outer[1]);
+        self.draw_groups(frame, panes.plan);
+        self.draw_diff(frame, panes.diff);
+        self.draw_status(frame, panes.status);
 
         match &self.mode {
             Mode::Editing(_, textarea) => {
@@ -905,7 +1020,7 @@ impl App {
         }
     }
 
-    fn draw_groups(&mut self, frame: &mut Frame, area: Rect) {
+    fn draw_groups(&self, frame: &mut Frame, area: Rect) {
         let inner_h = area.height.saturating_sub(2) as usize;
         let selected = self.selected_entry();
 
@@ -930,13 +1045,16 @@ impl App {
                 pad_to_width(line, inner_w, THEME.selected_bg);
             }
         }
-        let start_row: usize = blocks.iter().take(selected).map(Vec::len).sum();
-        let end_row = start_row + blocks.get(selected).map_or(0, Vec::len);
-        if start_row < self.group_scroll {
-            self.group_scroll = start_row;
-        } else if end_row > self.group_scroll + inner_h {
-            self.group_scroll = end_row.saturating_sub(inner_h);
-        }
+        // Scroll was decided in update; drawing only reads it. The heights
+        // this pane renders must match what `plan_block_height` predicted, or
+        // the two would disagree about where the selection is.
+        debug_assert!(
+            blocks
+                .iter()
+                .enumerate()
+                .all(|(i, b)| b.len() == self.plan_block_height(i)),
+            "plan block height disagrees with the rendered block"
+        );
         let items: Vec<Line> = blocks
             .into_iter()
             .flatten()
@@ -1188,10 +1306,8 @@ impl App {
         }
     }
 
-    fn draw_diff(&mut self, frame: &mut Frame, area: Rect) {
+    fn draw_diff(&self, frame: &mut Frame, area: Rect) {
         let inner_h = area.height.saturating_sub(2) as usize;
-        self.viewport_hint = inner_h;
-        self.follow_cursor();
         let inner_w = area.width.saturating_sub(2) as usize;
         let lines: Vec<Line> = self
             .rows
@@ -1218,7 +1334,7 @@ impl App {
         frame.render_widget(Paragraph::new(lines).block(block), area);
     }
 
-    fn draw_status(&mut self, frame: &mut Frame, area: Rect) {
+    fn draw_status(&self, frame: &mut Frame, area: Rect) {
         let total: usize = self.groups().iter().map(|g| g.class_keys.len()).sum();
         let done = self.session.reviewed_count().min(total);
         let open = self
