@@ -83,7 +83,6 @@ impl ReviewSession {
             }
             class_key.insert(c.id.clone(), key);
         }
-        drop(index);
 
         Ok(ReviewSession {
             store,

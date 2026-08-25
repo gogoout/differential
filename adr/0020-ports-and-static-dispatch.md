@@ -1,6 +1,12 @@
 # 0020 — Domain-owned ports, consumed by static dispatch
 
-Status: accepted (extends 0018; constrains 0002, 0011, 0012)
+Status: accepted, implemented in stages (extends 0018; constrains 0002, 0011, 0012)
+
+This record describes the decided end state, not what is built today — the migration
+lands over several changes. What is still outstanding is not left to memory: every
+domain module that has yet to be inverted is listed in `NOT_YET_INVERTED` in
+`crates/engine/tests/layering.rs`, which fails if that list grows *or* goes stale. When
+it is empty the migration is done and the test states the rule unconditionally.
 
 ## Context
 
