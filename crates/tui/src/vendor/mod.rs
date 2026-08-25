@@ -1,8 +1,18 @@
 //! Code adapted from other MIT-licensed projects, with attribution headers in
-//! each file (see LICENSE-MIT and the README credits):
+//! each file (see LICENSE-MIT and the README credits).
 //!
-//! - `agavra/tuicr` — span wrapping/search utilities, syntax highlighting,
-//!   terminal lifecycle.
+//! Trimmed to what this crate actually calls: the module is private, so the
+//! compiler can see what is reachable, and everything it reported unreachable
+//! is gone (a search feature that was never ported, and the suspend/resume
+//! terminal machinery). Keep it that way — do not re-add a helper "for later",
+//! and do not make the module public, which would make every `pub fn` in it
+//! exported surface and silence the dead-code lint entirely.
+//!
+//! Adapted from:
+//!
+//! - `agavra/tuicr` — syntax highlighting, terminal lifecycle, and one span
+//!   truncation helper. Its span-wrapping and search utilities were taken too
+//!   and are the bulk of what the trim removed.
 //! - `jnsahaj/lumen` — the blob-to-rows diff engine with word-level emphasis.
 
 pub mod diff_algo;

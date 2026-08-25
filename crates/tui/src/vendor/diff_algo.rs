@@ -1,4 +1,6 @@
-// Adapted from jnsahaj/lumen (f600389), src/command/diff/diff_algo.rs.
+// Adapted from jnsahaj/lumen (f600389), src/command/diff/diff_algo.rs — the
+// hunk-boundary and add/remove counting helpers removed (this crate gets those
+// from the engine's own parse of git's output).
 // MIT License — Copyright (c) 2024 Sahaj Jain. See LICENSE-MIT.
 use similar::{ChangeTag, TextDiff};
 
@@ -77,23 +79,6 @@ fn compute_word_diff(
     }
 
     Some((old_segments, new_segments))
-}
-
-/// Counts inserted and deleted lines for a file pair without building the
-/// full side-by-side structure. Cheaper than `compute_side_by_side` when only
-/// the totals are needed (e.g. sidebar aggregate stats).
-pub fn count_added_removed(old: &str, new: &str) -> (usize, usize) {
-    let diff = TextDiff::from_lines(old, new);
-    let mut added = 0usize;
-    let mut removed = 0usize;
-    for change in diff.iter_all_changes() {
-        match change.tag() {
-            ChangeTag::Insert => added += 1,
-            ChangeTag::Delete => removed += 1,
-            ChangeTag::Equal => {}
-        }
-    }
-    (added, removed)
 }
 
 /// Computes a side-by-side diff using GitHub-style pairing.
@@ -204,20 +189,4 @@ pub fn compute_side_by_side(old: &str, new: &str, tab_width: usize) -> Vec<DiffL
         }
     }
     lines
-}
-
-pub fn find_hunk_starts(lines: &[DiffLine]) -> Vec<usize> {
-    let mut hunks = Vec::new();
-    let mut in_hunk = false;
-
-    for (i, line) in lines.iter().enumerate() {
-        let is_change = !matches!(line.change_type, ChangeType::Equal);
-        if is_change && !in_hunk {
-            hunks.push(i);
-            in_hunk = true;
-        } else if !is_change {
-            in_hunk = false;
-        }
-    }
-    hunks
 }

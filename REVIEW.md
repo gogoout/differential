@@ -17,8 +17,10 @@ corpus — MR numbers, SHAs, company name, or repo-specific file/crate names fro
 it. Flag anything that looks like leaked private-repo detail.
 
 Style, naming and refactoring suggestions are **Nit** at most; report at most 5
-Nits per review. Skip `crates/tui/src/vendor/**` for style (vendored MIT code,
-kept close to upstream deliberately).
+Nits per review. Skip `crates/tui/src/vendor/**` for style — it is adapted MIT
+code and its shape is upstream's, not ours. It is no longer a verbatim copy
+(the parts we never called were removed), so treat a future re-sync as a manual
+merge rather than a diff.
 
 When a change contradicts `spec/` or `adr/`, the docs and code must change
 together — flag a mismatch as Important.
