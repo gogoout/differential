@@ -98,7 +98,11 @@ pub enum Fill {
     /// Rule out to the pane edge. What makes a row that is ABOUT the whole
     /// file — a boundary, a hunk header — read as spanning both columns
     /// instead of stopping mid-pane and leaving the split separator broken.
-    Rule(Style),
+    ///
+    /// `centered` puts the rule on both sides of the text. A boundary DIVIDES,
+    /// so it reads best centred; a hunk header LABELS what follows it, and a
+    /// label that drifts with the pane width is harder to scan down a column.
+    Rule { style: Style, centered: bool },
 }
 
 /// One side of a diff row: a gutter whose first cell is reserved for the
@@ -565,7 +569,10 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, rows: &mut Vec<Row>) {
     rows.push(Row::banner(
         RowKind::HunkHeader(hi),
         Line::from(spans),
-        Fill::Rule(header_style),
+        Fill::Rule {
+            style: header_style,
+            centered: false,
+        },
     ));
 
     for f in ctx
@@ -704,10 +711,13 @@ fn boundary_row(hunk: usize, side: Side, hidden: usize, step: usize) -> Row {
     Row::banner(
         RowKind::ContextEdge(hunk, side),
         Line::from(Span::styled(
-            format!("── {arrow} {hidden} more {where_} — z shows {step} "),
+            format!(" {arrow} {hidden} more {where_} — z shows {step} "),
             style,
         )),
-        Fill::Rule(style),
+        Fill::Rule {
+            style,
+            centered: true,
+        },
     )
 }
 

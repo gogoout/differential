@@ -1520,13 +1520,17 @@ fn compose_half(half: &Half, width: usize, cursor: bool) -> Vec<Span<'static>> {
         )),
         // A rule carries the row across the whole pane, separator column and
         // all — the row is about the file, not about one side of it.
-        Fill::Rule(style) => {
+        Fill::Rule { style, centered } => {
             let used: usize = half.pairs.iter().map(|(_, t)| t.width()).sum();
             if used >= rest {
                 spans.extend(truncate_or_pad_spans(&half.pairs, rest, style));
             } else {
+                let lead = if centered { (rest - used) / 2 } else { 0 };
+                if lead > 0 {
+                    spans.push(Span::styled("─".repeat(lead), style));
+                }
                 spans.extend(half.pairs.iter().map(|(s, t)| Span::styled(t.clone(), *s)));
-                spans.push(Span::styled("─".repeat(rest - used), style));
+                spans.push(Span::styled("─".repeat(rest - used - lead), style));
             }
         }
     }

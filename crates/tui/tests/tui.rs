@@ -1407,6 +1407,32 @@ fn headers_and_boundaries_rule_across_both_columns() {
         (1..39u16).any(|y| buf[(69, y)].symbol() == "│"),
         "no split separator found at column 69"
     );
+
+    // A boundary DIVIDES, so its rule runs on both sides of the text; a hunk
+    // header LABELS what follows, so it starts at the left and stays put.
+    let row_text = |y: u16| -> String { (41..99u16).map(|x| buf[(x, y)].symbol()).collect() };
+    let boundary = (1..39u16)
+        .map(row_text)
+        .find(|t| t.contains("more above") || t.contains("more below"))
+        .expect("a boundary row");
+    let (lead, trail) = (boundary.trim_start_matches([' ', '▸']), boundary.as_str());
+    assert!(lead.starts_with('─'), "boundary is not ruled on the left");
+    assert!(trail.ends_with('─'), "boundary is not ruled on the right");
+    let dashes_left = lead.chars().take_while(|c| *c == '─').count();
+    let dashes_right = trail.chars().rev().take_while(|c| *c == '─').count();
+    assert!(
+        dashes_left.abs_diff(dashes_right) <= 1,
+        "boundary text is not centred: {dashes_left} left, {dashes_right} right"
+    );
+
+    let header = (1..39u16)
+        .map(row_text)
+        .find(|t| t.contains(" · +"))
+        .expect("a hunk header band");
+    assert!(
+        header.trim_start_matches([' ', '▸']).starts_with("── "),
+        "a header band should start at the left, got {header:?}"
+    );
 }
 
 /// Not an assertion — a readable dump of the pane, so the styling can be

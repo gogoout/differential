@@ -57,9 +57,13 @@ that cell is reserved so moving the cursor never shifts the pane sideways.
 coordinates repeated what was already on screen in a notation you had to decode. What the
 header uniquely says stays on it: the class, the counts, the reviewed mark, the finding
 count, and in the file view the group's label. It remains a selectable row, so `n`/`N`
-jump to it and `space` and `c` act on it. Headers and boundary rows rule out to the pane
-edge and cross the split separator, because what they describe is not one side of the
-file.
+jump to it and `space` and `c` act on it.
+
+Headers and boundary rows rule out to the pane edge and cross the split separator, because
+what they describe is not one side of the file. A boundary **divides**, so its rule runs on
+both sides of a centred label; a header **labels** what follows it, so it starts at the left
+and stays there — a label that drifted with the pane width would be harder to scan down a
+column.
 
 **Context is expandable.** Canonical `-U0` hunks carry no context, so it is read out of the
 base and head blobs — three lines either side by default. Where more of the file is
