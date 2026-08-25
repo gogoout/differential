@@ -23,6 +23,10 @@ pub struct Theme {
     /// A hunk pill that is not lit: a control, but not the one in hand.
     pub button_fg: Color,
     pub button_bg: Color,
+    /// The context-boundary pill and its rule. Present, but not competing with
+    /// the code — it marks where the file was cut, and the file is the point.
+    pub hint_fg: Color,
+    pub hint_bg: Color,
     /// Text on a LIT pill, whose fill is the hunk's accent — so it has to be
     /// dark enough to read on yellow, green or cyan alike.
     pub pill_fg: Color,
@@ -58,6 +62,8 @@ pub const THEME: Theme = Theme {
     hatch_fg: Color::Rgb(48, 50, 58),
     button_fg: Color::Rgb(198, 204, 220),
     button_bg: Color::Rgb(58, 63, 83),
+    hint_fg: Color::Rgb(108, 114, 126),
+    hint_bg: Color::Rgb(38, 41, 48),
     pill_fg: Color::Rgb(20, 22, 28),
     add_on_pill: Color::Rgb(14, 72, 28),
     del_on_pill: Color::Rgb(112, 20, 20),

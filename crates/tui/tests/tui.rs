@@ -1403,7 +1403,7 @@ fn a_hunk_header_is_a_band_carrying_the_class_and_the_size() {
 /// of the file, so it rules the whole way across. A hunk header does not: it
 /// labels what follows, and ruling it off broke the flow of reading down.
 #[test]
-fn a_boundary_rules_across_both_columns_but_a_header_does_not() {
+fn a_boundary_is_a_dotted_stub_and_a_header_is_not_ruled() {
     let (_r, mut app) = app_with_a_long_file();
     app.handle_key(key('s')); // split
     let buf = buffer_of(&app);
@@ -1412,35 +1412,45 @@ fn a_boundary_rules_across_both_columns_but_a_header_does_not() {
     let boundary = (1..39u16)
         .find(|&y| row_text(y).contains("more"))
         .expect("a boundary row");
-    // The leading cell is the cursor's, so the rule starts just after it.
+    // A STUB either side, dotted, not a line across the screen: this row is a
+    // note about what is missing, and a full-width rule read as a chapter
+    // break in a file that has not ended.
     let text = row_text(boundary);
-    let ruled = text.trim_start_matches([' ', '\u{25b8}']);
     assert!(
-        ruled.starts_with('\u{2500}'),
-        "boundary is not ruled on the left: {text:?}"
+        !text.contains('\u{2500}'),
+        "the boundary rule should be dotted, not solid: {text:?}"
     );
+    assert!(text.contains('\u{2508}'), "no dotted rule: {text:?}");
     assert!(
-        text.ends_with('\u{2500}'),
-        "boundary is not ruled on the right"
+        text.starts_with("  ") && text.ends_with("  "),
+        "the rule should stop short of the pane edges: {text:?}"
     );
+
+    // It still crosses the split separator rather than being cut by it.
     assert_ne!(
         buf[(69, boundary)].symbol(),
         "\u{2502}",
-        "a ruled row crosses the split separator rather than being cut by it"
+        "a boundary row should cross the split separator"
     );
-    // And the separator really is at that column on ordinary rows.
     assert!(
         (1..39u16).any(|y| buf[(69, y)].symbol() == "\u{2502}"),
         "no split separator found at column 69"
     );
 
-    // The label sits centred between the two halves of the rule.
-    let lead = ruled.chars().take_while(|c| *c == '\u{2500}').count();
-    let trail = text.chars().rev().take_while(|c| *c == '\u{2500}').count();
-    assert!(
-        lead.abs_diff(trail) <= 1,
-        "boundary text is not centred: {lead} left, {trail} right"
-    );
+    // The two stubs are the same length, so the label sits centred.
+    let lead = text
+        .chars()
+        .skip_while(|c| *c == ' ')
+        .take_while(|c| *c == '\u{2508}')
+        .count();
+    let trail = text
+        .chars()
+        .rev()
+        .skip_while(|c| *c == ' ')
+        .take_while(|c| *c == '\u{2508}')
+        .count();
+    assert_eq!(lead, trail, "the stubs should match: {lead} vs {trail}");
+    assert!(lead > 0 && lead < 20, "a stub, not a line: {lead}");
 
     // A hunk header is a pill, with no rule running off either side of it.
     let header = (1..39u16)
@@ -1866,7 +1876,7 @@ fn a_context_boundary_reads_as_a_button() {
     // The expand pill wears the border's own muted grey.
     let filled: Vec<_> = cells
         .iter()
-        .filter(|c| c.style().bg == Some(THEME.gutter_fg))
+        .filter(|c| c.style().bg == Some(THEME.hint_bg))
         .collect();
     assert!(
         filled.len() > 10,
@@ -1876,18 +1886,18 @@ fn a_context_boundary_reads_as_a_button() {
     // The block is contiguous, and the rule either side of it is not filled.
     let first = cells
         .iter()
-        .position(|c| c.style().bg == Some(THEME.gutter_fg))
+        .position(|c| c.style().bg == Some(THEME.hint_bg))
         .unwrap();
     let last = cells
         .iter()
-        .rposition(|c| c.style().bg == Some(THEME.gutter_fg))
+        .rposition(|c| c.style().bg == Some(THEME.hint_bg))
         .unwrap();
     assert_eq!(
         last - first + 1,
         filled.len(),
         "the block should be contiguous"
     );
-    assert_ne!(cells[first - 1].style().bg, Some(THEME.gutter_fg));
+    assert_ne!(cells[first - 1].style().bg, Some(THEME.hint_bg));
     assert_eq!(cells[first].symbol(), " ", "the block is padded, not flush");
 }
 

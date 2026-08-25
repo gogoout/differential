@@ -37,6 +37,13 @@ const SCROLL_MARGIN: usize = 3;
 /// shifts the pane sideways.
 const CURSOR_MARK: char = '▸';
 
+/// How far a context boundary's rule reaches either side of its label.
+///
+/// A stub, not a line across the screen: the row is a note about what is
+/// missing, and a full-width rule read as a chapter break in a file that has
+/// not ended.
+const RULE_ARM: usize = 10;
+
 /// Presentation settings the application layer reads from config and hands to
 /// the renderer. Not review state: nothing here is persisted in the sidecar.
 #[derive(Debug, Clone, Copy)]
@@ -1618,14 +1625,20 @@ fn compose_half(half: &Half, width: usize, cursor: bool) -> Vec<Span<'static>> {
         // all — the row is about the file, not about one side of it.
         Fill::Rule(style) => {
             let used: usize = half.pairs.iter().map(|(_, t)| t.width()).sum();
-            if used >= rest {
+            let ruled = used + 2 * RULE_ARM;
+            if ruled >= rest {
                 spans.extend(truncate_or_pad_spans(&half.pairs, rest, style));
             } else {
-                let lead = (rest - used) / 2;
-                let dash = |n: usize| Span::styled("─".repeat(n), style);
-                spans.push(dash(lead));
+                // Dotted, and only a stub either side; the rest is left blank
+                // so the row does not draw a line across the whole screen.
+                let lead = (rest - ruled) / 2;
+                let blank = |n: usize| Span::styled(" ".repeat(n), Style::default());
+                let dots = Span::styled("┈".repeat(RULE_ARM), style);
+                spans.push(blank(lead));
+                spans.push(dots.clone());
                 spans.extend(half.pairs.iter().map(|(s, t)| Span::styled(t.clone(), *s)));
-                spans.push(dash(rest - used - lead));
+                spans.push(dots);
+                spans.push(blank(rest - ruled - lead));
             }
         }
     }

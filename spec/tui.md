@@ -84,10 +84,11 @@ both sides of a centred label; a header **labels** what follows it, so it starts
 and stays there — a label that drifted with the pane width would be harder to scan down a
 column.
 
-A **context boundary** is a control, not a caption, so its label is a pill on the rule
-rather than more dim text — the same shape a hunk header wears, since both are things to
-act on rather than read past. It belongs to no hunk, so it stays in the border's own muted
-grey however the cursor moves.
+A **context boundary** is a control, not a caption, so its label is a pill — the same shape
+a hunk header wears, since both are things to act on rather than read past. It belongs to no
+hunk, so it stays muted however the cursor moves, and its rule is a short dotted stub either
+side rather than a line drawn the whole way across: the row is a note about what is missing,
+and a full-width rule read as a chapter break in a file that has not ended.
 
 Pills are square. The half-circle caps that would round them are drawn at inconsistent
 widths across terminals and fonts, and a pill a cell wider in one terminal than another is

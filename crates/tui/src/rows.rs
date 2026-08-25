@@ -162,11 +162,12 @@ pub enum Fill {
     /// file — a boundary, a hunk header — read as spanning both columns
     /// instead of stopping mid-pane and leaving the split separator broken.
     ///
-    /// A rule out to both pane edges with the content centred on it.
+    /// A short dotted rule either side of centred content.
     ///
-    /// Only a context boundary uses this: it is the one row describing what is
-    /// hidden from BOTH sides of the file at once, so it divides rather than
-    /// labels, and reads best centred.
+    /// Only a context boundary uses this. It divides rather than labels, so it
+    /// is centred — but it is a note about what is missing, not a chapter
+    /// break, so the rule is a stub on each side rather than a line drawn the
+    /// whole way across the screen.
     Rule(Style),
 }
 
@@ -844,7 +845,7 @@ fn boundary_row(ctx: &RowsContext, b: &window::Boundary, step: usize) -> Row {
         Side::Up => "↑",
         Side::Down => "↓",
     };
-    let style = Style::default().fg(THEME.noise_fg);
+    let style = Style::default().fg(THEME.hint_fg);
     let label = match b.next {
         // The gap is exhausted and a hunk stands beyond it. Name it, so the
         // wall is visible and crossing is a deliberate press.
@@ -883,8 +884,8 @@ fn boundary_row(ctx: &RowsContext, b: &window::Boundary, step: usize) -> Row {
         Fill::Rule(style),
     )
     .with_pairs(pill(
-        vec![(THEME.context_fg, label.trim().to_string())],
-        THEME.gutter_fg,
+        vec![(THEME.hint_fg, label.trim().to_string())],
+        THEME.hint_bg,
     ))
 }
 
