@@ -19,7 +19,7 @@ use tui_textarea::TextArea;
 use unicode_width::UnicodeWidthStr;
 
 use super::rows::{
-    Border, DiffMode, Fill, GroupContext, Half, Row, RowContent, RowFactory, RowKind, RowsContext,
+    DiffMode, Fill, GroupContext, Half, Row, RowContent, RowFactory, RowKind, RowsContext,
     build_dir_rows, build_file_rows, build_group_rows,
 };
 use super::theme::{THEME, Theme};
@@ -1443,7 +1443,7 @@ impl App {
             .take(inner_h)
             .map(|(i, r)| {
                 let on = i == self.cursor && self.focus == Focus::Diff && r.kind.selectable();
-                let mut line = compose_row(&r.content, inner_w, on, r.border);
+                let mut line = compose_row(&r.content, inner_w, on);
                 if on {
                     // Span backgrounds win over a line style, so this colours
                     // exactly the rows that have no change colour of their own
@@ -1462,6 +1462,23 @@ impl App {
                 Style::default().fg(THEME.gutter_fg)
             });
         frame.render_widget(Paragraph::new(lines).block(block), area);
+
+        // A hunk's box shares the pane's border columns rather than sitting a
+        // cell inside them: two columns of code back, one vertical line instead
+        // of two a cell apart, and corners that are junctions because the
+        // pane's own border carries on above and below them. Drawn over the
+        // block, so it has to come after it.
+        let buf = frame.buffer_mut();
+        let (left, right) = (area.x, area.x + area.width.saturating_sub(1));
+        for (n, row) in self.rows.iter().skip(self.scroll).take(inner_h).enumerate() {
+            let Some(border) = row.border else { continue };
+            let y = area.y + 1 + n as u16;
+            let (l, r) = border.glyphs();
+            for (x, glyph) in [(left, l), (right, r)] {
+                buf[(x, y)].set_symbol(glyph.encode_utf8(&mut [0u8; 4]));
+                buf[(x, y)].set_style(border.style);
+            }
+        }
     }
 
     fn draw_status(&self, frame: &mut Frame, area: Rect) {
@@ -1489,47 +1506,19 @@ impl App {
 /// Every diff row pads HERE rather than at build time: a background that runs
 /// to the pane edge is a width question, and row counts must stay independent
 /// of width or each resize would rebuild them.
-fn compose_row(content: &RowContent, width: usize, cursor: bool, border: Border) -> Line<'static> {
-    // One column at each edge, reserved on EVERY row so a line number sits in
-    // the same place inside a hunk's box as in the context above it.
-    let inner = width.saturating_sub(2);
-    let (left, right) = frame_glyphs(border);
-    let edge = |g: char| {
-        Span::styled(
-            g.to_string(),
-            Style::default().fg(if border == Border::None {
-                THEME.gutter_fg
-            } else {
-                THEME.header_fg
-            }),
-        )
-    };
-
-    let mut spans = vec![edge(left)];
+fn compose_row(content: &RowContent, width: usize, cursor: bool) -> Line<'static> {
     match content {
-        RowContent::Full(line) => spans.extend(line.spans.iter().cloned()),
-        RowContent::Unified(half) => spans.extend(compose_half(half, inner, cursor)),
+        RowContent::Full(line) => line.clone(),
+        RowContent::Unified(half) => Line::from(compose_half(half, width, cursor)),
         RowContent::Split { old, new } => {
-            let lw = inner.saturating_sub(1) / 2;
-            let rw = inner.saturating_sub(1).saturating_sub(lw);
+            let lw = width.saturating_sub(1) / 2;
+            let rw = width.saturating_sub(1).saturating_sub(lw);
             // The marker belongs on the leftmost gutter only.
-            spans.extend(compose_half(old, lw, cursor));
+            let mut spans = compose_half(old, lw, cursor);
             spans.push(Span::styled("│", Style::default().fg(THEME.gutter_fg)));
             spans.extend(compose_half(new, rw, false));
+            Line::from(spans)
         }
-    }
-    spans.push(edge(right));
-    Line::from(spans)
-}
-
-/// The two edge cells for a row: the box's corners and sides, or blanks where
-/// there is no box.
-fn frame_glyphs(border: Border) -> (char, char) {
-    match border {
-        Border::None => (' ', ' '),
-        Border::Top(_) => ('┌', '┐'),
-        Border::Side(b) => (b.vertical(), b.vertical()),
-        Border::Bottom(_) => ('└', '┘'),
     }
 }
 

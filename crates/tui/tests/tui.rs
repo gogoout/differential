@@ -14,7 +14,8 @@ use differential_engine::schema::SourceKind;
 use differential_engine::store::{FsGroupingCache, FsReviewStore};
 use differential_testutil::{FakeBackend, TestRepo, json_group};
 use differential_tui::app::{App, Effect, Focus, Mode, ReviewOptions, Viewport};
-use differential_tui::rows::{Border, BoxStyle, RowFactory, RowKind};
+use differential_tui::rows::{BoxStyle, Part, RowFactory, RowKind};
+use differential_tui::theme::THEME;
 use differential_tui::window::Side;
 
 /// First-listed class (the largest) becomes the skim sweep; the rest are
@@ -699,9 +700,22 @@ fn the_plan_gutter_links_the_selected_group_to_what_it_follows() {
     let content = drawn(&mut app);
     assert!(content.contains("◆"));
     assert!(
-        !content.contains("├"),
+        !plan_pane(&mut app).contains("├"),
         "nothing is followed from here, so no connector should be drawn"
     );
+}
+
+/// Just the plan pane's columns. `├` is also a hunk box's corner over in the
+/// diff pane, so an assertion about the connector has to say where it looks.
+fn plan_pane(app: &mut App) -> String {
+    let backend = ratatui::backend::TestBackend::new(100, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    (0..40u16)
+        .flat_map(|x| (0..40u16).map(move |y| (x, y)))
+        .map(|(x, y)| buf[(x, y)].symbol().to_string())
+        .collect()
 }
 
 /// Render at a fixed size and flatten the buffer to text.
@@ -1183,9 +1197,10 @@ fn diff_pane_row(app: &App, y: u16) -> Vec<(String, Option<ratatui::style::Color
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|f| app.draw(f)).unwrap();
     let buf = terminal.backend().buffer().clone();
-    // The diff pane starts at column 40; its border is 40, and 41/98 are the
-    // reserved frame cells, so a row's CONTENT is 42..=97.
-    (42..98u16)
+    // The diff pane starts at column 40; its border is 40 and 99, so a row's
+    // content is 41..=98. A hunk's box shares those border columns rather than
+    // spending any of the content.
+    (41..99u16)
         .map(|x| (buf[(x, y)].symbol().to_string(), buf[(x, y)].style().bg))
         .collect()
 }
@@ -1404,7 +1419,7 @@ fn headers_and_boundaries_rule_across_both_columns() {
     assert!(!ruled.is_empty(), "no ruled row drawn");
     for y in ruled {
         assert_eq!(
-            buf[(97, y)].symbol(),
+            buf[(98, y)].symbol(),
             "─",
             "row {y} stops before the pane edge"
         );
@@ -1423,7 +1438,7 @@ fn headers_and_boundaries_rule_across_both_columns() {
 
     // A boundary DIVIDES, so its rule runs on both sides of the text; a hunk
     // header LABELS what follows, so it starts at the left and stays put.
-    let row_text = |y: u16| -> String { (42..98u16).map(|x| buf[(x, y)].symbol()).collect() };
+    let row_text = |y: u16| -> String { (41..99u16).map(|x| buf[(x, y)].symbol()).collect() };
     let boundary = (1..39u16)
         .map(row_text)
         .find(|t| t.contains("more above") || t.contains("more below"))
@@ -1564,13 +1579,19 @@ fn a_foreign_hunk_is_dashed_and_names_its_group() {
 
     // The distinction lives on the model, so assert it there rather than
     // depending on both boxes happening to share a viewport.
-    let borders: Vec<Border> = app.rows.iter().map(|r| r.border).collect();
+    let tops: Vec<BoxStyle> = app
+        .rows
+        .iter()
+        .filter_map(|r| r.border)
+        .filter(|b| b.part == Part::Top)
+        .map(|b| b.box_style)
+        .collect();
     assert!(
-        borders.contains(&Border::Top(BoxStyle::Own)),
+        tops.contains(&BoxStyle::Own),
         "this group's own hunk should keep a solid box"
     );
     assert!(
-        borders.contains(&Border::Top(BoxStyle::Foreign)),
+        tops.contains(&BoxStyle::Foreign),
         "the crossed hunk should be boxed as foreign"
     );
 
@@ -1578,7 +1599,10 @@ fn a_foreign_hunk_is_dashed_and_names_its_group() {
     let pos = app
         .rows
         .iter()
-        .position(|r| r.border == Border::Top(BoxStyle::Foreign))
+        .position(|r| {
+            r.border
+                .is_some_and(|b| b.part == Part::Top && b.box_style == BoxStyle::Foreign)
+        })
         .expect("a foreign box top");
     // Next to the box top, not ON it: the cursor marker takes over the leading
     // cell, which is exactly the cell the corner joins to.
@@ -1589,7 +1613,9 @@ fn a_foreign_hunk_is_dashed_and_names_its_group() {
         plan_rows: 38,
     });
     let text = drawn(&mut app);
-    assert!(text.contains("┌╌"), "a foreign box is dashed horizontally");
+    // `├`, not `┌`: the box's side IS the pane's border, which carries on
+    // above and below the corner.
+    assert!(text.contains("├╌"), "a foreign box is dashed horizontally");
     assert!(text.contains('╎'), "and vertically");
     // The foreign hunk says whose it is, even though this is the group view
     // where labels are otherwise redundant.
@@ -1599,30 +1625,29 @@ fn a_foreign_hunk_is_dashed_and_names_its_group() {
     );
 }
 
-/// The reason the frame's two columns are reserved on EVERY row: a line number
-/// inside a box must sit where a line number outside one sits.
+/// A box borrows the pane's border columns rather than spending content ones,
+/// so a line number inside a box sits where a line number outside one sits.
 #[test]
-fn the_frame_keeps_line_numbers_aligned() {
+fn a_box_costs_the_content_no_columns() {
     let (_r, app) = app_with_two_groups_in_one_file();
     let backend = ratatui::backend::TestBackend::new(100, 40);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|f| app.draw(f)).unwrap();
     let buf = terminal.backend().buffer().clone();
+    // Content is 41..=98; the box lives in the pane's own border columns (40
+    // and 99), so it costs the content nothing.
     let row_text = |y: u16| -> String { (41..99u16).map(|x| buf[(x, y)].symbol()).collect() };
-
-    // A framed row (inside a box) and a context row (outside one).
-    let framed = (1..39u16)
-        .map(row_text)
-        .find(|t| t.starts_with('│') && t.contains("let "))
-        .expect("no framed row");
+    let framed_row = (1..39u16)
+        .find(|&y| buf[(40, y)].style().fg == Some(THEME.skim_fg) && buf[(40, y)].symbol() == "│")
+        .expect("no row inside a box");
+    let framed = row_text(framed_row);
     let context = (1..39u16)
         .map(row_text)
-        .find(|t| t.starts_with(' ') && t.contains("let filler"))
+        .find(|t| t.contains("let filler"))
         .expect("no context row");
 
     // Line numbers are right-aligned in a fixed field, so what must match is
-    // where the CODE starts — i.e. that the gutter occupies the same columns.
-    // By CHARACTER: `str::find` counts bytes, and `│` is three of them.
+    // where the CODE starts. By CHARACTER: `str::find` counts bytes.
     let code_col = |t: &str| {
         let at = t.find("let ").expect("no code on the row");
         t[..at].chars().count()
@@ -1630,7 +1655,15 @@ fn the_frame_keeps_line_numbers_aligned() {
     assert_eq!(
         code_col(&framed),
         code_col(&context),
-        "content must start in the same column inside and outside a box:\n{framed}\n{context}"
+        "a box must cost the content no columns:\n{framed}\n{context}"
+    );
+
+    // And the box side really is the pane's border column, not a cell inside it.
+    assert_eq!(buf[(40, framed_row)].symbol(), "│");
+    assert_ne!(
+        buf[(41, framed_row)].symbol(),
+        "│",
+        "there should be no second vertical line beside the pane border"
     );
 }
 
@@ -1682,6 +1715,85 @@ fn n_skips_a_foreign_hunk_but_space_still_marks_it() {
         "space on a foreign hunk should mark its class"
     );
     assert!(app.session.reviewed_hunks().contains(&hunk));
+}
+
+/// A box's sides take the band's colour, not a colour of their own — otherwise
+/// the top reads as one thing and the sides as another that happens to touch it.
+#[test]
+fn a_box_side_matches_its_top_and_shares_the_pane_border() {
+    let (_r, app) = app_with_two_groups_in_one_file();
+    let backend = ratatui::backend::TestBackend::new(100, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+
+    // Both live in the pane's own left border column (40).
+    let top = (1..39u16)
+        .find(|&y| buf[(40, y)].symbol() == "├")
+        .expect("no box top");
+    let side = (top + 1..39u16)
+        .find(|&y| buf[(40, y)].symbol() == "│" && buf[(40, y)].style().fg == Some(THEME.skim_fg))
+        .expect("no box side");
+    assert_eq!(
+        buf[(40, side)].style().fg,
+        buf[(40, top)].style().fg,
+        "the side should be the same colour as the top"
+    );
+    // And the right-hand side, in the pane's right border column (99).
+    assert_eq!(buf[(99, top)].symbol(), "┤");
+    assert_eq!(buf[(99, side)].style().fg, buf[(40, top)].style().fg);
+
+    // A row outside any box leaves the pane's border to the pane.
+    let plain = (1..39u16)
+        .find(|&y| buf[(40, y)].style().fg != Some(THEME.skim_fg) && buf[(40, y)].symbol() == "│")
+        .expect("no unboxed row");
+    assert_ne!(buf[(40, plain)].style().fg, Some(THEME.skim_fg));
+}
+
+/// The boundary label is the one thing on its row a reviewer can act on. As
+/// dim text on a dim rule it read as a divider meant to be ignored.
+#[test]
+fn a_context_boundary_reads_as_a_button() {
+    let (_r, app) = app_with_two_groups_in_one_file();
+    let backend = ratatui::backend::TestBackend::new(100, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+
+    let row = (1..39u16)
+        .find(|&y| {
+            (41..99u16)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .contains("more")
+        })
+        .expect("no boundary row");
+    let cells: Vec<_> = (41..99u16).map(|x| buf[(x, row)].clone()).collect();
+    let filled: Vec<_> = cells
+        .iter()
+        .filter(|c| c.style().bg == Some(THEME.button_bg))
+        .collect();
+    assert!(
+        filled.len() > 10,
+        "the label should be a filled block, got {} cells",
+        filled.len()
+    );
+    // The block is contiguous, and the rule either side of it is not filled.
+    let first = cells
+        .iter()
+        .position(|c| c.style().bg == Some(THEME.button_bg))
+        .unwrap();
+    let last = cells
+        .iter()
+        .rposition(|c| c.style().bg == Some(THEME.button_bg))
+        .unwrap();
+    assert_eq!(
+        last - first + 1,
+        filled.len(),
+        "the block should be contiguous"
+    );
+    assert_ne!(cells[first - 1].style().bg, Some(THEME.button_bg));
+    assert_eq!(cells[first].symbol(), " ", "the block is padded, not flush");
 }
 
 /// Not an assertion — a readable dump of the pane, so the styling can be

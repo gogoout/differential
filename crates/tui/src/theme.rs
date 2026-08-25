@@ -20,6 +20,9 @@ pub struct Theme {
     pub deleted_word_bg: Color,
     /// Diagonal fill for the side of a split row that has no line at all.
     pub hatch_fg: Color,
+    /// The context-boundary label, which is a control rather than a caption.
+    pub button_fg: Color,
+    pub button_bg: Color,
     pub gutter_fg: Color,
     pub context_fg: Color,
     pub cursor_bg: Color,
@@ -44,6 +47,8 @@ pub const THEME: Theme = Theme {
     added_word_bg: Color::Rgb(28, 92, 42),
     deleted_word_bg: Color::Rgb(110, 38, 38),
     hatch_fg: Color::Rgb(48, 50, 58),
+    button_fg: Color::Rgb(198, 204, 220),
+    button_bg: Color::Rgb(58, 63, 83),
     gutter_fg: Color::DarkGray,
     context_fg: Color::Gray,
     cursor_bg: Color::Rgb(48, 52, 70),

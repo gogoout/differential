@@ -60,15 +60,20 @@ is not already obvious. It remains a selectable row, so `n`/`N` jump to it and `
 `c` act on it. The box closes under the change; **context flows outside it**, so a merged
 block reads as boxes with file between them.
 
-One column at each pane edge is reserved on **every** row, blank where there is no box.
-That is the point: a line number inside a hunk must sit in the same column as one in the
-context above it, or the eye cannot run down either.
+**The box's sides are the pane's own border.** They sit in that column rather than a cell
+inside it, so a box costs the content no width and there are never two vertical lines a
+cell apart. That is also why its corners are junctions (`├`, `┤`): the pane's border
+carries on above and below them. Sides take the header band's colour, so the top and the
+sides read as one shape rather than as two that happen to touch.
 
 Headers and boundary rows rule out to the pane edge and cross the split separator, because
 what they describe is not one side of the file. A boundary **divides**, so its rule runs on
 both sides of a centred label; a header **labels** what follows it, so it starts at the left
 and stays there — a label that drifted with the pane width would be harder to scan down a
 column.
+
+A **context boundary** is a control, not a caption, so its label is a filled block on the
+rule rather than more dim text.
 
 **Context is expandable.** Canonical `-U0` hunks carry no context, so it is read out of the
 base and head blobs — three lines either side by default. Where more of the file is

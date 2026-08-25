@@ -130,18 +130,38 @@ impl BoxStyle {
     }
 }
 
+/// Which part of a hunk's box a row draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Part {
+    Top,
+    Side,
+    Bottom,
+}
+
 /// A row's part in the box drawn around a hunk's changed lines.
 ///
-/// The two edge columns are reserved on EVERY row, blank where there is no
-/// box — otherwise a line number would sit two columns further left inside a
-/// hunk than in the context above it, and the eye could not run down either.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Border {
-    #[default]
-    None,
-    Top(BoxStyle),
-    Side(BoxStyle),
-    Bottom(BoxStyle),
+/// The box's sides ARE the diff pane's own border: they sit in the same column
+/// rather than beside it, so the box costs no width and there are never two
+/// parallel vertical lines a cell apart. That is also why the corners are
+/// junctions (`├`, `┤`) — the pane's border carries on above and below them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Border {
+    pub part: Part,
+    pub box_style: BoxStyle,
+    /// The hunk header band's colour, so the sides match the top rather than
+    /// reading as a different thing that happens to touch it.
+    pub style: Style,
+}
+
+impl Border {
+    /// The glyph this row puts in each of the pane's border columns.
+    pub fn glyphs(&self) -> (char, char) {
+        match self.part {
+            Part::Top => ('├', '┤'),
+            Part::Bottom => ('├', '┤'),
+            Part::Side => (self.box_style.vertical(), self.box_style.vertical()),
+        }
+    }
 }
 
 /// What a row's padding is filled with, out to the pane edge.
@@ -203,7 +223,7 @@ pub enum RowContent {
 pub struct Row {
     pub kind: RowKind,
     pub content: RowContent,
-    pub border: Border,
+    pub border: Option<Border>,
 }
 
 impl Row {
@@ -211,8 +231,12 @@ impl Row {
         Row::banner(kind, line, Fill::Bg(Style::default()))
     }
 
-    pub fn bordered(mut self, border: Border) -> Self {
-        self.border = border;
+    pub fn bordered(mut self, part: Part, box_style: BoxStyle, style: Style) -> Self {
+        self.border = Some(Border {
+            part,
+            box_style,
+            style,
+        });
         self
     }
 
@@ -238,7 +262,7 @@ impl Row {
     ) -> Self {
         Row {
             kind,
-            border: Border::None,
+            border: None,
             content: RowContent::Unified(Half {
                 gutter: (lead_style, lead.to_string()),
                 pairs: line
@@ -584,7 +608,7 @@ fn column_header_row() -> Row {
     };
     Row {
         kind: RowKind::ColumnHeader,
-        border: Border::None,
+        border: None,
         content: RowContent::Split {
             old: label("old"),
             new: label("new"),
@@ -593,6 +617,16 @@ fn column_header_row() -> Row {
 }
 
 /// Header row for one hunk, plus its findings.
+/// A hunk's colour: green once its class is read, otherwise the skim tier's.
+/// Shared by the band and the box sides so the two cannot drift apart.
+fn hunk_style(ctx: &RowsContext, hi: usize) -> Style {
+    if ctx.reviewed.contains(&hi) {
+        Style::default().fg(THEME.reviewed_fg)
+    } else {
+        Style::default().fg(THEME.skim_fg)
+    }
+}
+
 fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<Row>) {
     let hunk = &ctx.doc.hunks[hi];
     let reviewed = ctx.reviewed.contains(&hi);
@@ -618,11 +652,7 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
     } else {
         String::new()
     };
-    let header_style = if reviewed {
-        Style::default().fg(THEME.reviewed_fg)
-    } else {
-        Style::default().fg(THEME.skim_fg)
-    };
+    let header_style = hunk_style(ctx, hi);
     // A band across the pane rather than a `@@ -a,b +c,d @@` line. Those
     // coordinates were the only way to know where you were when the gutter
     // showed one number; now every row carries both, so the header repeated
@@ -669,7 +699,7 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
             box_style.horizontal(),
             header_style,
         )
-        .bordered(Border::Top(box_style)),
+        .bordered(Part::Top, box_style, header_style),
     );
 
     for f in ctx
@@ -773,7 +803,7 @@ fn file_rows(
                         let row = context_row(text, o, w, new_hl.get(&(w - 1)), ctx.mode);
                         rows.push(Row {
                             kind: RowKind::Diff(owner),
-                            border: Border::None,
+                            border: None,
                             content: row,
                         });
                     }
@@ -790,30 +820,37 @@ fn file_rows(
                     } else {
                         BoxStyle::Own
                     };
+                    let header_style = hunk_style(ctx, *hunk);
                     hunk_header_rows(ctx, *hunk, *foreign, rows);
                     for content in change_rows(src, old, new, &old_hl, &new_hl, ctx.mode) {
-                        rows.push(Row {
-                            kind: RowKind::Diff(*hunk),
-                            border: Border::Side(box_style),
-                            content,
-                        });
+                        rows.push(
+                            Row {
+                                kind: RowKind::Diff(*hunk),
+                                border: None,
+                                content,
+                            }
+                            .bordered(
+                                Part::Side,
+                                box_style,
+                                header_style,
+                            ),
+                        );
                     }
                     // The box closes under the change; context flows outside
                     // it, so a merged block reads as boxes with file between.
-                    let foot = Style::default().fg(THEME.gutter_fg);
                     rows.push(
                         Row::banner_with(
                             RowKind::HunkFoot,
                             Line::default(),
                             Fill::Rule {
-                                style: foot,
+                                style: header_style,
                                 centered: false,
                                 glyph: box_style.horizontal(),
                             },
                             box_style.horizontal(),
-                            foot,
+                            header_style,
                         )
-                        .bordered(Border::Bottom(box_style)),
+                        .bordered(Part::Bottom, box_style, header_style),
                     );
                 }
             }
@@ -856,14 +893,20 @@ fn boundary_row(ctx: &RowsContext, b: &window::Boundary, step: usize) -> Row {
         }
     };
     // A rule to the pane edge: what is hidden is hidden from BOTH sides, so
-    // the row saying so runs across both of them.
+    // the row saying so runs across both of them. The label itself is a BUTTON
+    // on that rule, not more rule — it is the one thing on the row a reviewer
+    // can act on, and as dim text it read as a divider meant to be ignored.
+    let button = Style::default()
+        .fg(THEME.button_fg)
+        .bg(THEME.button_bg)
+        .add_modifier(Modifier::BOLD);
     Row::banner(
         RowKind::ContextEdge {
             hunk: b.hunk,
             side: b.side,
             crossing: b.next.is_some(),
         },
-        Line::from(Span::styled(label, style)),
+        Line::from(Span::styled(format!(" {} ", label.trim()), button)),
         Fill::Rule {
             style,
             centered: true,
