@@ -11,6 +11,7 @@ mod ids;
 mod source;
 mod staging;
 mod tiers;
+mod view;
 
 pub use counts::LineCounts;
 pub use enumerate::{Enumeration, attr_marks_generated, build_view, classify};
@@ -19,6 +20,7 @@ pub use ids::{HunkId, PlanIndex};
 pub use source::{RangeSpec, ReviewSource, parse_range};
 pub use staging::{Staged, cumulative_state, final_state};
 pub use tiers::{Deferral, Fold, ReadingSplit, reading_split};
+pub use view::{Dependency, FileView, GroupView, ReviewView};
 
 use crate::schema;
 

@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use differential_engine::gitio::Repo;
-use differential_engine::plan::{self, Deferral, Fold, PlanIndex, reading_split};
+use differential_engine::plan::{Deferral, Fold, GroupView, PlanIndex, ReviewView, reading_split};
 use differential_engine::review_state::Finding;
 use differential_engine::schema;
 use ratatui::style::{Modifier, Style};
@@ -163,8 +163,10 @@ pub struct GroupContext<'a> {
     pub core: RowsContext<'a>,
     pub index: &'a PlanIndex<'a>,
     pub group: &'a schema::Group,
-    /// Group id -> label, for rendering depends_on legibly.
-    pub labels: &'a HashMap<String, String>,
+    /// The projected group, carrying resolved dependency edges and the
+    /// back-fill flag the header renders.
+    pub view: &'a GroupView,
+    pub plan: &'a ReviewView,
     pub fold: Fold,
 }
 
@@ -266,7 +268,10 @@ pub fn build_file_rows(
 
 fn header_rows(ctx: &GroupContext, rows: &mut Vec<Row>) {
     let g = ctx.group;
-    let tier = plan::effort_name(g.effort);
+    // The back-fill group is must-read for a different reason from an ordinary
+    // focus group — the model never classified it at all — and the stack has
+    // always said so. One source for the label, so both renderers agree.
+    let tier = ctx.plan.tier_name(ctx.view);
     let role = Theme::role_suffix(g.role);
     rows.push(Row::full(
         RowKind::GroupHeader,
@@ -294,15 +299,13 @@ fn header_rows(ctx: &GroupContext, rows: &mut Vec<Row>) {
         ));
     }
     if !g.depends_on.is_empty() {
-        let deps: Vec<String> = g
+        // Edges arrive resolved: the projection already paired each id with
+        // its label, so the renderer no longer carries a lookup table.
+        let deps: Vec<String> = ctx
+            .view
             .depends_on
             .iter()
-            .map(|id| {
-                ctx.labels
-                    .get(id)
-                    .map(|l| format!("{id} ({l})"))
-                    .unwrap_or_else(|| id.clone())
-            })
+            .map(|d| format!("{} ({})", d.id, d.label))
             .collect();
         rows.push(Row::full(
             RowKind::GroupHeader,
