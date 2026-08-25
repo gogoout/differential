@@ -11,7 +11,10 @@ pub mod picker;
 pub mod rows;
 pub mod splash;
 pub mod theme;
-pub mod vendor;
+/// Vendored MIT code (tuicr, lumen). PRIVATE: nothing outside this crate uses
+/// it, and while it was public the compiler could never tell us which of it
+/// was actually reachable — every `pub fn` was exported surface by definition.
+mod vendor;
 
 use std::io::Stdout;
 use std::sync::Arc;
