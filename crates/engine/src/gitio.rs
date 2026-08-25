@@ -97,6 +97,28 @@ impl Repo {
         Ok(out.stdout)
     }
 
+    /// Run a git command for its exit status, which the caller treats as the
+    /// answer rather than as success or failure.
+    ///
+    /// Separate from `run` rather than loosening it: `run` turning a non-zero
+    /// exit into an error is what makes every other call site safe by default.
+    fn run_status<I, S>(&self, args: I) -> Result<std::process::ExitStatus, EngineError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        Command::new("git")
+            .arg("-c")
+            .arg("core.quotepath=false")
+            .args(args)
+            .current_dir(&self.root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|e| EngineError::GitSpawn { source: e })
+    }
+
     /// Blob content at `rev:path`. `Ok(None)` when the path does not exist at
     /// that revision; any other failure is a real error.
     fn blob(&self, rev: &str, path: &[u8]) -> Result<Option<Vec<u8>>, EngineError> {
@@ -400,6 +422,13 @@ fn index_record(e: &ports::IndexEntry) -> Vec<u8> {
 impl ports::WorkingCopy for Repo {
     fn tracked_paths(&self) -> Result<Vec<u8>, EngineError> {
         self.run(["ls-files", "-z"], None)
+    }
+
+    /// `diff-index --quiet HEAD --`: exit 1 means differences, which is the
+    /// answer rather than a failure — hence `run_status` instead of `run`.
+    fn has_tracked_changes(&self) -> Result<bool, EngineError> {
+        let status = self.run_status(["diff-index", "--quiet", "HEAD", "--"])?;
+        Ok(!status.success())
     }
 
     fn untracked_paths(&self) -> Result<Vec<u8>, EngineError> {

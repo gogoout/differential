@@ -5,8 +5,9 @@ use differential_engine::config::Config;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::run_pipeline;
 use differential_engine::ports::ObjectReader;
+use differential_engine::ports::TreeResolver;
 use differential_engine::schema::SourceKind;
-use differential_engine::worktree::{index_tree, worktree_tree};
+use differential_engine::worktree::{index_tree, is_clean, worktree_tree};
 use differential_testutil::{TestRepo, assert_all_ok};
 
 /// base commit, then: a.txt staged, b.txt edited unstaged, new.txt untracked,
@@ -131,4 +132,74 @@ fn unmerged_index_is_a_clear_error() {
 
     let err = index_tree(&r.repo()).unwrap_err();
     assert!(err.to_string().contains("unmerged"), "got: {err}");
+}
+
+/// A committed repo with nothing outstanding — the case every existing fixture
+/// here skips, and the one the picker keys its checkbox off.
+fn clean_repo() -> (TestRepo, String) {
+    let r = TestRepo::new();
+    r.write("a.txt", b"alpha original line\n");
+    r.write("b.txt", b"beta original line\n");
+    let head = r.commit_all("base");
+    (r, head)
+}
+
+#[test]
+fn is_clean_distinguishes_a_settled_worktree_from_a_dirty_one() {
+    let (clean, _) = clean_repo();
+    assert!(is_clean(&clean.repo()).unwrap());
+
+    let (dirty, _) = dirty_repo();
+    assert!(!is_clean(&dirty.repo()).unwrap());
+}
+
+/// Each kind of dirt on its own, so a detector that catches only some of them
+/// fails here rather than silently hiding an option the reviewer needs.
+#[test]
+fn is_clean_catches_every_kind_of_uncommitted_change() {
+    // Staged.
+    let (r, _) = clean_repo();
+    r.write("a.txt", b"staged edit\n");
+    r.git(&["add", "a.txt"]);
+    assert!(!is_clean(&r.repo()).unwrap(), "staged change");
+
+    // Unstaged.
+    let (r, _) = clean_repo();
+    r.write("a.txt", b"unstaged edit\n");
+    assert!(!is_clean(&r.repo()).unwrap(), "unstaged change");
+
+    // Untracked but not ignored — the half `diff-index` cannot see, which is
+    // why `untracked_paths` is part of the answer.
+    let (r, _) = clean_repo();
+    r.write("newcomer.txt", b"hello\n");
+    assert!(!is_clean(&r.repo()).unwrap(), "untracked file");
+
+    // Deleted from the worktree only.
+    let (r, _) = clean_repo();
+    std::fs::remove_file(r.root.join("a.txt")).unwrap();
+    assert!(!is_clean(&r.repo()).unwrap(), "worktree deletion");
+
+    // Ignored files are not dirt: a snapshot excludes them too.
+    let (r, _) = clean_repo();
+    r.write(".gitignore", b"junk/\n");
+    r.git(&["add", ".gitignore"]);
+    r.git(&["commit", "-q", "-m", "ignore junk"]);
+    r.write("junk/thing.txt", b"noise\n");
+    assert!(
+        is_clean(&r.repo()).unwrap(),
+        "ignored files are not changes"
+    );
+}
+
+/// The identity the picker change rests on: with nothing outstanding, the
+/// snapshot IS `HEAD`'s tree, so offering to include the worktree cannot
+/// change the diff — it only costs the snapshot.
+#[test]
+fn a_clean_worktree_snapshots_to_exactly_the_head_tree() {
+    let (r, _) = clean_repo();
+    let repo = r.repo();
+    let head_tree = repo.tree_of("HEAD").unwrap();
+
+    assert_eq!(worktree_tree(&repo).unwrap(), head_tree);
+    assert_eq!(index_tree(&repo).unwrap(), head_tree);
 }

@@ -30,3 +30,14 @@ where
     session.stage_from_worktree(&paths)?;
     session.write_tree()
 }
+
+/// Whether a worktree snapshot would differ from `HEAD` at all.
+///
+/// The question a reviewer surface actually has: "is offering to include
+/// uncommitted work going to change anything?" Answered with two cheap
+/// plumbing calls rather than by building the snapshot and comparing trees —
+/// the snapshot re-hashes every tracked file, which is precisely the work a
+/// clean answer lets the caller skip.
+pub fn is_clean<G: WorkingCopy>(git: &G) -> Result<bool, EngineError> {
+    Ok(!git.has_tracked_changes()? && git.untracked_paths()?.is_empty())
+}
