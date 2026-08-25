@@ -227,6 +227,13 @@ pub fn plan(
         });
         match spans.last_mut() {
             Some(s) if joins => {
+                // BOTH ends. Widening only the lower one would drop the hunks
+                // between `lo` and `s.lo` from the block while still claiming
+                // to have absorbed them — a hunk asked for and never drawn.
+                if lo < s.lo {
+                    s.lo = lo;
+                    s.up_owner = i;
+                }
                 if hi > s.hi {
                     s.hi = hi;
                     s.down_owner = i;
@@ -627,6 +634,55 @@ mod tests {
 
     /// A hunk is absorbed whole and costs no context budget — showing half a
     /// change would be worse than showing none.
+    /// A merge has to widen BOTH ends of the span.
+    ///
+    /// Widening only the lower one drops every hunk between the new `lo` and
+    /// the old — absorbed as far as the arithmetic is concerned, never drawn.
+    /// The UI cannot reach this today (merging leaves the upper end owned by
+    /// the earlier hunk, so it is that hunk's `crossed_up` a `z` grows), but
+    /// `plan` is a pure function and should not have a silently-wrong corner
+    /// waiting for its caller to change.
+    #[test]
+    fn a_merge_widens_both_ends_of_the_span() {
+        let x = entry(10, 1, 10, 1);
+        let a = entry(20, 1, 20, 1);
+        let c = entry(30, 1, 30, 1);
+        let hunks = [
+            Candidate {
+                index: 0,
+                shown: false,
+                entry: &x,
+            },
+            shown(1, &a),
+            shown(2, &c),
+        ];
+        // The LATER shown hunk reaches back past the earlier one's span.
+        let deep = HashMap::from([(
+            2,
+            Expansion {
+                crossed_up: 2,
+                ..Expansion::default()
+            },
+        )]);
+        let blocks = plan(&hunks, &deep, 3, 100, 100);
+        assert_eq!(blocks.len(), 1);
+        let drawn: Vec<usize> = blocks[0]
+            .segments
+            .iter()
+            .filter_map(|s| match s {
+                Segment::Change { hunk, .. } => Some(*hunk),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            drawn,
+            vec![0, 1, 2],
+            "every hunk the span covers must be drawn"
+        );
+        // And the top boundary belongs to the hunk that reached up there.
+        assert_eq!(blocks[0].top.as_ref().map(|b| b.hunk), Some(2));
+    }
+
     /// `crossed_*` is a count of hunks, and it saturates. The UI can only
     /// reach a count by pressing `z` on a boundary that offered the next hunk,
     /// so it never asks for more than exist — but that is the caller's habit,
