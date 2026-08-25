@@ -14,6 +14,7 @@ use differential_engine::config::Config;
 use differential_engine::gitio::Repo;
 use differential_engine::grouping::GroupingOptions;
 use differential_engine::lang::LanguageRegistry;
+use differential_engine::ports::RepoLayout;
 use differential_engine::schema::Effort;
 use differential_engine::{resolve_range, run_grouped_pipeline};
 

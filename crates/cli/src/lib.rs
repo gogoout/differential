@@ -14,6 +14,7 @@ use differential_engine::invariants::InvariantReport;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::resolve_picked;
 use differential_engine::plan;
+use differential_engine::ports::RepoLayout;
 use differential_engine::{resolve_range, run_pipeline};
 use differential_stack::{StackOptions, run_stack_pipeline};
 

@@ -48,15 +48,7 @@ const NOT_YET_INVERTED: &[(&str, &str)] = &[
     ("config.rs", "etcetera"),
     ("config.rs", "std::fs"),
     ("grouping/cache.rs", "std::fs"),
-    ("invariants.rs", "crate::gitio"),
-    ("pipeline.rs", "crate::gitio"),
-    ("review_session.rs", "crate::gitio"),
-    ("review_state.rs", "crate::gitio"),
     ("review_state.rs", "std::fs"),
-    ("tree.rs", "crate::gitio"),
-    ("tree.rs", "tempfile"),
-    ("worktree.rs", "crate::gitio"),
-    ("worktree.rs", "tempfile"),
 ];
 
 #[test]
@@ -119,7 +111,7 @@ fn domain_modules_do_not_depend_on_adapters() {
 fn the_stack_renderer_is_domain_and_obeys_the_same_rule() {
     /// Same contract as `NOT_YET_INVERTED`: shrinks only, and stale entries
     /// are a failure.
-    const STACK_NOT_YET_INVERTED: &[&str] = &["crate::gitio", "tempfile"];
+    const STACK_NOT_YET_INVERTED: &[&str] = &[];
 
     let src = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -172,17 +164,26 @@ fn the_shared_domain_policy_is_pure() {
     }
 }
 
-/// Everything above the file's test module.
+/// The file's production code: everything above its test module, with comments
+/// stripped.
 ///
-/// A domain module's own unit tests may use a temp directory or read a
-/// fixture; that is the test being an adapter, not the domain depending on
-/// one. This codebase keeps `#[cfg(test)] mod tests` at the bottom of the
-/// file, so truncating there separates the two.
-fn production_source(text: &str) -> &str {
-    match text.find("#[cfg(test)]") {
+/// Two exclusions, both deliberate. A domain module's own unit tests may use a
+/// temp directory or read a fixture — that is the test being an adapter, not
+/// the domain depending on one; this codebase keeps `#[cfg(test)] mod tests` at
+/// the bottom, so truncating there separates them. And a doc comment often has
+/// to NAME an adapter to explain why a port exists at all (`ports.rs` says why
+/// `ConfigSource::read_required` keeps an error coming from the same `std::fs`
+/// call) — flagging prose would push authors toward vaguer comments, which is
+/// the opposite of what this file is for.
+fn production_source(text: &str) -> String {
+    let code = match text.find("#[cfg(test)]") {
         Some(i) => &text[..i],
         None => text,
-    }
+    };
+    code.lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn rust_files(dir: &Path) -> Vec<std::path::PathBuf> {

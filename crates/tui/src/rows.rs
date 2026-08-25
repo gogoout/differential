@@ -8,6 +8,7 @@ use differential_engine::gitio::Repo;
 use differential_engine::plan::{
     Deferral, Fold, GroupView, HunkId, PlanIndex, ReviewView, reading_split,
 };
+use differential_engine::ports::ObjectReader;
 use differential_engine::review_state::Finding;
 use differential_engine::schema;
 use ratatui::style::{Modifier, Style};

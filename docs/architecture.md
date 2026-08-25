@@ -68,7 +68,7 @@ The report is honest about the saving: skim exemplars still get read, so documen
 
 | path | what |
 |---|---|
-| `crates/engine` | the backend: git io, diff parsing, byte-exact applier, shape classes, language registry, grouping, ordering, invariants, review sessions — plus `engine::schema` (the frozen JSON contract, serde-only) and `engine::llm` (the backend abstraction, tools denied) |
+| `crates/engine` | the backend: git io, diff parsing, byte-exact applier, shape classes, language registry, grouping, ordering, invariants, review sessions — plus `engine::schema` (the frozen JSON contract, serde-only), `engine::plan` (shared domain policy over the schema), `engine::ports` (the traits domain owns, implemented by `gitio`) and `engine::llm` (the backend abstraction, tools denied) |
 | `crates/stack` | the shadow-branch renderer — the diff as a synthetic commit stack |
 | `crates/tui` | the terminal reviewer (vendored tuicr/lumen pieces live here) |
 | `crates/cli` | the application layer: the `dfr` / `differential` binaries, argument parsing and dispatch only |
@@ -79,6 +79,10 @@ module remains the product boundary — serde types only, no engine internals �
 reviewed module discipline rather than a crate boundary (ADR 0008, 0018).
 All git access shells out to real git, plumbing commands only — the byte-exactness
 guarantees were validated against real git output and nothing else (ADR 0002, 0011).
+Domain code reaches it through `engine::ports`, whose only implementation is `gitio::Repo`;
+`Repo::run` is private, so a function's trait bounds are an honest statement of how much git
+it can touch, and a fake git — which would make invariants 1–4 compare a fake with itself —
+is impossible to introduce by accident (ADR 0020, enforced by `engine/tests/layering.rs`).
 
 ## Testing philosophy
 
