@@ -8,6 +8,12 @@ and label, then file count with added/removed line totals (in their own colours)
 role, and `after: <ids>` naming the groups it follows — the id column is what makes those
 references resolvable.
 
+The trailing **back-filled** group — classes the model omitted, recovered by the coverage
+audit (ADR 0001, invariant 5) — is labelled `[unclassified]` with a `?` tier glyph rather
+than `[focus]`/`F`. It is must-read either way, but for a different reason: nothing
+judged it. The shadow-branch renderer has always said so on its commit subject, and the
+two renderers read the flag from the same projection so they cannot disagree.
+
 The plan is a **DAG, not a tree**: a group can follow several others, and the graph can
 even contain cycles (two groups that each define symbols the other uses). The ordering
 stage breaks a cycle deterministically, which means some edge cannot be honoured; the

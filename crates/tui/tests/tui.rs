@@ -28,6 +28,32 @@ fn skim_first_backend() -> FakeBackend {
     })
 }
 
+/// Open an App over HEAD~1..HEAD of `r` with an explicit backend.
+fn open_app_with(r: &TestRepo, backend: &FakeBackend, store: &str) -> App {
+    let repo = Repo::open(Path::new(&r.root)).unwrap();
+    let base = r.git(&["rev-parse", "HEAD~1"]);
+    let head = r.git(&["rev-parse", "HEAD"]);
+    let out = run_grouped_pipeline(
+        &repo,
+        &base,
+        &head,
+        SourceKind::Range,
+        &Config::default(),
+        &LanguageRegistry::builtin(),
+        &differential_engine::grouping::GroupingOptions {
+            backend: Some(backend),
+            cache_dir: None,
+            progress: None,
+            cancel: None,
+        },
+    )
+    .unwrap();
+    let factory = RowFactory::new(repo, out.base.clone(), out.head.clone());
+    let session =
+        ReviewSession::open_at(r.root.join(store), out.document.unwrap(), out.view).unwrap();
+    App::new(session, factory)
+}
+
 /// Open an App over HEAD~1..HEAD of `r`, with the review store inside the
 /// repo dir — reopening yields a resumed session over the same store.
 fn open_app(r: &TestRepo) -> App {
@@ -93,7 +119,7 @@ fn ctrl(c: char) -> KeyEvent {
 #[test]
 fn navigation_group_switch_and_focus() {
     let (_r, mut app) = make_app();
-    assert_eq!(app.groups.len(), 2);
+    assert_eq!(app.groups().len(), 2);
     assert_eq!(app.focus, Focus::Groups);
 
     // j in the groups pane switches group and rebuilds rows.
@@ -207,14 +233,14 @@ fn quit_saves_cursor() {
 fn group_counts_files_and_line_totals() {
     let (_r, app) = make_app();
     // Across both groups: 4 files, 4 hunks, each hunk one line replaced.
-    let files: usize = app.groups.iter().map(|g| g.n_files).sum();
-    let adds: usize = app.groups.iter().map(|g| g.adds).sum();
-    let dels: usize = app.groups.iter().map(|g| g.dels).sum();
+    let files: usize = app.groups().iter().map(|g| g.n_files).sum();
+    let adds: usize = app.groups().iter().map(|g| g.counts.adds).sum();
+    let dels: usize = app.groups().iter().map(|g| g.counts.dels).sum();
     assert_eq!(files, 4);
     assert_eq!(adds, 4);
     assert_eq!(dels, 4);
     // The 3-file repeated edit lands in one group.
-    assert!(app.groups.iter().any(|g| g.n_files == 3));
+    assert!(app.groups().iter().any(|g| g.n_files == 3));
 }
 
 #[test]
@@ -225,7 +251,7 @@ fn file_view_lists_all_files_and_shares_review_marks() {
 
     app.handle_key(key('v'));
     assert_eq!(app.view_mode, ViewMode::Files);
-    assert_eq!(app.files.len(), 4);
+    assert_eq!(app.files().len(), 4);
     let store =
         differential_engine::review_state::ReviewStore::open_at(r.root.join(".dfr-test-store"))
             .unwrap();
@@ -269,7 +295,7 @@ fn file_view_shows_hunks_across_groups_with_labels() {
     );
     r.commit_all("head");
     let mut app = open_app(&r);
-    assert_eq!(app.groups.len(), 2, "two shapes → two groups");
+    assert_eq!(app.groups().len(), 2, "two shapes → two groups");
 
     app.handle_key(key('v'));
     let hunk_headers = app
@@ -411,20 +437,21 @@ fn reading_plan_shows_ids_and_flags_unsatisfiable_dependencies() {
 
     // Every dependency names a real group id — the id column makes them
     // resolvable, which is the whole point of showing it.
-    let ids: Vec<&str> = app.groups.iter().map(|g| g.id.as_str()).collect();
-    for g in &app.groups {
-        for (dep, later) in &g.after {
+    let ids: Vec<&str> = app.groups().iter().map(|g| g.id.as_str()).collect();
+    for g in app.groups() {
+        for d in &g.depends_on {
             assert!(
-                ids.contains(&dep.as_str()),
-                "dependency {dep:?} is not a group id"
+                ids.contains(&d.id.as_str()),
+                "dependency {:?} is not a group id",
+                d.id
             );
             // The flag must agree with the plan order: it means "this
             // dependency appears further down", i.e. a cycle the toposort
             // had to break.
-            let dep_pos = app.groups.iter().position(|o| &o.id == dep).unwrap();
-            let self_pos = app.groups.iter().position(|o| o.id == g.id).unwrap();
+            let dep_pos = app.groups().iter().position(|o| o.id == d.id).unwrap();
+            let self_pos = app.groups().iter().position(|o| o.id == g.id).unwrap();
             assert_eq!(
-                *later,
+                d.unsatisfied,
                 dep_pos > self_pos,
                 "cycle flag disagrees with the order"
             );
@@ -443,7 +470,7 @@ fn reading_plan_shows_ids_and_flags_unsatisfiable_dependencies() {
         .map(|c| c.symbol())
         .collect();
     assert!(
-        content.contains(&app.groups[0].id),
+        content.contains(&app.groups()[0].id),
         "group id missing from the plan"
     );
     assert!(content.contains("files"), "per-group file count missing");
@@ -456,7 +483,7 @@ fn space_in_the_plan_pane_marks_the_whole_group() {
     assert_eq!(app.focus, Focus::Groups);
     // Pick the group with the most classes so "whole group" is meaningful.
     let target = app
-        .groups
+        .groups()
         .iter()
         .enumerate()
         .max_by_key(|(_, g)| g.class_keys.len())
@@ -465,7 +492,7 @@ fn space_in_the_plan_pane_marks_the_whole_group() {
     while app.selected_group != target {
         app.handle_key(key('j'));
     }
-    let want = app.groups[target].class_keys.len();
+    let want = app.groups()[target].class_keys.len();
     assert!(want >= 1);
 
     app.handle_key(key(' '));
@@ -571,15 +598,15 @@ fn the_plan_gutter_links_the_selected_group_to_its_neighbours() {
     // Land on a group that actually has an edge, so the connector has
     // something to draw.
     let with_edge = app
-        .groups
+        .groups()
         .iter()
-        .position(|g| !g.after.is_empty())
+        .position(|g| !g.depends_on.is_empty())
         .or_else(|| {
-            let ids: Vec<String> = app.groups.iter().map(|g| g.id.clone()).collect();
+            let ids: Vec<String> = app.groups().iter().map(|g| g.id.clone()).collect();
             ids.iter().position(|id| {
-                app.groups
+                app.groups()
                     .iter()
-                    .any(|o| o.after.iter().any(|(d, _)| d == id))
+                    .any(|o| o.depends_on.iter().any(|d| &d.id == id))
             })
         });
     let Some(target) = with_edge else {
@@ -592,15 +619,15 @@ fn the_plan_gutter_links_the_selected_group_to_its_neighbours() {
     // The relation model matches depends_on in both directions, and the
     // selected row is the anchor.
     assert_eq!(app.relation_to_selected(target), Relation::Selected);
-    for (i, g) in app.groups.iter().enumerate() {
+    for (i, g) in app.groups().iter().enumerate() {
         match app.relation_to_selected(i) {
             Relation::Dependency => assert!(
-                app.groups[target].after.iter().any(|(d, _)| *d == g.id),
+                app.groups()[target].depends_on.iter().any(|d| d.id == g.id),
                 "{} marked as a dependency but the selected group does not follow it",
                 g.id
             ),
             Relation::Dependent => assert!(
-                g.after.iter().any(|(d, _)| *d == app.groups[target].id),
+                g.depends_on.iter().any(|d| d.id == app.groups()[target].id),
                 "{} marked as a dependent but does not follow the selected group",
                 g.id
             ),
@@ -706,4 +733,62 @@ fn picker_reads_real_branch_and_tag_names() {
             "{want:?} missing from {names:?}"
         );
     }
+}
+
+/// The reviewer must say when a group was never classified.
+///
+/// The stack has always rendered the audit's back-fill as `[unclassified]`
+/// (`stack.rs::backfilled_group_renders_as_unclassified`) while the TUI showed
+/// it as an ordinary focus group — the same document, described two ways.
+/// One projection, one answer.
+#[test]
+fn a_backfilled_group_renders_as_unclassified() {
+    let r = TestRepo::new();
+    r.write("a.txt", b"use old_name;\n");
+    r.write("b.txt", b"fn main() { slow() }\n");
+    r.commit_all("base");
+    r.write("a.txt", b"use new_name;\n");
+    r.write("b.txt", b"fn main() { fast(3) }\n");
+    r.commit_all("head");
+
+    // The model answers with only one of the two class ids; the coverage
+    // audit back-fills the other into a trailing must-read group.
+    let backend = FakeBackend::new("fake", |ids| {
+        format!(
+            r#"{{"groups": [{}]}}"#,
+            json_group("Only one", "focus", &[&ids[1]])
+        )
+    });
+    let mut app = open_app_with(&r, &backend, ".dfr-backfill-store");
+
+    let last = app.groups().last().expect("at least one group");
+    assert!(
+        last.unclassified,
+        "the trailing group is the audit back-fill"
+    );
+    assert!(
+        app.groups()[..app.groups().len() - 1]
+            .iter()
+            .all(|g| !g.unclassified),
+        "only the back-fill is unclassified"
+    );
+
+    // And it is visible: the header says so rather than reading as focus work.
+    while app.selected_group != app.groups().len() - 1 {
+        app.handle_key(key('j'));
+    }
+    let backend = ratatui::backend::TestBackend::new(120, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(
+        text.contains("unclassified"),
+        "the back-fill group must be labelled, not shown as ordinary focus work"
+    );
 }

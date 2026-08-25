@@ -6,7 +6,7 @@
 //! mutation persists before returning, so a renderer can crash at any point
 //! without losing anything, and never touches the store itself.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::schema;
@@ -14,18 +14,17 @@ use crate::schema;
 use crate::EngineError;
 use crate::gitio::Repo;
 use crate::model::DiffView;
-use crate::plan::PlanIndex;
-use crate::review_state::{Anchor, Finding, ReviewState, ReviewStore, class_content_key, reanchor};
+use crate::plan;
+use crate::review_state::{Anchor, Finding, ReviewState, ReviewStore, reanchor};
 
 pub struct ReviewSession {
     store: ReviewStore,
     doc: schema::PlanDocument,
+    /// Hunk BYTES. Not to be confused with `plan`, which is the document's
+    /// arithmetic — see `view()` and `plan()`.
     view: DiffView,
+    plan: plan::ReviewView,
     plan_hash: String,
-    /// class id -> class content key (the reviewed-mark key).
-    class_key: HashMap<String, String>,
-    /// canonical hunk index -> class content key.
-    hunk_key: HashMap<usize, String>,
     state: ReviewState,
     findings: Vec<Finding>,
 }
@@ -68,29 +67,16 @@ impl ReviewSession {
         store.save_findings(&findings)?;
         let state = store.load_state()?;
 
-        let index = PlanIndex::build(&doc)?;
-        let mut class_key = HashMap::new();
-        let mut hunk_key = HashMap::new();
-        for c in &doc.classes {
-            let members = index.class_hunks(&c.id);
-            let digests: Vec<String> = members
-                .iter()
-                .map(|&h| index.hunk(h).digest.clone())
-                .collect();
-            let key = class_content_key(&digests);
-            for h in members {
-                hunk_key.insert(h.index(), key.clone());
-            }
-            class_key.insert(c.id.clone(), key);
-        }
+        // The projection computes the reviewed-mark keys, so the session no
+        // longer derives its own copy of the same arithmetic.
+        let plan = plan::ReviewView::project(&doc)?;
 
         Ok(ReviewSession {
             store,
             doc,
             view,
+            plan,
             plan_hash,
-            class_key,
-            hunk_key,
             state,
             findings,
         })
@@ -102,8 +88,17 @@ impl ReviewSession {
         &self.doc
     }
 
+    /// The canonical diff's CONTENT — hunk bytes. `plan()` is the document's
+    /// arithmetic; the two are one letter apart in the type names and quite
+    /// different things.
     pub fn view(&self) -> &DiffView {
         &self.view
+    }
+
+    /// The document's projection: groups, files, counts, dependency edges and
+    /// reviewed-mark keys. Renderers read this instead of re-deriving it.
+    pub fn plan(&self) -> &plan::ReviewView {
+        &self.plan
     }
 
     pub fn plan_hash(&self) -> &str {
@@ -116,12 +111,12 @@ impl ReviewSession {
 
     /// Content key of the class owning `hunk`.
     pub fn hunk_class_key(&self, hunk: usize) -> &str {
-        &self.hunk_key[&hunk]
+        self.plan.hunk_key(plan::HunkId::from_index(hunk))
     }
 
     /// Content key for a class id (present for every class in the document).
     pub fn class_key(&self, class_id: &str) -> &str {
-        &self.class_key[class_id]
+        self.plan.class_key(class_id)
     }
 
     pub fn is_reviewed(&self, class_key: &str) -> bool {
@@ -135,10 +130,10 @@ impl ReviewSession {
     /// Canonical hunk indices whose class is marked reviewed (owned — safe to
     /// hold while borrowing the session elsewhere).
     pub fn reviewed_hunks(&self) -> HashSet<usize> {
-        self.hunk_key
-            .iter()
-            .filter(|(_, key)| self.state.reviewed_classes.contains(*key))
-            .map(|(hi, _)| *hi)
+        self.plan
+            .hunks_with_keys(|key| self.state.reviewed_classes.contains(key))
+            .into_iter()
+            .map(|h| h.index())
             .collect()
     }
 
@@ -159,7 +154,10 @@ impl ReviewSession {
     /// Toggle the reviewed mark of the class owning `hunk`. Returns the new
     /// mark (true = now reviewed).
     pub fn toggle_reviewed(&mut self, hunk: usize) -> Result<bool, EngineError> {
-        let key = self.hunk_key[&hunk].clone();
+        let key = self
+            .plan
+            .hunk_key(plan::HunkId::from_index(hunk))
+            .to_string();
         let now = self.state.reviewed_classes.insert(key.clone());
         if !now {
             self.state.reviewed_classes.remove(&key);

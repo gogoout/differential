@@ -4,13 +4,12 @@
 //! All review state (reviewed marks, findings, resume cursor) lives in the
 //! engine's `ReviewSession`; this model holds presentation state only.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use differential_engine::ReviewSession;
-use differential_engine::plan::{Fold, HunkId, LineCounts, PlanIndex};
+use differential_engine::plan::{Fold, PlanIndex};
 use differential_engine::review_state::FindingStatus;
-use differential_engine::schema;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -61,26 +60,6 @@ pub enum Effect {
     CopySummary(String),
 }
 
-pub struct GroupInfo {
-    pub id: String,
-    pub label: String,
-    pub effort: schema::Effort,
-    /// Class content keys of the group's classes (reviewed-mark keys).
-    pub class_keys: Vec<String>,
-    pub n_hunks: usize,
-    /// Distinct paths touched (a rename counts as two: the canonical view is
-    /// --no-renames). Binary/submodule changes carry no hunks and count 0.
-    pub n_files: usize,
-    /// Added / removed line totals over the group's hunks.
-    pub adds: usize,
-    pub dels: usize,
-    /// Groups this one depends on: (id, appears later in the plan). A
-    /// dependency listed later means the order could not honour that edge —
-    /// the groups are mutually dependent and the toposort broke the cycle.
-    pub after: Vec<(String, bool)>,
-    pub role: Option<schema::Role>,
-}
-
 /// A plan row's relation to the selected group — what the gutter connector
 /// draws. The plan is a DAG (a group can follow several others), not a tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,34 +93,10 @@ pub enum TreeKind {
     File { file_idx: usize },
 }
 
-pub struct FileInfo {
-    pub path: String,
-    /// Canonical hunk indices, position order.
-    pub hunk_idxs: Vec<usize>,
-    pub adds: usize,
-    pub dels: usize,
-}
-
-/// A hunk by its wire id, or `None` if the document does not define one.
-///
-/// The group view has always been tolerant here — it already skipped class
-/// references it could not resolve — so a malformed id costs the same thing a
-/// missing class does, rather than taking the process down.
-fn hunk_of<'d>(doc: &'d schema::PlanDocument, hid: &str) -> Option<&'d schema::HunkEntry> {
-    doc.hunks.get(HunkId::parse(hid).ok()?.index())
-}
-
 pub struct App {
     pub session: ReviewSession,
     factory: RowFactory,
 
-    pub groups: Vec<GroupInfo>,
-    pub labels: HashMap<String, String>,
-    /// Every file in the document (including zero-hunk binary/submodule
-    /// changes the group view cannot surface), document order.
-    pub files: Vec<FileInfo>,
-    /// Hunk index -> owning group label, for file-view hunk headers.
-    hunk_labels: HashMap<usize, String>,
     /// Visible rows of the file tree (rebuilt when a directory folds).
     pub tree: Vec<TreeEntry>,
     /// Directory paths currently collapsed.
@@ -166,101 +121,6 @@ pub struct App {
 
 impl App {
     pub fn new(session: ReviewSession, factory: RowFactory) -> Self {
-        let doc = session.doc();
-        let class_by_id: HashMap<&str, &schema::ClassEntry> =
-            doc.classes.iter().map(|c| (c.id.as_str(), c)).collect();
-        let empty = Vec::new();
-        let schema_groups = doc.groups.as_ref().unwrap_or(&empty);
-        let labels_of: HashMap<String, String> = schema_groups
-            .iter()
-            .map(|g| (g.id.clone(), g.label.clone()))
-            .collect();
-        // Position in the plan, for spotting dependencies the order could not
-        // satisfy (cycles).
-        let rank_of: HashMap<String, usize> = schema_groups
-            .iter()
-            .enumerate()
-            .map(|(i, g)| (g.id.clone(), i))
-            .collect();
-        let groups: Vec<GroupInfo> = schema_groups
-            .iter()
-            .enumerate()
-            .map(|(rank, g)| {
-                let hunks: Vec<&schema::HunkEntry> = g
-                    .class_ids
-                    .iter()
-                    .filter_map(|c| class_by_id.get(c.as_str()))
-                    .flat_map(|cl| cl.hunk_ids.iter())
-                    .filter_map(|hid| hunk_of(doc, hid))
-                    .collect();
-                let files: std::collections::HashSet<&str> =
-                    hunks.iter().map(|h| h.file.as_str()).collect();
-                let counts: LineCounts = hunks.iter().map(|h| LineCounts::of_hunk(h)).sum();
-                GroupInfo {
-                    id: g.id.clone(),
-                    label: g.label.clone(),
-                    effort: g.effort,
-                    after: g
-                        .depends_on
-                        .iter()
-                        .map(|id| (id.clone(), rank_of.get(id).copied().unwrap_or(0) > rank))
-                        .collect(),
-                    role: g.role,
-                    class_keys: g
-                        .class_ids
-                        .iter()
-                        .map(|c| session.class_key(c).to_string())
-                        .collect(),
-                    n_hunks: hunks.len(),
-                    n_files: files.len(),
-                    adds: counts.adds,
-                    dels: counts.dels,
-                }
-            })
-            .collect();
-        let labels = labels_of.clone();
-
-        // Hunk -> owning group label (via the hunk's class).
-        let group_of_class: HashMap<&str, &str> = schema_groups
-            .iter()
-            .flat_map(|g| g.class_ids.iter().map(|c| (c.as_str(), g.label.as_str())))
-            .collect();
-        let mut hunk_labels = HashMap::new();
-        for c in &doc.classes {
-            if let Some(label) = group_of_class.get(c.id.as_str()) {
-                for hid in &c.hunk_ids {
-                    if let Ok(h) = HunkId::parse(hid) {
-                        hunk_labels.insert(h.index(), label.to_string());
-                    }
-                }
-            }
-        }
-
-        // Every file, document order — the flat view surfaces zero-hunk
-        // (binary/submodule/mode-only) changes the group view cannot.
-        let files: Vec<FileInfo> = doc
-            .files
-            .iter()
-            .map(|f| {
-                let hunk_idxs: Vec<usize> = f
-                    .hunk_ids
-                    .iter()
-                    .filter_map(|hid| HunkId::parse(hid).ok())
-                    .map(|h| h.index())
-                    .collect();
-                let counts: LineCounts = hunk_idxs
-                    .iter()
-                    .map(|&i| LineCounts::of_hunk(&doc.hunks[i]))
-                    .sum();
-                FileInfo {
-                    path: f.path.clone(),
-                    adds: counts.adds,
-                    dels: counts.dels,
-                    hunk_idxs,
-                }
-            })
-            .collect();
-
         // Resume position: the cursor id is a group id in the semantic view,
         // a file path in the file view (session.file_view() disambiguates).
         let view_mode = if session.file_view() {
@@ -268,33 +128,22 @@ impl App {
         } else {
             ViewMode::Groups
         };
-        // The cursor id is a group id in the plan view, a path in the file
-        // view; the tree row for a path is resolved after the tree is built.
-        let resume_cursor: Option<(String, usize)> = session.cursor().cloned();
-        let (selected_group, resume_row) = match (&resume_cursor, view_mode) {
-            (Some((id, row)), ViewMode::Groups) => (
-                groups.iter().position(|g| &g.id == id).unwrap_or(0),
-                Some(*row),
-            ),
-            (Some((_, row)), ViewMode::Files) => (0, Some(*row)),
-            (None, _) => (0, None),
+        let resume: Option<(String, usize)> = session.cursor().cloned();
+        let selected_group = match (&resume, view_mode) {
+            (Some((id, _)), ViewMode::Groups) => session.plan().group_position(id).unwrap_or(0),
+            _ => 0,
         };
-        let selected_file = 0;
 
         let mut app = App {
             session,
             factory,
-            groups,
-            labels,
-            files,
-            hunk_labels,
             tree: Vec::new(),
             collapsed: HashSet::new(),
             focus: Focus::Groups,
             mode: Mode::Normal,
             view_mode,
             selected_group,
-            selected_file,
+            selected_file: 0,
             rows: Vec::new(),
             cursor: 0,
             scroll: 0,
@@ -307,23 +156,34 @@ impl App {
         app.rebuild_tree();
         // The persisted cursor names a path; reveal it in the tree.
         if app.view_mode == ViewMode::Files
-            && let Some((id, _)) = resume_cursor.as_ref()
-            && let Some(row) = app.reveal_path(id)
+            && let Some((path, _)) = resume.as_ref()
+            && let Some(row) = app.reveal_path(path)
         {
             app.selected_file = row;
         }
         app.rebuild_rows();
-        if let Some(row) = resume_row {
+        if let Some((_, row)) = resume {
             app.cursor = row.min(app.rows.len().saturating_sub(1));
         }
         app
+    }
+
+    /// The document's groups, projected by the engine.
+    pub fn groups(&self) -> &[differential_engine::plan::GroupView] {
+        &self.session.plan().groups
+    }
+
+    /// Every file in the document, document order — including the zero-hunk
+    /// binary/submodule changes the group view cannot surface.
+    pub fn files(&self) -> &[differential_engine::plan::FileView] {
+        &self.session.plan().files
     }
 
     /// Rebuild the visible tree rows from the flat file list, honouring
     /// collapsed directories. Directory rows appear once, in path order.
     pub fn rebuild_tree(&mut self) {
         let mut paths: Vec<(usize, Vec<String>)> = self
-            .files
+            .files()
             .iter()
             .enumerate()
             .map(|(i, f)| (i, f.path.split('/').map(str::to_string).collect()))
@@ -377,7 +237,7 @@ impl App {
             Some(TreeKind::Dir { path }) => {
                 let prefix = format!("{path}/");
                 let mut under: Vec<usize> = self
-                    .files
+                    .files()
                     .iter()
                     .enumerate()
                     .filter(|(_, f)| f.path.starts_with(&prefix))
@@ -385,7 +245,7 @@ impl App {
                     .collect();
                 // Path order, so the diff pane presents files in the order the
                 // tree lists them rather than in document order.
-                under.sort_by(|a, b| self.files[*a].path.cmp(&self.files[*b].path));
+                under.sort_by(|a, b| self.files()[*a].path.cmp(&self.files()[*b].path));
                 under
             }
             None => Vec::new(),
@@ -400,7 +260,7 @@ impl App {
     /// The path a tree row stands for — what the resume cursor persists.
     fn tree_row_path(&self, row: usize) -> Option<String> {
         match self.tree.get(row).map(|e| &e.kind) {
-            Some(TreeKind::File { file_idx }) => Some(self.files[*file_idx].path.clone()),
+            Some(TreeKind::File { file_idx }) => Some(self.files()[*file_idx].path.clone()),
             Some(TreeKind::Dir { path }) => Some(path.clone()),
             None => None,
         }
@@ -415,7 +275,7 @@ impl App {
         }
         self.rebuild_tree();
         self.tree.iter().position(|e| match &e.kind {
-            TreeKind::File { file_idx } => self.files[*file_idx].path == path,
+            TreeKind::File { file_idx } => self.files()[*file_idx].path == path,
             TreeKind::Dir { path: p } => p == path,
         })
     }
@@ -472,11 +332,12 @@ impl App {
                         findings: self.session.findings(),
                         reviewed: &reviewed,
                         mode: self.diff_mode(),
-                        hunk_labels: None,
+                        labels: None,
                     },
                     index: &index,
                     group: g,
-                    labels: &self.labels,
+                    view: &self.session.plan().groups[self.selected_group.min(groups.len() - 1)],
+                    plan: self.session.plan(),
                     fold: if self.folds_open.contains(&g.id) {
                         Fold::Unfolded
                     } else {
@@ -500,20 +361,22 @@ impl App {
                     findings: self.session.findings(),
                     reviewed: &reviewed,
                     mode: self.diff_mode(),
-                    hunk_labels: Some(&self.hunk_labels),
+                    labels: Some(self.session.plan()),
                 };
                 self.rows = match targets.as_slice() {
                     // A single file keeps its dedicated builder (it renders a
                     // placeholder for zero-hunk binary/submodule changes).
                     [only] => {
-                        let f = &self.files[*only];
-                        build_file_rows(&mut self.factory, &ctx, &f.path, f.hunk_idxs.clone())
+                        let f = &self.session.plan().files[*only];
+                        let (path, hunks) =
+                            (f.path.clone(), f.hunks.iter().map(|h| h.index()).collect());
+                        build_file_rows(&mut self.factory, &ctx, &path, hunks)
                     }
                     // A directory: every hunk beneath it, file headers and all.
                     many => {
                         let hunks: Vec<usize> = many
                             .iter()
-                            .flat_map(|i| self.files[*i].hunk_idxs.iter().copied())
+                            .flat_map(|i| self.files()[*i].hunks.iter().map(|h| h.index()))
                             .collect();
                         build_dir_rows(&mut self.factory, &ctx, hunks)
                     }
@@ -576,10 +439,10 @@ impl App {
     fn select_entry(&mut self, idx: usize) {
         match self.view_mode {
             ViewMode::Groups => {
-                if self.groups.is_empty() {
+                if self.groups().is_empty() {
                     return;
                 }
-                self.selected_group = idx.min(self.groups.len() - 1);
+                self.selected_group = idx.min(self.groups().len() - 1);
             }
             ViewMode::Files => {
                 if self.tree.is_empty() {
@@ -631,14 +494,14 @@ impl App {
                 _ => None,
             })
             .map(|(row_idx, path)| {
-                let info = self.files.iter().find(|f| f.path == path);
+                let info = self.files().iter().find(|f| f.path == path);
                 let (adds, dels, done) = info
                     .map(|f| {
                         (
-                            f.adds,
-                            f.dels,
-                            !f.hunk_idxs.is_empty()
-                                && f.hunk_idxs.iter().all(|h| reviewed.contains(h)),
+                            f.counts.adds,
+                            f.counts.dels,
+                            !f.hunks.is_empty()
+                                && f.hunks.iter().all(|h| reviewed.contains(&h.index())),
                         )
                     })
                     .unwrap_or((0, 0, false));
@@ -717,7 +580,7 @@ impl App {
     fn save_cursor(&mut self) {
         let id = match self.view_mode {
             ViewMode::Groups => self
-                .groups
+                .groups()
                 .get(self.selected_group)
                 .map(|g| g.id.clone())
                 .unwrap_or_default(),
@@ -844,7 +707,7 @@ impl App {
             }
             (KeyCode::Char('z'), _) => {
                 if self.view_mode == ViewMode::Groups
-                    && let Some(g) = self.groups.get(self.selected_group)
+                    && let Some(g) = self.groups().get(self.selected_group)
                 {
                     let gid = g.id.clone();
                     if !self.folds_open.insert(gid.clone()) {
@@ -910,15 +773,15 @@ impl App {
     /// a partly reviewed entry becomes fully reviewed rather than inverted.
     fn toggle_selected_entry(&mut self) -> Result<(), differential_engine::EngineError> {
         let keys: Vec<String> = match self.view_mode {
-            ViewMode::Groups => match self.groups.get(self.selected_group) {
+            ViewMode::Groups => match self.groups().get(self.selected_group) {
                 Some(g) => g.class_keys.clone(),
                 None => return Ok(()),
             },
             ViewMode::Files => self
                 .files_of_tree_row(self.selected_file)
                 .iter()
-                .flat_map(|i| self.files[*i].hunk_idxs.iter())
-                .map(|h| self.session.hunk_class_key(*h).to_string())
+                .flat_map(|i| self.files()[*i].hunks.iter())
+                .map(|h| self.session.hunk_class_key(h.index()).to_string())
                 .collect(),
         };
         if keys.is_empty() {
@@ -957,21 +820,7 @@ impl App {
 
     /// Markdown summary of open findings, for pasting into an agent or PR.
     pub fn findings_summary(&self) -> String {
-        let doc = self.session.doc();
-        // A malformed document costs the group annotation, never the findings
-        // themselves — a reviewer's own words are the last thing to drop.
-        let index = PlanIndex::build(doc).ok();
-        let group_of_digest: HashMap<&str, &str> = index
-            .iter()
-            .flat_map(|index| {
-                index.groups().iter().flat_map(move |g| {
-                    index
-                        .group_hunks(g)
-                        .into_iter()
-                        .map(move |h| (index.hunk(h).digest.as_str(), g.label.as_str()))
-                })
-            })
-            .collect();
+        let plan = self.session.plan();
         let mut out = String::new();
         for f in self
             .session
@@ -979,9 +828,12 @@ impl App {
             .iter()
             .filter(|f| f.status == FindingStatus::Open)
         {
-            let label = group_of_digest
-                .get(f.anchor.hunk_digest.as_str())
-                .map(|l| format!(" ({l})"))
+            // Findings anchor on digests, which survive regeneration; the
+            // projection resolves one to its owning group.
+            let label = plan
+                .hunk_by_digest(&f.anchor.hunk_digest)
+                .and_then(|h| plan.group_of_hunk(h))
+                .map(|g| format!(" ({})", g.label))
                 .unwrap_or_default();
             out.push_str(&format!(
                 "- {}:{}{label}: {}\n",
@@ -1060,7 +912,7 @@ impl App {
         // Entries render as blocks of lines, so scrolling counts ROWS, not
         // entries; keep the whole selected block in view.
         let mut blocks: Vec<Vec<Line>> = match self.view_mode {
-            ViewMode::Groups => (0..self.groups.len())
+            ViewMode::Groups => (0..self.groups().len())
                 .map(|i| self.group_lines(i, i == selected))
                 .collect(),
             ViewMode::Files => {
@@ -1125,13 +977,13 @@ impl App {
         if idx == selected {
             return Relation::Selected;
         }
-        let Some(sel) = self.groups.get(selected) else {
+        let Some(sel) = self.groups().get(selected) else {
             return Relation::None;
         };
-        if sel.after.iter().any(|(id, _)| *id == self.groups[idx].id) {
+        if sel.depends_on.iter().any(|d| d.id == self.groups()[idx].id) {
             return Relation::Dependency;
         }
-        if self.groups[idx].after.iter().any(|(id, _)| *id == sel.id) {
+        if self.groups()[idx].depends_on.iter().any(|d| d.id == sel.id) {
             return Relation::Dependent;
         }
         Relation::None
@@ -1142,7 +994,7 @@ impl App {
     fn edge_span(&self) -> (usize, usize) {
         let mut lo = self.selected_group;
         let mut hi = self.selected_group;
-        for i in 0..self.groups.len() {
+        for i in 0..self.groups().len() {
             if !matches!(self.relation_to_selected(i), Relation::None) {
                 lo = lo.min(i);
                 hi = hi.max(i);
@@ -1153,7 +1005,7 @@ impl App {
 
     /// One group as 2–3 lines: title, counts, and what it follows.
     fn group_lines(&self, idx: usize, selected: bool) -> Vec<Line<'static>> {
-        let g = &self.groups[idx];
+        let g = &self.groups()[idx];
         let relation = self.relation_to_selected(idx);
         let (lo, hi) = self.edge_span();
         // The connector: a line running between the selected group and every
@@ -1170,7 +1022,12 @@ impl App {
         let tail_glyph = if idx >= lo && idx < hi { "│" } else { " " };
         let done =
             g.class_keys.iter().all(|k| self.session.is_reviewed(k)) && !g.class_keys.is_empty();
-        let tier = Theme::effort_glyph(g.effort);
+        // "?" rather than a tier letter: the back-fill was never classified.
+        let tier = if g.unclassified {
+            "?"
+        } else {
+            Theme::effort_glyph(g.effort)
+        };
         let bg = |st: Style| {
             if selected {
                 st.bg(THEME.selected_bg).add_modifier(Modifier::BOLD)
@@ -1213,17 +1070,17 @@ impl App {
             ),
             Span::styled(format!("   {} files  ", g.n_files), dim),
             Span::styled(
-                format!("+{}", g.adds),
+                format!("+{}", g.counts.adds),
                 bg(Style::default().fg(THEME.add_fg)),
             ),
             Span::styled(" ", dim),
             Span::styled(
-                format!("−{}", g.dels),
+                format!("−{}", g.counts.dels),
                 bg(Style::default().fg(THEME.del_fg)),
             ),
             Span::styled(role.to_string(), dim),
         ]));
-        if !g.after.is_empty() {
+        if !g.depends_on.is_empty() {
             // "↓" marks a dependency that appears LATER in the plan: the two
             // groups depend on each other, so no order can satisfy both.
             let mut spans = vec![
@@ -1233,10 +1090,10 @@ impl App {
                 ),
                 Span::styled("   after: ".to_string(), dim),
             ];
-            for (id, later) in &g.after {
+            for d in &g.depends_on {
                 spans.push(Span::styled(
-                    format!("{id}{} ", if *later { "↓" } else { "" }),
-                    if *later {
+                    format!("{}{} ", d.id, if d.unsatisfied { "↓" } else { "" }),
+                    if d.unsatisfied {
                         bg(Style::default().fg(THEME.skim_fg))
                     } else {
                         dim
@@ -1268,11 +1125,11 @@ impl App {
         let files = self.files_of_tree_row(row);
         let (adds, dels): (usize, usize) = files
             .iter()
-            .map(|i| (self.files[*i].adds, self.files[*i].dels))
+            .map(|i| (self.files()[*i].counts.adds, self.files()[*i].counts.dels))
             .fold((0, 0), |(a, d), (x, y)| (a + x, d + y));
         let hunks: Vec<usize> = files
             .iter()
-            .flat_map(|i| self.files[*i].hunk_idxs.iter().copied())
+            .flat_map(|i| self.files()[*i].hunks.iter().map(|h| h.index()))
             .collect();
         let done = !hunks.is_empty() && hunks.iter().all(|h| reviewed.contains(h));
         let mark = if done { "✓" } else { " " };
@@ -1306,23 +1163,23 @@ impl App {
                 ])]
             }
             TreeKind::File { file_idx } => {
-                let f = &self.files[*file_idx];
+                let f = &self.files()[*file_idx];
                 let name = f.path.rsplit('/').next().unwrap_or(&f.path).to_string();
                 let mut spans = vec![
                     Span::styled(format!("{mark}{indent}  "), dim),
                     Span::styled(name, name_style),
                     Span::styled("  ", dim),
                 ];
-                if f.hunk_idxs.is_empty() {
+                if f.hunks.is_empty() {
                     spans.push(Span::styled("(no text hunks)".to_string(), dim));
                 } else {
                     spans.push(Span::styled(
-                        format!("+{}", f.adds),
+                        format!("+{}", f.counts.adds),
                         bg(Style::default().fg(THEME.add_fg)),
                     ));
                     spans.push(Span::styled(" ", dim));
                     spans.push(Span::styled(
-                        format!("−{}", f.dels),
+                        format!("−{}", f.counts.dels),
                         bg(Style::default().fg(THEME.del_fg)),
                     ));
                 }
@@ -1362,7 +1219,7 @@ impl App {
     }
 
     fn draw_status(&mut self, frame: &mut Frame, area: Rect) {
-        let total: usize = self.groups.iter().map(|g| g.class_keys.len()).sum();
+        let total: usize = self.groups().iter().map(|g| g.class_keys.len()).sum();
         let done = self.session.reviewed_count().min(total);
         let open = self
             .session
