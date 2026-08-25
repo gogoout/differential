@@ -632,12 +632,15 @@ fn the_plan_gutter_links_the_selected_group_to_what_it_follows() {
         .iter()
         .position(|g| !g.depends_on.is_empty())
         .expect("the fixture must produce a dependency edge, or this asserts nothing");
-    let consumer_id = app.groups()[consumer].id.clone();
+    let follows: Vec<String> = app.groups()[consumer]
+        .depends_on
+        .iter()
+        .map(|d| d.id.clone())
+        .collect();
     let foundation = app
         .groups()
         .iter()
-        .position(|g| g.depends_on.iter().any(|d| d.id != consumer_id) || g.depends_on.is_empty())
-        .filter(|&i| i != consumer)
+        .position(|g| follows.contains(&g.id))
         .expect("the fixture must have a group the consumer follows");
 
     // j moves down, k up — a one-directional walk would spin forever when the
@@ -659,11 +662,6 @@ fn the_plan_gutter_links_the_selected_group_to_what_it_follows() {
     // Biconditional, so a relation that wrongly returned None fails too. The
     // previous version only checked that a claimed edge was backed by
     // depends_on, never that a real edge produced a mark.
-    let follows: Vec<String> = app.groups()[consumer]
-        .depends_on
-        .iter()
-        .map(|d| d.id.clone())
-        .collect();
     assert!(follows.contains(&app.groups()[foundation].id));
     for (i, g) in app
         .groups()
