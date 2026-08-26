@@ -2895,6 +2895,68 @@ fn the_footer_is_pills_on_the_left_and_two_keys_on_the_right() {
     );
 }
 
+/// Standing ON a hunk's header lights its pill's leading cell in the hunk's
+/// own accent. The cursor's bar sits in that same column, so drawing it there
+/// would repaint green (reviewed) or muted cyan (foreign) as plain cyan — and
+/// say the hunk was neither.
+#[test]
+fn the_cursor_on_a_hunk_header_keeps_the_hunks_own_accent() {
+    let (_r, mut app) = app_with_a_long_file();
+    // Reviewed, so the accent is green: an unread own hunk wears the cursor's
+    // own cyan already, and the collision would prove nothing.
+    let header = put_cursor_on(&mut app, |k| matches!(k, RowKind::HunkHeader { .. }));
+    app.handle_key(key(' '));
+    app.cursor = header;
+    let buf = buffer_of(&app);
+    let y = cursor_screen_row(&app);
+    assert_eq!(buf[(41, y)].symbol(), "▌", "no marker on the header");
+    assert_eq!(
+        buf[(41, y)].style().fg,
+        Some(THEME.reviewed_fg),
+        "the header's leading cell must keep the hunk's accent"
+    );
+}
+
+/// `z` acts on the pane it is pressed in. `self.cursor` is a DIFF row wherever
+/// the focus is, so a press in the file tree used to open whatever the diff's
+/// cursor happened to be parked on.
+#[test]
+fn z_in_the_file_tree_folds_the_tree_not_the_diff() {
+    use differential_tui::app::TreeKind;
+    let (_r, mut app) = make_app();
+    switch_left_pane(&mut app);
+    assert_eq!(app.view_mode, ViewMode::Files);
+
+    // Park the diff's cursor on a boundary row, then press `z` in the tree.
+    let boundary = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::ContextEdge { .. }));
+    if let Some(b) = boundary {
+        app.cursor = b;
+    }
+    let rows_before = app.rows.len();
+    let tree_before = app.tree.len();
+
+    app.focus = Focus::Groups;
+    app.selected_file = app
+        .tree
+        .iter()
+        .position(|e| matches!(e.kind, TreeKind::Dir { .. }))
+        .expect("a directory row");
+    app.handle_key(key('z'));
+
+    assert!(
+        app.tree.len() < tree_before,
+        "the directory should have folded"
+    );
+    assert_eq!(
+        app.rows.len(),
+        rows_before,
+        "the diff should not have moved"
+    );
+}
+
 /// A control has to say how to work it — but a screenful of bands each naming
 /// the same key is a wall. The key shows on the cursor's row only.
 #[test]

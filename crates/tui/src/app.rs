@@ -1068,18 +1068,25 @@ impl App {
                     .unwrap_or(0);
                 self.follow_cursor();
             }
-            // On a context boundary `z` opens the file up; everywhere else it
-            // keeps its existing meaning. One key for "show me what is being
-            // withheld", whatever is withholding it.
+            // One key for "show me what is being withheld", acting on the pane
+            // it is pressed in. Reading the diff that is a context boundary or
+            // a folded remainder; reading the file tree it is a directory.
+            //
+            // The pane matters: `self.cursor` is a DIFF row wherever the focus
+            // is, so without it a press in the tree opened whatever the diff's
+            // cursor happened to be parked on.
             (KeyCode::Char('z'), _)
-                if matches!(
-                    self.rows.get(self.cursor).map(|r| &r.kind),
-                    Some(RowKind::ContextEdge { .. })
-                ) =>
+                if self.focus == Focus::Detail
+                    && matches!(
+                        self.rows.get(self.cursor).map(|r| &r.kind),
+                        Some(RowKind::ContextEdge { .. })
+                    ) =>
             {
                 self.expand_at_cursor();
             }
-            (KeyCode::Char('z'), _) if self.view_mode == ViewMode::Files => {
+            (KeyCode::Char('z'), _)
+                if self.focus == Focus::Groups && self.view_mode == ViewMode::Files =>
+            {
                 self.toggle_dir();
             }
             (KeyCode::Char('z'), _) => self.toggle_group_fold(),
@@ -2062,19 +2069,24 @@ impl App {
 
         // The cursor's bar, in the cell just inside the frame. The gutter block
         // says which LINE the cursor is on, but only a diff row has a gutter:
-        // on a header, a fold or a boundary the cursor was a faint tint and
-        // nothing else. The bar is on every selectable row, so the cursor is
-        // one thing to look for rather than two.
+        // on a fold or a boundary the cursor was a faint tint and nothing else.
+        // The bar is on every selectable row, so the cursor is one thing to
+        // look for rather than two.
+        //
+        // Not on a hunk HEADER, though. That row is flush to the border, so its
+        // pill's leading cell IS this cell — and standing on the header lights
+        // that cell already, in the hunk's own accent. Drawing over it would
+        // repaint green (reviewed) or muted cyan (foreign) as plain cyan, and
+        // say the hunk was neither.
         //
         // Keeps the cell's own background — over a lit gutter it stands on the
         // change colour rather than punching a hole in it.
         if self.focus == Focus::Detail
             && let Some(n) = self.cursor.checked_sub(self.scroll)
             && n < inner_h
-            && self
-                .rows
-                .get(self.cursor)
-                .is_some_and(|r| r.kind.selectable())
+            && self.rows.get(self.cursor).is_some_and(|r| {
+                r.kind.selectable() && !matches!(r.kind, RowKind::HunkHeader { .. })
+            })
         {
             let cell = &mut buf[(area.x + 1, area.y + 1 + n as u16)];
             cell.set_symbol(CURSOR_BAR);

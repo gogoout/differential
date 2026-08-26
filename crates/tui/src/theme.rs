@@ -131,9 +131,8 @@ impl Theme {
 
     /// The same cell on the cursor's row, from the block it wears otherwise.
     ///
-    /// By colour, like `lit_ink`: this is the one place that knows a gutter's
-    /// blocks, so a fourth one means adding it here rather than at the call
-    /// site. An unchanged line has no block of its own and takes the plain
+    /// Keyed by colour: this is the one place that knows a gutter's blocks, so
+    /// a fourth one means adding it here rather than at the call site. An unchanged line has no block of its own and takes the plain
     /// cursor grey, which is what makes the cursor readable on every row.
     pub fn gutter_cursor(&self, block: Option<Color>) -> Style {
         let bg = match block {
@@ -149,10 +148,10 @@ impl Theme {
 
     /// Re-ink one span of a boundary band for the cursor's row.
     ///
-    /// By colour, like `lit_ink` and `gutter_cursor`: this is the one place
-    /// that knows the band's inks. Anything else — a line's change colour, a
-    /// syntax span — passes through untouched, which is what lets one pass
-    /// over a whole row lighten the band and nothing else.
+    /// Keyed by colour, like `gutter_cursor`: this is the one place that knows
+    /// the band's inks. Anything else — a line's change colour, a syntax span
+    /// — passes through untouched, which is what lets one pass over a whole
+    /// row lighten the band and nothing else.
     pub fn lit_band(&self, style: Style) -> Style {
         let mut out = style;
         if style.bg == Some(self.hint_bg) {

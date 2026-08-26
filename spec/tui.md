@@ -14,6 +14,12 @@ The panes are a fixed split and **focus never changes a height**: the overviews 
 over a pane rather than taking room from one, which is what keeps the heights a function of
 the terminal alone.
 
+**Keys act on the pane you are in.** `z` shows what is being withheld — a context
+boundary's hidden lines, a folded remainder, a directory — and which of those it means is
+decided by the focused pane, not by where the diff's cursor happens to be parked. The
+cursor is a diff row wherever the focus is, so without that rule a press in the file tree
+opened part of a file the reader was not looking at.
+
 **One key for files, acting on the pane it is pressed in.** In the left pane `f` chooses
 which list of files you are reading — the plan or the tree. In the diff pane it chooses
 which file you are looking at. It used to be two keys, and the one that switched the left
@@ -283,7 +289,7 @@ list belongs; the footer's job is to point at it.
 | `ctrl-d`/`ctrl-u` | half page |
 | `g`/`G` | top / bottom |
 | `n`/`N` | next / previous hunk (skipping hunks crossed in from other groups) |
-| `z` | on a `──` context boundary row: show more of the file, or cross into the hunk it names · elsewhere, fold the skim remainder or noise group (plan view) or a directory (file view) |
+| `z` | show what is being withheld, in the pane you are in — diff pane: on a `──` context boundary row, more of the file, or the hunk it names · elsewhere, the skim remainder or noise group · plan pane, file view: a directory |
 | `s` | toggle unified / side-by-side diff layout (persisted) |
 | `f` | files, in the pane you are in — plan pane: toggle reading plan ↔ file tree (persisted) · diff pane: the file-list modal (`enter` jumps to the file) |
 | `space` | mark reviewed — the whole selected group/file in the left pane, the hunk's **class** in the diff pane (one exemplar verifies the shape) |
