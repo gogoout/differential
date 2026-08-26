@@ -106,6 +106,13 @@ code must change together — or the change is wrong.
 
 - **Never push to main.** Every change: branch → PR. Branch protection enforces this
   (PR + the `test` check, admins included).
+- **A change you can SEE needs eyes before it needs a PR.** If the change alters what the
+  reviewer looks at — layout, colour, glyphs, what a row says, where a pane's content goes —
+  show the author a rendering and get confirmation *before* opening the PR. A
+  `ratatui::backend::TestBackend` dump is enough and needs no terminal: draw the app at a
+  fixed size and paste the text. Tests prove behaviour; they cannot tell you a thing looks
+  right, and every visual detail settled after the PR is opened costs a round trip that a
+  paste would have saved.
 - **Stop at PR created.** Never merge or arm auto-merge — report the PR link and CI
   status; the author reviews and merges (squash) themselves.
 - CI (`.github/workflows/ci.yml`) runs fmt, clippy `-D warnings`, tests and a release
