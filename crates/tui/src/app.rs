@@ -151,6 +151,35 @@ pub enum Mode {
         entries: Vec<FileListEntry>,
         selected: usize,
     },
+    /// Every finding in the review, in one list.
+    ///
+    /// A note is written on a line and drawn under it, which is where it
+    /// belongs while reading the code and no help at all in answering "what
+    /// have I found". An ORPHANED note is worse off: it has no row anywhere,
+    /// so this is the only place it can be read or deleted.
+    Findings {
+        entries: Vec<FindingEntry>,
+        selected: usize,
+        /// First visible entry. The file list has none and clips at the body
+        /// height; a review has more notes than it has files.
+        scroll: usize,
+        /// `D` was pressed and the next key answers.
+        confirming: bool,
+    },
+}
+
+pub struct FindingEntry {
+    pub id: String,
+    /// `src/app.rs:1307`, or `src/app.rs:1307-1312` for a range.
+    pub at: String,
+    /// The note's first line.
+    pub body: String,
+    pub orphaned: bool,
+    pub moved: bool,
+    /// The row to jump to. `None` when the note is not in the rows at all —
+    /// another group is selected, its context is folded, or it is orphaned and
+    /// has no row at any depth of unfolding.
+    pub row_idx: Option<usize>,
 }
 
 pub struct FileListEntry {
@@ -772,6 +801,50 @@ impl App {
         };
     }
 
+    /// Every finding in the review, open ones first and orphans after.
+    ///
+    /// Store order within each group, which is the order they were written.
+    /// The rule between the two groups is drawn rather than stored, so
+    /// `selected` indexes findings and nothing has to skip a row it cannot
+    /// land on.
+    fn open_findings(&mut self) {
+        // The rows a note was laid into, by id — the same rows the diff pane
+        // shows, so the list and the diff cannot disagree about where one is.
+        let row_of: HashMap<&str, usize> = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| match &r.kind {
+                RowKind::Finding(id, _) => Some((id.as_str(), i)),
+                _ => None,
+            })
+            .collect();
+        let mut entries: Vec<FindingEntry> = self
+            .session
+            .findings()
+            .iter()
+            .map(|f| FindingEntry {
+                at: format!("{}:{}", f.anchor.file, f.anchor.line_span()),
+                body: f.body.lines().next().unwrap_or("").to_string(),
+                orphaned: f.status == FindingStatus::Orphaned,
+                moved: f.moved,
+                row_idx: row_of.get(f.id.as_str()).copied(),
+                id: f.id.clone(),
+            })
+            .collect();
+        if entries.is_empty() {
+            self.status = "no findings yet — c writes one".into();
+            return;
+        }
+        entries.sort_by_key(|e| e.orphaned);
+        self.mode = Mode::Findings {
+            entries,
+            selected: 0,
+            scroll: 0,
+            confirming: false,
+        };
+    }
+
     /// Jump to the next/previous hunk header, so a reviewer can move by
     /// change instead of by line.
     fn jump_hunk(&mut self, dir: isize) {
@@ -990,6 +1063,10 @@ impl App {
 
     /// Key handling. Returns effects for the loop to execute.
     pub fn handle_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        // One latch, taken before anything reads a key. It used to be taken
+        // inside the normal-mode block, which a modal's early return never
+        // reaches — so `dd` could only ever mean one thing in one place.
+        let pending_d = std::mem::take(&mut self.pending_d);
         match &mut self.mode {
             Mode::Help => {
                 self.mode = Mode::Normal;
@@ -1011,6 +1088,67 @@ impl App {
                         self.follow_cursor();
                     }
                     KeyCode::Esc | KeyCode::Char('f') | KeyCode::Char('q') => {
+                        self.mode = Mode::Normal;
+                    }
+                    _ => {}
+                }
+                return Vec::new();
+            }
+            Mode::Findings {
+                entries,
+                selected,
+                scroll,
+                confirming,
+            } => {
+                // Asking to delete everything: the next key answers, and only
+                // `y` means yes. Anything else is a slip, and a slip must not
+                // be the thing that empties the store.
+                if *confirming {
+                    *confirming = false;
+                    if key.code == KeyCode::Char('y') {
+                        self.clear_findings();
+                    } else {
+                        self.status = "nothing deleted".into();
+                    }
+                    return Vec::new();
+                }
+                match (key.code, key.modifiers) {
+                    (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
+                        *selected = (*selected + 1).min(entries.len().saturating_sub(1));
+                        *scroll = follow(*selected, *scroll, self.viewport.detail_rows);
+                    }
+                    (KeyCode::Char('k'), _) | (KeyCode::Up, _) => {
+                        *selected = selected.saturating_sub(1);
+                        *scroll = follow(*selected, *scroll, self.viewport.detail_rows);
+                    }
+                    (KeyCode::Char('D'), _) => *confirming = true,
+                    (KeyCode::Char('d'), KeyModifiers::NONE) => {
+                        if pending_d {
+                            let id = entries[*selected].id.clone();
+                            self.delete_finding(&id);
+                        } else {
+                            self.pending_d = true;
+                        }
+                    }
+                    (KeyCode::Enter, _) => {
+                        let row = entries[*selected].row_idx;
+                        let orphaned = entries[*selected].orphaned;
+                        // Assign the mode first: it is what drops the borrow
+                        // this arm holds on it.
+                        self.mode = Mode::Normal;
+                        match row {
+                            Some(row) => {
+                                self.cursor = self.next_selectable(row, 1).unwrap_or(row);
+                                self.focus = Focus::Detail;
+                                self.follow_cursor();
+                            }
+                            None if orphaned => {
+                                self.status = "that finding has no line any more".into();
+                            }
+                            None => self.status = "that finding is not in this view".into(),
+                        }
+                    }
+                    (KeyCode::Esc, _) | (KeyCode::Char('F'), _) | (KeyCode::Char('q'), _) => {
                         self.mode = Mode::Normal;
                     }
                     _ => {}
@@ -1085,7 +1223,6 @@ impl App {
             Mode::Normal => {}
         }
 
-        let pending_d = std::mem::take(&mut self.pending_d);
         match (key.code, key.modifiers) {
             (KeyCode::Char('q'), _) => {
                 self.save_cursor();
@@ -1171,6 +1308,9 @@ impl App {
             // be looking at. `v` used to switch the left pane from either
             // side, which meant a key in one pane silently rearranged the
             // other.
+            // Every finding at once, from either pane. It is a fact about the
+            // review rather than about a pane, unlike `f`.
+            (KeyCode::Char('F'), _) => self.open_findings(),
             (KeyCode::Char('f'), KeyModifiers::NONE) => match self.focus {
                 Focus::Groups => self.toggle_file_view(),
                 Focus::Detail => self.open_file_list(),
@@ -1495,6 +1635,54 @@ impl App {
         self.rebuild_rows();
     }
 
+    /// Delete one note by id, from wherever it was named.
+    ///
+    /// The findings modal rebuilds its own list afterwards: every `row_idx`
+    /// below the deleted note has shifted, and a stale one would jump the
+    /// cursor to the wrong place.
+    fn delete_finding(&mut self, id: &str) {
+        match self.session.delete_finding(id) {
+            Ok(true) => self.status = "finding deleted".into(),
+            Ok(false) => self.status = "that finding is already gone".into(),
+            Err(e) => self.status = format!("save failed: {e:#}"),
+        }
+        self.rebuild_rows();
+        self.reopen_findings();
+    }
+
+    fn clear_findings(&mut self) {
+        match self.session.clear_findings() {
+            Ok(n) => self.status = format!("{n} finding(s) deleted"),
+            Err(e) => self.status = format!("save failed: {e:#}"),
+        }
+        self.rebuild_rows();
+        self.reopen_findings();
+    }
+
+    /// Rebuild the findings modal's list in place, keeping the cursor as near
+    /// where it was as the new list allows. Closes it when nothing is left.
+    fn reopen_findings(&mut self) {
+        let Mode::Findings {
+            selected, scroll, ..
+        } = &self.mode
+        else {
+            return;
+        };
+        let (was, scrolled) = (*selected, *scroll);
+        self.mode = Mode::Normal;
+        self.open_findings();
+        if let Mode::Findings {
+            entries,
+            selected,
+            scroll,
+            ..
+        } = &mut self.mode
+        {
+            *selected = was.min(entries.len().saturating_sub(1));
+            *scroll = scrolled.min(*selected);
+        }
+    }
+
     fn delete_finding_at_cursor(&mut self) {
         if let Some(RowKind::Finding(id, _)) = self.rows.get(self.cursor).map(|r| r.kind.clone()) {
             match self.session.delete_finding(&id) {
@@ -1590,9 +1778,118 @@ impl App {
                 );
             }
             Mode::Help => {
-                let area = centered_rect(panes.body, 62, 20);
+                let area = centered_rect(panes.body, 62, 21);
                 frame.render_widget(Clear, area);
                 frame.render_widget(help_paragraph(), area);
+            }
+            Mode::Findings {
+                entries,
+                selected,
+                scroll,
+                confirming,
+            } => {
+                let orphans = entries.iter().filter(|e| e.orphaned).count();
+                // The rule between the two groups is drawn, not stored, so it
+                // costs a row on screen and nothing in the model.
+                let rule_at = (orphans > 0).then(|| entries.len() - orphans);
+                let extra = usize::from(rule_at.is_some());
+                let height = (entries.len() + extra + 4).min(panes.body.height as usize) as u16;
+                let area = centered_rect(panes.body, 74, height);
+                let inner_w = area.width.saturating_sub(2) as usize;
+                let inner_h = area.height.saturating_sub(3) as usize;
+
+                let dim = Style::default().fg(THEME.gutter_fg);
+                let mut lines: Vec<Line> = Vec::new();
+                for (i, e) in entries.iter().enumerate() {
+                    if rule_at == Some(i) {
+                        lines.push(Line::from(Span::styled(
+                            format!(" ── orphaned {} ", "─".repeat(inner_w.saturating_sub(14))),
+                            dim,
+                        )));
+                    }
+                    let on = i == *selected;
+                    let base = Style::default().fg(if e.orphaned {
+                        THEME.gutter_fg
+                    } else {
+                        THEME.context_fg
+                    });
+                    let style = if on {
+                        base.bg(THEME.selected_bg).add_modifier(Modifier::BOLD)
+                    } else {
+                        base
+                    };
+                    let bg = |st: Style| {
+                        if on { st.bg(THEME.selected_bg) } else { st }
+                    };
+                    let moved = if e.moved { " (moved)" } else { "" };
+                    // Cut the note, not the box: a body that reached the border
+                    // was chopped mid-word against it and read as broken.
+                    let room = inner_w.saturating_sub(AT_COLUMN + moved.len() + 1);
+                    let body: String = if e.body.chars().count() > room {
+                        e.body
+                            .chars()
+                            .take(room.saturating_sub(1))
+                            .chain(['…'])
+                            .collect()
+                    } else {
+                        e.body.clone()
+                    };
+                    let mut line = Line::from(vec![
+                        Span::styled(
+                            format!("  {:<width$}", e.at, width = AT_COLUMN - 2),
+                            bg(dim),
+                        ),
+                        Span::styled(body, style),
+                        Span::styled(moved.to_string(), bg(dim)),
+                    ]);
+                    if on {
+                        pad_to_width(&mut line, inner_w, THEME.selected_bg);
+                    }
+                    lines.push(line);
+                }
+                // The rule is a row too, so scrolling counts drawn rows.
+                let skip = *scroll + usize::from(rule_at.is_some_and(|r| r <= *scroll));
+                let shown: Vec<Line> = lines.into_iter().skip(skip).take(inner_h).collect();
+
+                // The keys go in a footer inside the box, as the composer's
+                // do: the confirmation needs that row anyway, and a title
+                // carrying four keys is longer than the box.
+                let key = Style::default().fg(THEME.header_fg);
+                let text = Style::default().fg(THEME.context_fg);
+                let footer = if *confirming {
+                    Line::from(Span::styled(
+                        format!("  delete all {} findings?  y / n", entries.len()),
+                        Style::default()
+                            .fg(THEME.finding_fg)
+                            .add_modifier(Modifier::BOLD),
+                    ))
+                } else {
+                    Line::from(vec![
+                        Span::styled("  enter ", key),
+                        Span::styled("jump", text),
+                        Span::styled("  ·  dd ", key),
+                        Span::styled("delete", text),
+                        Span::styled("  ·  D ", key),
+                        Span::styled("delete all", text),
+                        Span::styled("  ·  esc ", key),
+                        Span::styled("close", text),
+                    ])
+                };
+                let title = match orphans {
+                    0 => format!(" findings · {} ", entries.len()),
+                    n => format!(" findings · {} · {n} orphaned ", entries.len()),
+                };
+                frame.render_widget(Clear, area);
+                frame.render_widget(Paragraph::new(shown).block(pane(title, true)), area);
+                frame.render_widget(
+                    Paragraph::new(footer),
+                    Rect {
+                        x: area.x + 1,
+                        y: area.y + area.height.saturating_sub(2),
+                        width: area.width.saturating_sub(2),
+                        height: 1,
+                    },
+                );
             }
             Mode::FileList { entries, selected } => {
                 let height = (entries.len() as u16 + 2).min(panes.body.height);
@@ -2772,6 +3069,24 @@ fn pad_to_width(line: &mut Line<'static>, width: usize, bg: ratatui::style::Colo
     }
 }
 
+/// Width of the findings modal's location column, `src/app.rs:1307` and the
+/// gap after it. Wide enough for most paths and fixed, so the notes line up.
+const AT_COLUMN: usize = 26;
+
+/// Keep `selected` inside a window `height` tall, moving `scroll` as little as
+/// it takes. The diff pane's own `follow_cursor` keeps a margin; a list this
+/// short does not need one.
+fn follow(selected: usize, scroll: usize, height: usize) -> usize {
+    let height = height.max(1);
+    if selected < scroll {
+        selected
+    } else if selected >= scroll + height {
+        selected + 1 - height
+    } else {
+        scroll
+    }
+}
+
 fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
     let w = width.min(area.width);
     let h = height.min(area.height);
@@ -2814,6 +3129,7 @@ fn help_paragraph() -> Paragraph<'static> {
         row("space", "mark the hunk's class reviewed"),
         row("v", "select lines · j/k extends · v or esc drops"),
         row("c  ·  dd", "add finding · delete the one under the cursor"),
+        row("F", "every finding, in one list"),
         row("y  ·  q", "copy findings · quit (state is saved)"),
         Line::from(""),
         Line::from(Span::styled("  press any key to close", dim)),

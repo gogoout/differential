@@ -3334,6 +3334,351 @@ fn a_finding_from_a_header_anchors_the_hunk_and_sits_under_it() {
     );
 }
 
+/// Write a note on the first row that can carry one, and return its row.
+fn note_on(
+    app: &mut App,
+    pred: impl Fn(&differential_tui::rows::Row) -> bool,
+    body: &str,
+) -> usize {
+    let at = app.rows.iter().position(&pred).expect("no row matches");
+    app.cursor = at;
+    app.focus = Focus::Detail;
+    app.handle_key(key('c'));
+    app.handle_paste(body);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    at
+}
+
+fn findings_modal(app: &App) -> (usize, usize) {
+    match &app.mode {
+        Mode::Findings {
+            entries, selected, ..
+        } => (entries.len(), *selected),
+        _ => panic!("the findings modal should be open"),
+    }
+}
+
+/// A note is written on a line and drawn under it, which is no help at all in
+/// answering "what have I found". `F` is the list.
+#[test]
+fn f_opens_every_finding_in_one_list() {
+    let (_r, mut app) = app_with_a_long_file();
+    note_on(&mut app, |r| r.line.is_some(), "the first thing");
+    let second = app
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.line.is_some() && !matches!(r.kind, RowKind::Finding(..)))
+        .map(|(i, _)| i)
+        .nth(4)
+        .expect("a second line");
+    app.cursor = second;
+    app.handle_key(key('c'));
+    app.handle_paste("the second thing");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let before = app.cursor;
+    app.handle_key(key('F'));
+    assert_eq!(findings_modal(&app), (2, 0));
+
+    let rows = drawn_rows(&mut app);
+    for want in ["findings · 2", "the first thing", "the second thing"] {
+        assert!(
+            rows.iter().any(|r| r.contains(want)),
+            "{want:?} missing from the list: {rows:#?}"
+        );
+    }
+    // Each note says where it is, so the list answers without the diff.
+    assert!(
+        rows.iter().any(|r| r.contains("src/long.rs:")),
+        "no location on the notes"
+    );
+
+    // `esc` closes it and moves nothing.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(matches!(app.mode, Mode::Normal));
+    assert_eq!(app.cursor, before, "closing the list should move nothing");
+
+    // And it opens from the plan pane too: it is about the review, not a pane.
+    app.focus = Focus::Groups;
+    app.handle_key(key('F'));
+    assert!(matches!(app.mode, Mode::Findings { .. }));
+}
+
+/// `enter` puts the cursor on the note. A note with no row in this view says
+/// so instead — it does not drag the reader into another group.
+#[test]
+fn enter_jumps_to_a_note_or_says_why_not() {
+    let (_r, mut app) = app_with_a_long_file();
+    note_on(&mut app, |r| r.line.is_some(), "look here");
+    app.cursor = 0;
+    app.handle_key(key('F'));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(matches!(app.mode, Mode::Normal));
+    assert_eq!(app.focus, Focus::Detail);
+    let note = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Finding(..)))
+        .expect("the note's row");
+    assert_eq!(app.cursor, note, "the cursor should land on the note");
+
+    // A note with no row: the list says which case it is and closes.
+    app.handle_key(key('F'));
+    if let Mode::Findings { entries, .. } = &mut app.mode {
+        entries[0].row_idx = None;
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(app.mode, Mode::Normal));
+    assert!(
+        app.status.contains("not in this view"),
+        "no reason given: {:?}",
+        app.status
+    );
+}
+
+/// `dd` deletes the selected note and the list stays open — a reviewer
+/// clearing up has more than one to clear.
+#[test]
+fn dd_in_the_list_deletes_one_and_stays() {
+    let (_r, mut app) = app_with_a_long_file();
+    for (n, body) in ["one", "two", "three"].iter().enumerate() {
+        let at = app
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.line.is_some() && !matches!(r.kind, RowKind::Finding(..)))
+            .map(|(i, _)| i)
+            .nth(n * 3)
+            .expect("a line");
+        app.cursor = at;
+        app.focus = Focus::Detail;
+        app.handle_key(key('c'));
+        app.handle_paste(body);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    }
+    assert_eq!(app.session.findings().len(), 3);
+
+    app.handle_key(key('F'));
+    app.handle_key(key('j'));
+    assert_eq!(findings_modal(&app), (3, 1));
+    let Mode::Findings {
+        entries, selected, ..
+    } = &app.mode
+    else {
+        unreachable!()
+    };
+    let doomed = entries[*selected].body.clone();
+
+    // One `d` is a latch, not a delete.
+    app.handle_key(key('d'));
+    assert_eq!(app.session.findings().len(), 3, "one d deletes nothing");
+    app.handle_key(key('d'));
+
+    assert_eq!(app.session.findings().len(), 2);
+    assert!(
+        !app.session.findings().iter().any(|f| f.body == doomed),
+        "the wrong note went"
+    );
+    assert_eq!(
+        findings_modal(&app).0,
+        2,
+        "the list stays open, one shorter"
+    );
+    // And the diff lost it too, not just the list.
+    let notes = app
+        .rows
+        .iter()
+        .filter(|r| matches!(r.kind, RowKind::Finding(..)))
+        .count();
+    assert_eq!(notes, 2, "the diff should carry the two that are left");
+}
+
+/// Clearing every note is the only irreversible thing in this app, so it asks.
+#[test]
+fn d_clears_everything_but_only_after_a_yes() {
+    let (_r, mut app) = app_with_a_long_file();
+    note_on(&mut app, |r| r.line.is_some(), "the only one");
+    app.handle_key(key('F'));
+
+    // `D` alone deletes nothing; it asks, and the box says so.
+    app.handle_key(key('D'));
+    assert_eq!(app.session.findings().len(), 1, "D alone deletes nothing");
+    assert!(
+        drawn_rows(&mut app)
+            .iter()
+            .any(|r| r.contains("delete all 1 findings?")),
+        "the confirmation should be on screen"
+    );
+
+    // Anything but `y` is a slip, and a slip must not empty the store.
+    app.handle_key(key('n'));
+    assert_eq!(app.session.findings().len(), 1);
+    assert!(app.status.contains("nothing deleted"));
+
+    app.handle_key(key('D'));
+    app.handle_key(key('y'));
+    assert!(app.session.findings().is_empty(), "D then y clears the lot");
+    assert!(matches!(app.mode, Mode::Normal), "an empty list closes");
+}
+
+/// An orphaned note — one whose code is gone — has no row anywhere: it matches
+/// no line and no hunk digest, so `place_findings` emits nothing for it. Before
+/// this list its body could not be read in the app at all, and `dd` could not
+/// reach it. It is the one thing here the list is not a convenience for.
+#[test]
+fn the_list_is_the_only_door_to_an_orphaned_note() {
+    use differential_engine::review_state::{Anchor, Finding};
+
+    let r = TestRepo::new();
+    r.write("src/f.txt", b"alpha = 1\nbeta = 2\n");
+    r.commit_all("base");
+    r.write("src/f.txt", b"alpha = 11\nbeta = 2\n");
+    r.commit_all("head");
+
+    // A note the current plan can re-anchor to nothing: no hunk carries that
+    // digest, and no hunk carries that text.
+    let store_dir = r.root.join(".dfr-orphan-store");
+    let store = FsReviewStore::at(store_dir.clone()).unwrap();
+    let orphan = Finding::new(
+        1,
+        "the code this was about is gone".into(),
+        "an older plan".into(),
+        Anchor {
+            file: "src/vanished.txt".into(),
+            side: "new".into(),
+            line: 12,
+            end_line: 12,
+            hunk_digest: "a digest no hunk has".into(),
+            line_text: "a line no file has".into(),
+            ..Anchor::default()
+        },
+    );
+    store.save_findings(&[orphan]).unwrap();
+
+    let backend = skim_first_backend();
+    let mut app = open_app_with(&r, &backend, ".dfr-orphan-store");
+    assert_eq!(app.session.findings().len(), 1);
+    assert_eq!(
+        app.session.findings()[0].status,
+        differential_engine::review_state::FindingStatus::Orphaned
+    );
+
+    // It has no row, so nothing in the diff pane can reach it.
+    assert!(
+        !app.rows
+            .iter()
+            .any(|r| matches!(r.kind, RowKind::Finding(..))),
+        "an orphan has no row to stand on"
+    );
+
+    // The list has it, under its own rule, with its body readable.
+    app.handle_key(key('F'));
+    let rows = drawn_rows(&mut app);
+    for want in [
+        "1 orphaned",
+        "orphaned ──",
+        "the code this was about is gone",
+    ] {
+        assert!(
+            rows.iter().any(|r| r.contains(want)),
+            "{want:?} missing: {rows:#?}"
+        );
+    }
+
+    // And `dd` reaches it, which nothing else does.
+    app.handle_key(key('d'));
+    app.handle_key(key('d'));
+    assert!(app.session.findings().is_empty(), "dd must reach an orphan");
+}
+
+/// More notes than the box is tall. The file-list modal has no scroll and
+/// clips; a review has more notes than it has files.
+#[test]
+fn the_list_scrolls_to_keep_the_selection_on_screen() {
+    let (_r, mut app) = app_with_a_long_file();
+    app.set_viewport(Viewport {
+        detail_rows: 4,
+        plan_rows: 4,
+    });
+    let lines: Vec<usize> = app
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.line.is_some())
+        .map(|(i, _)| i)
+        .collect();
+    assert!(lines.len() >= 6, "the fixture needs six lines to annotate");
+    for (n, at) in lines.iter().take(6).enumerate() {
+        // Each note adds a row, so re-find the line rather than trusting `at`.
+        let at = app
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.line.is_some())
+            .map(|(i, _)| i)
+            .nth(n)
+            .unwrap_or(*at);
+        app.cursor = at;
+        app.focus = Focus::Detail;
+        app.handle_key(key('c'));
+        app.handle_paste(&format!("note {n}"));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    }
+    let total = app.session.findings().len();
+    assert!(total >= 5, "wrote {total} notes, wanted at least five");
+
+    app.handle_key(key('F'));
+    for _ in 0..total {
+        app.handle_key(key('j'));
+    }
+    let Mode::Findings {
+        selected, scroll, ..
+    } = &app.mode
+    else {
+        panic!("the list should be open");
+    };
+    assert_eq!(*selected, total - 1, "j should reach the last note");
+    assert!(
+        *scroll > 0,
+        "the window should have moved to keep it on screen"
+    );
+    assert!(*scroll <= *selected, "and never past the selection");
+}
+
+#[test]
+#[ignore = "prints the pane for a human to look at"]
+fn render_dump_findings() {
+    let (_r, mut app) = app_with_a_long_file();
+    app.focus = Focus::Detail;
+    // Three notes: one on a line, one over a range, one on a hunk header.
+    let mut wrote = 0;
+    for i in 0..app.rows.len() {
+        if wrote == 3 {
+            break;
+        }
+        if app.rows[i].line.is_none() && !matches!(app.rows[i].kind, RowKind::HunkHeader { .. }) {
+            continue;
+        }
+        app.cursor = i;
+        if wrote == 1 {
+            app.handle_key(key('v'));
+            app.handle_key(key('j'));
+        }
+        app.handle_key(key('c'));
+        app.handle_paste(&format!("note number {wrote} about this"));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        wrote += 1;
+    }
+    app.handle_key(key('F'));
+    println!("\n=== findings modal ===");
+    println!("{}", ansi_dump(&mut app, 120, 16));
+    app.handle_key(key('D'));
+    println!("\n=== confirming ===");
+    println!("{}", ansi_dump(&mut app, 120, 16));
+}
+
 /// The help modal is keys and nothing else. Five lines of prose about the plan
 /// pane and the diff's colours used to sit between `n/N` and `s`.
 #[test]

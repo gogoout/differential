@@ -463,6 +463,39 @@ fn doc_class_keys(session: &FsReviewSession) -> Vec<String> {
         .collect()
 }
 
+/// Clearing every finding is one write, not one per note: the store rewrites
+/// the whole file on every save.
+#[test]
+fn clear_findings_empties_the_store_in_one_write() {
+    let r = TestRepo::new();
+    r.write("f.txt", b"alpha_value = 1\n");
+    let base = r.commit_all("base");
+    r.write("f.txt", b"alpha_value = 2\n");
+    let head = r.commit_all("head");
+
+    let dir = r.root.join(".dfr-clear");
+    let store = FsReviewStore::at(dir.clone()).unwrap();
+    let (doc, view) = doc_and_view(&r, &base, &head);
+    let mut session = ReviewSession::open(store, doc, view).unwrap();
+
+    session.add_finding(0, None, "one".into()).unwrap();
+    session.add_finding(0, None, "two".into()).unwrap();
+    assert_eq!(session.findings().len(), 2);
+
+    assert_eq!(
+        session.clear_findings().unwrap(),
+        2,
+        "it says how many went"
+    );
+    assert!(session.findings().is_empty());
+    // On disk, not just in hand.
+    let reread = FsReviewStore::at(dir).unwrap();
+    assert!(reread.load_findings().unwrap().is_empty());
+
+    // And clearing nothing is not an error, nor a write.
+    assert_eq!(session.clear_findings().unwrap(), 0);
+}
+
 /// A reader can annotate a CONTEXT line, and context sits on both sides of a
 /// hunk. An offset clamped at zero walked every note written above a hunk down
 /// to that hunk's first line on the next regeneration — silently, and not even

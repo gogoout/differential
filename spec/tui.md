@@ -300,6 +300,7 @@ list belongs; the footer's job is to point at it.
 | `c` | write a finding — on the line under the cursor, on the lines `v` selected, or on the whole hunk from a row that is not a line; on a line that already carries one, rewrite that one |
 | `dd` | delete the finding under the cursor |
 | `y` | copy the open-findings summary to the clipboard — a markdown list of `file:lines: note`, and nothing about groups: a group is how this reviewer chose to READ the branch, and the summary is pasted somewhere that has no idea what `g7` was |
+| `F` | every finding in one list — `enter` jumps to one, `dd` deletes it, `D` clears them all, `esc` closes |
 | `?` | help — the keys, as one uninterrupted table |
 | `q` | quit — state is saved on every change, quitting never loses anything |
 
@@ -413,6 +414,22 @@ different kind of thing from the code without competing with it — which one tr
 under a bright marker glyph did not. Every line of the panel is a finding row, so `dd`
 deletes the note from any of them and the cursor never lands on a line belonging to
 nothing.
+
+**Every finding, in one list.** `F` opens it, from either pane — findings are a fact about
+the review rather than about a pane, unlike `f`. Each row is where the note is and what it
+says: `src/app.rs:1307   this overflows on a narrow pane`. `enter` puts the cursor on the
+note; a note with no row in this view says which case it is and closes, rather than
+dragging the reader into a group they did not choose to be in. `dd` deletes the selected
+note and the list stays open — a reviewer clearing up has more than one to clear. `D` asks
+`delete all 4 findings?  y / n`, and only `y` means yes: `dd` deletes one without asking
+because a note is one line and rewriting it is `c`, while clearing the lot is the only
+irreversible thing in this reviewer.
+
+**Orphans have their own section**, under a rule, and for them the list is not a
+convenience but the only door. An orphaned note matches no line and no hunk digest, so no
+row is emitted for it anywhere: before the list its body could not be read in the app at
+all, `c` could not reopen it and `dd` could not reach it. The plan pane's title still counts
+them, which is the signpost that sends a reader to `F`.
 
 **Writing a finding** opens a float over the diff rather than a strip pinned to its foot:
 a note is about lines you should still be able to see. Its border carries the file and line

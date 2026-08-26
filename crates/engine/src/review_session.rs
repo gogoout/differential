@@ -287,4 +287,19 @@ impl<S: ReviewStore> ReviewSession<S> {
         self.store.save_findings(&self.findings)?;
         Ok(true)
     }
+
+    /// Delete every finding. Returns how many there were.
+    ///
+    /// One write, not one per note: the store rewrites the whole file on every
+    /// save, so a loop over `delete_finding` would rewrite it N times to reach
+    /// the same empty file.
+    pub fn clear_findings(&mut self) -> Result<usize, EngineError> {
+        let n = self.findings.len();
+        if n == 0 {
+            return Ok(0);
+        }
+        self.findings.clear();
+        self.store.save_findings(&self.findings)?;
+        Ok(n)
+    }
 }
