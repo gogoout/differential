@@ -16,6 +16,15 @@ pub struct Theme {
     /// what makes the gutter read as an edge rather than as more of the line.
     pub added_gutter_bg: Color,
     pub deleted_gutter_bg: Color,
+    /// The line-number block on the row the cursor is on. Brighter than the
+    /// change block, so the cursor is the strongest cell in the gutter column
+    /// — and still red on a deletion and green on an addition, so a row does
+    /// not stop saying which it is just because you are standing on it.
+    pub added_gutter_cursor_bg: Color,
+    pub deleted_gutter_cursor_bg: Color,
+    /// The line number itself on that row. One ink for all three blocks, light
+    /// enough to read on bright green, bright red and the plain cursor grey.
+    pub cursor_gutter_fg: Color,
     pub added_word_bg: Color,
     pub deleted_word_bg: Color,
     /// Diagonal fill for the side of a split row that has no line at all.
@@ -60,6 +69,9 @@ pub const THEME: Theme = Theme {
     deleted_bg: Color::Rgb(58, 22, 22),
     added_gutter_bg: Color::Rgb(24, 68, 33),
     deleted_gutter_bg: Color::Rgb(82, 29, 29),
+    added_gutter_cursor_bg: Color::Rgb(46, 128, 62),
+    deleted_gutter_cursor_bg: Color::Rgb(150, 52, 52),
+    cursor_gutter_fg: Color::Rgb(240, 242, 248),
     added_word_bg: Color::Rgb(28, 92, 42),
     deleted_word_bg: Color::Rgb(110, 38, 38),
     hatch_fg: Color::Rgb(48, 50, 58),
@@ -107,6 +119,24 @@ impl Theme {
             LineOrigin::Deletion => Some(self.deleted_gutter_bg),
             LineOrigin::Context => None,
         }
+    }
+
+    /// The same cell on the cursor's row, from the block it wears otherwise.
+    ///
+    /// By colour, like `lit_ink`: this is the one place that knows a gutter's
+    /// blocks, so a fourth one means adding it here rather than at the call
+    /// site. An unchanged line has no block of its own and takes the plain
+    /// cursor grey, which is what makes the cursor readable on every row.
+    pub fn gutter_cursor(&self, block: Option<Color>) -> Style {
+        let bg = match block {
+            Some(c) if c == self.added_gutter_bg => self.added_gutter_cursor_bg,
+            Some(c) if c == self.deleted_gutter_bg => self.deleted_gutter_cursor_bg,
+            _ => self.cursor_bg,
+        };
+        Style::default()
+            .fg(self.cursor_gutter_fg)
+            .bg(bg)
+            .add_modifier(Modifier::BOLD)
     }
 
     pub fn effort_style(&self, effort: differential_engine::schema::Effort) -> Style {

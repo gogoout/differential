@@ -171,20 +171,54 @@ pub enum Fill {
     Rule(Style),
 }
 
-/// One side of a diff row: a gutter whose first cell is reserved for the
-/// cursor marker, the content, and what pads the rest.
+/// The line-number cell: its text, the block it wears, and the brighter block
+/// it takes on the row the cursor is on.
+///
+/// Both styles travel with the row because whether a row is the cursor's is a
+/// cursor question — the cursor moves without rebuilding rows, so the row
+/// carries the colour it WOULD take and drawing chooses. Same reasoning as a
+/// hunk's `Border`, one column over.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Gutter {
+    pub text: String,
+    pub style: Style,
+    pub cursor: Style,
+}
+
+impl Gutter {
+    /// A cell that takes the same style either way — a banner's, or a boundary
+    /// band's, where the row is one tint the whole way across.
+    fn flat(text: &str, style: Style) -> Self {
+        Gutter {
+            text: text.to_string(),
+            style,
+            cursor: style,
+        }
+    }
+}
+
+/// One side of a diff row: a line-number cell, the content, and what pads the
+/// rest.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Half {
-    pub gutter: (Style, String),
+    pub gutter: Gutter,
     pub pairs: Vec<(Style, String)>,
     pub fill: Fill,
 }
 
 impl Half {
     /// The absent side of a split row.
+    ///
+    /// Its line-number cell is blank but keeps the width the real one has, so
+    /// the cursor block lands in the same column on both sides of a row that
+    /// exists on only one of them.
     fn hatch() -> Self {
         Half {
-            gutter: (Style::default(), String::new()),
+            gutter: Gutter {
+                text: format!(" {:4} ", ""),
+                style: Style::default(),
+                cursor: THEME.gutter_cursor(None),
+            },
             pairs: Vec::new(),
             fill: Fill::Hatch,
         }
@@ -234,7 +268,8 @@ impl Row {
     pub fn with_button(mut self, glyph: &'static str, tint: Style) -> Self {
         self.button = Some(glyph);
         if let RowContent::Unified(half) = &mut self.content {
-            half.gutter.0 = tint;
+            half.gutter.style = tint;
+            half.gutter.cursor = tint;
         }
         self
     }
@@ -261,7 +296,7 @@ impl Row {
             border: None,
             button: None,
             content: RowContent::Unified(Half {
-                gutter: (Style::default(), " ".to_string()),
+                gutter: Gutter::flat(" ", Style::default()),
                 pairs: line
                     .spans
                     .into_iter()
@@ -731,7 +766,7 @@ fn file_header_row(doc: &schema::PlanDocument, path: &str) -> Row {
 /// content, at any pane width.
 fn column_header_row() -> Row {
     let label = |text: &str| Half {
-        gutter: (Style::default(), String::new()),
+        gutter: Gutter::default(),
         pairs: vec![(
             Style::default()
                 .fg(THEME.gutter_fg)
@@ -1235,7 +1270,7 @@ fn render_change_row(
 /// order they are drawn.
 fn unify(mut h: Half, old_n: Option<usize>, new_n: Option<usize>) -> Half {
     let num = |n: Option<usize>| n.map(|n| n.to_string()).unwrap_or_default();
-    h.gutter.1 = format!(" {:>4} {:>4} ", num(old_n), num(new_n));
+    h.gutter.text = format!(" {:>4} {:>4} ", num(old_n), num(new_n));
     h
 }
 
@@ -1259,11 +1294,11 @@ fn half(
 
 /// The line-number cell.
 ///
-/// A leading space is reserved for the cursor marker, so moving the cursor
-/// never shifts the pane sideways. On a changed line the cell carries the
-/// change colour as a solid block, deliberately stronger than the tint over
-/// the code, which is what makes the gutter read as an edge.
-fn gutter(text: &str, origin: LineOrigin) -> (Style, String) {
+/// A space either side, so the number is a block rather than a run of digits
+/// against the code. On a changed line that block carries the change colour,
+/// deliberately stronger than the tint over the code, which is what makes the
+/// gutter read as an edge — and brighter again on the cursor's row.
+fn gutter(text: &str, origin: LineOrigin) -> Gutter {
     let mut style = Style::default().fg(match origin {
         LineOrigin::Context => THEME.gutter_fg,
         _ => THEME.context_fg,
@@ -1271,7 +1306,11 @@ fn gutter(text: &str, origin: LineOrigin) -> (Style, String) {
     if let Some(bg) = THEME.gutter_bg(origin) {
         style = style.bg(bg);
     }
-    (style, format!(" {text} "))
+    Gutter {
+        text: format!(" {text} "),
+        style,
+        cursor: THEME.gutter_cursor(THEME.gutter_bg(origin)),
+    }
 }
 
 /// Syntax pairs for one line with the per-side background and word-level
@@ -1343,11 +1382,11 @@ mod tests {
             half.fill
         );
         assert!(
-            half.gutter.1.contains('7') && half.gutter.1.contains('9'),
+            half.gutter.text.contains('7') && half.gutter.text.contains('9'),
             "both line numbers belong in a context gutter: {:?}",
-            half.gutter.1
+            half.gutter.text
         );
-        assert!(half.gutter.0.bg.is_none(), "no gutter block on context");
+        assert!(half.gutter.style.bg.is_none(), "no gutter block on context");
 
         // Split mode shows it once on each side, neither of them hatched.
         let out = render_change_row(&row, Some(7), Some(9), &no_hl, &no_hl, DiffMode::Split);
@@ -1373,7 +1412,7 @@ mod tests {
         assert_eq!(out.len(), 2);
         let text = |c: &RowContent| match c {
             RowContent::Unified(h) => (
-                h.gutter.1.clone(),
+                h.gutter.text.clone(),
                 h.pairs.iter().map(|(_, t)| t.clone()).collect::<String>(),
             ),
             other => panic!("expected unified, got {other:?}"),

@@ -689,6 +689,17 @@ fn the_plan_gutter_links_the_selected_group_to_what_it_follows() {
         content.contains("├"),
         "the selected group follows something, so a connector must be drawn"
     );
+    // The tick wears the file tree's arm and reaches the title it points at.
+    let rows = plan_rows(&mut app);
+    assert!(
+        rows.iter().any(|r| r.starts_with("◆─")),
+        "the selected group's diamond must reach its title: {rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|r| r.starts_with("├─") || r.starts_with("└─")),
+        "a dependency tick must reach its title: {rows:?}"
+    );
 
     // --- selecting the foundation: the group that follows IT is not marked --
     // This is the change: the reverse edge used to be drawn, in a second
@@ -705,6 +716,19 @@ fn the_plan_gutter_links_the_selected_group_to_what_it_follows() {
         !plan_pane(&mut app).contains("├"),
         "nothing is followed from here, so no connector should be drawn"
     );
+}
+
+/// The plan pane's rows, one string each, trimmed of the pane's own border.
+/// Row order, unlike `plan_pane` — a connector's arm is two adjacent cells on
+/// one row, and a column-major dump puts a pane's height between them.
+fn plan_rows(app: &mut App) -> Vec<String> {
+    let backend = ratatui::backend::TestBackend::new(100, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    (1..39u16)
+        .map(|y| (1..39u16).map(|x| buf[(x, y)].symbol()).collect())
+        .collect()
 }
 
 /// Just the plan pane's columns. `├` is also a hunk box's corner over in the
@@ -728,6 +752,18 @@ fn plan_pane(app: &mut App) -> String {
 fn drawn(app: &mut App) -> String {
     app.focus = Focus::Detail;
     drawn_as_is(app)
+}
+
+/// The whole screen as rows, in row order — for assertions about text that
+/// has to sit on one line.
+fn drawn_rows(app: &mut App) -> Vec<String> {
+    let backend = ratatui::backend::TestBackend::new(100, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    (0..40u16)
+        .map(|y| (0..100u16).map(|x| buf[(x, y)].symbol()).collect())
+        .collect()
 }
 
 /// Render whatever the current focus puts on screen.
@@ -1307,23 +1343,86 @@ fn the_absent_side_of_a_split_row_is_hatched() {
     );
 }
 
+/// Background colours of the cells on one drawn row, left to right.
+fn row_backgrounds(app: &mut App, y: u16) -> Vec<ratatui::style::Color> {
+    let backend = ratatui::backend::TestBackend::new(100, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    (0..100u16).map(|x| buf[(x, y)].bg).collect()
+}
+
+/// The brighter line-number block the cursor's row wears on a changed line.
+fn is_cursor_block(c: &ratatui::style::Color) -> bool {
+    *c == THEME.added_gutter_cursor_bg || *c == THEME.deleted_gutter_cursor_bg
+}
+
+/// The screen row the cursor is drawn on, given the pane's scroll.
+fn cursor_screen_row(app: &App) -> u16 {
+    (app.cursor - app.scroll()) as u16 + 1
+}
+
 #[test]
-fn the_cursor_stays_visible_on_a_changed_row() {
+fn the_cursor_is_a_brighter_gutter_block_on_a_changed_row() {
     let (_r, mut app) = app_with_a_long_file();
     // A changed line carries its own background, and a line style sits under
-    // span styles — so only the marker can show the cursor there.
+    // span styles — so the gutter block is what has to show the cursor there.
     put_cursor_on(&mut app, |k| matches!(k, RowKind::Diff(_)));
     // Walk onto a row that actually has a change colour.
     for _ in 0..20 {
-        if drawn(&mut app).contains('▸') {
-            break;
+        let y = cursor_screen_row(&app);
+        if row_backgrounds(&mut app, y).iter().any(is_cursor_block) {
+            return;
         }
         app.handle_key(key('j'));
     }
-    assert!(
-        drawn(&mut app).contains('▸'),
-        "the cursor must be visible on a diff row"
+    panic!("the cursor's gutter must wear the brighter block of its change colour");
+}
+
+#[test]
+fn the_cursor_lights_the_gutter_on_both_sides_of_a_split_row() {
+    let (_r, mut app) = app_with_a_long_file();
+    app.handle_key(key('s')); // split
+    put_cursor_on(&mut app, |k| matches!(k, RowKind::Diff(_)));
+    // A modification exists on both sides, so both gutters must light.
+    for _ in 0..30 {
+        let y = cursor_screen_row(&app);
+        let bgs = row_backgrounds(&mut app, y);
+        // The separator column splits the row into its two halves.
+        if bgs[..50].iter().any(is_cursor_block) && bgs[50..].iter().any(is_cursor_block) {
+            return;
+        }
+        app.handle_key(key('j'));
+    }
+    panic!("both halves of a modified split row must carry the cursor block");
+}
+
+#[test]
+fn the_cursor_lights_the_absent_side_of_a_split_row_too() {
+    let r = TestRepo::new();
+    r.write("src/a.rs", b"let keep = 1;\nlet tail = 3;\n");
+    r.commit_all("base");
+    // A pure insertion: the OLD side has no line, so it is hatched.
+    r.write(
+        "src/a.rs",
+        b"let keep = 1;\nlet fresh = 2;\nlet tail = 3;\n",
     );
+    r.commit_all("head");
+    let backend = skim_first_backend();
+    let mut app = open_app_with(&r, &backend, ".dfr-cursor-hatch-store");
+    app.handle_key(key('s'));
+    put_cursor_on(&mut app, |k| matches!(k, RowKind::Diff(_)));
+    for _ in 0..20 {
+        let y = cursor_screen_row(&app);
+        let bgs = row_backgrounds(&mut app, y);
+        // The hatched half keeps a blank gutter of the same width, so the
+        // cursor block lands in the same column on both sides.
+        if bgs[..50].contains(&THEME.cursor_bg) {
+            return;
+        }
+        app.handle_key(key('j'));
+    }
+    panic!("an absent side must still carry the cursor's gutter block");
 }
 
 #[test]
@@ -1986,6 +2085,90 @@ fn the_counts_stay_coloured_on_both_pill_fills() {
 
 // -------------------------------------------------- the overview surfaces
 
+/// The map folds on the GROUP: a directory the group never enters is one row,
+/// and the files it does not touch inside one it does enter are a count. A
+/// document of any size then fits the float instead of running past it.
+#[test]
+fn the_group_map_folds_what_the_group_does_not_touch() {
+    let r = TestRepo::new();
+    // Every file changes, so every one is a row in the document's tree. Only
+    // ONE of them lands in the group the map is drawn for.
+    let files = [
+        "deep/a/b/c/buried.rs",
+        "src/one.rs",
+        "src/two.rs",
+        "src/three.rs",
+        "src/four.rs",
+        "src/five.rs",
+        "src/target.rs",
+    ];
+    // Structurally distinct, so each file lands in its own shape class and so
+    // in its own group — the map then has six files it must fold.
+    let shapes = [
+        ("fn f() { g(); }\n", "fn f() { h(); }\n"),
+        ("let x = 1;\n", "let x = 2;\n"),
+        ("struct S { a: u8 }\n", "struct S { a: u16 }\n"),
+        ("use a::b;\n", "use a::c;\n"),
+        ("const K: u8 = 1;\n", "const K: u8 = 2;\n"),
+        ("impl T for S {}\n", "impl U for S {}\n"),
+        ("enum E { A, B }\n", "enum E { A, C }\n"),
+    ];
+    for (path, (before, _)) in files.iter().zip(shapes) {
+        r.write(path, before.as_bytes());
+    }
+    r.commit_all("base");
+    for (path, (_, after)) in files.iter().zip(shapes) {
+        r.write(path, after.as_bytes());
+    }
+    r.commit_all("head");
+
+    // One class per group, so the selected group touches exactly one file.
+    let backend = FakeBackend::new("fake", |ids| {
+        let groups: Vec<String> = ids
+            .iter()
+            .enumerate()
+            .map(|(n, id)| json_group(&format!("Group {n}"), "focus", &[id.as_str()]))
+            .collect();
+        format!(r#"{{"groups": [{}]}}"#, groups.join(", "))
+    });
+    let mut app = open_app_with(&r, &backend, ".dfr-map-fold-store");
+    app.focus = Focus::Groups;
+
+    // Walk to the group that owns `src/target.rs`: it is the one whose map has
+    // a folded chain above it AND folded siblings beside it.
+    let mut rows = drawn_rows(&mut app);
+    for _ in 0..files.len() {
+        if rows.iter().any(|l| l.contains("● target.rs")) {
+            break;
+        }
+        app.handle_key(key('j'));
+        rows = drawn_rows(&mut app);
+    }
+
+    // The chain the group never enters is ONE row, with its path joined.
+    assert!(
+        rows.iter().any(|l| l.contains("▸ deep/a/b/c/")),
+        "an untouched chain must fold to one joined row: {rows:#?}"
+    );
+    assert!(
+        !rows.iter().any(|l| l.contains("buried.rs")),
+        "a folded directory must not list its files: {rows:#?}"
+    );
+    // The changed file is lit, and its siblings are a count.
+    assert!(
+        rows.iter().any(|l| l.contains("● target.rs")),
+        "the group's own file must still be lit: {rows:#?}"
+    );
+    assert!(
+        rows.iter().any(|l| l.contains("more")),
+        "the files the group misses must fold to a count: {rows:#?}"
+    );
+    assert!(
+        !rows.iter().any(|l| l.contains("three.rs")),
+        "a folded file must not be named: {rows:#?}"
+    );
+}
+
 /// Reading the plan, a map of the selected group FLOATS over the detail pane —
 /// below the group's header, so its full label survives the plan pane's 40
 /// columns, and above the diff, which carries on underneath as a preview of
@@ -2441,16 +2624,218 @@ fn the_help_modal_is_only_keys() {
 fn render_dump() {
     let (_r, mut app) = app_with_a_long_file();
     app.focus = Focus::Detail;
+    put_cursor_on(&mut app, |k| matches!(k, RowKind::Diff(_)));
     for mode in ["unified", "split"] {
-        let backend = ratatui::backend::TestBackend::new(120, 30);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal.draw(|f| app.draw(f)).unwrap();
-        let buf = terminal.backend().buffer().clone();
-        println!("\n=== {mode} ===");
-        for y in 0..30u16 {
-            let line: String = (0..120u16).map(|x| buf[(x, y)].symbol()).collect();
-            println!("{line}");
+        // Park on a changed row, so the cursor's gutter block is in the dump.
+        for _ in 0..20 {
+            let y = cursor_screen_row(&app);
+            if row_backgrounds(&mut app, y).iter().any(is_cursor_block) {
+                break;
+            }
+            app.handle_key(key('j'));
         }
+        println!("\n=== diff: {mode} ===");
+        println!("{}", ansi_dump(&mut app, 120, 26));
         app.handle_key(key('s'));
     }
+}
+
+/// The screen as ANSI truecolour, so a paste of it shows what a terminal shows.
+/// `TestBackend` renders styles but only exposes them cell by cell.
+fn ansi_dump(app: &mut App, w: u16, h: u16) -> String {
+    use ratatui::style::{Color, Modifier};
+    let backend = ratatui::backend::TestBackend::new(w, h);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    // The named colours the theme still uses, as the 8-bit codes a terminal
+    // reads — truecolour and named inks have to end up in one escape.
+    let code = |c: Color, base: u8| -> String {
+        match c {
+            Color::Rgb(r, g, b) => format!("{};2;{r};{g};{b}", base + 8),
+            Color::Reset => format!("{}", base + 9),
+            Color::Black => format!("{}", base),
+            Color::Red => format!("{}", base + 1),
+            Color::Green => format!("{}", base + 2),
+            Color::Yellow => format!("{}", base + 3),
+            Color::Blue => format!("{}", base + 4),
+            Color::Magenta => format!("{}", base + 5),
+            Color::Cyan => format!("{}", base + 6),
+            Color::Gray => format!("{}", base + 7),
+            Color::DarkGray => format!("{}", base + 60),
+            Color::LightRed => format!("{}", base + 61),
+            Color::LightGreen => format!("{}", base + 62),
+            Color::LightYellow => format!("{}", base + 63),
+            Color::LightBlue => format!("{}", base + 64),
+            Color::LightMagenta => format!("{}", base + 65),
+            Color::LightCyan => format!("{}", base + 66),
+            Color::White => format!("{}", base + 67),
+            _ => format!("{}", base + 9),
+        }
+    };
+    let mut out = String::new();
+    for y in 0..h {
+        // One escape per RUN, not per cell: a cell-by-cell dump is twenty
+        // times the bytes and unreadable in a diff.
+        let mut worn = String::new();
+        for x in 0..w {
+            let cell = &buf[(x, y)];
+            let mut parts = vec![code(cell.fg, 30), code(cell.bg, 40)];
+            if cell.modifier.contains(Modifier::BOLD) {
+                parts.push("1".to_string());
+            }
+            let style = parts.join(";");
+            if style != worn {
+                out.push_str(&format!("\x1b[0;{style}m"));
+                worn = style;
+            }
+            out.push_str(cell.symbol());
+        }
+        out.push_str("\x1b[0m\n");
+    }
+    out
+}
+
+/// The group map float, folded, over a document with more files than the
+/// selected group touches.
+#[test]
+#[ignore = "prints the pane for a human to look at"]
+fn render_dump_map() {
+    let r = TestRepo::new();
+    let files = [
+        "deep/a/b/c/buried.rs",
+        "src/one.rs",
+        "src/two.rs",
+        "src/three.rs",
+        "src/four.rs",
+        "src/five.rs",
+        "src/target.rs",
+    ];
+    let shapes = [
+        ("fn f() { g(); }\n", "fn f() { h(); }\n"),
+        ("let x = 1;\n", "let x = 2;\n"),
+        ("struct S { a: u8 }\n", "struct S { a: u16 }\n"),
+        ("use a::b;\n", "use a::c;\n"),
+        ("const K: u8 = 1;\n", "const K: u8 = 2;\n"),
+        ("impl T for S {}\n", "impl U for S {}\n"),
+        ("enum E { A, B }\n", "enum E { A, C }\n"),
+    ];
+    for (path, (before, _)) in files.iter().zip(shapes) {
+        r.write(path, before.as_bytes());
+    }
+    r.commit_all("base");
+    for (path, (_, after)) in files.iter().zip(shapes) {
+        r.write(path, after.as_bytes());
+    }
+    r.commit_all("head");
+    let backend = FakeBackend::new("fake", |ids| {
+        let groups: Vec<String> = ids
+            .iter()
+            .enumerate()
+            .map(|(n, id)| json_group(&format!("Group {n}"), "focus", &[id.as_str()]))
+            .collect();
+        format!(r#"{{"groups": [{}]}}"#, groups.join(", "))
+    });
+    let mut app = open_app_with(&r, &backend, ".dfr-map-dump-store");
+    app.focus = Focus::Groups;
+    for _ in 0..files.len() {
+        if drawn_rows(&mut app)
+            .iter()
+            .any(|l| l.contains("● target.rs"))
+        {
+            break;
+        }
+        app.handle_key(key('j'));
+    }
+    println!("\n=== group map, folded ===");
+    println!("{}", ansi_dump(&mut app, 120, 20));
+}
+
+/// The cursor's bar sits just inside the frame on EVERY selectable row — a
+/// header, a fold and a boundary have no line-number block to brighten, and
+/// the row tint alone was too faint to find.
+#[test]
+fn the_cursor_bar_shows_on_rows_that_have_no_gutter() {
+    // The column just inside the detail pane's left border, at width 100.
+    const BAR_X: usize = 41;
+    type Case = (&'static str, fn(&RowKind) -> bool);
+    let cases: [Case; 2] = [
+        ("a context boundary", |k| {
+            matches!(k, RowKind::ContextEdge { .. })
+        }),
+        ("a hunk header", |k| matches!(k, RowKind::HunkHeader { .. })),
+    ];
+    let (_r, mut app) = app_with_a_long_file();
+    for (name, pred) in cases {
+        put_cursor_on(&mut app, pred);
+        let rows = drawn_rows(&mut app);
+        let y = cursor_screen_row(&app) as usize;
+        assert_eq!(
+            rows[y].chars().nth(BAR_X),
+            Some('▌'),
+            "no cursor bar on {name}: {:?}",
+            rows[y]
+        );
+    }
+
+    // A fold row: the skim group's remainder, which no fixture above has.
+    let (_r, mut app) = make_app();
+    app.handle_key(key('j'));
+    put_cursor_on(&mut app, |k| *k == RowKind::Fold);
+    let rows = drawn_rows(&mut app);
+    let y = cursor_screen_row(&app) as usize;
+    assert_eq!(
+        rows[y].chars().nth(BAR_X),
+        Some('▌'),
+        "no cursor bar on a fold row: {:?}",
+        rows[y]
+    );
+}
+
+/// A split diff over a pure insertion: one side is hatched, and the cursor's
+/// block still lands in the same column on both.
+#[test]
+#[ignore = "prints the pane for a human to look at"]
+fn render_dump_hatch() {
+    let r = TestRepo::new();
+    r.write("src/a.rs", b"let keep = 1;\nlet tail = 3;\n");
+    r.commit_all("base");
+    r.write(
+        "src/a.rs",
+        b"let keep = 1;\nlet fresh = 2;\nlet tail = 3;\n",
+    );
+    r.commit_all("head");
+    let backend = skim_first_backend();
+    let mut app = open_app_with(&r, &backend, ".dfr-hatch-dump-store");
+    app.handle_key(key('s'));
+    put_cursor_on(&mut app, |k| matches!(k, RowKind::Diff(_)));
+    for _ in 0..20 {
+        let y = cursor_screen_row(&app);
+        if row_backgrounds(&mut app, y).iter().any(is_cursor_block) {
+            break;
+        }
+        app.handle_key(key('j'));
+    }
+    println!("\n=== split over an insertion ===");
+    println!("{}", ansi_dump(&mut app, 120, 16));
+}
+
+/// The plan pane's connector, with a group that follows two others.
+#[test]
+#[ignore = "prints the pane for a human to look at"]
+fn render_dump_plan() {
+    let (_r, mut app) = app_with_dependency_edge();
+    app.focus = Focus::Groups;
+    let follower = (0..app.groups().len())
+        .find(|i| !app.groups()[*i].depends_on.is_empty())
+        .expect("no group follows another");
+    while app.selected_group != follower {
+        app.handle_key(key(if app.selected_group < follower {
+            'j'
+        } else {
+            'k'
+        }));
+    }
+    println!("\n=== plan connector ===");
+    println!("{}", ansi_dump(&mut app, 120, 20));
 }

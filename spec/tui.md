@@ -34,7 +34,11 @@ plan says so rather than hiding it — a dependency listed **later** than the gr
 follows it is marked `↓`. Selecting a group draws a connector in the left gutter linking
 it (`◆`) to every group it **follows**, so what has to be read first is visible without
 reading ids. One direction only: the reverse edge is deliberately not drawn, so the gutter
-says the same thing as the `after:` line beneath it rather than something different. Counts derive from hunks, so binary/submodule
+says the same thing as the `after:` line beneath it rather than something different. Each
+tick wears the **same arm** the file tree's guides wear (`├─`, `└─`, and `◆─` at the
+selected group), in the pane's own border grey, so it reaches the title it points at: two guides a pane apart had no
+reason to draw the same relation differently, and a tick that stopped a cell short read as
+a mark floating beside the row rather than as a line into it. Counts derive from hunks, so binary/submodule
 changes contribute zero and a rename counts as two files (the canonical view is
 `--no-renames`). Skim groups show one exemplar per shape class with the remainder folded
 behind a single line; noise groups are folded entirely.
@@ -58,6 +62,15 @@ connector guides and marks a lit file beside its name rather than out in a colum
 own. Deliberately not interactive: it is a map, and a second cursor in a second pane is a
 thing to explain and to get wrong.
 
+**The map folds on the group.** A document of any size otherwise runs past the bottom of
+the float. A directory the group never enters is **one row** with a `▸` and the number of
+files under it, and a chain of such directories is joined into that row (`▸ a/b/c/`), so a
+deep path the reader is not going into costs one line rather than four. Inside a directory
+the group does enter, the files it does not touch fold to a count (`… 6 more`). What
+remains is exactly the group's own files, each lit, in the tree that holds them — which is
+the question the float is asked. The fold is the map's own: it never touches the file
+view's folds, whose state belongs to the reader's `z` and to that pane's cursor.
+
 Reading the **detail**, a flat list of the files in view floats over the foot of the plan
 pane, the current one marked and the title counting `file 2 of 7`.
 
@@ -77,9 +90,26 @@ choice persists per review); syntax highlighting and word-level change emphasis.
 background runs to the pane edge, and its line-number cell is a stronger block of the same
 colour, which is what makes the gutter read as an edge. In split mode a row that exists on
 only one side has its other half filled with `╱` — an absent line is visibly absent rather
-than looking like an empty one. Because a background is what marks a change, the cursor
-cannot be one: it is a `▸` in the leading gutter cell, which reads on any background, and
-that cell is reserved so moving the cursor never shifts the pane sideways.
+than looking like an empty one.
+
+**The cursor is that block, brighter — and a bar beside the frame.** A row-wide colour
+cannot carry it: a changed line already has one, and a line style sits under span styles.
+So the cursor lights the line-number cell — the brighter twin of the block it wears
+anyway, which keeps a deleted line red and an added one green while making the cursor the
+strongest cell in the column. An unchanged line has no block of its own and takes the
+plain cursor grey. The cell never changes width, so moving the cursor never shifts the
+pane sideways.
+
+Only a diff row has a line number, though, and `space`, `c` and `z` all act on rows that
+do not: a hunk header, a fold, a context boundary. On those the cursor was a faint tint
+and nothing else. So a **bar sits in the cell just inside the pane's frame** on every
+selectable row, keeping that cell's own background — over a lit block it stands on the
+change colour rather than punching a hole in it. One thing to look for, on every row.
+
+**Both gutters light.** A split row is one row, so a cursor drawn on the left half alone
+read as a cursor on that side's line. The absent side keeps a blank line-number cell of
+the same width, so the block lands in the same column on a row that exists on one side
+only — where a marker glyph used to vanish into the `╱` fill.
 
 **A hunk is a pill and an edge.** Its header is a filled pill — ` C31 · +25 `, the shape
 class and the size of the change — rather than a `@@ -479,0 +480,25 @@` line: every row
@@ -96,6 +126,13 @@ page.
 
 **The edge is the pane's own border.** It sits in that column rather than a cell inside it,
 so it costs the content no width and there are never two vertical lines a cell apart.
+
+Which is why a **pane's frame never lights**. Focus is carried by the pane's **title**, in
+the same colour the border used to take. A lit frame drew a box around half the screen to
+say a thing about the cursor, and it competed with the hunk edge — the one border in this
+view that means something. The title is where a reader looks to know which pane they are
+in anyway. For the same reason the plan's connector wears **one** colour, the border grey:
+it says which rows are tied together, and the rows themselves say what they are.
 
 **Only the hunk the cursor is in wears a colour**; every other edge is muted to the gutter,
 because a screenful of accents is no accent at all. Which box is lit is a cursor question
