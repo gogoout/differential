@@ -2984,6 +2984,85 @@ fn c_on_a_commented_line_rewrites_the_note() {
     );
 }
 
+/// A selection has to cross a hunk. Only a gap the reader never opened stops
+/// it — a hunk's header and its removed and added rows are one continuous
+/// stretch of one file.
+#[test]
+fn a_selection_crosses_a_hunk_from_either_side() {
+    let (_r, mut app) = app_with_a_long_file();
+    app.focus = Focus::Detail;
+    // The removed half of the modification: an OLD-side row, and the one the
+    // run used to get stuck on, since every row after it is new-side.
+    let removed = app
+        .rows
+        .iter()
+        .position(|r| r.line.as_ref().is_some_and(|l| l.side == "old"))
+        .expect("a removed row");
+    let old_line = app.rows[removed].line.clone().unwrap().line;
+
+    app.cursor = removed;
+    app.handle_key(key('v'));
+    for _ in 0..3 {
+        app.handle_key(key('j'));
+    }
+    app.handle_key(key('c'));
+    let Mode::Editing { lines: Some(l), .. } = &app.mode else {
+        panic!("no lines picked");
+    };
+    assert_eq!(l.side, "old", "the anchor's side is the run's side");
+    assert_eq!(l.start, old_line);
+    assert!(
+        l.end > old_line,
+        "an old-side run must reach the context below the hunk: {l:?}"
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    // And the same downward, from the context above through the hunk.
+    let above = app.rows[..removed]
+        .iter()
+        .rposition(|r| r.line.as_ref().is_some_and(|l| l.side == "new"))
+        .expect("a context row above");
+    app.cursor = above;
+    app.handle_key(key('v'));
+    for _ in 0..4 {
+        app.handle_key(key('j'));
+    }
+    app.handle_key(key('c'));
+    let Mode::Editing { lines: Some(l), .. } = &app.mode else {
+        panic!("no lines picked");
+    };
+    let from = app.rows[above].line.clone().unwrap().line;
+    assert_eq!((l.side.as_str(), l.start), ("new", from));
+    // Past the hunk's header, its removed row and its added row: three rows
+    // that are not two consecutive new-side lines, and used to end the run.
+    assert!(
+        l.end >= from + 2,
+        "the run should reach past the hunk: {l:?}"
+    );
+}
+
+/// `v` is how a reader gets into a selection, so it is the key their hand is
+/// on to get out of one.
+#[test]
+fn v_toggles_the_selection_off() {
+    let (_r, mut app) = app_with_a_long_file();
+    app.focus = Focus::Detail;
+    app.cursor = app
+        .rows
+        .iter()
+        .position(|r| r.line.is_some())
+        .expect("a line row");
+
+    app.handle_key(key('v'));
+    assert!(app.visual.is_some());
+    app.handle_key(key('v'));
+    assert_eq!(app.visual, None, "a second v drops it");
+
+    // And it starts a fresh one rather than staying off.
+    app.handle_key(key('v'));
+    assert_eq!(app.visual, Some(app.cursor));
+}
+
 /// A selection stops where the file's line numbers do. Dragging from line 23
 /// across `13 lines hidden` to line 37 used to file a note claiming fifteen
 /// lines, thirteen of which were never on screen.

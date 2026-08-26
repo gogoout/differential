@@ -296,7 +296,7 @@ list belongs; the footer's job is to point at it.
 | `s` | toggle unified / side-by-side diff layout (persisted) |
 | `f` | files, in the pane you are in — plan pane: toggle reading plan ↔ file tree (persisted) · diff pane: the file-list modal (`enter` jumps to the file) |
 | `space` | mark reviewed — the whole selected group/file in the left pane, the hunk's **class** in the diff pane (one exemplar verifies the shape) |
-| `v` | start a line selection at the cursor · `j`/`k` extend it · `esc` drops it · `c` writes a finding over it |
+| `v` | start a line selection at the cursor · `j`/`k` extend it · `v` or `esc` drops it · `c` writes a finding over it |
 | `c` | write a finding — on the line under the cursor, on the lines `v` selected, or on the whole hunk from a row that is not a line; on a line that already carries one, rewrite that one |
 | `dd` | delete the finding under the cursor |
 | `y` | copy the open-findings summary to the clipboard — a markdown list of `file:lines: note`, and nothing about groups: a group is how this reviewer chose to READ the branch, and the summary is pasted somewhere that has no idea what `g7` was |
@@ -361,11 +361,17 @@ returns). The pane title shows an orphan count when any exist.
 **A finding is about lines.** `c` on a diff row annotates **that line**; `v` first starts a
 selection the cursor extends, and `c` then annotates the run.
 
-A selection **stops where the file's line numbers do**. Walking past a context boundary
-moves the cursor but not the selection: a gap the reader never opened is a gap they never
-read, and a note claiming those lines claims something nobody said. A hunk's header sits
-between two consecutive lines and does not break a run — it is chrome, not a gap. The
-highlight shows exactly what `c` will file, so it needs no message to explain it. On a row that is not a line of
+A selection **stops at a context boundary, and at a file header** — the two rows that stand
+for a stretch of file the reader is not looking at. Walking past one moves the cursor but
+not the selection: a gap they never opened is a gap they never read, and a note claiming
+those lines claims something nobody said. **Nothing else breaks a run**: a hunk's header,
+its removed and added rows, a note already filed on one of them are all one continuous
+stretch of one file, and a selection has to cross them. A run is in ONE side's numbering,
+the anchor's, and a row that exists in both files answers for either. The highlight shows
+exactly what `c` will file, so it needs no message to explain it.
+
+`v` is a toggle: pressing it again drops the selection, as `esc` does, and `c` leaves by
+using it. On a row that is not a line of
 a file — a hunk header, a fold — `c` annotates the whole hunk, which is what every finding
 used to do.
 

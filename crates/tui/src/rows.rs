@@ -259,10 +259,22 @@ pub struct LineRef {
 }
 
 impl LineRef {
+    /// This row's number in one side's file, if it has one there.
+    ///
+    /// A row shows up to two numbers and belongs to up to two files. Which of
+    /// them a reader means depends on what they are doing — a note anchors to
+    /// one side, and a selection is a run in one side's numbering.
+    pub fn line_on(&self, side: &str) -> Option<u32> {
+        if self.side == side {
+            Some(self.line)
+        } else {
+            self.other.filter(|(s, _)| *s == side).map(|(_, n)| n)
+        }
+    }
+
     /// Does a note anchored to `(side, line)` belong on this row?
     pub fn holds(&self, side: &str, line: u32) -> bool {
-        (self.side == side && self.line == line)
-            || self.other.is_some_and(|(s, n)| s == side && n == line)
+        self.line_on(side) == Some(line)
     }
 }
 

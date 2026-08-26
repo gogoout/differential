@@ -1180,10 +1180,17 @@ impl App {
             // One field, not a mode: `j`/`k` keep moving the cursor and the
             // selection is the span between the two ends, which is what makes
             // `V` cost nothing to explain.
+            // A toggle. `v` is how a reader gets into a selection, so it is
+            // the key their hand is on to get out of one — `esc` works too,
+            // and so does `c`, which leaves by using it.
+            (KeyCode::Char('v'), KeyModifiers::NONE) if self.visual.is_some() => {
+                self.visual = None;
+                self.status = "selection dropped".into();
+            }
             (KeyCode::Char('v'), KeyModifiers::NONE) => {
                 if self.rows.get(self.cursor).is_some_and(|r| r.line.is_some()) {
                     self.visual = Some(self.cursor);
-                    self.status = "select lines · c to write · esc to drop".into();
+                    self.status = "select lines · c to write · v or esc to drop".into();
                 } else {
                     self.status = "move onto a line first".into();
                 }
@@ -1406,34 +1413,40 @@ impl App {
 
     /// The rows a selection actually covers.
     ///
-    /// From the anchor toward the cursor, stopping where the file's line
-    /// numbers stop being consecutive. That is exactly a context gap the
-    /// reader never opened: dragging from line 23 across `13 lines hidden` to
-    /// line 37 used to file a note claiming fifteen lines, thirteen of which
-    /// were never on screen.
+    /// From the anchor toward the cursor, stopping at a **context boundary**
+    /// or a **file header** — the two rows that stand for a stretch of file
+    /// the reader is not looking at. Dragging from line 23 across `13 lines
+    /// hidden` to line 37 would otherwise file a note claiming fifteen lines,
+    /// thirteen of which were never on screen.
     ///
-    /// A hunk's header sits between two consecutive lines and does not break
-    /// the run — it is chrome, not a gap.
-    fn selected_run(&self) -> Vec<(usize, &LineRef)> {
+    /// Nothing else breaks a run. A hunk's header, its removed and added rows,
+    /// a note already filed on one of them — all of that is one continuous
+    /// stretch of one file, and a selection has to cross it.
+    fn selected_run(&self) -> Vec<(usize, u32)> {
         let anchor = self.visual.unwrap_or(self.cursor);
         let at = |i: usize| self.rows.get(i).and_then(|r| r.line.as_ref());
-        // One side, so a run is a run in one file's numbering. In the unified
-        // layout a modification is two rows, and a run over both would mix the
-        // old file's numbers with the new file's.
+        // One side, so a run is a run in ONE file's numbering. The anchor's,
+        // since that is the end the reader chose deliberately. A row that
+        // exists in both files answers for either.
         let Some(side) = at(anchor).or_else(|| at(self.cursor)).map(|l| l.side) else {
             return Vec::new();
         };
 
         let step: isize = if self.cursor >= anchor { 1 } else { -1 };
         let (mut i, stop) = (anchor as isize, self.cursor as isize);
-        let (mut run, mut last) = (Vec::new(), None::<u32>);
+        let mut run = Vec::new();
         loop {
-            if let Some(l) = at(i as usize).filter(|l| l.side == side) {
-                if last.is_some_and(|n| l.line.abs_diff(n) != 1) {
-                    break;
-                }
-                last = Some(l.line);
-                run.push((i as usize, l));
+            let Some(row) = self.rows.get(i as usize) else {
+                break;
+            };
+            if matches!(
+                row.kind,
+                RowKind::ContextEdge { .. } | RowKind::FileHeader(_)
+            ) {
+                break;
+            }
+            if let Some(n) = row.line.as_ref().and_then(|l| l.line_on(side)) {
+                run.push((i as usize, n));
             }
             if i == stop {
                 break;
@@ -1450,16 +1463,27 @@ impl App {
     /// hunk header, a fold — and the finding then anchors the whole hunk.
     fn selected_lines(&self) -> Option<Lines> {
         let run = self.selected_run();
-        let (mut first, mut last) = (run.first()?.1, run.last()?.1);
-        if first.line > last.line {
-            std::mem::swap(&mut first, &mut last);
-        }
+        let side = self
+            .rows
+            .get(self.visual.unwrap_or(self.cursor))
+            .or_else(|| self.rows.get(self.cursor))
+            .and_then(|r| r.line.as_ref())
+            .map(|l| l.side)?;
+        let lo = run.iter().min_by_key(|(_, n)| *n)?;
+        let hi = run.iter().max_by_key(|(_, n)| *n)?;
+        let text = |row: usize| {
+            self.rows[row]
+                .line
+                .as_ref()
+                .map(|l| l.text.clone())
+                .unwrap_or_default()
+        };
         Some(Lines {
-            side: first.side.to_string(),
-            start: first.line,
-            end: last.line,
-            start_text: first.text.clone(),
-            end_text: last.text.clone(),
+            side: side.to_string(),
+            start: lo.1,
+            end: hi.1,
+            start_text: text(lo.0),
+            end_text: text(hi.0),
         })
     }
 
@@ -2276,11 +2300,8 @@ impl App {
         // What the selection will actually annotate, not the rows the cursor
         // walked over: it stops at a gap, and the highlight has to say so.
         let selection = self.visual.and_then(|_| {
-            let run = self.selected_run();
-            Some((
-                run.first()?.0.min(run.last()?.0),
-                run.first()?.0.max(run.last()?.0),
-            ))
+            let rows: Vec<usize> = self.selected_run().iter().map(|(i, _)| *i).collect();
+            Some((*rows.iter().min()?, *rows.iter().max()?))
         });
         let note = self.note_cluster();
         let in_note = |i: usize| note.is_some_and(|(lo, hi)| (lo..=hi).contains(&i));
@@ -2791,7 +2812,7 @@ fn help_paragraph() -> Paragraph<'static> {
         row("f", "plan pane: reading plan / file tree"),
         row("", "diff pane: file list (enter jumps)"),
         row("space", "mark the hunk's class reviewed"),
-        row("v", "select lines · j/k extends · esc drops"),
+        row("v", "select lines · j/k extends · v or esc drops"),
         row("c  ·  dd", "add finding · delete the one under the cursor"),
         row("", "in the box: enter saves · shift+enter or \\↵ newline"),
         row("", "esc cancels, here and in any modal"),
