@@ -31,7 +31,7 @@ use differential_engine::store::FsReviewStore;
 use differential_engine::{PipelineOutput, ReviewSession};
 
 pub use app::ReviewOptions;
-use app::{App, Effect, Viewport};
+use app::{App, Effect};
 use picker::PickedSource;
 use ratatui::layout::Rect;
 use rows::RowFactory;
@@ -145,9 +145,9 @@ where
 }
 
 /// The terminal's current size, as the model wants it.
-fn measure() -> anyhow::Result<Viewport> {
+fn measure() -> anyhow::Result<Rect> {
     let (w, h) = crossterm::terminal::size()?;
-    Ok(Viewport::measure(Rect::new(0, 0, w, h)))
+    Ok(Rect::new(0, 0, w, h))
 }
 
 /// The reviewer's event loop.
@@ -157,7 +157,7 @@ fn measure() -> anyhow::Result<Viewport> {
 /// model.
 fn run_app(terminal: &mut Session, mut app: App) -> anyhow::Result<()> {
     let mut clipboard: Option<arboard::Clipboard> = arboard::Clipboard::new().ok();
-    app.set_viewport(measure()?);
+    app.set_area(measure()?);
     let mut dirty = true;
     loop {
         if dirty {
@@ -180,7 +180,7 @@ fn run_app(terminal: &mut Session, mut app: App) -> anyhow::Result<()> {
                 // — and in stream order, so keys before and after it each see
                 // the geometry that was true when they were pressed.
                 Event::Resize(w, h) => {
-                    app.set_viewport(Viewport::measure(Rect::new(0, 0, w, h)));
+                    app.set_area(Rect::new(0, 0, w, h));
                     dirty = true;
                 }
                 _ => {}

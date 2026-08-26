@@ -207,6 +207,9 @@ pub struct Row {
     pub kind: RowKind,
     pub content: RowContent,
     pub border: Option<Border>,
+    /// A glyph drawn in the pane's left border column, for rows that are a
+    /// control rather than content.
+    pub button: Option<&'static str>,
 }
 
 impl Row {
@@ -219,6 +222,19 @@ impl Row {
     pub fn with_pairs(mut self, pairs: Vec<(Style, String)>) -> Self {
         if let RowContent::Unified(half) = &mut self.content {
             half.pairs = pairs;
+        }
+        self
+    }
+
+    /// A glyph for the pane's border column — how a boundary band says which
+    /// way it opens, in the column a hunk's edge otherwise occupies.
+    ///
+    /// Tints the reserved cursor cell to match, since a band is one tinted row
+    /// the whole way across and that cell is part of it.
+    pub fn with_button(mut self, glyph: &'static str, tint: Style) -> Self {
+        self.button = Some(glyph);
+        if let RowContent::Unified(half) = &mut self.content {
+            half.gutter.0 = tint;
         }
         self
     }
@@ -243,6 +259,7 @@ impl Row {
         Row {
             kind,
             border: None,
+            button: None,
             content: RowContent::Unified(Half {
                 gutter: (Style::default(), " ".to_string()),
                 pairs: line
@@ -589,6 +606,7 @@ fn column_header_row() -> Row {
     Row {
         kind: RowKind::ColumnHeader,
         border: None,
+        button: None,
         content: RowContent::Split {
             old: label("old"),
             new: label("new"),
@@ -607,7 +625,7 @@ fn column_header_row() -> Row {
 /// whether it is the lit one is a cursor question and the cursor moves without
 /// a rebuild. That recolouring rewrites the whole of a row's content, so a pill
 /// must BE that content with nothing mixed in beside it.
-fn pill(
+pub fn pill(
     parts: Vec<(ratatui::style::Color, String)>,
     bg: ratatui::style::Color,
 ) -> Vec<(Style, String)> {
@@ -774,7 +792,7 @@ fn file_rows(
     let (old_hl, new_hl) = factory.highlight(path, &old_want, &new_want);
     let src = factory.source(path);
 
-    for block in &blocks {
+    for (n, block) in blocks.iter().enumerate() {
         if let Some(b) = &block.top {
             rows.push(boundary_row(ctx, b, ctx.context_step));
         }
@@ -802,6 +820,7 @@ fn file_rows(
                         rows.push(Row {
                             kind: RowKind::Diff(owner),
                             border: None,
+                            button: None,
                             content: row,
                         });
                     }
@@ -825,6 +844,7 @@ fn file_rows(
                             Row {
                                 kind: RowKind::Diff(*hunk),
                                 border: None,
+                                button: None,
                                 content,
                             }
                             .bordered(box_style, *hunk, accent),
@@ -836,7 +856,14 @@ fn file_rows(
         if let Some(b) = &block.bottom {
             rows.push(boundary_row(ctx, b, ctx.context_step));
         }
-        rows.push(Row::full(RowKind::Blank, Line::default()));
+        // A blank separates a block from what follows — but NOT two boundary
+        // rows, which describe one gap between two blocks and read as one band
+        // when they touch.
+        let joins_next =
+            block.bottom.is_some() && blocks.get(n + 1).is_some_and(|next| next.top.is_some());
+        if !joins_next {
+            rows.push(Row::full(RowKind::Blank, Line::default()));
+        }
     }
 }
 
@@ -845,7 +872,12 @@ fn boundary_row(ctx: &RowsContext, b: &window::Boundary, step: usize) -> Row {
         Side::Up => "↑",
         Side::Down => "↓",
     };
-    let style = Style::default().fg(THEME.hint_fg);
+    // The whole gap fits in one press: one arrow, not a direction to choose.
+    let arrow = if b.next.is_none() && b.hidden <= step {
+        "↕"
+    } else {
+        arrow
+    };
     let label = match b.next {
         // The gap is exhausted and a hunk stands beyond it. Name it, so the
         // wall is visible and crossing is a deliberate press.
@@ -856,37 +888,28 @@ fn boundary_row(ctx: &RowsContext, b: &window::Boundary, step: usize) -> Row {
                 .group_of_hunk(HunkId::from_index(next))
                 .map(|g| format!(" “{}”", g.label))
                 .unwrap_or_default();
-            format!(" {arrow} next: {class}{group} — z shows it ")
+            format!("next: {class}{group}")
         }
-        None => {
-            let where_ = match b.side {
-                Side::Up => "above",
-                Side::Down => "below",
-            };
-            format!(
-                " {arrow} {} more {where_} — z shows {} ",
-                b.hidden,
-                step.min(b.hidden)
-            )
-        }
+        None => format!("{} lines hidden", b.hidden),
     };
-    // A rule to the pane edge: what is hidden is hidden from BOTH sides, so
-    // the row saying so runs across both of them. The label itself is a BUTTON
-    // on that rule, not more rule — it is the one thing on the row a reviewer
-    // can act on, and as dim text it read as a divider meant to be ignored.
+    // A band, not a rule: two of these sit adjacent where two blocks meet, and
+    // a tinted row with the arrow in the border column reads as one seam in the
+    // file rather than as two unrelated notices. `@@` is deliberately absent —
+    // it is the notation the hunk headers dropped, and the gutters either side
+    // already carry the numbers.
     Row::banner(
         RowKind::ContextEdge {
             hunk: b.hunk,
             side: b.side,
             crossing: b.next.is_some(),
         },
-        Line::default(),
-        Fill::Rule(style),
+        Line::from(vec![
+            Span::styled(" ".to_string(), Style::default().bg(THEME.hint_bg)),
+            Span::styled(label, Style::default().fg(THEME.hint_fg).bg(THEME.hint_bg)),
+        ]),
+        Fill::Bg(Style::default().bg(THEME.hint_bg)),
     )
-    .with_pairs(pill(
-        vec![(THEME.hint_fg, label.trim().to_string())],
-        THEME.hint_bg,
-    ))
+    .with_button(arrow, Style::default().bg(THEME.hint_bg))
 }
 
 /// Every line the blocks will draw, as sorted ranges per side.

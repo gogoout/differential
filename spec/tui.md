@@ -3,16 +3,23 @@
 A dedicated reviewer over the grouped, ordered document. Two panes: the reading plan and
 the diff for the selected entry.
 
-**Geometry is model state.** The event loop measures the terminal and pushes the pane
-heights into the model before any key is handled, so scrolling is arithmetic over a known
-height and drawing is a pure function of the model. A resize is folded in like any other
-event, in stream order — keys before and after it each see the geometry that was true when
-they were pressed. Row *contents* still compose their columns at draw time from the pane
-width, which is why a resize never rebuilds rows.
+**Geometry is model state.** The event loop measures the terminal and pushes it into the
+model before any key is handled, so scrolling is arithmetic over a known height and drawing
+is a pure function of the model. A resize is folded in like any other event, in stream
+order — keys before and after it each see the geometry that was true when they were
+pressed. Row *contents* still compose their columns at draw time from the pane width, which
+is why a resize never rebuilds rows.
+
+The model holds the terminal's **rectangle**, and the pane heights are derived from it —
+because they depend on focus as well as on size, and focus is a key away. `Tab` re-derives
+them for the same reason a resize does. Deriving rather than pushing is what keeps the
+guarantee true once the panes stopped being a fixed split.
 
 **Reading plan.** Groups in rank order, each a small block: the group **id**, effort tier
 and label, then file count with added/removed line totals (in their own colours), the
-role, and `after: <ids>` naming the groups it follows — the id column is what makes those
+role — as a pill, in the same muted colours a hunk's title pill wears, since it is a fact
+about the group rather than a decoration on it — and `after: <ids>` naming the groups it
+follows — the id column is what makes those
 references resolvable.
 
 The trailing **back-filled** group — classes the model omitted, recovered by the coverage
@@ -39,6 +46,25 @@ show their aggregate counts, and fold with `z`/`enter`; selecting a directory sh
 hunk beneath it, selecting a file shows that file's hunks in position order regardless of
 grouping, each hunk header carrying its group's label. Reviewed marks are shared between
 the views — they key on class content either way.
+
+**The pane you are not in is a map of the other.** Focus decides what each side shows,
+which is what makes an unfocused pane worth its space.
+
+Reading the **plan**, the right pane is the document's file tree with the selected group's
+files lit — `files in g0 · 3 of 8` — so what a group spans is one look rather than a walk
+through its hunks. It is deliberately not interactive: it is a map, and a second cursor in
+a second pane is a thing to explain and to get wrong. It scrolls only far enough to reveal
+the first file the group touches.
+
+Reading the **detail**, the right pane is the diff again, and the left pane splits: the
+plan above, and below it a flat list of the files in view with the current one marked and
+the title counting `file 2 of 7`. The list is bounded — a three-file review does not give
+half its plan pane to three names, and a three-hundred-file one does not swallow it.
+
+**A file header sticks.** Scrolled past it, the filename pins to the pane's top row, which
+costs a row only while it would otherwise be invisible. The hunk pill does not stick with
+it: two pinned rows is most of a small pane, and the pill's information is in the plan pane
+anyway.
 
 **Diff pane.** Unified layout by default, `s` toggles a side-by-side split (the layout
 choice persists per review); syntax highlighting and word-level change emphasis.
@@ -84,11 +110,15 @@ both sides of a centred label; a header **labels** what follows it, so it starts
 and stays there — a label that drifted with the pane width would be harder to scan down a
 column.
 
-A **context boundary** is a control, not a caption, so its label is a pill — the same shape
-a hunk header wears, since both are things to act on rather than read past. It belongs to no
-hunk, so it stays muted however the cursor moves, and its rule is a short dotted stub either
-side rather than a line drawn the whole way across: the row is a note about what is missing,
-and a full-width rule read as a chapter break in a file that has not ended.
+A **context boundary** is a control, not a caption: a tinted band across the pane with its
+arrow in the border column, saying `29 lines hidden` or, once the gap is spent,
+`next: C42 "Group 42"`. Deliberately not `@@ …` — that is the notation the hunk headers
+dropped, and the gutters either side already carry the numbers.
+
+Where two blocks meet, the two boundary rows describing that one gap sit **adjacent with no
+blank between them**, so the seam reads as one band. They stay two rows rather than merging
+into one: each keeps its own `z`, so no key has to mean two directions. A gap that fits in
+a single press shows `↕` instead of a direction to choose.
 
 Pills are square. The half-circle caps that would round them are drawn at inconsistent
 widths across terminals and fonts, and a pill a cell wider in one terminal than another is
