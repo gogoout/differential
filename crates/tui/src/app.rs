@@ -885,7 +885,11 @@ impl App {
     /// file — the header above it does. Both the flat list's marker and the
     /// sticky header need this, so it is one function.
     fn file_header_above(&self, from: usize) -> Option<usize> {
-        self.rows[..=from.min(self.rows.len().saturating_sub(1))]
+        // `..=0` on an empty slice panics, and rows ARE empty for a document
+        // with no groups. Drawing was harmlessly a no-op there before this
+        // helper existed; it stays one.
+        let last = self.rows.len().checked_sub(1)?;
+        self.rows[..=from.min(last)]
             .iter()
             .rposition(|r| matches!(r.kind, RowKind::FileHeader(_)))
     }

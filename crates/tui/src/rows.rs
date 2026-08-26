@@ -16,7 +16,7 @@ use std::ops::Range;
 
 use differential_engine::gitio::Repo;
 use differential_engine::plan::{
-    Deferral, FileView, Fold, GroupView, HunkId, PlanIndex, ReviewView, reading_split,
+    Deferral, FileView, Fold, GroupView, HunkId, PlanIndex, ReviewView, reading_split, role_name,
 };
 use differential_engine::ports::ObjectReader;
 use differential_engine::review_state::Finding;
@@ -24,7 +24,7 @@ use differential_engine::schema;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::theme::{THEME, Theme, highlighter};
+use super::theme::{THEME, highlighter};
 use super::vendor::LineOrigin;
 use super::vendor::diff_algo::compute_side_by_side;
 use super::vendor::diff_types::{ChangeType, DiffLine, InlineSegment, expand_tabs};
@@ -517,23 +517,31 @@ fn header_rows(ctx: &GroupContext, rows: &mut Vec<Row>) {
     // focus group — the model never classified it at all — and the stack has
     // always said so. One source for the label, so both renderers agree.
     let tier = ctx.core.plan.tier_name(ctx.view);
-    let role = Theme::role_suffix(g.role);
-    rows.push(Row::full(
-        RowKind::GroupHeader,
-        Line::from(vec![
-            Span::styled(
-                format!("[{tier}] "),
-                THEME.effort_style(g.effort).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                g.label.clone(),
-                Style::default()
-                    .fg(THEME.header_fg)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(role.to_string(), Style::default().fg(THEME.gutter_fg)),
-        ]),
-    ));
+    let mut header = vec![
+        Span::styled(
+            format!("[{tier}] "),
+            THEME.effort_style(g.effort).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            g.label.clone(),
+            Style::default()
+                .fg(THEME.header_fg)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    // The same pill the plan pane gives the role. One fact, one rendering —
+    // the grey suffix this replaces was the same `g.role` wearing a different
+    // face on the other side of the screen.
+    if let Some(r) = g.role {
+        let (fg, bg) = THEME.pill(None);
+        header.push(Span::styled(" ".to_string(), Style::default()));
+        header.extend(
+            pill(vec![(fg, role_name(r).to_string())], bg)
+                .into_iter()
+                .map(|(st, t)| Span::styled(t, st)),
+        );
+    }
+    rows.push(Row::full(RowKind::GroupHeader, Line::from(header)));
     if !g.description.is_empty() {
         rows.push(Row::full(
             RowKind::GroupHeader,

@@ -2121,6 +2121,53 @@ fn counts_are_coloured_in_the_file_modal_and_the_role_is_a_pill() {
     );
 }
 
+/// One fact, one rendering. The role was a pill in the plan pane and grey
+/// suffix text on the group header three columns away.
+#[test]
+fn the_role_wears_the_same_pill_in_both_panes() {
+    let (_r, mut app) = app_with_dependency_edge();
+    app.focus = Focus::Detail;
+    let buf = buffer_of(&app);
+    let (_, pill_bg) = THEME.pill(None);
+
+    // The group header row leads the detail pane and carries the role.
+    let detail = (1..39u16)
+        .find(|&y| {
+            (41..99u16)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .contains("foundation")
+        })
+        .expect("no role on the group header");
+    assert!(
+        (41..99u16).any(|x| buf[(x, detail)].style().bg == Some(pill_bg)),
+        "the group header's role should be a pill, not grey text"
+    );
+
+    // And the plan pane's copy of the same fact wears the same fill.
+    let plan = (1..39u16)
+        .find(|&y| {
+            (1..39u16)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .contains("foundation")
+        })
+        .expect("no role in the plan pane");
+    assert!((1..39u16).any(|x| buf[(x, plan)].style().bg == Some(pill_bg)));
+}
+
+/// Drawing a document with no groups must not panic. It was harmlessly a no-op
+/// before the sticky header needed to know which file it was in.
+#[test]
+fn an_empty_document_draws_without_panicking() {
+    let (_r, mut app) = make_app();
+    app.rows.clear();
+    app.cursor = 0;
+    app.focus = Focus::Detail;
+    let _ = drawn_as_is(&mut app);
+    assert!(app.file_at_cursor().is_none());
+}
+
 /// Not an assertion — a readable dump of the pane, so the styling can be
 /// eyeballed with `cargo test -- --ignored --nocapture render_dump`.
 #[test]

@@ -18,8 +18,8 @@ guarantee true once the panes stopped being a fixed split.
 **Reading plan.** Groups in rank order, each a small block: the group **id**, effort tier
 and label, then file count with added/removed line totals (in their own colours), the
 role — as a pill, in the same muted colours a hunk's title pill wears, since it is a fact
-about the group rather than a decoration on it — and `after: <ids>` naming the groups it
-follows — the id column is what makes those
+about the group rather than a decoration on it, and the **same** pill the group's header
+carries in the detail pane — and `after: <ids>` naming the groups it follows — the id column is what makes those
 references resolvable.
 
 The trailing **back-filled** group — classes the model omitted, recovered by the coverage

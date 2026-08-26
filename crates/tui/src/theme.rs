@@ -131,12 +131,6 @@ impl Theme {
         }
     }
 
-    /// The role decoration, empty when the ordering stage assigned none.
-    pub fn role_suffix(role: Option<differential_engine::schema::Role>) -> String {
-        role.map(|r| format!(" · {}", differential_engine::plan::role_name(r)))
-            .unwrap_or_default()
-    }
-
     /// The two colours a pill wears. `accent` is `Some` when this is the hunk
     /// under the cursor, and the fill then matches its edge so the marker and
     /// the run below it read as one thing.
