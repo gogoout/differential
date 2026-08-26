@@ -67,7 +67,9 @@ When `current` advances, a migration pass visits every comment:
 1. **Exact**: a hunk with the same digest exists in the new plan → reattach.
 2. **Fuzzy**: no digest match, but the anchor's context lines match at some position in the
    file → reattach, flagged as moved.
-3. **Orphaned**: neither → `status: orphaned`, surfaced in a dedicated list.
+3. **Orphaned**: neither → `status: orphaned`, surfaced in the TUI's findings list (`F`),
+   which is the only place an orphan can be read or deleted — it has no line and no hunk,
+   so nothing in the diff pane can reach it.
 
 Orphaned comments are **never deleted** — the same philosophy as the grouping coverage
 back-fill: detection and preservation, not silent loss.
