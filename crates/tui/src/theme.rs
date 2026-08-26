@@ -39,6 +39,12 @@ pub struct Theme {
     /// the code — it marks where the file was cut, and the file is the point.
     pub hint_fg: Color,
     pub hint_bg: Color,
+    /// The same band on the cursor's row. A boundary is a control, and a
+    /// control the reader is standing on has to look like the one they are
+    /// about to press — the band carries its own colour, so the row tint that
+    /// marks the cursor everywhere else never showed through it.
+    pub hint_cursor_fg: Color,
+    pub hint_cursor_bg: Color,
     /// Text on a LIT pill, whose fill is the hunk's accent — so it has to be
     /// dark enough to read on yellow, green or cyan alike.
     pub pill_fg: Color,
@@ -80,6 +86,8 @@ pub const THEME: Theme = Theme {
     sticky_bg: Color::Rgb(34, 37, 44),
     hint_fg: Color::Rgb(108, 114, 126),
     hint_bg: Color::Rgb(38, 41, 48),
+    hint_cursor_fg: Color::Rgb(198, 206, 222),
+    hint_cursor_bg: Color::Rgb(64, 69, 82),
     pill_fg: Color::Rgb(20, 22, 28),
     add_on_pill: Color::Rgb(14, 72, 28),
     del_on_pill: Color::Rgb(112, 20, 20),
@@ -137,6 +145,23 @@ impl Theme {
             .fg(self.cursor_gutter_fg)
             .bg(bg)
             .add_modifier(Modifier::BOLD)
+    }
+
+    /// Re-ink one span of a boundary band for the cursor's row.
+    ///
+    /// By colour, like `lit_ink` and `gutter_cursor`: this is the one place
+    /// that knows the band's inks. Anything else — a line's change colour, a
+    /// syntax span — passes through untouched, which is what lets one pass
+    /// over a whole row lighten the band and nothing else.
+    pub fn lit_band(&self, style: Style) -> Style {
+        let mut out = style;
+        if style.bg == Some(self.hint_bg) {
+            out = out.bg(self.hint_cursor_bg);
+        }
+        if style.fg == Some(self.hint_fg) {
+            out = out.fg(self.hint_cursor_fg);
+        }
+        out
     }
 
     pub fn effort_style(&self, effort: differential_engine::schema::Effort) -> Style {

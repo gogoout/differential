@@ -269,7 +269,8 @@ impl Row {
         self.button = Some(glyph);
         if let RowContent::Unified(half) = &mut self.content {
             half.gutter.style = tint;
-            half.gutter.cursor = tint;
+            // The band lightens under the cursor, and this cell is part of it.
+            half.gutter.cursor = THEME.lit_band(tint);
         }
         self
     }

@@ -127,8 +127,8 @@ page.
 **The edge is the pane's own border.** It sits in that column rather than a cell inside it,
 so it costs the content no width and there are never two vertical lines a cell apart.
 
-Which is why a **pane's frame never lights**. Focus is carried by the pane's **title**, in
-the same colour the border used to take. A lit frame drew a box around half the screen to
+Which is why a **frame never lights** — a pane's or a float's. Focus is carried by the
+**title**, in the same colour the border used to take. A lit frame drew a box around half the screen to
 say a thing about the cursor, and it competed with the hunk edge — the one border in this
 view that means something. The title is where a reader looks to know which pane they are
 in anyway. For the same reason the plan's connector wears **one** colour, the border grey:
@@ -152,7 +152,10 @@ and stays there — a label that drifted with the pane width would be harder to 
 column.
 
 A **context boundary** is a control, not a caption: a tinted band across the pane with its
-arrow in the border column, saying `29 lines hidden · z shows 10` or, once the gap is spent,
+arrow in the border column, **lighter on the cursor's row** — a control the reader is
+standing on has to look like the one they are about to press, and the band carries its own
+colour the whole way across, so the tint that marks the cursor everywhere else never
+showed through it. It says `29 lines hidden · z shows 10` or, once the gap is spent,
 `next: C42 "Group 42" · z shows it` — a control that does not say how to work it is a label.
 Where two boundaries are the two ends of one gap they carry the **same** count, so opening
 one end drops the other's figure too. Deliberately not `@@ …` — that is the notation the hunk headers

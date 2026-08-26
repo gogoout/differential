@@ -1568,8 +1568,15 @@ fn two_boundaries_over_one_gap_are_one_band() {
         !text.contains("@@"),
         "`@@` was removed from headers: {text:?}"
     );
+    // One tint the whole way across. Which of the two it is depends on where
+    // the cursor is standing, so the assertion is about uniformity.
+    let tint = buf[(41, band)].style().bg;
     assert!(
-        (41..99u16).all(|x| buf[(x, band)].style().bg == Some(THEME.hint_bg)),
+        tint == Some(THEME.hint_bg) || tint == Some(THEME.hint_cursor_bg),
+        "the band should wear a band colour: {tint:?}"
+    );
+    assert!(
+        (41..99u16).all(|x| buf[(x, band)].style().bg == tint),
         "the band should be tinted the whole way across: {text:?}"
     );
 }
@@ -2789,6 +2796,34 @@ fn the_cursor_bar_shows_on_rows_that_have_no_gutter() {
         Some('▌'),
         "no cursor bar on a fold row: {:?}",
         rows[y]
+    );
+}
+
+/// A context boundary is a control, and its band carries its own colour the
+/// whole way across — so the row tint that marks the cursor elsewhere never
+/// showed through it. On the cursor's row the band lightens instead.
+#[test]
+fn a_context_boundary_band_lightens_under_the_cursor() {
+    let (_r, mut app) = app_with_a_long_file();
+    let pos = put_cursor_on(&mut app, |k| matches!(k, RowKind::ContextEdge { .. }));
+    let y = cursor_screen_row(&app);
+    let lit = row_backgrounds(&mut app, y);
+    assert!(
+        lit.contains(&THEME.hint_cursor_bg),
+        "the band under the cursor must lighten: {lit:?}"
+    );
+
+    // The same row, with the cursor elsewhere, keeps the muted band.
+    app.cursor = app
+        .rows
+        .iter()
+        .enumerate()
+        .position(|(i, r)| i != pos && r.kind.selectable())
+        .expect("another selectable row");
+    let muted = row_backgrounds(&mut app, y);
+    assert!(
+        !muted.contains(&THEME.hint_cursor_bg),
+        "only the cursor's band lightens: {muted:?}"
     );
 }
 

@@ -1697,15 +1697,7 @@ impl App {
             Some(n) => format!(" file {} of {} ", n + 1, files.len()),
             None => format!(" {} files ", files.len()),
         };
-        frame.render_widget(
-            Paragraph::new(lines).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(title)
-                    .border_style(Style::default().fg(THEME.gutter_fg)),
-            ),
-            area,
-        );
+        frame.render_widget(Paragraph::new(lines).block(pane(title, true)), area);
     }
 
     /// The right pane while the plan has focus: the whole document's file tree
@@ -1823,12 +1815,7 @@ impl App {
                     .take(inner_h)
                     .collect::<Vec<_>>(),
             )
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(title)
-                    .border_style(Style::default().fg(THEME.header_fg)),
-            ),
+            .block(pane(title, true)),
             area,
         );
     }
@@ -2030,13 +2017,20 @@ impl App {
         // sitting a cell inside it: no width lost, and no second vertical line
         // a cell away from the first. Drawn over the block, so it comes after.
         let buf = frame.buffer_mut();
+        let on_cursor = |i: usize| i == self.cursor && self.focus == Focus::Detail;
         for (n, row) in self.rows.iter().skip(self.scroll).take(inner_h).enumerate() {
             let y = area.y + 1 + n as u16;
-            // A control's button takes the same column a hunk's edge would.
+            // A control's button takes the same column a hunk's edge would, and
+            // lightens with the band it belongs to.
             if let Some(glyph) = row.button {
+                let band = Style::default().fg(THEME.hint_fg).bg(THEME.hint_bg);
                 let cell = &mut buf[(area.x, y)];
                 cell.set_symbol(glyph);
-                cell.set_style(Style::default().fg(THEME.hint_fg).bg(THEME.hint_bg));
+                cell.set_style(if on_cursor(self.scroll + n) {
+                    THEME.lit_band(band)
+                } else {
+                    band
+                });
                 continue;
             }
             let Some(border) = row.border else { continue };
@@ -2176,8 +2170,23 @@ fn compose_half(half: &Half, width: usize, cursor: bool) -> Vec<Span<'static>> {
     if !gutter.is_empty() {
         spans.push(Span::styled(gutter, style));
     }
+    // A boundary band carries its own colour the whole way across, so the row
+    // tint that marks the cursor everywhere else never showed through it. One
+    // pass re-inks the band and leaves change colours and syntax alone.
+    let pairs: Vec<(Style, String)> = if cursor {
+        half.pairs
+            .iter()
+            .map(|(st, t)| (THEME.lit_band(*st), t.clone()))
+            .collect()
+    } else {
+        half.pairs.clone()
+    };
     match half.fill {
-        Fill::Bg(bg) => spans.extend(truncate_or_pad_spans(&half.pairs, rest, bg)),
+        Fill::Bg(bg) => spans.extend(truncate_or_pad_spans(
+            &pairs,
+            rest,
+            if cursor { THEME.lit_band(bg) } else { bg },
+        )),
         // An absent side is hatched rather than blank, so a line that does not
         // exist here cannot be mistaken for one that is empty.
         Fill::Hatch => spans.push(Span::styled(
@@ -2187,10 +2196,10 @@ fn compose_half(half: &Half, width: usize, cursor: bool) -> Vec<Span<'static>> {
         // A rule carries the row across the whole pane, separator column and
         // all — the row is about the file, not about one side of it.
         Fill::Rule(style) => {
-            let used: usize = half.pairs.iter().map(|(_, t)| t.width()).sum();
+            let used: usize = pairs.iter().map(|(_, t)| t.width()).sum();
             let ruled = used + 2 * RULE_ARM;
             if ruled >= rest {
-                spans.extend(truncate_or_pad_spans(&half.pairs, rest, style));
+                spans.extend(truncate_or_pad_spans(&pairs, rest, style));
             } else {
                 // Dotted, and only a stub either side; the rest is left blank
                 // so the row does not draw a line across the whole screen.
@@ -2199,7 +2208,7 @@ fn compose_half(half: &Half, width: usize, cursor: bool) -> Vec<Span<'static>> {
                 let dots = Span::styled("┈".repeat(RULE_ARM), style);
                 spans.push(blank(lead));
                 spans.push(dots.clone());
-                spans.extend(half.pairs.iter().map(|(s, t)| Span::styled(t.clone(), *s)));
+                spans.extend(pairs.iter().map(|(s, t)| Span::styled(t.clone(), *s)));
                 spans.push(dots);
                 spans.push(blank(rest - ruled - lead));
             }
