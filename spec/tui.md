@@ -358,8 +358,14 @@ findings anchor on exact hunk digests and re-anchor on every open (exact digest 
 content match flagged *moved* → orphaned, never dropped; orphans revive when content
 returns). The pane title shows an orphan count when any exist.
 
-**A finding is about lines.** `c` on a diff row annotates **that line**; `V` first starts a
-selection the cursor extends, and `c` then annotates the run. On a row that is not a line of
+**A finding is about lines.** `c` on a diff row annotates **that line**; `v` first starts a
+selection the cursor extends, and `c` then annotates the run.
+
+A selection **stops where the file's line numbers do**. Walking past a context boundary
+moves the cursor but not the selection: a gap the reader never opened is a gap they never
+read, and a note claiming those lines claims something nobody said. A hunk's header sits
+between two consecutive lines and does not break a run — it is chrome, not a gap. The
+highlight shows exactly what `c` will file, so it needs no message to explain it. On a row that is not a line of
 a file — a hunk header, a fold — `c` annotates the whole hunk, which is what every finding
 used to do.
 

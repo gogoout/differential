@@ -2963,6 +2963,55 @@ fn c_on_a_commented_line_rewrites_the_note() {
     );
 }
 
+/// A selection stops where the file's line numbers do. Dragging from line 23
+/// across `13 lines hidden` to line 37 used to file a note claiming fifteen
+/// lines, thirteen of which were never on screen.
+#[test]
+fn a_selection_stops_at_a_gap_it_never_opened() {
+    let (_r, mut app) = app_with_a_long_file();
+    app.focus = Focus::Detail;
+    let boundary = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::ContextEdge { .. }) && r.button == Some("↓"))
+        .expect("a downward boundary");
+    let above = app.rows[..boundary]
+        .iter()
+        .rposition(|r| r.line.is_some())
+        .expect("a line above it");
+    let last_seen = app.rows[above].line.clone().unwrap();
+
+    // Select from that line and walk down past the gap onto a line beyond it.
+    app.cursor = above;
+    app.handle_key(key('v'));
+    for _ in 0..6 {
+        app.handle_key(key('j'));
+        if app.cursor > boundary && app.rows[app.cursor].line.is_some() {
+            break;
+        }
+    }
+    let beyond = app.rows[app.cursor]
+        .line
+        .clone()
+        .expect("a line past the gap");
+    assert!(
+        beyond.line > last_seen.line + 1,
+        "the fixture needs a real gap: {} to {}",
+        last_seen.line,
+        beyond.line
+    );
+
+    app.handle_key(key('c'));
+    let Mode::Editing { lines: Some(l), .. } = &app.mode else {
+        panic!("no lines picked");
+    };
+    assert_eq!(
+        (l.start, l.end),
+        (last_seen.line, last_seen.line),
+        "the selection should have stopped at the last line the reader saw"
+    );
+}
+
 /// A note over a RANGE is drawn under its last line, so the run above it is
 /// not adjacent to it. Standing anywhere in the run lights the whole thing.
 #[test]

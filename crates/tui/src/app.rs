@@ -1344,40 +1344,6 @@ impl App {
         Some((lo, hi))
     }
 
-    /// The rows the selection covers, as the engine wants them: lowest line
-    /// first, both ends' text, one side.
-    ///
-    /// `None` when the cursor is on a row that is not a line of a file — a
-    /// hunk header, a fold — and the finding then anchors the whole hunk.
-    fn selected_lines(&self) -> Option<Lines> {
-        let (lo, hi) = match self.visual {
-            Some(v) => (v.min(self.cursor), v.max(self.cursor)),
-            None => (self.cursor, self.cursor),
-        };
-        let refs: Vec<&LineRef> = (lo..=hi)
-            .filter_map(|i| self.rows.get(i).and_then(|r| r.line.as_ref()))
-            .collect();
-        // One side, so a range is a range in one file's numbering. The
-        // cursor's own side wins; in unified mode a modification is two rows
-        // and a selection over both would otherwise mix the two.
-        let side = self
-            .rows
-            .get(self.cursor)
-            .and_then(|r| r.line.as_ref())
-            .map(|l| l.side)
-            .or_else(|| refs.first().map(|l| l.side))?;
-        let mut same: Vec<&&LineRef> = refs.iter().filter(|l| l.side == side).collect();
-        same.sort_by_key(|l| l.line);
-        let (first, last) = (same.first()?, same.last()?);
-        Some(Lines {
-            side: side.to_string(),
-            start: first.line,
-            end: last.line,
-            start_text: first.text.clone(),
-            end_text: last.text.clone(),
-        })
-    }
-
     /// The note the cursor is standing in.
     ///
     /// "In", not "on": a note over a RANGE covers every line of it, and it is
@@ -1428,6 +1394,65 @@ impl App {
             Err(e) => self.status = format!("save failed: {e:#}"),
         }
         self.rebuild_rows();
+    }
+
+    /// The rows a selection actually covers.
+    ///
+    /// From the anchor toward the cursor, stopping where the file's line
+    /// numbers stop being consecutive. That is exactly a context gap the
+    /// reader never opened: dragging from line 23 across `13 lines hidden` to
+    /// line 37 used to file a note claiming fifteen lines, thirteen of which
+    /// were never on screen.
+    ///
+    /// A hunk's header sits between two consecutive lines and does not break
+    /// the run — it is chrome, not a gap.
+    fn selected_run(&self) -> Vec<(usize, &LineRef)> {
+        let anchor = self.visual.unwrap_or(self.cursor);
+        let at = |i: usize| self.rows.get(i).and_then(|r| r.line.as_ref());
+        // One side, so a run is a run in one file's numbering. In the unified
+        // layout a modification is two rows, and a run over both would mix the
+        // old file's numbers with the new file's.
+        let Some(side) = at(anchor).or_else(|| at(self.cursor)).map(|l| l.side) else {
+            return Vec::new();
+        };
+
+        let step: isize = if self.cursor >= anchor { 1 } else { -1 };
+        let (mut i, stop) = (anchor as isize, self.cursor as isize);
+        let (mut run, mut last) = (Vec::new(), None::<u32>);
+        loop {
+            if let Some(l) = at(i as usize).filter(|l| l.side == side) {
+                if last.is_some_and(|n| l.line.abs_diff(n) != 1) {
+                    break;
+                }
+                last = Some(l.line);
+                run.push((i as usize, l));
+            }
+            if i == stop {
+                break;
+            }
+            i += step;
+        }
+        run
+    }
+
+    /// The lines the selection covers, as the engine wants them: lowest first,
+    /// both ends' text, one side.
+    ///
+    /// `None` when the cursor is on a row that is not a line of a file — a
+    /// hunk header, a fold — and the finding then anchors the whole hunk.
+    fn selected_lines(&self) -> Option<Lines> {
+        let run = self.selected_run();
+        let (mut first, mut last) = (run.first()?.1, run.last()?.1);
+        if first.line > last.line {
+            std::mem::swap(&mut first, &mut last);
+        }
+        Some(Lines {
+            side: first.side.to_string(),
+            start: first.line,
+            end: last.line,
+            start_text: first.text.clone(),
+            end_text: last.text.clone(),
+        })
     }
 
     fn add_finding(&mut self, hunk_idx: usize, lines: Option<Lines>, body: String) {
@@ -2240,9 +2265,15 @@ impl App {
         // Which box is lit. Only one at a time: a screenful of accents is a
         // screenful of nothing, so every other box is muted to the gutter.
         let active = self.current_hunk();
-        let selection = self
-            .visual
-            .map(|v| (v.min(self.cursor), v.max(self.cursor)));
+        // What the selection will actually annotate, not the rows the cursor
+        // walked over: it stops at a gap, and the highlight has to say so.
+        let selection = self.visual.and_then(|_| {
+            let run = self.selected_run();
+            Some((
+                run.first()?.0.min(run.last()?.0),
+                run.first()?.0.max(run.last()?.0),
+            ))
+        });
         let note = self.note_cluster();
         let in_note = |i: usize| note.is_some_and(|(lo, hi)| (lo..=hi).contains(&i));
         let lines: Vec<Line> = self
