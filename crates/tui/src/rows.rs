@@ -869,13 +869,15 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
     // A foreign hunk ALWAYS names its group: that is the whole point of it
     // being on screen at all, and the dashed border says "not yours" without
     // saying whose.
-    // The ID as well as the label: it is what the plan pane's rows and their
-    // `after:` lines are keyed by, so it is what turns "some other group" into
-    // a row you can go and look at.
+    //
+    // The id alone, not the label. The id is what the plan pane's rows and
+    // their `after:` lines are keyed by, so it is what turns "some other
+    // group" into a row you can go and look at — and the label is a sentence,
+    // which made the header longer than the code beneath it.
     let group_label = if ctx.show_group_labels || foreign {
         ctx.plan
             .group_of_hunk(HunkId::from_index(hi))
-            .map(|g| format!(" · {} {}", g.id, g.label))
+            .map(|g| format!(" · {}", g.id))
             .unwrap_or_default()
     } else {
         String::new()
@@ -904,16 +906,17 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
     // One palette. Whether the cursor is in this hunk is a cursor question, and
     // drawing answers it by lighting the pill's leading cell — not by re-inking
     // the pill, which would need a second ink for every span on it.
+    // The SIZE first, then the class. How much changed is what a reader sizes
+    // a hunk up by; the class is what they need only once they are in it, and
+    // leading with it put a token they cannot read at a glance in front of two
+    // numbers they can.
     let (fg, bg) = THEME.pill();
-    let mut parts = vec![
-        (fg, format!("{} · ", hunk.class)),
-        (THEME.add_fg, format!("+{}", hunk.new_count)),
-    ];
+    let mut parts = vec![(THEME.add_fg, format!("+{}", hunk.new_count))];
     if hunk.old_count > 0 {
         parts.push((fg, " ".to_string()));
         parts.push((THEME.del_fg, format!("−{}", hunk.old_count)));
     }
-    parts.push((fg, format!("{group_label}{check}")));
+    parts.push((fg, format!(" · {}{group_label}{check}", hunk.class)));
     if !notes.is_empty() {
         parts.push((THEME.finding_fg, notes));
     }

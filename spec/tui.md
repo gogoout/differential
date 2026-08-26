@@ -117,12 +117,14 @@ read as a cursor on that side's line. The absent side keeps a blank line-number 
 the same width, so the block lands in the same column on a row that exists on one side
 only — where a marker glyph used to vanish into the `╱` fill.
 
-**A hunk is a pill and an edge.** Its header is a filled pill — ` C31 · +25 `, the shape
-class and the size of the change — rather than a `@@ -479,0 +480,25 @@` line: every row
+**A hunk is a pill and an edge.** Its header is a filled pill — ` +25 −3 · C31 `, the size
+of the change and then the shape class — rather than a `@@ -479,0 +480,25 @@` line: every row
 carries both line numbers in its gutter, so the coordinates repeated what was already on
 screen in a notation you had to decode. What the header uniquely says stays on it: the
-class, the counts, the reviewed mark, the finding count, and the group's id and label where
-that is not already obvious. It remains a selectable row, so `n`/`N` jump to it and `space`
+counts, the class, the reviewed mark, the finding count, and the group's id where that is
+not already obvious. The counts lead: how much changed is what a reader sizes a hunk up by,
+and putting a class token they cannot read at a glance in front of two numbers they can
+made the size the second thing on the row. It remains a selectable row, so `n`/`N` jump to it and `space`
 and `c` act on it.
 
 Below the pill, a vertical **edge** runs down the hunk's changed rows. Deliberately not a
@@ -218,8 +220,9 @@ expansion can never silently swallow someone else's change, and a wall can never
 mistaken for the end of the file. A boundary row disappears at one place only: a real file
 edge.
 
-A crossed hunk carries a **dashed** edge and its owning group's **id and label**
-(`╌ C31 · +25 · g7 "Rename sweep" ╌`) — real code the reviewer asked to see, plainly not on
+A crossed hunk carries a **dashed** edge and its owning group's **id**
+(`╌ +25 −3 · C31 · g7 ╌`) — the id alone, since a label is a sentence and the header would
+then be longer than the code under it — real code the reviewer asked to see, plainly not on
 this group's reading list. The id is what the plan pane's rows and their `after:` lines are
 keyed by, so it is what turns "some other group" into a row you can go and look at. It is absorbed whole
 and costs no context budget, because showing half a change would be worse than showing

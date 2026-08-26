@@ -33,13 +33,10 @@ pub struct Theme {
     /// tallies. Deliberately quieter than the code it labels: a pill is a
     /// caption, and the counts and the accent on it are what carry.
     pub button_fg: Color,
-    /// A pill's fill. Quiet — a pill is a caption, and one that ran bright the
-    /// width of its text was a bar across the pane before it was a label.
-    ///
-    /// It cannot go much quieter without colliding: this palette already has
-    /// three dark panels within a few points of each other — the plan pane's
-    /// selection, a boundary band, and the cursor's row — and a pill has to
-    /// stay a shape on all three.
+    /// A pill's fill. Bright enough that the lit cell at its head reads as a
+    /// COLOUR on it — cyan for the hunk you are in, a muted cyan for one
+    /// crossed in from another group. Darkening the fill put those two too
+    /// close to tell apart, which is the one thing that cell is for.
     pub button_bg: Color,
     /// Behind a file header pinned to the top of the pane, so a stuck row is
     /// visibly stuck rather than looking like content that will not scroll.
@@ -87,7 +84,7 @@ pub const THEME: Theme = Theme {
     deleted_word_bg: Color::Rgb(110, 38, 38),
     hatch_fg: Color::Rgb(48, 50, 58),
     button_fg: Color::Rgb(158, 166, 186),
-    button_bg: Color::Rgb(46, 50, 64),
+    button_bg: Color::Rgb(58, 63, 83),
     sticky_bg: Color::Rgb(34, 37, 44),
     hint_fg: Color::Rgb(108, 114, 126),
     hint_bg: Color::Rgb(38, 41, 48),

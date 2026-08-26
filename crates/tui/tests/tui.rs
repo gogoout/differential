@@ -1757,10 +1757,20 @@ fn a_foreign_hunk_is_dashed_and_names_its_group() {
         .plan()
         .group_of_hunk(differential_engine::plan::HunkId::from_index(foreign))
         .expect("the foreign hunk belongs to a group");
-    let want = format!("\u{b7} {} {}", owner.id, owner.label);
+    // The id, not the label: the id is what the plan pane's `after:` lines are
+    // keyed by, and the label is a sentence.
+    let (want, label) = (format!("\u{b7} {}", owner.id), owner.label.clone());
     assert!(
         text.contains(&want),
-        "a foreign header must name its group by id and label; looked for {want:?} in:\n{text}"
+        "a foreign header must name its group by id; looked for {want:?} in:\n{text}"
+    );
+    let header = drawn_rows(&mut app)
+        .into_iter()
+        .find(|r| r.contains(&want))
+        .expect("the foreign header's row");
+    assert!(
+        !header.contains(&label),
+        "the group's label belongs in the plan pane, not on a hunk header: {header:?}"
     );
 }
 
