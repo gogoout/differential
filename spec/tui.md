@@ -418,8 +418,13 @@ nothing.
 **Every finding, in one list.** `F` opens it, from either pane — findings are a fact about
 the review rather than about a pane, unlike `f`. Each row is where the note is and what it
 says: `src/app.rs:1307   this overflows on a narrow pane`. `enter` puts the cursor on the
-note; a note with no row in this view says which case it is and closes, rather than
-dragging the reader into a group they did not choose to be in. `dd` deletes the selected
+note, **wherever in the review it lives**. A note's rows exist only in the view that is
+built — the plan view builds the selected group's, the file view the selected file's — so
+reaching one is a navigation, not a row index: select the group or the file that owns it,
+let the rows rebuild, then find the row again by the note's id. Folded context is not in
+the way, since a note whose line is hidden hangs off its hunk's header instead; a folded
+skim remainder is, and is opened. An orphan has no row at any depth of unfolding and says
+so. `dd` deletes the selected
 note and the list stays open — a reviewer clearing up has more than one to clear. `D` asks
 `delete all 4 findings?  y / n`, and only `y` means yes: `dd` deletes one without asking
 because a note is one line and rewriting it is `c`, while clearing the lot is the only

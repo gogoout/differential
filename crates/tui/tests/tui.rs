@@ -3414,40 +3414,105 @@ fn f_opens_every_finding_in_one_list() {
     assert!(matches!(app.mode, Mode::Findings { .. }));
 }
 
-/// `enter` puts the cursor on the note. A note with no row in this view says
-/// so instead — it does not drag the reader into another group.
+/// `enter` puts the cursor on the note — including one in a group the reader
+/// is not in, whose rows do not exist until that group is selected.
 #[test]
-fn enter_jumps_to_a_note_or_says_why_not() {
-    let (_r, mut app) = app_with_a_long_file();
-    note_on(&mut app, |r| r.line.is_some(), "look here");
-    app.cursor = 0;
+fn enter_reaches_a_note_in_another_group() {
+    let (_r, mut app) = app_with_two_groups_in_one_file();
+    app.focus = Focus::Detail;
+    note_on(&mut app, |r| r.line.is_some(), "in the first group");
+    let wrote_in = app.selected_group;
+
+    // Walk to a group that does not hold it: its rows are gone entirely.
+    app.handle_key(key('J'));
+    assert_ne!(app.selected_group, wrote_in, "the fixture needs two groups");
+    assert!(
+        !app.rows
+            .iter()
+            .any(|r| matches!(r.kind, RowKind::Finding(..))),
+        "the note should not be in this group's rows"
+    );
+
     app.handle_key(key('F'));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(matches!(app.mode, Mode::Normal));
+    assert_eq!(
+        app.selected_group, wrote_in,
+        "it should go to the note's group"
+    );
     assert_eq!(app.focus, Focus::Detail);
     let note = app
         .rows
         .iter()
         .position(|r| matches!(r.kind, RowKind::Finding(..)))
-        .expect("the note's row");
+        .expect("the note's row, once its group is selected");
     assert_eq!(app.cursor, note, "the cursor should land on the note");
-
-    // A note with no row: the list says which case it is and closes.
-    app.handle_key(key('F'));
-    if let Mode::Findings { entries, .. } = &mut app.mode {
-        entries[0].row_idx = None;
-    }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(matches!(app.mode, Mode::Normal));
-    assert!(
-        app.status.contains("not in this view"),
-        "no reason given: {:?}",
-        app.status
-    );
 }
 
-/// `dd` deletes the selected note and the list stays open — a reviewer
+/// The same across FILES, in the file view: a note's rows exist only while its
+/// own file is the selected tree row.
+#[test]
+fn enter_reaches_a_note_in_another_file() {
+    use differential_tui::app::TreeKind;
+    let r = TestRepo::new();
+    for (name, before) in [("src/one.rs", "alpha = 1\n"), ("src/two.rs", "beta = 1\n")] {
+        r.write(name, before.as_bytes());
+    }
+    r.commit_all("base");
+    r.write("src/one.rs", b"alpha = 2\n");
+    r.write("src/two.rs", b"beta = 2\n");
+    r.commit_all("head");
+
+    let backend = skim_first_backend();
+    let mut app = open_app_with(&r, &backend, ".dfr-jump-file-store");
+    switch_left_pane(&mut app);
+    assert_eq!(app.view_mode, ViewMode::Files);
+
+    // Stand on the first file and write a note in it.
+    app.selected_file = app
+        .tree
+        .iter()
+        .position(|e| matches!(&e.kind, TreeKind::File { .. }))
+        .expect("a file row");
+    app.rebuild_rows();
+    let wrote_in = app.selected_file;
+    note_on(&mut app, |r| r.line.is_some(), "in the first file");
+
+    // Move to the other file: the note's rows go with it.
+    app.focus = Focus::Groups;
+    let other = app
+        .tree
+        .iter()
+        .enumerate()
+        .filter(|(i, e)| *i != wrote_in && matches!(&e.kind, TreeKind::File { .. }))
+        .map(|(i, _)| i)
+        .next()
+        .expect("a second file");
+    app.selected_file = other;
+    app.rebuild_rows();
+    assert!(
+        !app.rows
+            .iter()
+            .any(|r| matches!(r.kind, RowKind::Finding(..))),
+        "the note should not be in this file's rows"
+    );
+
+    app.handle_key(key('F'));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        app.selected_file, wrote_in,
+        "it should go to the note's file"
+    );
+    let note = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Finding(..)))
+        .expect("the note's row, once its file is selected");
+    assert_eq!(app.cursor, note);
+}
+
+/// `dd` deletes the selected note and the list stays open/// `dd` deletes the selected note and the list stays open — a reviewer
 /// clearing up has more than one to clear.
 #[test]
 fn dd_in_the_list_deletes_one_and_stays() {

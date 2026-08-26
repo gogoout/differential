@@ -1131,21 +1131,15 @@ impl App {
                         }
                     }
                     (KeyCode::Enter, _) => {
-                        let row = entries[*selected].row_idx;
+                        let id = entries[*selected].id.clone();
                         let orphaned = entries[*selected].orphaned;
                         // Assign the mode first: it is what drops the borrow
                         // this arm holds on it.
                         self.mode = Mode::Normal;
-                        match row {
-                            Some(row) => {
-                                self.cursor = self.next_selectable(row, 1).unwrap_or(row);
-                                self.focus = Focus::Detail;
-                                self.follow_cursor();
-                            }
-                            None if orphaned => {
-                                self.status = "that finding has no line any more".into();
-                            }
-                            None => self.status = "that finding is not in this view".into(),
+                        if orphaned {
+                            self.status = "that finding has no line any more".into();
+                        } else if !self.jump_to_finding(&id) {
+                            self.status = "could not reach that finding".into();
                         }
                     }
                     (KeyCode::Esc, _) | (KeyCode::Char('F'), _) | (KeyCode::Char('q'), _) => {
@@ -1633,6 +1627,72 @@ impl App {
             Err(e) => self.status = format!("save failed: {e:#}"),
         }
         self.rebuild_rows();
+    }
+
+    /// The row a note was laid into, if this view holds one.
+    fn row_of_finding(&self, id: &str) -> Option<usize> {
+        self.rows
+            .iter()
+            .position(|r| matches!(&r.kind, RowKind::Finding(fid, _) if fid == id))
+    }
+
+    /// Put the cursor on a note, wherever in the review it lives.
+    ///
+    /// A note's row exists only in the view that is BUILT: the plan view
+    /// builds the selected group's rows, the file view the selected file's. So
+    /// reaching one is a navigation, not a row index — select the thing that
+    /// owns it, let the rows rebuild, then find the row again by the note's id.
+    ///
+    /// Folded context is not in the way: `place_findings` hangs a note whose
+    /// line is hidden off its hunk's header instead. A folded skim remainder
+    /// is, since the hunk itself is not there, so that fold is opened.
+    fn jump_to_finding(&mut self, id: &str) -> bool {
+        if let Some(row) = self.row_of_finding(id) {
+            self.land_on(row);
+            return true;
+        }
+        // Copied out before anything takes `&mut self`.
+        let Some((digest, path)) = self
+            .session
+            .findings()
+            .iter()
+            .find(|f| f.id == id)
+            .map(|f| (f.anchor.hunk_digest.clone(), f.anchor.file.clone()))
+        else {
+            return false;
+        };
+
+        let owner = match self.view_mode {
+            ViewMode::Groups => {
+                let plan = self.session.plan();
+                plan.hunk_by_digest(&digest)
+                    .and_then(|h| plan.group_of_hunk(h))
+                    .map(|g| g.id.clone())
+                    .and_then(|gid| self.session.plan().group_position(&gid))
+            }
+            ViewMode::Files => self.reveal_path(&path),
+        };
+        let Some(owner) = owner else { return false };
+        self.select_entry(owner);
+
+        // Still nothing: the hunk is in the group's folded remainder.
+        if self.row_of_finding(id).is_none() {
+            self.toggle_group_fold();
+        }
+        match self.row_of_finding(id) {
+            Some(row) => {
+                self.land_on(row);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Park the cursor on a row and bring it into view.
+    fn land_on(&mut self, row: usize) {
+        self.cursor = self.next_selectable(row, 1).unwrap_or(row);
+        self.focus = Focus::Detail;
+        self.follow_cursor();
     }
 
     /// Delete one note by id, from wherever it was named.
