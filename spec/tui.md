@@ -126,9 +126,12 @@ blank between them**, so the seam reads as one band. They stay two rows while th
 direction to choose — each keeps its own `z`, so no key has to mean two things — and both
 carry the **same** count, since they are two ends of one gap and opening either shortens it.
 
-Once one press would close the gap the choice is gone, and so is the second row: a single
-`↕` band says the whole of what is left. Which point that happens at depends on
-`context_step`, so a wider step collapses the seam sooner.
+Two rows exist to offer a **direction**. Where both ends would do the same thing there is
+none to offer and the second row only repeats the first, so one `↕` band speaks for both.
+That happens two ways: one press would close the gap — which point depends on
+`context_step`, so a wider step collapses the seam sooner — or both ends are spent and name
+the *same* hunk beyond, which is what an unlisted hunk sitting between two blocks looks
+like from either side.
 
 Pills are square. The half-circle caps that would round them are drawn at inconsistent
 widths across terminals and fonts, and a pill a cell wider in one terminal than another is

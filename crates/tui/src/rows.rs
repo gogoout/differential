@@ -807,7 +807,7 @@ fn file_rows(
         if let Some(b) = &block.top
             && !spoken_for
         {
-            rows.push(boundary_row(ctx, b, ctx.context_step));
+            rows.push(boundary_row(ctx, b, ctx.context_step, false));
         }
         // A context row acts on the hunk it sits next to — the one below when
         // it leads a block, the one above otherwise — so `space` and `c` do
@@ -868,13 +868,21 @@ fn file_rows(
         }
         spoken_for = false;
         if let Some(b) = &block.bottom {
-            rows.push(boundary_row(ctx, b, ctx.context_step));
-            // One press closes this gap, so there is no direction left to
-            // choose: the row below would carry the same count and the same
-            // `↕`. Two rows saying one thing is one row too many.
-            spoken_for = b.next.is_none()
-                && b.hidden <= ctx.context_step
-                && blocks.get(n + 1).is_some_and(|next| next.top.is_some());
+            // Two rows exist to offer a DIRECTION. When both ends would do the
+            // same thing there is none to offer and the second row only repeats
+            // the first, so one row speaks for both.
+            //
+            // Two ways that happens: one press closes the gap, or the gap is
+            // spent at both ends and they name the same hunk beyond.
+            spoken_for = blocks
+                .get(n + 1)
+                .and_then(|next| next.top.as_ref())
+                .is_some_and(|t| match (b.next, t.next) {
+                    (None, None) => b.hidden <= ctx.context_step,
+                    (Some(x), Some(y)) => x == y,
+                    _ => false,
+                });
+            rows.push(boundary_row(ctx, b, ctx.context_step, spoken_for));
         }
         // A blank separates a block from what follows — but NOT two boundary
         // rows, which describe one gap between two blocks and read as one band
@@ -887,16 +895,16 @@ fn file_rows(
     }
 }
 
-fn boundary_row(ctx: &RowsContext, b: &window::Boundary, step: usize) -> Row {
-    let arrow = match b.side {
-        Side::Up => "↑",
-        Side::Down => "↓",
-    };
-    // The whole gap fits in one press: one arrow, not a direction to choose.
-    let arrow = if b.next.is_none() && b.hidden <= step {
+/// One boundary row. `both_ends` when this row stands for its own end AND the
+/// one facing it, which is what turns the arrow into `↕`.
+fn boundary_row(ctx: &RowsContext, b: &window::Boundary, step: usize, both_ends: bool) -> Row {
+    let arrow = if both_ends {
         "↕"
     } else {
-        arrow
+        match b.side {
+            Side::Up => "↑",
+            Side::Down => "↓",
+        }
     };
     // The key goes on the band. It is a control, and a control that does not
     // say how to work it is a label.

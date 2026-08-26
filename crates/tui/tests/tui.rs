@@ -2283,6 +2283,86 @@ fn the_file_view_tree_is_drawn_with_guides() {
     );
 }
 
+/// Two blocks either side of one unlisted hunk both name it as what comes
+/// next, and pressing either crosses the same hunk — so one row says it.
+#[test]
+fn one_hunk_between_two_blocks_is_offered_once_not_twice() {
+    let r = TestRepo::new();
+    // Three changes, the middle one far enough from both to stay its own block.
+    let body = |a: &str, b: &str, c: &str| -> Vec<u8> {
+        let mut out = String::new();
+        for i in 1..=60 {
+            match i {
+                10 => out.push_str(a),
+                30 => out.push_str(b),
+                50 => out.push_str(c),
+                _ => out.push_str(&format!("let filler{i} = {i};\n")),
+            }
+        }
+        out.into_bytes()
+    };
+    r.write(
+        "src/f.rs",
+        &body("let a = 1;\n", "let b = 2;\n", "let c = 3;\n"),
+    );
+    r.commit_all("base");
+    r.write(
+        "src/f.rs",
+        &body("let a = 11;\n", "let b = 22;\n", "let c = 33;\n"),
+    );
+    r.commit_all("head");
+    // The outer two share a group; the middle one is its own, so it is foreign
+    // to the view and sits between two blocks.
+    let backend = FakeBackend::new("fake", |ids| {
+        let mut outer: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let middle = outer.remove(1);
+        format!(
+            r#"{{"groups": [{}, {}]}}"#,
+            json_group("Outer", "focus", &outer),
+            json_group("Middle", "focus", &[middle])
+        )
+    });
+    let mut app = open_app_with(&r, &backend, ".dfr-between-store");
+    app.focus = Focus::Detail;
+
+    // Open both inner gaps until each names the hunk between them.
+    for _ in 0..12 {
+        let spent = app.rows.iter().enumerate().find_map(|(i, r)| {
+            matches!(
+                r.kind,
+                RowKind::ContextEdge {
+                    crossing: false,
+                    ..
+                }
+            )
+            .then_some(i)
+        });
+        let Some(i) = spent else { break };
+        app.cursor = i;
+        app.handle_key(key('z'));
+    }
+
+    let naming: Vec<usize> = app
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| matches!(r.kind, RowKind::ContextEdge { crossing: true, .. }))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        naming.len(),
+        1,
+        "one hunk between two blocks should be offered once, got {} rows",
+        naming.len()
+    );
+    // And that row says it reaches both ways.
+    assert_eq!(app.rows[naming[0]].button, Some("↕"));
+    // Pressing it still works: the hunk arrives, marked foreign.
+    app.cursor = naming[0];
+    app.handle_key(key('z'));
+    assert!(shows_a_foreign_hunk(&app), "z should have crossed it");
+}
+
 /// Not an assertion — a readable dump of the pane, so the styling can be
 /// eyeballed with `cargo test -- --ignored --nocapture render_dump`.
 #[test]
