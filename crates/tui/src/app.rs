@@ -1240,7 +1240,7 @@ impl App {
                 );
             }
             Mode::Help => {
-                let area = centered_rect(panes.body, 66, 30);
+                let area = centered_rect(panes.body, 62, 21);
                 frame.render_widget(Clear, area);
                 frame.render_widget(help_paragraph(), area);
             }
@@ -2113,33 +2113,47 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
 }
 
 fn help_paragraph() -> Paragraph<'static> {
-    Paragraph::new(vec![
-        Line::from("differential review"),
+    // Nothing but keys. Five lines of prose about the plan pane and the diff's
+    // colours used to sit between `n/N` and `s`, splitting the table in half —
+    // and a legend is not what anyone opens `?` to find.
+    let key = Style::default().fg(THEME.header_fg);
+    let text = Style::default().fg(THEME.context_fg);
+    let dim = Style::default().fg(THEME.gutter_fg);
+
+    let row = |k: &str, what: &str| {
+        Line::from(vec![
+            Span::styled(format!("  {k:<11}"), key),
+            Span::styled(what.to_string(), text),
+        ])
+    };
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "differential review",
+            text.add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
-        Line::from("  j/k        move (groups pane: switch group)"),
-        Line::from("  J/K { }    previous / next group"),
-        Line::from("  tab/enter  switch pane focus"),
-        Line::from("  ctrl-d/u   half page"),
-        Line::from("  g/G        top / bottom"),
-        Line::from("  z          on a ── boundary row: show more of the file"),
-        Line::from("             elsewhere: unfold skim remainder / noise"),
-        Line::from("  n/N        next / previous hunk"),
+        row("j/k", "move · in the plan pane, switch group"),
+        row("J/K  { }", "previous / next group"),
+        row("tab", "switch pane focus"),
+        row("n/N", "next / previous hunk"),
+        row("ctrl-d/u", "half page"),
+        row("g/G", "top / bottom"),
+        row("z", "boundary: show more, or cross into the hunk"),
+        row("", "elsewhere: unfold skim remainder / noise"),
+        row("s", "unified / split diff"),
+        row("v", "reading plan / file view"),
+        row("f", "file list of this view (enter jumps)"),
+        row("space", "mark the hunk's class reviewed"),
+        row("c  ·  dd", "add finding · delete the one under the cursor"),
+        row("y  ·  q", "copy findings · quit (state is saved)"),
         Line::from(""),
-        Line::from("  plan rows: <id> <tier> label · after: what it follows"),
-        Line::from("  the line links the selected group to what it follows;"),
-        Line::from("  ↓ marks a dependency listed later (mutual dependency)"),
-        Line::from("  colour marks the change; there are no -/+ columns,"),
-        Line::from("  and ╱╱╱ is a line the other side does not have"),
-        Line::from("  s          toggle unified / split diff"),
-        Line::from("  v          toggle reading plan / file view"),
-        Line::from("  f          file list of the current view (enter jumps)"),
-        Line::from("  space      toggle class reviewed"),
-        Line::from("  c          add finding on current hunk"),
-        Line::from("  dd         delete finding under cursor"),
-        Line::from("  y          copy findings summary to clipboard"),
-        Line::from("  q          quit (state is saved)"),
-        Line::from(""),
-        Line::from("press any key to close"),
-    ])
-    .block(Block::default().borders(Borders::ALL).title(" help "))
+        Line::from(Span::styled("  press any key to close", dim)),
+    ];
+    lines.insert(0, Line::from(""));
+    Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(THEME.header_fg))
+            .title(" help "),
+    )
 }
