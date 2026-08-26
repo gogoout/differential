@@ -23,6 +23,9 @@ pub struct Theme {
     /// A hunk pill that is not lit: a control, but not the one in hand.
     pub button_fg: Color,
     pub button_bg: Color,
+    /// Behind a file header pinned to the top of the pane, so a stuck row is
+    /// visibly stuck rather than looking like content that will not scroll.
+    pub sticky_bg: Color,
     /// The context-boundary pill and its rule. Present, but not competing with
     /// the code — it marks where the file was cut, and the file is the point.
     pub hint_fg: Color,
@@ -62,6 +65,7 @@ pub const THEME: Theme = Theme {
     hatch_fg: Color::Rgb(48, 50, 58),
     button_fg: Color::Rgb(198, 204, 220),
     button_bg: Color::Rgb(58, 63, 83),
+    sticky_bg: Color::Rgb(34, 37, 44),
     hint_fg: Color::Rgb(108, 114, 126),
     hint_bg: Color::Rgb(38, 41, 48),
     pill_fg: Color::Rgb(20, 22, 28),
@@ -125,12 +129,6 @@ impl Theme {
             differential_engine::schema::Effort::Skim => "S",
             differential_engine::schema::Effort::Noise => "N",
         }
-    }
-
-    /// The role decoration, empty when the ordering stage assigned none.
-    pub fn role_suffix(role: Option<differential_engine::schema::Role>) -> String {
-        role.map(|r| format!(" · {}", differential_engine::plan::role_name(r)))
-            .unwrap_or_default()
     }
 
     /// The two colours a pill wears. `accent` is `Some` when this is the hunk

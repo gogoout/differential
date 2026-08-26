@@ -16,7 +16,7 @@ use std::ops::Range;
 
 use differential_engine::gitio::Repo;
 use differential_engine::plan::{
-    Deferral, FileView, Fold, GroupView, HunkId, PlanIndex, ReviewView, reading_split,
+    Deferral, FileView, Fold, GroupView, HunkId, PlanIndex, ReviewView, reading_split, role_name,
 };
 use differential_engine::ports::ObjectReader;
 use differential_engine::review_state::Finding;
@@ -24,7 +24,7 @@ use differential_engine::schema;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::theme::{THEME, Theme, highlighter};
+use super::theme::{THEME, highlighter};
 use super::vendor::LineOrigin;
 use super::vendor::diff_algo::compute_side_by_side;
 use super::vendor::diff_types::{ChangeType, DiffLine, InlineSegment, expand_tabs};
@@ -207,6 +207,9 @@ pub struct Row {
     pub kind: RowKind,
     pub content: RowContent,
     pub border: Option<Border>,
+    /// A glyph drawn in the pane's left border column, for rows that are a
+    /// control rather than content.
+    pub button: Option<&'static str>,
 }
 
 impl Row {
@@ -219,6 +222,19 @@ impl Row {
     pub fn with_pairs(mut self, pairs: Vec<(Style, String)>) -> Self {
         if let RowContent::Unified(half) = &mut self.content {
             half.pairs = pairs;
+        }
+        self
+    }
+
+    /// A glyph for the pane's border column — how a boundary band says which
+    /// way it opens, in the column a hunk's edge otherwise occupies.
+    ///
+    /// Tints the reserved cursor cell to match, since a band is one tinted row
+    /// the whole way across and that cell is part of it.
+    pub fn with_button(mut self, glyph: &'static str, tint: Style) -> Self {
+        self.button = Some(glyph);
+        if let RowContent::Unified(half) = &mut self.content {
+            half.gutter.0 = tint;
         }
         self
     }
@@ -243,6 +259,7 @@ impl Row {
         Row {
             kind,
             border: None,
+            button: None,
             content: RowContent::Unified(Half {
                 gutter: (Style::default(), " ".to_string()),
                 pairs: line
@@ -264,6 +281,58 @@ impl Row {
 struct FileSource {
     old: Vec<String>,
     new: Vec<String>,
+    /// Highlighted lines kept between rebuilds, and which lines have been
+    /// offered to syntect at all.
+    ///
+    /// ADR 0021 deliberately went without this: a rebuild costs O(what is
+    /// drawn), which is cheap, so caching looked like complexity for its own
+    /// sake. Measurement disagreed — moving between two groups re-highlighted
+    /// ~2,600 lines each way on a line-heavy range, about half the cost of the
+    /// switch, all of it work already done. The `scanned` marks are separate
+    /// from the spans because a line syntect FAILS on has no spans and must not
+    /// be retried forever.
+    old_hl: Highlights,
+    new_hl: Highlights,
+}
+
+#[derive(Default)]
+struct Highlights {
+    spans: HashMap<usize, HighlightedSpans>,
+    scanned: Vec<bool>,
+}
+
+impl Highlights {
+    /// The parts of `want` that have not been through syntect yet.
+    ///
+    /// Whole ranges, not individual lines: syntect's cost is a forward walk, so
+    /// asking for a run with a hole in it is no cheaper than asking for the run.
+    fn missing(&self, want: &[Range<usize>]) -> Vec<Range<usize>> {
+        want.iter()
+            .filter(|r| (r.start..r.end).any(|i| !self.scanned.get(i).copied().unwrap_or(false)))
+            .cloned()
+            .collect()
+    }
+
+    fn record(&mut self, want: &[Range<usize>], got: HashMap<usize, HighlightedSpans>, len: usize) {
+        if self.scanned.len() < len {
+            self.scanned.resize(len, false);
+        }
+        let end = self.scanned.len();
+        for r in want {
+            for i in r.start..r.end.min(end) {
+                self.scanned[i] = true;
+            }
+        }
+        self.spans.extend(got);
+    }
+
+    /// The spans for `want`, which `record` has already made complete.
+    fn take(&self, want: &[Range<usize>]) -> HashMap<usize, HighlightedSpans> {
+        want.iter()
+            .flat_map(|r| r.start..r.end)
+            .filter_map(|i| self.spans.get(&i).map(|s| (i, s.clone())))
+            .collect()
+    }
 }
 
 fn source_lines(blob: &str) -> Vec<String> {
@@ -315,16 +384,76 @@ impl RowFactory {
         self.source(path);
         let hl = highlighter();
         let p = std::path::Path::new(path);
-        let src = &self.cache[path];
-        let old = hl.highlight_ranges(p, &src.old, old_want);
-        let new = hl.highlight_ranges(p, &src.new, new_want);
-        let scanned = old.as_ref().map_or(0, |h| h.lines_scanned)
-            + new.as_ref().map_or(0, |h| h.lines_scanned);
+        let src = self.cache.get_mut(path).expect("source() just inserted it");
+
+        // Only what has not been through syntect before. Revisiting a group, or
+        // rebuilding after a mark, then costs nothing.
+        let mut scanned = 0;
+        for (want, lines, into) in [
+            (old_want, &src.old, &mut src.old_hl),
+            (new_want, &src.new, &mut src.new_hl),
+        ] {
+            let missing = into.missing(want);
+            if missing.is_empty() {
+                continue;
+            }
+            if let Some(got) = hl.highlight_ranges(p, lines, &missing) {
+                scanned += got.lines_scanned;
+                into.record(&missing, got.spans, lines.len());
+            } else {
+                // No syntax for this file: mark it done so the probe is not
+                // repeated on every rebuild.
+                into.record(&missing, HashMap::new(), lines.len());
+            }
+        }
         self.highlighted += scanned;
-        (
-            old.map(|h| h.spans).unwrap_or_default(),
-            new.map(|h| h.spans).unwrap_or_default(),
-        )
+        (src.old_hl.take(old_want), src.new_hl.take(new_want))
+    }
+
+    /// Read every file the rows are about to draw, in one `git` call.
+    ///
+    /// Reading a blob costs a process; doing it lazily per file meant two
+    /// spawns per file, which was most of the wait the first time a group
+    /// opened. The caller already knows the whole set, so it says so.
+    fn prefetch(&mut self, paths: &[&str]) {
+        let want: Vec<&str> = paths
+            .iter()
+            .copied()
+            .filter(|p| !self.cache.contains_key(*p))
+            .collect();
+        if want.is_empty() {
+            return;
+        }
+        // Both sides of every file, one list: old then new per path.
+        let specs: Vec<(&str, &[u8])> = want
+            .iter()
+            .flat_map(|p| {
+                [
+                    (self.base.as_str(), p.as_bytes()),
+                    (self.head.as_str(), p.as_bytes()),
+                ]
+            })
+            .collect();
+        let Ok(blobs) = self.repo.blobs(&specs) else {
+            // A failed batch is not fatal: `source` still reads a file on its
+            // own, and reports absence the way it always did.
+            return;
+        };
+        for (path, sides) in want.iter().zip(blobs.chunks(2)) {
+            let lines = |b: &Option<Vec<u8>>| match b {
+                Some(bytes) => source_lines(&String::from_utf8_lossy(bytes)),
+                None => Vec::new(),
+            };
+            self.cache.insert(
+                (*path).to_string(),
+                FileSource {
+                    old: lines(&sides[0]),
+                    new: lines(&sides[1]),
+                    old_hl: Highlights::default(),
+                    new_hl: Highlights::default(),
+                },
+            );
+        }
     }
 
     fn source(&mut self, path: &str) -> &FileSource {
@@ -340,7 +469,15 @@ impl RowFactory {
                 source_lines(&blob)
             };
             let (old, new) = (read(&self.base), read(&self.head));
-            self.cache.insert(path.to_string(), FileSource { old, new });
+            self.cache.insert(
+                path.to_string(),
+                FileSource {
+                    old,
+                    new,
+                    old_hl: Highlights::default(),
+                    new_hl: Highlights::default(),
+                },
+            );
         }
         &self.cache[path]
     }
@@ -430,6 +567,15 @@ fn hunk_list_rows(
         .map(|f| (f.path.as_str(), f))
         .collect();
 
+    // Every file at once, before any of them is drawn: one `git` call for the
+    // group rather than two spawns per file.
+    let mut paths: Vec<&str> = hunks
+        .iter()
+        .map(|&h| ctx.doc.hunks[h].file.as_str())
+        .collect();
+    paths.dedup();
+    factory.prefetch(&paths);
+
     let mut i = 0;
     while i < hunks.len() {
         let path = ctx.doc.hunks[hunks[i]].file.as_str();
@@ -500,23 +646,31 @@ fn header_rows(ctx: &GroupContext, rows: &mut Vec<Row>) {
     // focus group — the model never classified it at all — and the stack has
     // always said so. One source for the label, so both renderers agree.
     let tier = ctx.core.plan.tier_name(ctx.view);
-    let role = Theme::role_suffix(g.role);
-    rows.push(Row::full(
-        RowKind::GroupHeader,
-        Line::from(vec![
-            Span::styled(
-                format!("[{tier}] "),
-                THEME.effort_style(g.effort).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                g.label.clone(),
-                Style::default()
-                    .fg(THEME.header_fg)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(role.to_string(), Style::default().fg(THEME.gutter_fg)),
-        ]),
-    ));
+    let mut header = vec![
+        Span::styled(
+            format!("[{tier}] "),
+            THEME.effort_style(g.effort).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            g.label.clone(),
+            Style::default()
+                .fg(THEME.header_fg)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    // The same pill the plan pane gives the role. One fact, one rendering —
+    // the grey suffix this replaces was the same `g.role` wearing a different
+    // face on the other side of the screen.
+    if let Some(r) = g.role {
+        let (fg, bg) = THEME.pill(None);
+        header.push(Span::styled(" ".to_string(), Style::default()));
+        header.extend(
+            pill(vec![(fg, role_name(r).to_string())], bg)
+                .into_iter()
+                .map(|(st, t)| Span::styled(t, st)),
+        );
+    }
+    rows.push(Row::full(RowKind::GroupHeader, Line::from(header)));
     if !g.description.is_empty() {
         rows.push(Row::full(
             RowKind::GroupHeader,
@@ -589,6 +743,7 @@ fn column_header_row() -> Row {
     Row {
         kind: RowKind::ColumnHeader,
         border: None,
+        button: None,
         content: RowContent::Split {
             old: label("old"),
             new: label("new"),
@@ -607,7 +762,7 @@ fn column_header_row() -> Row {
 /// whether it is the lit one is a cursor question and the cursor moves without
 /// a rebuild. That recolouring rewrites the whole of a row's content, so a pill
 /// must BE that content with nothing mixed in beside it.
-fn pill(
+pub fn pill(
     parts: Vec<(ratatui::style::Color, String)>,
     bg: ratatui::style::Color,
 ) -> Vec<(Style, String)> {
@@ -774,9 +929,14 @@ fn file_rows(
     let (old_hl, new_hl) = factory.highlight(path, &old_want, &new_want);
     let src = factory.source(path);
 
-    for block in &blocks {
-        if let Some(b) = &block.top {
-            rows.push(boundary_row(ctx, b, ctx.context_step));
+    // Set when the previous block's bottom row already spoke for the gap on its
+    // own, so this block's top row would only repeat it.
+    let mut spoken_for = false;
+    for (n, block) in blocks.iter().enumerate() {
+        if let Some(b) = &block.top
+            && !spoken_for
+        {
+            rows.push(boundary_row(ctx, b, ctx.context_step, false));
         }
         // A context row acts on the hunk it sits next to — the one below when
         // it leads a block, the one above otherwise — so `space` and `c` do
@@ -802,6 +962,7 @@ fn file_rows(
                         rows.push(Row {
                             kind: RowKind::Diff(owner),
                             border: None,
+                            button: None,
                             content: row,
                         });
                     }
@@ -825,6 +986,7 @@ fn file_rows(
                             Row {
                                 kind: RowKind::Diff(*hunk),
                                 border: None,
+                                button: None,
                                 content,
                             }
                             .bordered(box_style, *hunk, accent),
@@ -833,19 +995,48 @@ fn file_rows(
                 }
             }
         }
+        spoken_for = false;
         if let Some(b) = &block.bottom {
-            rows.push(boundary_row(ctx, b, ctx.context_step));
+            // Two rows exist to offer a DIRECTION. When both ends would do the
+            // same thing there is none to offer and the second row only repeats
+            // the first, so one row speaks for both.
+            //
+            // Two ways that happens: one press closes the gap, or the gap is
+            // spent at both ends and they name the same hunk beyond.
+            spoken_for = blocks
+                .get(n + 1)
+                .and_then(|next| next.top.as_ref())
+                .is_some_and(|t| match (b.next, t.next) {
+                    (None, None) => b.hidden <= ctx.context_step,
+                    (Some(x), Some(y)) => x == y,
+                    _ => false,
+                });
+            rows.push(boundary_row(ctx, b, ctx.context_step, spoken_for));
         }
-        rows.push(Row::full(RowKind::Blank, Line::default()));
+        // A blank separates a block from what follows — but NOT two boundary
+        // rows, which describe one gap between two blocks and read as one band
+        // when they touch.
+        let joins_next =
+            block.bottom.is_some() && blocks.get(n + 1).is_some_and(|next| next.top.is_some());
+        if !joins_next {
+            rows.push(Row::full(RowKind::Blank, Line::default()));
+        }
     }
 }
 
-fn boundary_row(ctx: &RowsContext, b: &window::Boundary, step: usize) -> Row {
-    let arrow = match b.side {
-        Side::Up => "↑",
-        Side::Down => "↓",
+/// One boundary row. `both_ends` when this row stands for its own end AND the
+/// one facing it, which is what turns the arrow into `↕`.
+fn boundary_row(ctx: &RowsContext, b: &window::Boundary, step: usize, both_ends: bool) -> Row {
+    let arrow = if both_ends {
+        "↕"
+    } else {
+        match b.side {
+            Side::Up => "↑",
+            Side::Down => "↓",
+        }
     };
-    let style = Style::default().fg(THEME.hint_fg);
+    // The key goes on the band. It is a control, and a control that does not
+    // say how to work it is a label.
     let label = match b.next {
         // The gap is exhausted and a hunk stands beyond it. Name it, so the
         // wall is visible and crossing is a deliberate press.
@@ -856,37 +1047,28 @@ fn boundary_row(ctx: &RowsContext, b: &window::Boundary, step: usize) -> Row {
                 .group_of_hunk(HunkId::from_index(next))
                 .map(|g| format!(" “{}”", g.label))
                 .unwrap_or_default();
-            format!(" {arrow} next: {class}{group} — z shows it ")
+            format!("next: {class}{group} · z shows it")
         }
-        None => {
-            let where_ = match b.side {
-                Side::Up => "above",
-                Side::Down => "below",
-            };
-            format!(
-                " {arrow} {} more {where_} — z shows {} ",
-                b.hidden,
-                step.min(b.hidden)
-            )
-        }
+        None => format!("{} lines hidden · z shows {}", b.hidden, step.min(b.hidden)),
     };
-    // A rule to the pane edge: what is hidden is hidden from BOTH sides, so
-    // the row saying so runs across both of them. The label itself is a BUTTON
-    // on that rule, not more rule — it is the one thing on the row a reviewer
-    // can act on, and as dim text it read as a divider meant to be ignored.
+    // A band, not a rule: two of these sit adjacent where two blocks meet, and
+    // a tinted row with the arrow in the border column reads as one seam in the
+    // file rather than as two unrelated notices. `@@` is deliberately absent —
+    // it is the notation the hunk headers dropped, and the gutters either side
+    // already carry the numbers.
     Row::banner(
         RowKind::ContextEdge {
             hunk: b.hunk,
             side: b.side,
             crossing: b.next.is_some(),
         },
-        Line::default(),
-        Fill::Rule(style),
+        Line::from(vec![
+            Span::styled(" ".to_string(), Style::default().bg(THEME.hint_bg)),
+            Span::styled(label, Style::default().fg(THEME.hint_fg).bg(THEME.hint_bg)),
+        ]),
+        Fill::Bg(Style::default().bg(THEME.hint_bg)),
     )
-    .with_pairs(pill(
-        vec![(THEME.hint_fg, label.trim().to_string())],
-        THEME.hint_bg,
-    ))
+    .with_button(arrow, Style::default().bg(THEME.hint_bg))
 }
 
 /// Every line the blocks will draw, as sorted ranges per side.

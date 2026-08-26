@@ -39,6 +39,18 @@ pub trait ObjectReader {
     /// never render identically.
     fn blob(&self, rev: &str, path: &[u8]) -> Result<Option<Vec<u8>>, EngineError>;
 
+    /// The same, for several specs at once, answered in the order given.
+    ///
+    /// Reading a blob costs a process, and a process costs milliseconds — so a
+    /// caller that already knows every file it is about to draw should say so
+    /// rather than paying that per file. Measured on a 120-file range: 240
+    /// one-at-a-time reads took a second, against one call for the lot
+    /// (ADR 0021's "what is left is process spawns").
+    ///
+    /// Bulk is the SAME need as `blob`, not a different one, which is why it
+    /// sits on this port rather than earning its own.
+    fn blobs(&self, specs: &[(&str, &[u8])]) -> Result<Vec<Option<Vec<u8>>>, EngineError>;
+
     /// Assert `oid` is present in the odb.
     ///
     /// Invariant 1 verifies binary files this way, since they carry no hunks

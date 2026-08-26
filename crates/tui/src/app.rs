@@ -20,7 +20,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::rows::{
     Border, DiffMode, Fill, GroupContext, Half, Row, RowContent, RowFactory, RowKind, RowsContext,
-    build_dir_rows, build_file_rows, build_group_rows,
+    build_dir_rows, build_file_rows, build_group_rows, pill,
 };
 use super::theme::{THEME, Theme};
 use super::vendor::text_utils::truncate_or_pad_spans;
@@ -69,16 +69,20 @@ impl Default for ReviewOptions {
 /// three-row window cannot produce nonsense.
 const MIN_VIEWPORT: usize = 8;
 
-/// The reviewer's panes: a fixed-width plan pane, the diff, a status row.
+/// The reviewer's panes: a fixed-width plan pane, the detail, a status row.
 pub struct Panes {
     pub body: Rect,
     pub plan: Rect,
-    pub diff: Rect,
+    pub detail: Rect,
     pub status: Rect,
 }
 
 /// The one layout. `draw` places widgets with it and the event loop measures
-/// with it, so the two can never disagree about how tall the diff pane is.
+/// with it, so the two can never disagree about how tall the detail pane is.
+///
+/// Focus does NOT enter into it. The overviews each focus brings up float over
+/// a pane rather than splitting one, which is what lets the pane heights stay a
+/// function of the terminal alone — and lets a key never change them.
 pub fn layout(area: Rect) -> Panes {
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -91,7 +95,7 @@ pub fn layout(area: Rect) -> Panes {
     Panes {
         body: outer[0],
         plan: panes[0],
-        diff: panes[1],
+        detail: panes[1],
         status: outer[1],
     }
 }
@@ -106,7 +110,7 @@ pub fn layout(area: Rect) -> Panes {
 /// that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Viewport {
-    pub diff_rows: usize,
+    pub detail_rows: usize,
     pub plan_rows: usize,
 }
 
@@ -114,8 +118,8 @@ impl Viewport {
     pub fn measure(area: Rect) -> Self {
         let panes = layout(area);
         Viewport {
-            // Both panes are bordered.
-            diff_rows: panes.diff.height.saturating_sub(2) as usize,
+            // Every pane is bordered.
+            detail_rows: panes.detail.height.saturating_sub(2) as usize,
             plan_rows: panes.plan.height.saturating_sub(2) as usize,
         }
     }
@@ -125,7 +129,7 @@ impl Default for Viewport {
     /// Before the first measurement.
     fn default() -> Self {
         Viewport {
-            diff_rows: 24,
+            detail_rows: 24,
             plan_rows: 24,
         }
     }
@@ -134,7 +138,7 @@ impl Default for Viewport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Groups,
-    Diff,
+    Detail,
 }
 
 pub enum Mode {
@@ -227,6 +231,12 @@ pub struct App {
     expanded: HashMap<usize, Expansion>,
     opts: ReviewOptions,
     pub status: String,
+    /// The overviews' inputs, computed when the rows are. Both used to be
+    /// derived inside `draw`, which meant an O(hunks) scan with a string
+    /// compare per hunk on EVERY frame — enough to make a large review feel
+    /// stuck on each keypress.
+    map_files: HashSet<usize>,
+    listed_files: Vec<usize>,
     /// Measured geometry. An input to update, never a draw-time output.
     viewport: Viewport,
     pending_d: bool,
@@ -265,6 +275,8 @@ impl App {
             expanded: HashMap::new(),
             opts,
             status: String::new(),
+            map_files: HashSet::new(),
+            listed_files: Vec::new(),
             viewport: Viewport::default(),
             pending_d: false,
         };
@@ -523,6 +535,7 @@ impl App {
         {
             self.cursor = self.next_selectable(0, 1).unwrap_or(0);
         }
+        self.rebuild_overviews();
     }
 
     fn next_selectable(&self, from: usize, dir: isize) -> Option<usize> {
@@ -558,6 +571,14 @@ impl App {
 
     /// Diff-pane scroll offset. Decided in update, never at draw time — which
     /// is why the field itself is private.
+    /// The pane heights currently in force.
+    ///
+    /// Exposed so a test can assert the guarantee the geometry rework rests on
+    /// — that they are re-derived when focus changes, not left stale.
+    pub fn viewport(&self) -> Viewport {
+        self.viewport
+    }
+
     pub fn scroll(&self) -> usize {
         self.scroll
     }
@@ -593,7 +614,7 @@ impl App {
     }
 
     fn follow_cursor(&mut self) {
-        let h = self.viewport.diff_rows.max(MIN_VIEWPORT);
+        let h = self.viewport.detail_rows.max(MIN_VIEWPORT);
         if self.cursor < self.scroll + SCROLL_MARGIN {
             self.scroll = self.cursor.saturating_sub(SCROLL_MARGIN);
         } else if self.cursor + SCROLL_MARGIN + 1 > self.scroll + h {
@@ -715,7 +736,7 @@ impl App {
                 RowKind::HunkHeader { foreign: false, .. }
             ) {
                 self.cursor = i as usize;
-                self.focus = Focus::Diff;
+                self.focus = Focus::Detail;
                 self.follow_cursor();
                 return;
             }
@@ -786,6 +807,57 @@ impl App {
         self.follow_cursor();
     }
 
+    /// The files the flat list under the plan would show: every file the
+    /// current rows touch, in the order they appear.
+    ///
+    /// Its LENGTH decides how tall that pane is, so this is called from layout
+    /// as well as from drawing — one answer, so the two cannot disagree about
+    /// how much room the list needs.
+    fn file_list(&self) -> Vec<usize> {
+        let mut out: Vec<usize> = Vec::new();
+        for row in &self.rows {
+            if let RowKind::FileHeader(path) = &row.kind
+                && let Some(i) = self.files().iter().position(|f| f.path == *path)
+                && !out.contains(&i)
+            {
+                out.push(i);
+            }
+        }
+        out
+    }
+
+    /// Recompute what the two overviews draw. Called with the rows, because
+    /// that is what they describe — and never from `draw`, which runs on every
+    /// keypress.
+    fn rebuild_overviews(&mut self) {
+        self.listed_files = self.file_list();
+        self.map_files = self.files_of_selected_group();
+    }
+
+    /// The row index of the file header the cursor is under.
+    ///
+    /// Walked backwards from the cursor, because a diff row does not name its
+    /// file — the header above it does. Both the flat list's marker and the
+    /// sticky header need this, so it is one function.
+    fn file_header_above(&self, from: usize) -> Option<usize> {
+        // `..=0` on an empty slice panics, and rows ARE empty for a document
+        // with no groups. Drawing was harmlessly a no-op there before this
+        // helper existed; it stays one.
+        let last = self.rows.len().checked_sub(1)?;
+        self.rows[..=from.min(last)]
+            .iter()
+            .rposition(|r| matches!(r.kind, RowKind::FileHeader(_)))
+    }
+
+    /// The file the cursor is in, as an index into `files()`.
+    pub fn file_at_cursor(&self) -> Option<usize> {
+        let row = self.file_header_above(self.cursor)?;
+        let RowKind::FileHeader(path) = &self.rows[row].kind else {
+            return None;
+        };
+        self.files().iter().position(|f| f.path == *path)
+    }
+
     fn current_hunk(&self) -> Option<usize> {
         self.rows.get(self.cursor).and_then(|r| r.kind.hunk())
     }
@@ -852,7 +924,7 @@ impl App {
                         let row = entries[*selected].row_idx;
                         self.mode = Mode::Normal;
                         self.cursor = self.next_selectable(row, 1).unwrap_or(row);
-                        self.focus = Focus::Diff;
+                        self.focus = Focus::Detail;
                         self.follow_cursor();
                     }
                     KeyCode::Esc | KeyCode::Char('f') | KeyCode::Char('q') => {
@@ -898,23 +970,23 @@ impl App {
             (KeyCode::Char('?'), _) => self.mode = Mode::Help,
             (KeyCode::Tab, _) => {
                 self.focus = match self.focus {
-                    Focus::Groups => Focus::Diff,
-                    Focus::Diff => Focus::Groups,
+                    Focus::Groups => Focus::Detail,
+                    Focus::Detail => Focus::Groups,
                 }
             }
             (KeyCode::Enter, _) if self.focus == Focus::Groups => {
                 // Enter opens a directory rather than jumping to the diff.
                 if !(self.view_mode == ViewMode::Files && self.toggle_dir()) {
-                    self.focus = Focus::Diff;
+                    self.focus = Focus::Detail;
                 }
             }
             (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, _) => match self.focus {
                 Focus::Groups => self.select_entry(self.selected_entry() + 1),
-                Focus::Diff => self.move_cursor(1),
+                Focus::Detail => self.move_cursor(1),
             },
             (KeyCode::Char('k'), KeyModifiers::NONE) | (KeyCode::Up, _) => match self.focus {
                 Focus::Groups => self.select_entry(self.selected_entry().saturating_sub(1)),
-                Focus::Diff => self.move_cursor(-1),
+                Focus::Detail => self.move_cursor(-1),
             },
             (KeyCode::Char('J'), _) | (KeyCode::Char('}'), _) => {
                 self.select_entry(self.selected_entry() + 1)
@@ -923,13 +995,13 @@ impl App {
                 self.select_entry(self.selected_entry().saturating_sub(1))
             }
             (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
-                let h = self.viewport.diff_rows.max(MIN_VIEWPORT) / 2;
+                let h = self.viewport.detail_rows.max(MIN_VIEWPORT) / 2;
                 self.cursor = (self.cursor + h).min(self.rows.len().saturating_sub(1));
                 self.cursor = self.next_selectable(self.cursor, -1).unwrap_or(self.cursor);
                 self.follow_cursor();
             }
             (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
-                let h = self.viewport.diff_rows.max(MIN_VIEWPORT) / 2;
+                let h = self.viewport.detail_rows.max(MIN_VIEWPORT) / 2;
                 self.cursor = self.cursor.saturating_sub(h);
                 self.cursor = self.next_selectable(self.cursor, 1).unwrap_or(self.cursor);
                 self.follow_cursor();
@@ -977,11 +1049,26 @@ impl App {
             (KeyCode::Char(' '), _) => self.toggle_reviewed(),
             (KeyCode::Char('c'), KeyModifiers::NONE) => {
                 if let Some(h) = self.current_hunk() {
+                    let hunk = &self.session.doc().hunks[h];
+                    // Name what is being annotated: findings anchor to a hunk,
+                    // and a note whose subject you cannot see is a note you
+                    // have to trust yourself to have written carefully.
+                    let file = hunk.file.rsplit('/').next().unwrap_or(&hunk.file);
+                    let lines = if hunk.new_count > 1 {
+                        format!(
+                            "L{}-{}",
+                            hunk.new_start,
+                            hunk.new_start + hunk.new_count - 1
+                        )
+                    } else {
+                        format!("L{}", hunk.new_start)
+                    };
                     let mut ta = TextArea::default();
                     ta.set_block(
                         Block::default()
                             .borders(Borders::ALL)
-                            .title(" finding — Ctrl-s save · Esc cancel "),
+                            .border_style(Style::default().fg(THEME.header_fg))
+                            .title(format!(" {file} · {lines} ")),
                     );
                     self.mode = Mode::Editing(h, Box::new(ta));
                 } else {
@@ -1009,7 +1096,7 @@ impl App {
     fn toggle_reviewed(&mut self) {
         let outcome = match self.focus {
             Focus::Groups => self.toggle_selected_entry(),
-            Focus::Diff => match self.current_hunk() {
+            Focus::Detail => match self.current_hunk() {
                 Some(h) => self.session.toggle_reviewed(h).map(|_| ()),
                 None => return,
             },
@@ -1104,14 +1191,53 @@ impl App {
     pub fn draw(&self, frame: &mut Frame) {
         let panes = layout(frame.area());
         self.draw_groups(frame, panes.plan);
-        self.draw_diff(frame, panes.diff);
+        self.draw_diff(frame, panes.detail);
         self.draw_status(frame, panes.status);
+
+        // Each focus FLOATS a map of the other pane rather than replacing or
+        // splitting one. The diff carries on underneath, so browsing the plan
+        // still previews what entering it will show — and pane heights stay a
+        // function of the terminal, never of a key.
+        //
+        // Only in the reading plan, though. The file view's left pane IS a file
+        // tree: a floating map of one group would name a group nothing is
+        // selecting, and a floating file list would be the pane behind it.
+        if self.view_mode == ViewMode::Groups {
+            match self.focus {
+                Focus::Groups => self.draw_group_map(frame, panes.detail),
+                Focus::Detail => self.draw_file_list(frame, panes.plan),
+            }
+        }
 
         match &self.mode {
             Mode::Editing(_, textarea) => {
-                let area = bottom_rect(panes.body, 8);
+                // A float over the diff, not a strip pinned to the bottom: a
+                // finding is about the lines you can still see around it.
+                let area = centered_rect(panes.body, panes.body.width * 3 / 5, 10);
                 frame.render_widget(Clear, area);
                 frame.render_widget(&**textarea, area);
+                // The keys go INSIDE the box, on its last row, where a footer
+                // belongs — the title says what you are annotating.
+                let footer = Rect {
+                    x: area.x + 1,
+                    y: area.y + area.height.saturating_sub(2),
+                    width: area.width.saturating_sub(2),
+                    height: 1,
+                };
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled("  ctrl-s ", Style::default().fg(THEME.header_fg)),
+                        Span::styled("save", Style::default().fg(THEME.context_fg)),
+                        Span::styled("  │  ", Style::default().fg(THEME.gutter_fg)),
+                        Span::styled("esc ", Style::default().fg(THEME.header_fg)),
+                        Span::styled("cancel", Style::default().fg(THEME.context_fg)),
+                        Span::styled("  │  ", Style::default().fg(THEME.gutter_fg)),
+                        Span::styled("enter ", Style::default().fg(THEME.header_fg)),
+                        Span::styled("newline", Style::default().fg(THEME.context_fg)),
+                    ]))
+                    .alignment(ratatui::layout::Alignment::Center),
+                    footer,
+                );
             }
             Mode::Help => {
                 let area = centered_rect(panes.body, 66, 30);
@@ -1130,10 +1256,22 @@ impl App {
                         if i == *selected {
                             style = style.bg(THEME.selected_bg).add_modifier(Modifier::BOLD);
                         }
-                        Line::from(Span::styled(
-                            format!("{mark} +{:<4}-{:<4} {}", e.adds, e.dels, e.path),
-                            style,
-                        ))
+                        // The counts say added and removed here too — they were
+                        // one grey run, which is the one thing a file list is
+                        // scanned for.
+                        let on = |c| {
+                            Style::default().fg(c).patch(
+                                style
+                                    .bg
+                                    .map_or(Style::default(), |b| Style::default().bg(b)),
+                            )
+                        };
+                        Line::from(vec![
+                            Span::styled(format!("{mark} "), style),
+                            Span::styled(format!("+{:<4}", e.adds), on(THEME.add_fg)),
+                            Span::styled(format!("−{:<4} ", e.dels), on(THEME.del_fg)),
+                            Span::styled(e.path.clone(), style),
+                        ])
                     })
                     .collect();
                 frame.render_widget(Clear, area);
@@ -1162,8 +1300,9 @@ impl App {
                 .collect(),
             ViewMode::Files => {
                 let reviewed = self.session.reviewed_hunks();
+                let guides = tree_guides(&self.tree);
                 (0..self.tree.len())
-                    .map(|i| self.tree_lines(i, i == selected, &reviewed))
+                    .map(|i| self.tree_lines(i, i == selected, &reviewed, &guides[i]))
                     .collect()
             }
         };
@@ -1313,8 +1452,7 @@ impl App {
             ),
         ])];
 
-        let role = Theme::role_suffix(g.role);
-        lines.push(Line::from(vec![
+        let mut counts = vec![
             Span::styled(
                 format!("{tail_glyph} "),
                 Style::default().fg(THEME.gutter_fg),
@@ -1329,8 +1467,23 @@ impl App {
                 format!("−{}", g.counts.dels),
                 bg(Style::default().fg(THEME.del_fg)),
             ),
-            Span::styled(role.to_string(), dim),
-        ]));
+        ];
+        // The ordering role is a fact about the group, like the class on a hunk
+        // header — so it wears the same pill, in the muted colours, rather than
+        // trailing off the line as dim text.
+        if let Some(r) = g.role {
+            let (fg, pill_bg) = THEME.pill(None);
+            counts.push(Span::styled(" ", dim));
+            counts.extend(
+                pill(
+                    vec![(fg, differential_engine::plan::role_name(r).to_string())],
+                    pill_bg,
+                )
+                .into_iter()
+                .map(|(st, t)| Span::styled(t, st)),
+            );
+        }
+        lines.push(Line::from(counts));
         if !g.depends_on.is_empty() {
             // "↓" marks a dependency that appears LATER in the plan: the two
             // groups depend on each other, so no order can satisfy both.
@@ -1363,6 +1516,10 @@ impl App {
         row: usize,
         selected: bool,
         reviewed: &HashSet<usize>,
+        // Passed in, not computed here: this runs once per visible row, and
+        // building the whole tree's connectors inside it would be quadratic on
+        // every frame.
+        guide: &str,
     ) -> Vec<Line<'static>> {
         let entry = &self.tree[row];
         let bg = |st: Style| {
@@ -1372,7 +1529,7 @@ impl App {
                 st
             }
         };
-        let indent = "  ".repeat(entry.depth);
+        let indent = guide;
         let files = self.files_of_tree_row(row);
         let (adds, dels): (usize, usize) = files
             .iter()
@@ -1417,7 +1574,7 @@ impl App {
                 let f = &self.files()[*file_idx];
                 let name = f.path.rsplit('/').next().unwrap_or(&f.path).to_string();
                 let mut spans = vec![
-                    Span::styled(format!("{mark}{indent}  "), dim),
+                    Span::styled(format!("{mark}{indent}"), dim),
                     Span::styled(name, name_style),
                     Span::styled("  ", dim),
                 ];
@@ -1439,6 +1596,234 @@ impl App {
         }
     }
 
+    /// The flat file list, floating over the foot of the plan pane: where you
+    /// are, and how much is left.
+    fn draw_file_list(&self, frame: &mut Frame, plan: Rect) {
+        let files_len = self.listed_files.len();
+        if files_len == 0 {
+            return;
+        }
+        let h = (files_len as u16 + 2)
+            .min(plan.height.saturating_sub(2))
+            .max(3);
+        let area = Rect {
+            x: plan.x,
+            y: plan.y + plan.height.saturating_sub(h),
+            width: plan.width,
+            height: h,
+        };
+        frame.render_widget(Clear, area);
+        self.draw_file_list_in(frame, area);
+    }
+
+    fn draw_file_list_in(&self, frame: &mut Frame, area: Rect) {
+        let reviewed = self.session.reviewed_hunks();
+        let here = self.file_at_cursor();
+        let files = &self.listed_files;
+        let inner_w = area.width.saturating_sub(2) as usize;
+        // Keep the current file in view; the list can outrun its pane.
+        let h = area.height.saturating_sub(2) as usize;
+        let at = here.and_then(|i| files.iter().position(|&f| f == i));
+        let scroll = at.map_or(0, |n| n.saturating_sub(h.saturating_sub(1)));
+
+        let mut lines: Vec<Line> = files
+            .iter()
+            .skip(scroll)
+            .take(h)
+            .map(|&i| {
+                let f = &self.files()[i];
+                let on = here == Some(i);
+                let done =
+                    !f.hunks.is_empty() && f.hunks.iter().all(|hk| reviewed.contains(&hk.index()));
+                let base = Style::default().fg(if done {
+                    THEME.reviewed_fg
+                } else {
+                    THEME.context_fg
+                });
+                let style = if on {
+                    base.bg(THEME.selected_bg).add_modifier(Modifier::BOLD)
+                } else {
+                    base
+                };
+                let name = f.path.rsplit('/').next().unwrap_or(&f.path);
+                let mut line = Line::from(vec![
+                    Span::styled(if on { "▸ " } else { "  " }.to_string(), style),
+                    Span::styled(name.to_string(), style),
+                ]);
+                if on {
+                    pad_to_width(&mut line, inner_w, THEME.selected_bg);
+                }
+                line
+            })
+            .collect();
+        if lines.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "  (no files)",
+                Style::default().fg(THEME.gutter_fg),
+            )));
+        }
+        let title = match at {
+            Some(n) => format!(" file {} of {} ", n + 1, files.len()),
+            None => format!(" {} files ", files.len()),
+        };
+        frame.render_widget(
+            Paragraph::new(lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .border_style(Style::default().fg(THEME.gutter_fg)),
+            ),
+            area,
+        );
+    }
+
+    /// The right pane while the plan has focus: the whole document's file tree
+    /// with the selected group's files lit, so what a group spans is one look
+    /// rather than a walk through its hunks.
+    ///
+    /// Deliberately not interactive. It is a map; a second cursor in a second
+    /// pane is a thing to explain and to get wrong.
+    fn draw_group_map(&self, frame: &mut Frame, detail: Rect) {
+        // Below the group's header block, so its full label and description —
+        // which the 40-column plan pane truncates — stay readable, and the diff
+        // carries on beneath the float.
+        let header = self
+            .rows
+            .iter()
+            .take_while(|r| matches!(r.kind, RowKind::GroupHeader | RowKind::Blank))
+            .count()
+            .min(6) as u16;
+        let top = detail.y + 1 + header;
+        let area = Rect {
+            x: detail.x + 1,
+            y: top,
+            width: detail.width.saturating_sub(2),
+            height: detail
+                .height
+                .saturating_sub(header + 2)
+                .min(self.tree.len() as u16 + 2)
+                .max(3),
+        };
+        frame.render_widget(Clear, area);
+        let inner_h = area.height.saturating_sub(2) as usize;
+        let mine = &self.map_files;
+        let guides = tree_guides(&self.tree);
+        let lines: Vec<Line> = self
+            .tree
+            .iter()
+            .zip(&guides)
+            .map(|(entry, guide)| {
+                match &entry.kind {
+                    TreeKind::Dir { path } => {
+                        let name = path.rsplit('/').next().unwrap_or(path);
+                        Line::from(vec![
+                            Span::styled(
+                                format!("  {guide}"),
+                                Style::default().fg(THEME.gutter_fg),
+                            ),
+                            Span::styled(format!("{name}/"), Style::default().fg(THEME.context_fg)),
+                        ])
+                    }
+                    TreeKind::File { file_idx } => {
+                        let f = &self.files()[*file_idx];
+                        let name = f.path.rsplit('/').next().unwrap_or(&f.path);
+                        let lit = mine.contains(file_idx);
+                        let style = if lit {
+                            Style::default()
+                                .fg(THEME.context_fg)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(THEME.gutter_fg)
+                        };
+                        // The marker sits WITH the name, not out in a column of
+                        // its own — a dot at the far left of a deep tree points
+                        // at nothing.
+                        let mut spans = vec![
+                            Span::styled(
+                                format!("  {guide}"),
+                                Style::default().fg(THEME.gutter_fg),
+                            ),
+                            Span::styled(
+                                if lit { "● " } else { "" }.to_string(),
+                                Style::default().fg(THEME.header_fg),
+                            ),
+                            Span::styled(name.to_string(), style),
+                        ];
+                        if lit {
+                            spans.push(Span::styled("  ", style));
+                            spans.push(Span::styled(
+                                format!("+{}", f.counts.adds),
+                                Style::default().fg(THEME.add_fg),
+                            ));
+                            spans.push(Span::styled(" ", style));
+                            spans.push(Span::styled(
+                                format!("−{}", f.counts.dels),
+                                Style::default().fg(THEME.del_fg),
+                            ));
+                        }
+                        Line::from(spans)
+                    }
+                }
+            })
+            .collect();
+
+        // No cursor to follow, so the only scroll it needs is enough to reveal
+        // the first file the group touches — and none at all when it already
+        // fits, which is what a short float mostly is.
+        let first = self
+            .tree
+            .iter()
+            .position(|e| matches!(&e.kind, TreeKind::File { file_idx } if mine.contains(file_idx)))
+            .unwrap_or(0);
+        let scroll = first.saturating_sub(inner_h.saturating_sub(1));
+
+        let title = match self.groups().get(self.selected_group) {
+            Some(g) => format!(
+                " files in {} · {} of {} ",
+                g.id,
+                mine.len(),
+                self.files().len()
+            ),
+            None => " files ".to_string(),
+        };
+        frame.render_widget(
+            Paragraph::new(
+                lines
+                    .into_iter()
+                    .skip(scroll)
+                    .take(inner_h)
+                    .collect::<Vec<_>>(),
+            )
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .border_style(Style::default().fg(THEME.header_fg)),
+            ),
+            area,
+        );
+    }
+
+    /// File indices the selected group touches, via the projection rather than
+    /// by re-deriving what belongs to a group here.
+    fn files_of_selected_group(&self) -> HashSet<usize> {
+        let plan = self.session.plan();
+        let Some(g) = self.groups().get(self.selected_group) else {
+            return HashSet::new();
+        };
+        let id = g.id.as_str();
+        self.files()
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| {
+                f.hunks
+                    .iter()
+                    .any(|h| plan.group_of_hunk(*h).is_some_and(|owner| owner.id == id))
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
     fn draw_diff(&self, frame: &mut Frame, area: Rect) {
         let inner_h = area.height.saturating_sub(2) as usize;
         let inner_w = area.width.saturating_sub(2) as usize;
@@ -1452,7 +1837,7 @@ impl App {
             .skip(self.scroll)
             .take(inner_h)
             .map(|(i, r)| {
-                let on = i == self.cursor && self.focus == Focus::Diff && r.kind.selectable();
+                let on = i == self.cursor && self.focus == Focus::Detail && r.kind.selectable();
                 // A hunk's pill follows its edge, so the marker and the run
                 // below it read as one thing — and which is lit is a cursor
                 // question, decided here rather than when the row was built.
@@ -1476,10 +1861,24 @@ impl App {
                 line
             })
             .collect();
+
+        // Scrolled past a file's header, pin it to the top row. It costs a row
+        // only while the filename would otherwise be off-screen, which is
+        // exactly when a long file stops saying which file it is.
+        let mut lines = lines;
+        if let Some(header) = self
+            .file_header_above(self.scroll)
+            .filter(|&h| h < self.scroll)
+            && let Some(first) = lines.first_mut()
+        {
+            *first = compose_row(&self.rows[header].content, inner_w, false, None)
+                .style(Style::default().bg(THEME.sticky_bg));
+        }
+
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" diff ")
-            .border_style(if self.focus == Focus::Diff {
+            .title(" detail ")
+            .border_style(if self.focus == Focus::Detail {
                 Style::default().fg(THEME.header_fg)
             } else {
                 Style::default().fg(THEME.gutter_fg)
@@ -1491,8 +1890,15 @@ impl App {
         // a cell away from the first. Drawn over the block, so it comes after.
         let buf = frame.buffer_mut();
         for (n, row) in self.rows.iter().skip(self.scroll).take(inner_h).enumerate() {
-            let Some(border) = row.border else { continue };
             let y = area.y + 1 + n as u16;
+            // A control's button takes the same column a hunk's edge would.
+            if let Some(glyph) = row.button {
+                let cell = &mut buf[(area.x, y)];
+                cell.set_symbol(glyph);
+                cell.set_style(Style::default().fg(THEME.hint_fg).bg(THEME.hint_bg));
+                continue;
+            }
+            let Some(border) = row.border else { continue };
             let cell = &mut buf[(area.x, y)];
             cell.set_symbol(border.glyph().encode_utf8(&mut [0u8; 4]));
             cell.set_style(chrome(border, active));
@@ -1645,6 +2051,39 @@ fn compose_half(half: &Half, width: usize, cursor: bool) -> Vec<Span<'static>> {
     spans
 }
 
+/// The connector prefix for each row of a tree, in order.
+///
+/// A tree drawn as bare indentation reads as a list that happens to be ragged;
+/// the guides are what say which directory a file is under. Each row gets `│ `
+/// for every ancestor that still has siblings below, then `└─` if it is the
+/// last of its parent's children or `├─` if it is not.
+fn tree_guides(tree: &[TreeEntry]) -> Vec<String> {
+    // Whether a later row shares this row's depth before the tree pops out of
+    // it — that is exactly "has a sibling below".
+    let more_after: Vec<bool> = (0..tree.len())
+        .map(|i| {
+            tree[i + 1..]
+                .iter()
+                .take_while(|e| e.depth >= tree[i].depth)
+                .any(|e| e.depth == tree[i].depth)
+        })
+        .collect();
+
+    let mut open: Vec<bool> = Vec::new();
+    tree.iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            open.truncate(entry.depth);
+            let mut prefix: String = open.iter().map(|&o| if o { "│ " } else { "  " }).collect();
+            if entry.depth > 0 || i + 1 < tree.len() {
+                prefix.push_str(if more_after[i] { "├─" } else { "└─" });
+            }
+            open.push(more_after[i]);
+            prefix
+        })
+        .collect()
+}
+
 /// Extend `line` with blank, styled cells so a selection background covers
 /// the full row width. Trailing padding only — the leading connector column
 /// keeps its own styling.
@@ -1659,16 +2098,6 @@ fn pad_to_width(line: &mut Line<'static>, width: usize, bg: ratatui::style::Colo
             " ".repeat(width - used),
             Style::default().bg(bg),
         ));
-    }
-}
-
-fn bottom_rect(area: Rect, height: u16) -> Rect {
-    let h = height.min(area.height);
-    Rect {
-        x: area.x,
-        y: area.y + area.height - h,
-        width: area.width,
-        height: h,
     }
 }
 

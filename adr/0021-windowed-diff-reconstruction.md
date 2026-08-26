@@ -81,11 +81,20 @@ whole price of the change: the alternative is O(file) parse state for every file
 Raising `LOOKBACK` raises the floor cost for every window; the fix for a genuinely
 pathological file is not to go back to whole-file highlighting.
 
-**What is left is process spawns.** With the diff and the highlight windowed, `blob`'s
-remaining single spawn is the dominant term — around 4ms per call on macOS, two calls per
-file drawn. Going further means either a persistent `cat-file --batch` child in the adapter
-or a port that reads many paths at once. Both are real design decisions about the port
-surface and about holding a subprocess across calls, so neither is taken here.
+**What was left is process spawns** — around 4ms per call on macOS, two calls per file
+drawn, which was most of the wait the first time a group opened. Resolved since, the second
+way: `ObjectReader` gained `blobs`, and `cat-file --batch -z` reads its list of specs from
+stdin, so one process answers a whole group. Measured on a 120-file range, 240 reads went
+from 1.0s to 19ms, and a cold group switch from 481ms to 240ms — the remainder being
+syntect, where it should be.
+
+The other way — a persistent `cat-file --batch` child — is faster still and would help
+every caller without any of them changing, `invariants.rs` included. It was declined, and
+not only for the `Arc<Mutex<..>>`, the death detection and the `Drop` ordering that a
+subprocess outliving its call brings. `cat-file --batch` reads the object store when it
+starts, and this tool WRITES objects mid-run: the tree assertion does `hash-object -w` and
+`write-tree`. A long-lived reader could fail to see an object the same process had just
+written, which is a correctness hazard rather than an untidiness.
 
 The blob-line cache is per path and unbounded, as its predecessor was, but strictly
 smaller: two vectors of lines instead of a full `DiffLine` vector plus two complete

@@ -13,7 +13,7 @@ use differential_engine::ports::ReviewStore;
 use differential_engine::schema::SourceKind;
 use differential_engine::store::{FsGroupingCache, FsReviewStore};
 use differential_testutil::{FakeBackend, TestRepo, json_group};
-use differential_tui::app::{App, Effect, Focus, Mode, ReviewOptions, Viewport};
+use differential_tui::app::{App, Effect, Focus, Mode, ReviewOptions, ViewMode, Viewport};
 use differential_tui::rows::{BoxStyle, RowFactory, RowKind};
 use differential_tui::theme::THEME;
 use differential_tui::window::Side;
@@ -143,7 +143,7 @@ fn navigation_group_switch_and_focus() {
 
     // Tab moves focus to the diff pane; j moves the cursor over selectables.
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    assert_eq!(app.focus, Focus::Diff);
+    assert_eq!(app.focus, Focus::Detail);
     let c0 = app.cursor;
     app.handle_key(key('j'));
     assert!(app.cursor > c0);
@@ -341,7 +341,7 @@ fn file_list_modal_opens_jumps_and_closes() {
     // Enter jumps the cursor to (the first selectable after) that header.
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(matches!(app.mode, Mode::Normal));
-    assert_eq!(app.focus, Focus::Diff);
+    assert_eq!(app.focus, Focus::Detail);
     let header_row = app
         .rows
         .iter()
@@ -649,6 +649,7 @@ fn the_plan_gutter_links_the_selected_group_to_what_it_follows() {
     // j moves down, k up — a one-directional walk would spin forever when the
     // target is above the cursor, and the foundation sits above its consumer.
     let select = |app: &mut App, want: usize| {
+        app.focus = Focus::Groups;
         for _ in 0..64 {
             if app.selected_group == want {
                 return;
@@ -719,8 +720,18 @@ fn plan_pane(app: &mut App) -> String {
         .collect()
 }
 
-/// Render at a fixed size and flatten the buffer to text.
+/// Render the DETAIL pane at a fixed size and flatten the buffer to text.
+///
+/// Focuses it first: the right pane is a map of the selected group while the
+/// plan has focus, so a test asserting on diff content has to say it wants the
+/// diff. `drawn_as_is` is for the tests that are about focus itself.
 fn drawn(app: &mut App) -> String {
+    app.focus = Focus::Detail;
+    drawn_as_is(app)
+}
+
+/// Render whatever the current focus puts on screen.
+fn drawn_as_is(app: &mut App) -> String {
     let backend = ratatui::backend::TestBackend::new(100, 40);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|f| app.draw(f)).unwrap();
@@ -764,7 +775,7 @@ fn scrolling_back_up_reveals_the_group_header() {
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     // A short pane, as a small terminal would give: the rows now overflow it.
     app.set_viewport(Viewport {
-        diff_rows: 8,
+        detail_rows: 8,
         plan_rows: 8,
     });
 
@@ -865,16 +876,10 @@ fn a_backfilled_group_renders_as_unclassified() {
     while app.selected_group != app.groups().len() - 1 {
         app.handle_key(key('j'));
     }
-    let backend = ratatui::backend::TestBackend::new(120, 40);
-    let mut terminal = ratatui::Terminal::new(backend).unwrap();
-    terminal.draw(|f| app.draw(f)).unwrap();
-    let text: String = terminal
-        .backend()
-        .buffer()
-        .content()
-        .iter()
-        .map(|c| c.symbol())
-        .collect();
+    // The group's header row is in the detail pane, which shows a map of the
+    // group while the plan has focus.
+    app.focus = Focus::Detail;
+    let text = drawn_as_is(&mut app);
     assert!(
         text.contains("unclassified"),
         "the back-fill group must be labelled, not shown as ordinary focus work"
@@ -896,7 +901,7 @@ fn shrinking_the_viewport_re_clamps_scroll_without_a_draw() {
     // Tall enough that the whole diff fits, so nothing has scrolled yet.
     let tall = app.rows.len() + SCROLL_MARGIN + 2;
     app.set_viewport(Viewport {
-        diff_rows: tall,
+        detail_rows: tall,
         plan_rows: tall,
     });
     app.handle_key(key('G'));
@@ -905,7 +910,7 @@ fn shrinking_the_viewport_re_clamps_scroll_without_a_draw() {
     // Now shrink — above MIN_VIEWPORT, so the floor cannot mask it. No key is
     // pressed and nothing is drawn between here and the assertion.
     app.set_viewport(Viewport {
-        diff_rows: SHORT,
+        detail_rows: SHORT,
         plan_rows: SHORT,
     });
     assert!(
@@ -982,7 +987,7 @@ fn edges(app: &App) -> Vec<(usize, Side)> {
         .collect()
 }
 
-fn diff_rows(app: &App) -> usize {
+fn detail_rows(app: &App) -> usize {
     app.rows
         .iter()
         .filter(|r| matches!(r.kind, RowKind::Diff(_)))
@@ -996,7 +1001,7 @@ fn put_cursor_on<F: Fn(&RowKind) -> bool>(app: &mut App, pred: F) -> usize {
         .position(|r| pred(&r.kind))
         .expect("no such row");
     app.cursor = pos;
-    app.focus = Focus::Diff;
+    app.focus = Focus::Detail;
     pos
 }
 
@@ -1010,13 +1015,12 @@ fn context_boundary_rows_appear_and_z_expands_there() {
         before.iter().any(|(_, s)| *s == Side::Up) && before.iter().any(|(_, s)| *s == Side::Down),
         "expected a boundary at each end, got {before:?}"
     );
-    let rows_before = diff_rows(&app);
+    let rows_before = detail_rows(&app);
     let text = drawn(&mut app);
     assert!(
-        text.contains("more above"),
-        "the boundary says what is hidden"
+        text.contains("lines hidden"),
+        "the boundary says what is hidden: {text}"
     );
-    assert!(text.contains("z shows"), "the boundary says how to open it");
 
     // Stand on the first upward boundary and open it.
     put_cursor_on(&mut app, |k| {
@@ -1025,7 +1029,7 @@ fn context_boundary_rows_appear_and_z_expands_there() {
     app.handle_key(key('z'));
 
     assert_eq!(
-        diff_rows(&app),
+        detail_rows(&app),
         rows_before + ReviewOptions::default().context_step,
         "z pulls in exactly one step"
     );
@@ -1089,29 +1093,33 @@ fn expanded_windows_that_meet_merge_into_one_block() {
         .next_back()
         .expect("a second hunk");
 
-    for _ in 0..4 {
-        if !edges(&app)
-            .iter()
-            .any(|(h, s)| *h == lower && *s == Side::Up)
-        {
-            break;
-        }
+    // Press on whichever end of the middle gap is still offered. Once one press
+    // would close it the two rows collapse to one, so "the upward one is gone"
+    // is not the same as "the gap is closed".
+    for _ in 0..8 {
+        let mid = edges(&app)
+            .into_iter()
+            .find(|&(h, s)| (h == lower && s == Side::Up) || (h != lower && s == Side::Down));
+        let Some((h, side)) = mid else { break };
         put_cursor_on(
             &mut app,
-            |k| matches!(*k, RowKind::ContextEdge { hunk: h, side: Side::Up, .. } if h == lower),
+            |k| matches!(*k, RowKind::ContextEdge { hunk: x, side: sd, .. } if x == h && sd == side),
         );
         app.handle_key(key('z'));
     }
 
-    // One block: exactly one upward and one downward boundary survive, and no
-    // line of the file is drawn twice.
+    // One block: one boundary at each outer end, and no line drawn twice.
     let e = edges(&app);
     assert_eq!(
         e.iter().filter(|(_, s)| *s == Side::Up).count(),
         1,
         "merged windows share one top boundary, got {e:?}"
     );
-    assert_eq!(e.iter().filter(|(_, s)| *s == Side::Down).count(), 1);
+    assert_eq!(
+        e.iter().filter(|(_, s)| *s == Side::Down).count(),
+        1,
+        "and one bottom, got {e:?}"
+    );
     let text = drawn(&mut app);
     assert_eq!(
         text.matches("let filler25 =").count(),
@@ -1217,13 +1225,19 @@ fn painted(bg: Option<ratatui::style::Color>) -> Option<ratatui::style::Color> {
 
 #[test]
 fn a_changed_row_paints_its_background_to_the_pane_edge() {
-    let (_r, app) = app_with_a_long_file();
+    let (_r, mut app) = app_with_a_long_file();
+    app.focus = Focus::Detail;
+    let app = app;
     // A changed row is one whose gutter block is painted; the last inner
     // column of the pane must then carry the line's own background too.
     let row = (1..39u16)
         .find(|&y| {
             let cells = diff_pane_row(&app, y);
-            painted(cells[1].1).is_some() && painted(cells.last().unwrap().1).is_some()
+            // A boundary band paints every cell one colour; a changed row's
+            // gutter block and line tint differ, which is the point.
+            painted(cells[1].1).is_some()
+                && painted(cells.last().unwrap().1).is_some()
+                && painted(cells[1].1) != painted(cells.last().unwrap().1)
         })
         .expect("no changed row found in the diff pane");
     let cells = diff_pane_row(&app, row);
@@ -1399,76 +1413,65 @@ fn a_hunk_header_is_a_band_carrying_the_class_and_the_size() {
     assert!(app.rows[header].kind.hunk().is_some());
 }
 
-/// A context boundary is the one row describing what is hidden from BOTH sides
-/// of the file, so it rules the whole way across. A hunk header does not: it
-/// labels what follows, and ruling it off broke the flow of reading down.
+/// Two boundary rows describing one gap sit adjacent with no blank between
+/// them, so the seam reads as one band rather than two unrelated notices.
 #[test]
-fn a_boundary_is_a_dotted_stub_and_a_header_is_not_ruled() {
+fn two_boundaries_over_one_gap_are_one_band() {
     let (_r, mut app) = app_with_a_long_file();
-    app.handle_key(key('s')); // split
+    app.focus = Focus::Detail;
+
+    // The two hunks are far enough apart that each block bounds the same gap.
+    let at: Vec<usize> = app
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| matches!(r.kind, RowKind::ContextEdge { .. }))
+        .map(|(i, _)| i)
+        .collect();
+    let pair = at
+        .windows(2)
+        .find(|w| {
+            matches!(
+                app.rows[w[0]].kind,
+                RowKind::ContextEdge {
+                    side: Side::Down,
+                    ..
+                }
+            ) && matches!(
+                app.rows[w[1]].kind,
+                RowKind::ContextEdge { side: Side::Up, .. }
+            )
+        })
+        .expect("no down/up pair over one gap");
+    assert_eq!(
+        pair[1],
+        pair[0] + 1,
+        "the two rows of a band must be adjacent, with no blank between them"
+    );
+
+    // Each keeps its own button in the pane's border column — GitHub's expander
+    // is two rows styled as one, so no key has to mean two directions.
+    assert_eq!(app.rows[pair[0]].button, Some("↓"));
+    assert_eq!(app.rows[pair[1]].button, Some("↑"));
+
     let buf = buffer_of(&app);
     let row_text = |y: u16| -> String { (41..99u16).map(|x| buf[(x, y)].symbol()).collect() };
-
-    let boundary = (1..39u16)
-        .find(|&y| row_text(y).contains("more"))
-        .expect("a boundary row");
-    // A STUB either side, dotted, not a line across the screen: this row is a
-    // note about what is missing, and a full-width rule read as a chapter
-    // break in a file that has not ended.
-    let text = row_text(boundary);
+    let band = (1..39u16)
+        .find(|&y| row_text(y).contains("lines hidden"))
+        .expect("no band row");
+    let text = row_text(band);
+    // A tinted body, not a rule, and none of the notation the hunk pills lost.
     assert!(
-        !text.contains('\u{2500}'),
-        "the boundary rule should be dotted, not solid: {text:?}"
-    );
-    assert!(text.contains('\u{2508}'), "no dotted rule: {text:?}");
-    assert!(
-        text.starts_with("  ") && text.ends_with("  "),
-        "the rule should stop short of the pane edges: {text:?}"
-    );
-
-    // It still crosses the split separator rather than being cut by it.
-    assert_ne!(
-        buf[(69, boundary)].symbol(),
-        "\u{2502}",
-        "a boundary row should cross the split separator"
+        !text.contains('\u{2508}'),
+        "the dotted stub should be gone: {text:?}"
     );
     assert!(
-        (1..39u16).any(|y| buf[(69, y)].symbol() == "\u{2502}"),
-        "no split separator found at column 69"
+        !text.contains("@@"),
+        "`@@` was removed from headers: {text:?}"
     );
-
-    // The two stubs are the same length, so the label sits centred.
-    let lead = text
-        .chars()
-        .skip_while(|c| *c == ' ')
-        .take_while(|c| *c == '\u{2508}')
-        .count();
-    let trail = text
-        .chars()
-        .rev()
-        .skip_while(|c| *c == ' ')
-        .take_while(|c| *c == '\u{2508}')
-        .count();
-    assert_eq!(lead, trail, "the stubs should match: {lead} vs {trail}");
-    assert!(lead > 0 && lead < 20, "a stub, not a line: {lead}");
-
-    // A hunk header is a pill, with no rule running off either side of it.
-    let header = (1..39u16)
-        .find(|&y| {
-            row_text(y).contains('\u{b7}')
-                && !row_text(y).contains("more")
-                && (41..99u16).any(|x| {
-                    buf[(x, y)]
-                        .style()
-                        .bg
-                        .is_some_and(|b| b != ratatui::style::Color::Reset)
-                })
-        })
-        .expect("a hunk header");
-    let text = row_text(header);
     assert!(
-        !text.contains('\u{2500}'),
-        "a header should not be ruled: {text:?}"
+        (41..99u16).all(|x| buf[(x, band)].style().bg == Some(THEME.hint_bg)),
+        "the band should be tinted the whole way across: {text:?}"
     );
 }
 
@@ -1528,7 +1531,7 @@ fn press_z_on_down_boundary(app: &mut App) -> bool {
         return false;
     };
     app.cursor = pos;
-    app.focus = Focus::Diff;
+    app.focus = Focus::Detail;
     app.handle_key(key('z'));
     true
 }
@@ -1614,9 +1617,9 @@ fn a_foreign_hunk_is_dashed_and_names_its_group() {
         })
         .expect("a foreign hunk row");
     app.cursor = pos;
-    app.focus = Focus::Diff;
+    app.focus = Focus::Detail;
     app.set_viewport(Viewport {
-        diff_rows: 38,
+        detail_rows: 38,
         plan_rows: 38,
     });
     let buf = buffer_of(&app);
@@ -1718,7 +1721,7 @@ fn n_skips_a_foreign_hunk_but_space_still_marks_it() {
     // n never lands on a foreign header: it is context the reviewer asked for,
     // not an entry on this group's reading list.
     app.cursor = 0;
-    app.focus = Focus::Diff;
+    app.focus = Focus::Detail;
     for _ in 0..8 {
         app.handle_key(key('n'));
         assert!(
@@ -1763,9 +1766,9 @@ fn cursor_into_first_box(app: &mut App) {
         .position(|r| r.border.is_some() && matches!(r.kind, RowKind::Diff(_)))
         .expect("no row inside a box");
     app.cursor = pos;
-    app.focus = Focus::Diff;
+    app.focus = Focus::Detail;
     app.set_viewport(Viewport {
-        diff_rows: 38,
+        detail_rows: 38,
         plan_rows: 38,
     });
 }
@@ -1823,7 +1826,7 @@ fn only_the_active_hunks_edge_is_coloured() {
         .position(|r| matches!(r.kind, RowKind::ContextEdge { .. }))
         .expect("a boundary row");
     app.cursor = boundary;
-    app.focus = Focus::Diff;
+    app.focus = Focus::Detail;
     let buf = buffer_of(&app);
     assert!(
         (1..39u16).all(|y| buf[(40, y)].style().fg != Some(THEME.skim_fg)),
@@ -1854,51 +1857,41 @@ fn only_the_active_hunks_edge_is_coloured() {
     }
 }
 
-/// The boundary label is the one thing on its row a reviewer can act on. As
-/// dim text on a dim rule it read as a divider meant to be ignored.
+/// The band says the two things a reviewer can act on: how much is hidden, and
+/// what stands beyond it once the gap is spent.
 #[test]
-fn a_context_boundary_reads_as_a_button() {
-    let (_r, app) = app_with_two_groups_in_one_file();
-    let backend = ratatui::backend::TestBackend::new(100, 40);
-    let mut terminal = ratatui::Terminal::new(backend).unwrap();
-    terminal.draw(|f| app.draw(f)).unwrap();
-    let buf = terminal.backend().buffer().clone();
-
-    let row = (1..39u16)
-        .find(|&y| {
-            (41..99u16)
-                .map(|x| buf[(x, y)].symbol())
-                .collect::<String>()
-                .contains("more")
-        })
-        .expect("no boundary row");
-    let cells: Vec<_> = (41..99u16).map(|x| buf[(x, row)].clone()).collect();
-    // The expand pill wears the border's own muted grey.
-    let filled: Vec<_> = cells
-        .iter()
-        .filter(|c| c.style().bg == Some(THEME.hint_bg))
-        .collect();
+fn a_band_says_what_is_hidden_and_what_is_beyond() {
+    let (_r, mut app) = app_with_two_groups_in_one_file();
+    app.focus = Focus::Detail;
+    let text = drawn_as_is(&mut app);
     assert!(
-        filled.len() > 10,
-        "the label should be a filled block, got {} cells",
-        filled.len()
+        text.contains("lines hidden"),
+        "a band should say how much is hidden: {text}"
     );
-    // The block is contiguous, and the rule either side of it is not filled.
-    let first = cells
-        .iter()
-        .position(|c| c.style().bg == Some(THEME.hint_bg))
-        .unwrap();
-    let last = cells
-        .iter()
-        .rposition(|c| c.style().bg == Some(THEME.hint_bg))
-        .unwrap();
-    assert_eq!(
-        last - first + 1,
-        filled.len(),
-        "the block should be contiguous"
+
+    // Spend the gap and the band names the hunk beyond instead.
+    for _ in 0..6 {
+        if app
+            .rows
+            .iter()
+            .any(|r| matches!(r.kind, RowKind::ContextEdge { crossing: true, .. }))
+        {
+            break;
+        }
+        press_z_on_down_boundary(&mut app);
+    }
+    let text = drawn_as_is(&mut app);
+    assert!(
+        text.contains("next: C"),
+        "a spent gap should name what stands beyond it: {text}"
     );
-    assert_ne!(cells[first - 1].style().bg, Some(THEME.hint_bg));
-    assert_eq!(cells[first].symbol(), " ", "the block is padded, not flush");
+
+    // When the whole gap fits in one press there is no direction to choose.
+    let one_press = app.rows.iter().any(|r| r.button == Some("↕"));
+    assert!(
+        one_press || app.rows.iter().any(|r| r.button.is_some()),
+        "a band always carries a button"
+    );
 }
 
 /// A hunk's pill follows its edge, so the marker and the run below it read as
@@ -1914,13 +1907,15 @@ fn the_hunk_pill_takes_the_colour_of_its_edge() {
         .position(|r| matches!(r.kind, RowKind::ContextEdge { .. }))
         .expect("a boundary row");
     app.cursor = boundary;
-    app.focus = Focus::Diff;
+    app.focus = Focus::Detail;
     let buf = buffer_of(&app);
     let pill_bg = |buf: &ratatui::buffer::Buffer| -> Option<Color> {
         (1..39u16)
             .filter(|&y| {
                 let t: String = (41..99u16).map(|x| buf[(x, y)].symbol()).collect();
-                t.contains('·') && !t.contains("more")
+                // A hunk pill, not the boundary band — both are tinted rows
+                // carrying a `·`.
+                t.contains('·') && !t.contains("hidden") && !t.contains("next:")
             })
             .flat_map(|y| (41..99u16).map(move |x| (x, y)))
             .find_map(|(x, y)| buf[(x, y)].style().bg.filter(|b| *b != Color::Reset))
@@ -1955,7 +1950,9 @@ fn the_counts_stay_coloured_on_both_pill_fills() {
         (1..39u16)
             .filter(|&y| {
                 let t: String = (41..99u16).map(|x| buf[(x, y)].symbol()).collect();
-                t.contains('·') && !t.contains("more")
+                // A hunk pill, not the boundary band — both are tinted rows
+                // carrying a `·`.
+                t.contains('·') && !t.contains("hidden") && !t.contains("next:")
             })
             .flat_map(|y| (41..99u16).map(move |x| (x, y)))
             .filter(|&(x, y)| matches!(buf[(x, y)].symbol(), "+" | "−"))
@@ -1970,7 +1967,7 @@ fn the_counts_stay_coloured_on_both_pill_fills() {
         .position(|r| matches!(r.kind, RowKind::ContextEdge { .. }))
         .expect("a boundary row");
     app.cursor = boundary;
-    app.focus = Focus::Diff;
+    app.focus = Focus::Detail;
     let idle = inks(&app);
     assert!(idle.contains(&THEME.add_fg), "no + colour idle: {idle:?}");
     assert!(idle.contains(&THEME.del_fg), "no − colour idle: {idle:?}");
@@ -1987,13 +1984,419 @@ fn the_counts_stay_coloured_on_both_pill_fills() {
     );
 }
 
+// -------------------------------------------------- the overview surfaces
+
+/// Reading the plan, a map of the selected group FLOATS over the detail pane —
+/// below the group's header, so its full label survives the plan pane's 40
+/// columns, and above the diff, which carries on underneath as a preview of
+/// what entering the group will show.
+#[test]
+fn the_group_map_floats_over_the_diff_when_the_plan_is_focused() {
+    let (_r, mut app) = app_with_two_groups_in_one_file();
+    app.focus = Focus::Groups;
+    let text = drawn_as_is(&mut app);
+
+    assert!(
+        text.contains("files in g"),
+        "the float names the group: {text}"
+    );
+    assert!(text.contains("f.rs"), "the tree should list files: {text}");
+    assert!(
+        text.contains('●'),
+        "no file is marked as the group's: {text}"
+    );
+    // Tree guides, not bare indentation.
+    assert!(
+        text.contains('└') || text.contains('├'),
+        "no tree guides: {text}"
+    );
+
+    // The group's header is above the float, and the diff below it.
+    assert!(
+        text.contains("[focus] Group 0"),
+        "the group's title should be uncovered: {text}"
+    );
+    assert!(
+        text.contains("let filler"),
+        "the diff should carry on underneath the float: {text}"
+    );
+
+    // Tab and the float is gone.
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    let text = drawn_as_is(&mut app);
+    assert!(
+        !text.contains("files in g"),
+        "the float should lift: {text}"
+    );
+    assert!(text.contains("let filler"));
+}
+
+/// Reading the detail, a list of the files in view floats over the foot of the
+/// plan pane to say where you are and how much is left.
+#[test]
+fn the_file_list_floats_over_the_plan_when_the_detail_is_focused() {
+    let (_r, mut app) = app_with_two_groups_in_one_file();
+
+    app.focus = Focus::Groups;
+    assert!(
+        !drawn_as_is(&mut app).contains("file 1 of"),
+        "the list belongs to the detail pane's focus"
+    );
+
+    app.focus = Focus::Detail;
+    let text = drawn_as_is(&mut app);
+    assert!(text.contains("file 1 of 1"), "no file list drawn: {text}");
+    assert!(
+        text.contains("▸ f.rs"),
+        "the current file is not marked: {text}"
+    );
+}
+
+/// Both overviews FLOAT, so focus never changes a pane's height. This is the
+/// guarantee `spec/tui.md` opens with, and the reason splitting a pane on focus
+/// was the wrong shape.
+#[test]
+fn focus_never_changes_a_pane_height() {
+    let (_r, mut app) = app_with_two_groups_in_one_file();
+    app.set_viewport(Viewport {
+        detail_rows: 30,
+        plan_rows: 30,
+    });
+    let before = app.viewport();
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(app.focus, Focus::Detail);
+    assert_eq!(
+        app.viewport(),
+        before,
+        "a float must not take room from the pane it covers"
+    );
+}
+
+/// A long file stops saying which file it is once its header scrolls away.
+#[test]
+fn a_file_header_sticks_while_scrolled_past_it() {
+    let (_r, mut app) = app_with_a_long_file();
+    app.focus = Focus::Detail;
+    app.set_viewport(Viewport {
+        detail_rows: 10,
+        plan_rows: 10,
+    });
+
+    let header = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::FileHeader(_)))
+        .expect("a file header");
+    // Park the cursor well below it so the header is off-screen.
+    app.cursor = app.rows.len() - 1;
+    app.set_viewport(Viewport {
+        detail_rows: 10,
+        plan_rows: 10,
+    });
+    assert!(
+        app.scroll() > header,
+        "not actually scrolled past the header"
+    );
+
+    let buf = buffer_of(&app);
+    let top: String = (41..99u16).map(|x| buf[(x, 1)].symbol()).collect();
+    assert!(
+        top.contains("long.rs"),
+        "the filename should stick to the top row: {top:?}"
+    );
+
+    // Back at the top, nothing is stuck: row one is the group header the rows
+    // actually start with, not a filename pinned over it.
+    app.cursor = 0;
+    app.set_viewport(Viewport {
+        detail_rows: 10,
+        plan_rows: 10,
+    });
+    assert_eq!(app.scroll(), 0);
+    let buf = buffer_of(&app);
+    let top: String = (41..99u16).map(|x| buf[(x, 1)].symbol()).collect();
+    assert!(
+        top.contains("Everything") && !top.contains("long.rs"),
+        "nothing should be stuck at the top of the rows: {top:?}"
+    );
+}
+
+/// Colour on the counts, in the two places that were still grey.
+#[test]
+fn counts_are_coloured_in_the_file_modal_and_the_role_is_a_pill() {
+    let (_r, mut app) = app_with_a_long_file();
+    app.focus = Focus::Detail;
+    app.handle_key(key('f'));
+    let buf = buffer_of(&app);
+    let inks: Vec<_> = buf.content().iter().filter_map(|c| c.style().fg).collect();
+    assert!(
+        inks.contains(&THEME.add_fg) && inks.contains(&THEME.del_fg),
+        "the file modal's counts should say added and removed"
+    );
+}
+
+/// One fact, one rendering. The role was a pill in the plan pane and grey
+/// suffix text on the group header three columns away.
+#[test]
+fn the_role_wears_the_same_pill_in_both_panes() {
+    let (_r, mut app) = app_with_dependency_edge();
+    app.focus = Focus::Detail;
+    let buf = buffer_of(&app);
+    let (_, pill_bg) = THEME.pill(None);
+
+    // The group header row leads the detail pane and carries the role.
+    let detail = (1..39u16)
+        .find(|&y| {
+            (41..99u16)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .contains("foundation")
+        })
+        .expect("no role on the group header");
+    assert!(
+        (41..99u16).any(|x| buf[(x, detail)].style().bg == Some(pill_bg)),
+        "the group header's role should be a pill, not grey text"
+    );
+
+    // And the plan pane's copy of the same fact wears the same fill.
+    let plan = (1..39u16)
+        .find(|&y| {
+            (1..39u16)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .contains("foundation")
+        })
+        .expect("no role in the plan pane");
+    assert!((1..39u16).any(|x| buf[(x, plan)].style().bg == Some(pill_bg)));
+}
+
+/// Drawing a document with no groups must not panic. It was harmlessly a no-op
+/// before the sticky header needed to know which file it was in.
+#[test]
+fn an_empty_document_draws_without_panicking() {
+    let (_r, mut app) = make_app();
+    app.rows.clear();
+    app.cursor = 0;
+    app.focus = Focus::Detail;
+    let _ = drawn_as_is(&mut app);
+    assert!(app.file_at_cursor().is_none());
+}
+
+/// A gap wide enough to need several presses shows both of its ends. Narrow it
+/// until one press would close it and there is nothing left to choose between
+/// them, so it collapses to a single row.
+#[test]
+fn a_gap_one_press_wide_is_one_row_not_two() {
+    let (_r, mut app) = app_with_a_long_file();
+    app.focus = Focus::Detail;
+
+    let edge_rows = |app: &App| -> Vec<(usize, Side)> {
+        app.rows
+            .iter()
+            .filter_map(|r| match r.kind {
+                RowKind::ContextEdge { hunk, side, .. } => Some((hunk, side)),
+                _ => None,
+            })
+            .collect()
+    };
+    // Two hunks mid-file: an outer end each, plus both ends of the gap between.
+    assert_eq!(
+        edge_rows(&app).len(),
+        4,
+        "expected two outer ends and both ends of the middle gap"
+    );
+
+    // The middle gap is thirteen lines against a ten-line step, so one press
+    // leaves three — close enough that the next press finishes it.
+    let (upper, _) = edge_rows(&app)[0];
+    put_cursor_on(
+        &mut app,
+        |k| matches!(*k, RowKind::ContextEdge { hunk: h, side: Side::Down, .. } if h == upper),
+    );
+    app.handle_key(key('z'));
+
+    let rows = edge_rows(&app);
+    assert_eq!(
+        rows.len(),
+        3,
+        "the middle gap should now speak with one row, got {rows:?}"
+    );
+    assert!(
+        app.rows.iter().any(|r| r.button == Some("↕")),
+        "a one-press gap should offer both directions at once"
+    );
+    // And it still works: one more press closes it and the blocks merge.
+    put_cursor_on(
+        &mut app,
+        |k| matches!(*k, RowKind::ContextEdge { hunk: h, side: Side::Down, .. } if h == upper),
+    );
+    app.handle_key(key('z'));
+    assert_eq!(
+        edge_rows(&app).len(),
+        2,
+        "closing the gap should leave only the outer ends"
+    );
+}
+
+/// The file view's left pane IS a file tree, so neither float belongs there: a
+/// map of one group would name a group nothing is selecting, and a file list
+/// would be the pane behind it.
+#[test]
+fn neither_float_appears_in_the_file_view() {
+    let (_r, mut app) = app_with_two_groups_in_one_file();
+
+    app.focus = Focus::Groups;
+    assert!(
+        drawn_as_is(&mut app).contains("files in g"),
+        "no map to lose"
+    );
+    app.handle_key(key('v'));
+    assert_eq!(app.view_mode, ViewMode::Files);
+    let text = drawn_as_is(&mut app);
+    assert!(
+        !text.contains("files in g"),
+        "the group map should not follow into the file view: {text}"
+    );
+
+    app.focus = Focus::Detail;
+    let text = drawn_as_is(&mut app);
+    assert!(
+        !text.contains("file 1 of"),
+        "nor should the file list: {text}"
+    );
+
+    // Both come back on the way out.
+    app.handle_key(key('v'));
+    assert_eq!(app.view_mode, ViewMode::Groups);
+    assert!(drawn_as_is(&mut app).contains("file 1 of"));
+}
+
+/// The file view's tree gets the same connectors the floating map draws.
+#[test]
+fn the_file_view_tree_is_drawn_with_guides() {
+    let (_r, mut app) = app_with_two_groups_in_one_file();
+    app.handle_key(key('v'));
+    let text = drawn_as_is(&mut app);
+    assert!(
+        text.contains('└') || text.contains('├'),
+        "the file tree should have guides: {text}"
+    );
+}
+
+/// Two blocks either side of one unlisted hunk both name it as what comes
+/// next, and pressing either crosses the same hunk — so one row says it.
+#[test]
+fn one_hunk_between_two_blocks_is_offered_once_not_twice() {
+    let r = TestRepo::new();
+    // Three changes, the middle one far enough from both to stay its own block.
+    let body = |a: &str, b: &str, c: &str| -> Vec<u8> {
+        let mut out = String::new();
+        for i in 1..=60 {
+            match i {
+                10 => out.push_str(a),
+                30 => out.push_str(b),
+                50 => out.push_str(c),
+                _ => out.push_str(&format!("let filler{i} = {i};\n")),
+            }
+        }
+        out.into_bytes()
+    };
+    r.write(
+        "src/f.rs",
+        &body("let a = 1;\n", "let b = 2;\n", "let c = 3;\n"),
+    );
+    r.commit_all("base");
+    r.write(
+        "src/f.rs",
+        &body("let a = 11;\n", "let b = 22;\n", "let c = 33;\n"),
+    );
+    r.commit_all("head");
+    // The outer two share a group; the middle one is its own, so it is foreign
+    // to the view and sits between two blocks.
+    let backend = FakeBackend::new("fake", |ids| {
+        let mut outer: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let middle = outer.remove(1);
+        format!(
+            r#"{{"groups": [{}, {}]}}"#,
+            json_group("Outer", "focus", &outer),
+            json_group("Middle", "focus", &[middle])
+        )
+    });
+    let mut app = open_app_with(&r, &backend, ".dfr-between-store");
+    app.focus = Focus::Detail;
+
+    // Open both inner gaps until each names the hunk between them.
+    for _ in 0..12 {
+        let spent = app.rows.iter().enumerate().find_map(|(i, r)| {
+            matches!(
+                r.kind,
+                RowKind::ContextEdge {
+                    crossing: false,
+                    ..
+                }
+            )
+            .then_some(i)
+        });
+        let Some(i) = spent else { break };
+        app.cursor = i;
+        app.handle_key(key('z'));
+    }
+
+    let naming: Vec<usize> = app
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| matches!(r.kind, RowKind::ContextEdge { crossing: true, .. }))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        naming.len(),
+        1,
+        "one hunk between two blocks should be offered once, got {} rows",
+        naming.len()
+    );
+    // And that row says it reaches both ways.
+    assert_eq!(app.rows[naming[0]].button, Some("↕"));
+    // Pressing it still works: the hunk arrives, marked foreign.
+    app.cursor = naming[0];
+    app.handle_key(key('z'));
+    assert!(shows_a_foreign_hunk(&app), "z should have crossed it");
+}
+
+/// The finding editor floats over the diff and names what it annotates: a note
+/// whose subject you cannot see is one you have to trust yourself about.
+#[test]
+fn the_finding_editor_floats_and_names_its_subject() {
+    let (_r, mut app) = app_with_a_long_file();
+    app.focus = Focus::Detail;
+    put_cursor_on(&mut app, |k| matches!(k, RowKind::HunkHeader { .. }));
+    app.handle_key(key('c'));
+    assert!(matches!(app.mode, Mode::Editing(_, _)));
+
+    let text = drawn_as_is(&mut app);
+    assert!(text.contains("long.rs · L"), "no file·line title: {text}");
+    // The keys are in a footer inside the box, and they are THIS app's keys —
+    // `enter` cannot save, because saving would leave no way to type a second
+    // line: the terminal reports shift+enter as enter without the keyboard
+    // enhancements this app deliberately does not ask for.
+    assert!(text.contains("ctrl-s"), "no save key shown: {text}");
+    assert!(text.contains("esc"), "no cancel key shown: {text}");
+    assert!(text.contains("newline"), "no newline key shown: {text}");
+
+    // It floats: the diff is still there around it.
+    assert!(
+        text.contains("let filler"),
+        "the editor should float over the diff, not replace it: {text}"
+    );
+}
+
 /// Not an assertion — a readable dump of the pane, so the styling can be
 /// eyeballed with `cargo test -- --ignored --nocapture render_dump`.
 #[test]
 #[ignore = "prints the pane for a human to look at"]
 fn render_dump() {
     let (_r, mut app) = app_with_a_long_file();
-    app.focus = Focus::Diff;
+    app.focus = Focus::Detail;
     for mode in ["unified", "split"] {
         let backend = ratatui::backend::TestBackend::new(120, 30);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
