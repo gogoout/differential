@@ -223,15 +223,21 @@ pub fn reanchor(
             .flatten();
         if let Some((hi, h)) = matched {
             f.anchor.hunk_digest = doc.hunks[hi].digest.clone();
-            let own = if f.anchor.side == "old" {
-                &h.removed
-            } else {
-                &h.added
-            };
-            f.anchor.offset = at(own)
-                .or_else(|| at(&h.added))
-                .or_else(|| at(&h.removed))
-                .unwrap_or(0) as i32;
+            // An offset is a position in ONE side's numbering, so the side it
+            // was found on is the side it now belongs to. Keeping the old side
+            // while taking the fallback's index paired one side's offset with
+            // the other side's start, and the note landed on an unrelated line
+            // wherever `old_start` and `new_start` had diverged — silently,
+            // and reported as a clean re-anchor.
+            let own = if f.anchor.side == "old" { "old" } else { "new" };
+            let lines_of = |side: &str| if side == "old" { &h.removed } else { &h.added };
+            let found = at(lines_of(own))
+                .map(|p| (own, p))
+                .or_else(|| at(&h.added).map(|p| ("new", p)))
+                .or_else(|| at(&h.removed).map(|p| ("old", p)));
+            let (side, offset) = found.unwrap_or((own, 0));
+            f.anchor.side = side.to_string();
+            f.anchor.offset = offset as i32;
             let start = f.anchor.hunk_start(h.old_start, h.new_start);
             f.anchor.resolve(start);
             f.plan_hash = plan_hash.to_string();

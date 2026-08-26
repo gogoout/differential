@@ -433,4 +433,5 @@ for a consumer that only reads; `offset`/`span` are what survive a regeneration.
 are additive with defaults, so an older `findings.jsonl` loads unchanged. `hunk_digest` keys back into the plan document's `hunks[].digest` and from
 there to `forge_position`, which is how agent tooling and the future forge consumer act on
 them. The `y` clipboard summary is the human-readable projection: one markdown bullet per
-open finding, `file:line (group label): body`.
+open finding, `file:lines: note`. No group: a group is how this reviewer chose to READ the
+branch, and the summary is pasted somewhere that has no idea what `g7` was.

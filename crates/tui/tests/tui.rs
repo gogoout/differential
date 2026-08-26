@@ -2694,6 +2694,7 @@ fn the_composer_saves_on_enter_and_takes_a_newline_two_ways() {
     open(&mut app);
     typed(&mut app, "first\\");
     app.handle_key(enter);
+    assert!(matches!(app.mode, Mode::Editing { .. }));
     assert!(
         matches!(app.mode, Mode::Editing { .. }),
         "the box should stay open"
@@ -2701,6 +2702,26 @@ fn the_composer_saves_on_enter_and_takes_a_newline_two_ways() {
     typed(&mut app, "second");
     app.handle_key(enter);
     assert_eq!(app.session.findings()[0].body, "first\nsecond");
+
+    // A `\` the reader went BACK to a line to leave is not a newline request:
+    // the key looks at the character before the cursor, and `delete_char`
+    // takes what the cursor sits after.
+    let (_r, mut app) = app_with_a_long_file();
+    open(&mut app);
+    typed(&mut app, "ends with a slash\\");
+    for _ in 0..5 {
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    }
+    app.handle_key(enter);
+    assert!(
+        matches!(app.mode, Mode::Normal),
+        "enter mid-line still saves"
+    );
+    assert_eq!(
+        app.session.findings()[0].body,
+        "ends with a slash\\",
+        "nothing should have been deleted"
+    );
 
     // `ctrl-s` still saves, for whoever's terminal passes it.
     let (_r, mut app) = app_with_a_long_file();

@@ -528,3 +528,73 @@ fn a_note_above_its_hunk_keeps_its_distance() {
         "the note should still be on keep12, not on the hunk's first line"
     );
 }
+
+/// An offset is a position in ONE side's numbering, so the side the anchored
+/// text is FOUND on is the side it now belongs to.
+///
+/// Keeping the old side while taking the index from the other one paired one
+/// side's offset with the other side's start; wherever `old_start` and
+/// `new_start` had diverged the note landed on an unrelated line, silently,
+/// and reported as a clean re-anchor.
+#[test]
+fn a_content_match_on_the_other_side_moves_the_anchor_to_it() {
+    let r = TestRepo::new();
+    let file = |prefix: usize, mid: &str| -> Vec<u8> {
+        let mut b = String::new();
+        for i in 1..=prefix {
+            b.push_str(&format!("prefix{i} = {i}\n"));
+        }
+        for i in 1..=10 {
+            b.push_str(&format!("head{i} = {i}\n"));
+        }
+        b.push_str(mid);
+        for i in 1..=5 {
+            b.push_str(&format!("tail{i} = {i}\n"));
+        }
+        b.into_bytes()
+    };
+    let before = "one = 1\ntwo = 2\nthree = 3\n";
+    let after = "one = 11\ntwo = 22\nthree = 33\n";
+    r.write("f.txt", &file(0, before));
+    let base = r.commit_all("base");
+
+    // A note on the OLD side whose saved text is a NEW-side line — what an
+    // edit that reverses which side a line sits on leaves behind. Its digest
+    // is gone, so re-anchoring can only take the content-match path.
+    let mut findings = vec![Finding::new(
+        FIXED_TIME,
+        "x".into(),
+        "plan1".into(),
+        Anchor {
+            file: "f.txt".into(),
+            side: "old".into(),
+            line: 11,
+            end_line: 11,
+            offset: 0,
+            span: 0,
+            hunk_digest: "a digest no hunk has".into(),
+            line_text: "three = 33".into(),
+            end_line_text: "three = 33".into(),
+        },
+    )];
+
+    // Eight lines inserted at the top, so the hunk's two starts diverge.
+    r.write("f.txt", &file(8, after));
+    let head2 = r.commit_all("head2");
+    let (doc2, view2) = doc_and_view(&r, &base, &head2);
+    let want = String::from_utf8(file(8, after))
+        .unwrap()
+        .lines()
+        .position(|l| l == "three = 33")
+        .map(|i| i as u32 + 1)
+        .expect("the line is in the head file");
+
+    reanchor(&mut findings, &doc2, &view2, "plan2");
+    let a = &findings[0].anchor;
+    assert!(findings[0].moved, "a content match is a move");
+    assert_eq!(a.side, "new", "the side follows the text");
+    assert_eq!(
+        a.line, want,
+        "the note must land on the line its text is actually on"
+    );
+}

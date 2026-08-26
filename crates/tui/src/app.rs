@@ -1045,10 +1045,18 @@ impl App {
                         return Vec::new();
                     }
                     (KeyCode::Enter, _)
-                        if textarea
-                            .lines()
-                            .get(textarea.cursor().0)
-                            .is_some_and(|l| l.ends_with('\\')) =>
+                        // The character before the CURSOR, not the end of the
+                        // line: `delete_char` takes what the cursor sits after,
+                        // so a `\` at the end of a line the reader had gone
+                        // back to edit would have deleted something else.
+                        if {
+                            let (row, col) = textarea.cursor();
+                            textarea
+                                .lines()
+                                .get(row)
+                                .and_then(|l| col.checked_sub(1).and_then(|i| l.chars().nth(i)))
+                                == Some('\\')
+                        } =>
                     {
                         textarea.delete_char();
                         textarea.insert_newline();
