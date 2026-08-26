@@ -1734,9 +1734,10 @@ fn a_foreign_hunk_is_dashed_and_names_its_group() {
         .collect();
     assert!(!dashed.is_empty(), "a foreign hunk's edge should be dashed");
 
-    // A foreign hunk has no tier here, so it takes the pane's own border
-    // colour rather than wearing one.
-    assert_eq!(buf[(40, dashed[0])].style().fg, Some(THEME.header_fg));
+    // A foreign hunk wears the same cyan the hunk you ARE reading wears, muted:
+    // same family, but plainly not on this reading list.
+    assert_eq!(buf[(40, dashed[0])].style().fg, Some(THEME.foreign_fg));
+    assert_ne!(THEME.foreign_fg, THEME.header_fg);
 
     // And it says whose it is, by id and label.
     let text = drawn(&mut app);
@@ -1896,7 +1897,9 @@ fn a_hunks_edge_runs_down_the_panes_own_border_column() {
     let buf = buffer_of(&app);
 
     let lit: Vec<u16> = (1..39u16)
-        .filter(|&y| buf[(40, y)].style().fg == Some(THEME.skim_fg))
+        .filter(|&y| {
+            buf[(40, y)].style().fg == Some(THEME.header_fg) && buf[(40, y)].symbol() == "\u{2502}"
+        })
         .collect();
     assert!(lit.len() > 1, "the edge should run, not mark a single row");
     assert!(
@@ -1935,7 +1938,7 @@ fn only_the_active_hunks_edge_is_coloured() {
     app.focus = Focus::Detail;
     let buf = buffer_of(&app);
     assert!(
-        (1..39u16).all(|y| buf[(40, y)].style().fg != Some(THEME.skim_fg)),
+        (1..39u16).all(|y| buf[(40, y)].style().fg != Some(THEME.header_fg)),
         "no hunk is under the cursor, so no edge should be lit"
     );
     // The edges are still there — muted, not missing.
@@ -1949,7 +1952,7 @@ fn only_the_active_hunks_edge_is_coloured() {
     let active = app.rows[app.cursor].border.unwrap().hunk;
     let buf = buffer_of(&app);
     let lit: Vec<u16> = (1..39u16)
-        .filter(|&y| buf[(40, y)].style().fg == Some(THEME.skim_fg))
+        .filter(|&y| buf[(40, y)].style().fg == Some(THEME.header_fg))
         .collect();
     assert!(!lit.is_empty(), "the hunk under the cursor should be lit");
     let rows_on_screen = &app.rows[app.scroll()..];
@@ -2048,7 +2051,7 @@ fn the_lit_hunk_pill_is_a_leading_bar_not_a_fill() {
         "a lit pill keeps the muted fill; only its leading cell changes"
     );
     let edge = (1..39u16)
-        .find_map(|y| buf[(40, y)].style().fg.filter(|c| *c == THEME.skim_fg))
+        .find_map(|y| buf[(40, y)].style().fg.filter(|c| *c == THEME.header_fg))
         .expect("no lit edge");
     let bar = pill_rows(&buf)
         .into_iter()

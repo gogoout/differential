@@ -125,7 +125,10 @@ flow of reading down it. An edge says where a hunk begins and ends without chopp
 page.
 
 **The edge is the pane's own border.** It sits in that column rather than a cell inside it,
-so it costs the content no width and there are never two vertical lines a cell apart.
+so it costs the content no width and there are never two vertical lines a cell apart. The
+pill **starts against that border**, with no cell of gap: the pill caps the edge that runs
+down the hunk beneath it, and a gap read as two marks that happened to line up rather than
+as one mark and the run it opens.
 
 Which is why a **frame never lights** — a pane's or a float's. Focus is carried by the
 **title**, in the same colour the border used to take. A lit frame drew a box around half the screen to
@@ -146,8 +149,12 @@ eye went to before the code — and it cost the palette a second, darker ink for
 that could sit on a pill, since `add_fg`/`del_fg` glow on a dark background and vanish on a
 bright one. One cell needs no twins, so the `+N`/`−M` counts are one pair everywhere.
 
-A **foreign** hunk takes the pane's border colour rather than a tier colour: it has no tier
-here, and wearing one would say it did.
+**Cyan is where you are.** The pane title wears it, the cursor's bar wears it, and so does
+the edge of the hunk you are reading — one colour for one idea, rather than a third accent
+to learn. A hunk already **reviewed** wears green instead: that is the one fact worth
+seeing at a glance on a hunk you have been through. A **foreign** hunk wears the same cyan,
+**muted** — it is real code you asked to see, so it belongs to the same family, but it is
+not on this reading list and a full accent would say it was.
 
 Headers and boundary rows rule out to the pane edge and cross the split separator, because
 what they describe is not one side of the file. A boundary **divides**, so its rule runs on

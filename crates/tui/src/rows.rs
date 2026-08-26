@@ -251,6 +251,19 @@ impl Row {
         Row::banner(kind, line, Fill::Bg(Style::default()))
     }
 
+    /// Drop the leading cell, so the row's band starts against the pane's own
+    /// border.
+    ///
+    /// A hunk's pill caps the edge that runs down the hunk beneath it. A cell
+    /// of gap between them read as two marks that happened to line up rather
+    /// than as one mark and the run it opens.
+    pub fn flush(mut self) -> Self {
+        if let RowContent::Unified(half) = &mut self.content {
+            half.gutter.text.clear();
+        }
+        self
+    }
+
     /// Replace a banner's content with pairs built elsewhere — a pill, whose
     /// caps drawing has to find by position.
     pub fn with_pairs(mut self, pairs: Vec<(Style, String)>) -> Self {
@@ -815,14 +828,17 @@ pub fn pill(
 
 /// The colour a hunk's box takes when the cursor is in it.
 ///
-/// A foreign hunk borrows the pane's own border colour rather than a tier
-/// colour: it has no tier here — it is not on this reading list at all — and
-/// wearing one would say it was.
+/// Cyan is "here you are" everywhere else in this view — the pane title, the
+/// cursor's bar — so it is what the hunk you are reading wears. A foreign
+/// hunk wears the same cyan, muted: it is real code you asked to see, so it
+/// belongs to the same family, but it is not on this reading list and a full
+/// accent would say it was. Reviewed wins over both: that is the one fact a
+/// reader wants at a glance on a hunk they have already been through.
 fn hunk_accent(ctx: &RowsContext, hi: usize, foreign: bool) -> Style {
     let fg = match (foreign, ctx.reviewed.contains(&hi)) {
-        (true, _) => THEME.header_fg,
+        (true, _) => THEME.foreign_fg,
         (false, true) => THEME.reviewed_fg,
-        (false, false) => THEME.skim_fg,
+        (false, false) => THEME.header_fg,
     };
     Style::default().fg(fg)
 }
@@ -889,6 +905,7 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
             Fill::Bg(Style::default()),
         )
         .with_pairs(pill(parts, bg))
+        .flush()
         .bordered(box_style, hi, hunk_accent(ctx, hi, foreign)),
     );
 

@@ -50,6 +50,11 @@ pub struct Theme {
     pub cursor_bg: Color,
     pub selected_bg: Color,
     pub header_fg: Color,
+    /// A hunk crossed in from another group. The same cyan the hunk you ARE
+    /// reading wears, muted: it is real code you asked to see, so it belongs
+    /// to the same family — but it is not on this reading list, and a full
+    /// accent would say it was.
+    pub foreign_fg: Color,
     pub focus_fg: Color,
     pub skim_fg: Color,
     pub noise_fg: Color,
@@ -84,6 +89,7 @@ pub const THEME: Theme = Theme {
     cursor_bg: Color::Rgb(48, 52, 70),
     selected_bg: Color::Rgb(40, 44, 58),
     header_fg: Color::Cyan,
+    foreign_fg: Color::Rgb(84, 132, 146),
     focus_fg: Color::LightRed,
     skim_fg: Color::Yellow,
     noise_fg: Color::DarkGray,
