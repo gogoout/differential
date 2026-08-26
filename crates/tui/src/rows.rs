@@ -171,20 +171,54 @@ pub enum Fill {
     Rule(Style),
 }
 
-/// One side of a diff row: a gutter whose first cell is reserved for the
-/// cursor marker, the content, and what pads the rest.
+/// The line-number cell: its text, the block it wears, and the brighter block
+/// it takes on the row the cursor is on.
+///
+/// Both styles travel with the row because whether a row is the cursor's is a
+/// cursor question — the cursor moves without rebuilding rows, so the row
+/// carries the colour it WOULD take and drawing chooses. Same reasoning as a
+/// hunk's `Border`, one column over.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Gutter {
+    pub text: String,
+    pub style: Style,
+    pub cursor: Style,
+}
+
+impl Gutter {
+    /// A cell that takes the same style either way — a banner's, or a boundary
+    /// band's, where the row is one tint the whole way across.
+    fn flat(text: &str, style: Style) -> Self {
+        Gutter {
+            text: text.to_string(),
+            style,
+            cursor: style,
+        }
+    }
+}
+
+/// One side of a diff row: a line-number cell, the content, and what pads the
+/// rest.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Half {
-    pub gutter: (Style, String),
+    pub gutter: Gutter,
     pub pairs: Vec<(Style, String)>,
     pub fill: Fill,
 }
 
 impl Half {
     /// The absent side of a split row.
+    ///
+    /// Its line-number cell is blank but keeps the width the real one has, so
+    /// the cursor block lands in the same column on both sides of a row that
+    /// exists on only one of them.
     fn hatch() -> Self {
         Half {
-            gutter: (Style::default(), String::new()),
+            gutter: Gutter {
+                text: format!(" {:4} ", ""),
+                style: Style::default(),
+                cursor: THEME.gutter_cursor(None),
+            },
             pairs: Vec::new(),
             fill: Fill::Hatch,
         }
@@ -210,11 +244,39 @@ pub struct Row {
     /// A glyph drawn in the pane's left border column, for rows that are a
     /// control rather than content.
     pub button: Option<&'static str>,
+    /// What a hunk header keeps while the cursor is somewhere else.
+    ///
+    /// The marks — reviewed, and how many findings stand against the hunk —
+    /// are FACTS about the hunk, and they are what a reader scans a file for.
+    /// The rest of the pill describes it, and a column of descriptions down
+    /// the page competes with the code it describes.
+    pub idle: Vec<(Style, String)>,
+    /// How to work this row, shown only while the cursor is ON it.
+    ///
+    /// A control that does not say how to work it is a label — but a screenful
+    /// of bands each naming the same key is a wall the reader stops reading.
+    /// The key belongs on the one row they can press it for. Whether that is
+    /// this row is a cursor question, so the row carries the text and drawing
+    /// chooses, exactly as it does for a hunk's accent.
+    pub hint: Option<(Style, String)>,
 }
 
 impl Row {
     pub fn full(kind: RowKind, line: Line<'static>) -> Self {
         Row::banner(kind, line, Fill::Bg(Style::default()))
+    }
+
+    /// Drop the leading cell, so the row's band starts against the pane's own
+    /// border.
+    ///
+    /// A hunk's pill caps the edge that runs down the hunk beneath it. A cell
+    /// of gap between them read as two marks that happened to line up rather
+    /// than as one mark and the run it opens.
+    pub fn flush(mut self) -> Self {
+        if let RowContent::Unified(half) = &mut self.content {
+            half.gutter.text.clear();
+        }
+        self
     }
 
     /// Replace a banner's content with pairs built elsewhere — a pill, whose
@@ -226,6 +288,18 @@ impl Row {
         self
     }
 
+    /// What survives on this row when the cursor is elsewhere.
+    pub fn with_idle(mut self, pairs: Vec<(Style, String)>) -> Self {
+        self.idle = pairs;
+        self
+    }
+
+    /// Text the row adds while the cursor is on it — the key that works it.
+    pub fn with_hint(mut self, style: Style, text: String) -> Self {
+        self.hint = Some((style, text));
+        self
+    }
+
     /// A glyph for the pane's border column — how a boundary band says which
     /// way it opens, in the column a hunk's edge otherwise occupies.
     ///
@@ -234,7 +308,9 @@ impl Row {
     pub fn with_button(mut self, glyph: &'static str, tint: Style) -> Self {
         self.button = Some(glyph);
         if let RowContent::Unified(half) = &mut self.content {
-            half.gutter.0 = tint;
+            half.gutter.style = tint;
+            // The band lightens under the cursor, and this cell is part of it.
+            half.gutter.cursor = THEME.lit_band(tint);
         }
         self
     }
@@ -260,8 +336,10 @@ impl Row {
             kind,
             border: None,
             button: None,
+            hint: None,
+            idle: Vec::new(),
             content: RowContent::Unified(Half {
-                gutter: (Style::default(), " ".to_string()),
+                gutter: Gutter::flat(" ", Style::default()),
                 pairs: line
                     .spans
                     .into_iter()
@@ -531,16 +609,19 @@ pub fn build_group_rows(factory: &mut RowFactory, ctx: &GroupContext) -> Vec<Row
         Deferral::FoldedNoise => "folded generated hunks",
         Deferral::SkimRemainder => "remaining hunks, same shapes as the exemplars above",
     };
-    rows.push(Row::full(
-        RowKind::Fold,
-        Line::from(Span::styled(
-            format!(
-                "  ── {} {what} — press z to unfold ──",
-                split.deferred.len()
-            ),
-            Style::default().fg(THEME.noise_fg),
-        )),
-    ));
+    rows.push(
+        Row::full(
+            RowKind::Fold,
+            Line::from(Span::styled(
+                format!("  ── {} {what} ──", split.deferred.len()),
+                Style::default().fg(THEME.noise_fg),
+            )),
+        )
+        .with_hint(
+            Style::default().fg(THEME.hint_cursor_fg),
+            "  ·  z to show".to_string(),
+        ),
+    );
     rows
 }
 
@@ -662,7 +743,7 @@ fn header_rows(ctx: &GroupContext, rows: &mut Vec<Row>) {
     // the grey suffix this replaces was the same `g.role` wearing a different
     // face on the other side of the screen.
     if let Some(r) = g.role {
-        let (fg, bg) = THEME.pill(None);
+        let (fg, bg) = THEME.pill();
         header.push(Span::styled(" ".to_string(), Style::default()));
         header.extend(
             pill(vec![(fg, role_name(r).to_string())], bg)
@@ -702,7 +783,7 @@ fn header_rows(ctx: &GroupContext, rows: &mut Vec<Row>) {
 
 fn file_header_row(doc: &schema::PlanDocument, path: &str) -> Row {
     let entry = doc.files.iter().find(|f| f.path == path);
-    let mut text = format!("▍{path}");
+    let mut text = path.to_string();
     if let Some(f) = entry {
         if let Some(old) = &f.old_path {
             let sim = f
@@ -731,7 +812,7 @@ fn file_header_row(doc: &schema::PlanDocument, path: &str) -> Row {
 /// content, at any pane width.
 fn column_header_row() -> Row {
     let label = |text: &str| Half {
-        gutter: (Style::default(), String::new()),
+        gutter: Gutter::default(),
         pairs: vec![(
             Style::default()
                 .fg(THEME.gutter_fg)
@@ -744,6 +825,8 @@ fn column_header_row() -> Row {
         kind: RowKind::ColumnHeader,
         border: None,
         button: None,
+        hint: None,
+        idle: Vec::new(),
         content: RowContent::Split {
             old: label("old"),
             new: label("new"),
@@ -779,14 +862,17 @@ pub fn pill(
 
 /// The colour a hunk's box takes when the cursor is in it.
 ///
-/// A foreign hunk borrows the pane's own border colour rather than a tier
-/// colour: it has no tier here — it is not on this reading list at all — and
-/// wearing one would say it was.
+/// Cyan is "here you are" everywhere else in this view — the pane title, the
+/// cursor's bar — so it is what the hunk you are reading wears. A foreign
+/// hunk wears the same cyan, muted: it is real code you asked to see, so it
+/// belongs to the same family, but it is not on this reading list and a full
+/// accent would say it was. Reviewed wins over both: that is the one fact a
+/// reader wants at a glance on a hunk they have already been through.
 fn hunk_accent(ctx: &RowsContext, hi: usize, foreign: bool) -> Style {
     let fg = match (foreign, ctx.reviewed.contains(&hi)) {
-        (true, _) => THEME.header_fg,
+        (true, _) => THEME.foreign_fg,
         (false, true) => THEME.reviewed_fg,
-        (false, false) => THEME.skim_fg,
+        (false, false) => THEME.header_fg,
     };
     Style::default().fg(fg)
 }
@@ -794,31 +880,30 @@ fn hunk_accent(ctx: &RowsContext, hi: usize, foreign: bool) -> Style {
 fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<Row>) {
     let hunk = &ctx.doc.hunks[hi];
     let reviewed = ctx.reviewed.contains(&hi);
-    let check = if reviewed { " ✓ reviewed" } else { "" };
     // A foreign hunk ALWAYS names its group: that is the whole point of it
     // being on screen at all, and the dashed border says "not yours" without
     // saying whose.
-    // The ID as well as the label: it is what the plan pane's rows and their
-    // `after:` lines are keyed by, so it is what turns "some other group" into
-    // a row you can go and look at.
-    let group_label = if ctx.show_group_labels || foreign {
-        ctx.plan
-            .group_of_hunk(HunkId::from_index(hi))
-            .map(|g| format!(" · {} {}", g.id, g.label))
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
+    //
+    // The id alone, not the label. The id is what the plan pane's rows and
+    // their `after:` lines are keyed by, so it is what turns "some other
+    // group" into a row you can go and look at — and the label is a sentence,
+    // which made the header longer than the code beneath it.
+    let group_id = (ctx.show_group_labels || foreign)
+        .then(|| {
+            ctx.plan
+                .group_of_hunk(HunkId::from_index(hi))
+                .map(|g| g.id.clone())
+        })
+        .flatten();
+    let group_label = group_id
+        .as_ref()
+        .map(|id| format!(" · {id}"))
+        .unwrap_or_default();
     let n_findings = ctx
         .findings
         .iter()
         .filter(|f| f.anchor.hunk_digest == hunk.digest)
         .count();
-    let notes = if n_findings > 0 {
-        format!("  ◆ {n_findings} finding(s)")
-    } else {
-        String::new()
-    };
     // A band across the pane rather than a `@@ -a,b +c,d @@` line. Those
     // coordinates were the only way to know where you were when the gutter
     // showed one number; now every row carries both, so the header repeated
@@ -830,28 +915,60 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
     } else {
         BoxStyle::Own
     };
-    // Built in the MUTED palette: whether this pill is the lit one is a cursor
-    // question, and drawing re-inks it through `Theme::lit_ink`.
-    let (fg, bg) = THEME.pill(None);
-    let mut parts = vec![
-        (fg, format!("{} · ", hunk.class)),
-        (THEME.add_fg, format!("+{}", hunk.new_count)),
-    ];
+    // One palette. Whether the cursor is in this hunk is a cursor question, and
+    // drawing answers it by lighting the pill's leading cell — not by re-inking
+    // the pill, which would need a second ink for every span on it.
+    // The SIZE first, then the class. How much changed is what a reader sizes
+    // a hunk up by; the class is what they need only once they are in it, and
+    // leading with it put a token they cannot read at a glance in front of two
+    // numbers they can.
+    let (fg, bg) = THEME.pill();
+
+    // The marks first, since they are what an idle header keeps: whose group
+    // the hunk is, `✓` for a class already read, `◆ N` for what stands filed
+    // against it. A reader scans a file for those; the class and the counts
+    // they ask a hunk for once they are in it.
+    let mut marks: Vec<(ratatui::style::Color, String)> = Vec::new();
+    let mark = |c, t: String, marks: &mut Vec<(ratatui::style::Color, String)>| {
+        if !marks.is_empty() {
+            marks.push((fg, " ".to_string()));
+        }
+        marks.push((c, t));
+    };
+    if let Some(id) = &group_id {
+        mark(fg, id.clone(), &mut marks);
+    }
+    if reviewed {
+        mark(THEME.reviewed_fg, "✓".to_string(), &mut marks);
+    }
+    if n_findings > 0 {
+        mark(THEME.finding_fg, format!("◆ {n_findings}"), &mut marks);
+    }
+
+    let mut parts = vec![(THEME.add_fg, format!("+{}", hunk.new_count))];
     if hunk.old_count > 0 {
         parts.push((fg, " ".to_string()));
         parts.push((THEME.del_fg, format!("−{}", hunk.old_count)));
     }
-    parts.push((fg, format!("{group_label}{check}")));
-    if !notes.is_empty() {
-        parts.push((THEME.finding_fg, notes));
+    parts.push((fg, format!(" · {}{group_label}", hunk.class)));
+    if !marks.is_empty() {
+        parts.push((fg, "  ".to_string()));
+        parts.extend(marks.iter().cloned());
     }
+    let idle = if marks.is_empty() {
+        Vec::new()
+    } else {
+        pill(marks, bg)
+    };
     rows.push(
         Row::banner(
             RowKind::HunkHeader { hunk: hi, foreign },
             Line::default(),
-            Fill::Bg(Style::default()),
+            Fill::Hatch,
         )
         .with_pairs(pill(parts, bg))
+        .with_idle(idle)
+        .flush()
         .bordered(box_style, hi, hunk_accent(ctx, hi, foreign)),
     );
 
@@ -963,6 +1080,8 @@ fn file_rows(
                             kind: RowKind::Diff(owner),
                             border: None,
                             button: None,
+                            hint: None,
+                            idle: Vec::new(),
                             content: row,
                         });
                     }
@@ -987,6 +1106,8 @@ fn file_rows(
                                 kind: RowKind::Diff(*hunk),
                                 border: None,
                                 button: None,
+                                hint: None,
+                                idle: Vec::new(),
                                 content,
                             }
                             .bordered(box_style, *hunk, accent),
@@ -1035,9 +1156,11 @@ fn boundary_row(ctx: &RowsContext, b: &window::Boundary, step: usize, both_ends:
             Side::Down => "↓",
         }
     };
-    // The key goes on the band. It is a control, and a control that does not
-    // say how to work it is a label.
-    let label = match b.next {
+    // The key goes on the band while the cursor is on it. A control that does
+    // not say how to work it is a label — but every band saying the same key
+    // at once is a wall, so the row carries the key and drawing shows it on
+    // the one row the reader can press it for.
+    let (label, hint) = match b.next {
         // The gap is exhausted and a hunk stands beyond it. Name it, so the
         // wall is visible and crossing is a deliberate press.
         Some(next) => {
@@ -1047,9 +1170,12 @@ fn boundary_row(ctx: &RowsContext, b: &window::Boundary, step: usize, both_ends:
                 .group_of_hunk(HunkId::from_index(next))
                 .map(|g| format!(" “{}”", g.label))
                 .unwrap_or_default();
-            format!("next: {class}{group} · z shows it")
+            (format!("next: {class}{group}"), "z shows it".to_string())
         }
-        None => format!("{} lines hidden · z shows {}", b.hidden, step.min(b.hidden)),
+        None => (
+            format!("{} lines hidden", b.hidden),
+            format!("z shows {}", step.min(b.hidden)),
+        ),
     };
     // A band, not a rule: two of these sit adjacent where two blocks meet, and
     // a tinted row with the arrow in the border column reads as one seam in the
@@ -1069,6 +1195,13 @@ fn boundary_row(ctx: &RowsContext, b: &window::Boundary, step: usize, both_ends:
         Fill::Bg(Style::default().bg(THEME.hint_bg)),
     )
     .with_button(arrow, Style::default().bg(THEME.hint_bg))
+    .with_hint(
+        Style::default()
+            .fg(THEME.hint_cursor_fg)
+            .bg(THEME.hint_cursor_bg)
+            .add_modifier(Modifier::BOLD),
+        format!("  ·  {hint}"),
+    )
 }
 
 /// Every line the blocks will draw, as sorted ranges per side.
@@ -1235,7 +1368,7 @@ fn render_change_row(
 /// order they are drawn.
 fn unify(mut h: Half, old_n: Option<usize>, new_n: Option<usize>) -> Half {
     let num = |n: Option<usize>| n.map(|n| n.to_string()).unwrap_or_default();
-    h.gutter.1 = format!(" {:>4} {:>4} ", num(old_n), num(new_n));
+    h.gutter.text = format!(" {:>4} {:>4} ", num(old_n), num(new_n));
     h
 }
 
@@ -1259,11 +1392,11 @@ fn half(
 
 /// The line-number cell.
 ///
-/// A leading space is reserved for the cursor marker, so moving the cursor
-/// never shifts the pane sideways. On a changed line the cell carries the
-/// change colour as a solid block, deliberately stronger than the tint over
-/// the code, which is what makes the gutter read as an edge.
-fn gutter(text: &str, origin: LineOrigin) -> (Style, String) {
+/// A space either side, so the number is a block rather than a run of digits
+/// against the code. On a changed line that block carries the change colour,
+/// deliberately stronger than the tint over the code, which is what makes the
+/// gutter read as an edge — and brighter again on the cursor's row.
+fn gutter(text: &str, origin: LineOrigin) -> Gutter {
     let mut style = Style::default().fg(match origin {
         LineOrigin::Context => THEME.gutter_fg,
         _ => THEME.context_fg,
@@ -1271,7 +1404,11 @@ fn gutter(text: &str, origin: LineOrigin) -> (Style, String) {
     if let Some(bg) = THEME.gutter_bg(origin) {
         style = style.bg(bg);
     }
-    (style, format!(" {text} "))
+    Gutter {
+        text: format!(" {text} "),
+        style,
+        cursor: THEME.gutter_cursor(THEME.gutter_bg(origin)),
+    }
 }
 
 /// Syntax pairs for one line with the per-side background and word-level
@@ -1343,11 +1480,11 @@ mod tests {
             half.fill
         );
         assert!(
-            half.gutter.1.contains('7') && half.gutter.1.contains('9'),
+            half.gutter.text.contains('7') && half.gutter.text.contains('9'),
             "both line numbers belong in a context gutter: {:?}",
-            half.gutter.1
+            half.gutter.text
         );
-        assert!(half.gutter.0.bg.is_none(), "no gutter block on context");
+        assert!(half.gutter.style.bg.is_none(), "no gutter block on context");
 
         // Split mode shows it once on each side, neither of them hatched.
         let out = render_change_row(&row, Some(7), Some(9), &no_hl, &no_hl, DiffMode::Split);
@@ -1373,7 +1510,7 @@ mod tests {
         assert_eq!(out.len(), 2);
         let text = |c: &RowContent| match c {
             RowContent::Unified(h) => (
-                h.gutter.1.clone(),
+                h.gutter.text.clone(),
                 h.pairs.iter().map(|(_, t)| t.clone()).collect::<String>(),
             ),
             other => panic!("expected unified, got {other:?}"),

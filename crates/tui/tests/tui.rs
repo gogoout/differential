@@ -116,6 +116,15 @@ fn make_app() -> (TestRepo, App) {
     (r, app)
 }
 
+/// Switch the left pane between the reading plan and the file tree. `f` acts
+/// on the pane it is pressed in, so this presses it there and puts focus back.
+fn switch_left_pane(app: &mut App) {
+    let focus = app.focus;
+    app.focus = Focus::Groups;
+    app.handle_key(key('f'));
+    app.focus = focus;
+}
+
 fn key(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
 }
@@ -252,7 +261,7 @@ fn file_view_lists_all_files_and_shares_review_marks() {
     let (r, mut app) = make_app();
     assert_eq!(app.view_mode, ViewMode::Groups);
 
-    app.handle_key(key('v'));
+    switch_left_pane(&mut app);
     assert_eq!(app.view_mode, ViewMode::Files);
     assert_eq!(app.files().len(), 4);
     let store = FsReviewStore::at(r.root.join(".dfr-test-store")).unwrap();
@@ -274,7 +283,7 @@ fn file_view_lists_all_files_and_shares_review_marks() {
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     app.handle_key(key(' '));
     assert_eq!(app.session.reviewed_count(), 1);
-    app.handle_key(key('v'));
+    switch_left_pane(&mut app);
     assert_eq!(app.view_mode, ViewMode::Groups);
     assert!(!store.load_state().unwrap().file_view);
     assert_eq!(app.session.reviewed_count(), 1);
@@ -298,7 +307,7 @@ fn file_view_shows_hunks_across_groups_with_labels() {
     let mut app = open_app(&r);
     assert_eq!(app.groups().len(), 2, "two shapes → two groups");
 
-    app.handle_key(key('v'));
+    switch_left_pane(&mut app);
     let hunk_headers = app
         .rows
         .iter()
@@ -314,7 +323,7 @@ fn file_view_shows_hunks_across_groups_with_labels() {
 fn file_view_resume_restores_view_and_file() {
     use differential_tui::app::ViewMode;
     let (r, mut app) = make_app();
-    app.handle_key(key('v'));
+    switch_left_pane(&mut app);
     app.handle_key(key('J')); // next tree row
     let path = app.selected_path().unwrap();
     app.handle_key(key('q'));
@@ -329,8 +338,9 @@ fn file_view_resume_restores_view_and_file() {
 fn file_list_modal_opens_jumps_and_closes() {
     use differential_tui::app::Mode;
     let (_r, mut app) = make_app();
-    // Group 1 ("Close work" or the skim sweep) — use whichever is selected;
-    // ensure some file headers exist in the current rows.
+    // `f` opens the list from the DIFF pane; in the plan pane it switches the
+    // left pane instead.
+    app.focus = Focus::Detail;
     app.handle_key(key('f'));
     let (n_entries, first_path) = match &app.mode {
         Mode::FileList { entries, .. } => (entries.len(), entries[0].path.clone()),
@@ -544,7 +554,7 @@ fn n_and_shift_n_jump_between_hunks() {
 fn file_view_is_a_collapsible_tree() {
     use differential_tui::app::{TreeKind, ViewMode};
     let (_r, mut app) = make_app();
-    app.handle_key(key('v'));
+    switch_left_pane(&mut app);
     assert_eq!(app.view_mode, ViewMode::Files);
 
     // The fixture's files all live under src/, so the tree has a src/ node
@@ -689,6 +699,17 @@ fn the_plan_gutter_links_the_selected_group_to_what_it_follows() {
         content.contains("├"),
         "the selected group follows something, so a connector must be drawn"
     );
+    // The tick wears the file tree's arm and reaches the title it points at.
+    let rows = plan_rows(&mut app);
+    assert!(
+        rows.iter().any(|r| r.starts_with("◆─")),
+        "the selected group's diamond must reach its title: {rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|r| r.starts_with("├─") || r.starts_with("└─")),
+        "a dependency tick must reach its title: {rows:?}"
+    );
 
     // --- selecting the foundation: the group that follows IT is not marked --
     // This is the change: the reverse edge used to be drawn, in a second
@@ -705,6 +726,19 @@ fn the_plan_gutter_links_the_selected_group_to_what_it_follows() {
         !plan_pane(&mut app).contains("├"),
         "nothing is followed from here, so no connector should be drawn"
     );
+}
+
+/// The plan pane's rows, one string each, trimmed of the pane's own border.
+/// Row order, unlike `plan_pane` — a connector's arm is two adjacent cells on
+/// one row, and a column-major dump puts a pane's height between them.
+fn plan_rows(app: &mut App) -> Vec<String> {
+    let backend = ratatui::backend::TestBackend::new(100, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    (1..39u16)
+        .map(|y| (1..39u16).map(|x| buf[(x, y)].symbol()).collect())
+        .collect()
 }
 
 /// Just the plan pane's columns. `├` is also a hunk box's corner over in the
@@ -728,6 +762,18 @@ fn plan_pane(app: &mut App) -> String {
 fn drawn(app: &mut App) -> String {
     app.focus = Focus::Detail;
     drawn_as_is(app)
+}
+
+/// The whole screen as rows, in row order — for assertions about text that
+/// has to sit on one line.
+fn drawn_rows(app: &mut App) -> Vec<String> {
+    let backend = ratatui::backend::TestBackend::new(100, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    (0..40u16)
+        .map(|y| (0..100u16).map(|x| buf[(x, y)].symbol()).collect())
+        .collect()
 }
 
 /// Render whatever the current focus puts on screen.
@@ -1307,23 +1353,86 @@ fn the_absent_side_of_a_split_row_is_hatched() {
     );
 }
 
+/// Background colours of the cells on one drawn row, left to right.
+fn row_backgrounds(app: &mut App, y: u16) -> Vec<ratatui::style::Color> {
+    let backend = ratatui::backend::TestBackend::new(100, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    (0..100u16).map(|x| buf[(x, y)].bg).collect()
+}
+
+/// The brighter line-number block the cursor's row wears on a changed line.
+fn is_cursor_block(c: &ratatui::style::Color) -> bool {
+    *c == THEME.added_gutter_cursor_bg || *c == THEME.deleted_gutter_cursor_bg
+}
+
+/// The screen row the cursor is drawn on, given the pane's scroll.
+fn cursor_screen_row(app: &App) -> u16 {
+    (app.cursor - app.scroll()) as u16 + 1
+}
+
 #[test]
-fn the_cursor_stays_visible_on_a_changed_row() {
+fn the_cursor_is_a_brighter_gutter_block_on_a_changed_row() {
     let (_r, mut app) = app_with_a_long_file();
     // A changed line carries its own background, and a line style sits under
-    // span styles — so only the marker can show the cursor there.
+    // span styles — so the gutter block is what has to show the cursor there.
     put_cursor_on(&mut app, |k| matches!(k, RowKind::Diff(_)));
     // Walk onto a row that actually has a change colour.
     for _ in 0..20 {
-        if drawn(&mut app).contains('▸') {
-            break;
+        let y = cursor_screen_row(&app);
+        if row_backgrounds(&mut app, y).iter().any(is_cursor_block) {
+            return;
         }
         app.handle_key(key('j'));
     }
-    assert!(
-        drawn(&mut app).contains('▸'),
-        "the cursor must be visible on a diff row"
+    panic!("the cursor's gutter must wear the brighter block of its change colour");
+}
+
+#[test]
+fn the_cursor_lights_the_gutter_on_both_sides_of_a_split_row() {
+    let (_r, mut app) = app_with_a_long_file();
+    app.handle_key(key('s')); // split
+    put_cursor_on(&mut app, |k| matches!(k, RowKind::Diff(_)));
+    // A modification exists on both sides, so both gutters must light.
+    for _ in 0..30 {
+        let y = cursor_screen_row(&app);
+        let bgs = row_backgrounds(&mut app, y);
+        // The separator column splits the row into its two halves.
+        if bgs[..50].iter().any(is_cursor_block) && bgs[50..].iter().any(is_cursor_block) {
+            return;
+        }
+        app.handle_key(key('j'));
+    }
+    panic!("both halves of a modified split row must carry the cursor block");
+}
+
+#[test]
+fn the_cursor_lights_the_absent_side_of_a_split_row_too() {
+    let r = TestRepo::new();
+    r.write("src/a.rs", b"let keep = 1;\nlet tail = 3;\n");
+    r.commit_all("base");
+    // A pure insertion: the OLD side has no line, so it is hatched.
+    r.write(
+        "src/a.rs",
+        b"let keep = 1;\nlet fresh = 2;\nlet tail = 3;\n",
     );
+    r.commit_all("head");
+    let backend = skim_first_backend();
+    let mut app = open_app_with(&r, &backend, ".dfr-cursor-hatch-store");
+    app.handle_key(key('s'));
+    put_cursor_on(&mut app, |k| matches!(k, RowKind::Diff(_)));
+    for _ in 0..20 {
+        let y = cursor_screen_row(&app);
+        let bgs = row_backgrounds(&mut app, y);
+        // The hatched half keeps a blank gutter of the same width, so the
+        // cursor block lands in the same column on both sides.
+        if bgs[..50].contains(&THEME.cursor_bg) {
+            return;
+        }
+        app.handle_key(key('j'));
+    }
+    panic!("an absent side must still carry the cursor's gutter block");
 }
 
 #[test]
@@ -1394,15 +1503,6 @@ fn space_on_context_marks_the_hunk_that_context_belongs_to() {
 #[test]
 fn a_hunk_header_is_a_band_carrying_the_class_and_the_size() {
     let (_r, mut app) = app_with_a_long_file();
-    let text = drawn(&mut app);
-    assert!(
-        !text.contains("@@"),
-        "the diff-syntax coordinates should be gone"
-    );
-    // What the header uniquely says survives: the shape class and the change's
-    // size. Each hunk here replaces one line with one line.
-    assert!(text.contains("+1"), "the added count: {text}");
-    assert!(text.contains("−1"), "the removed count");
     // Still a selectable row, so n/N, space and c keep working on it.
     let header = app
         .rows
@@ -1411,6 +1511,31 @@ fn a_hunk_header_is_a_band_carrying_the_class_and_the_size() {
         .expect("a hunk header row");
     assert!(app.rows[header].kind.selectable());
     assert!(app.rows[header].kind.hunk().is_some());
+
+    // Idle, the header is the band and nothing else.
+    let boundary = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::ContextEdge { .. }))
+        .expect("a boundary row");
+    app.cursor = boundary;
+    app.focus = Focus::Detail;
+    let idle = drawn(&mut app);
+    assert!(
+        !idle.contains("· C"),
+        "an idle header shows no pill: {idle}"
+    );
+
+    // Move into the hunk and it says what it uniquely says: the size of the
+    // change and the shape class. Each hunk here replaces one line with one.
+    cursor_into_first_box(&mut app);
+    let text = drawn(&mut app);
+    assert!(
+        !text.contains("@@"),
+        "the diff-syntax coordinates should be gone"
+    );
+    assert!(text.contains("+1"), "the added count: {text}");
+    assert!(text.contains("−1"), "the removed count");
 }
 
 /// Two boundary rows describing one gap sit adjacent with no blank between
@@ -1469,8 +1594,15 @@ fn two_boundaries_over_one_gap_are_one_band() {
         !text.contains("@@"),
         "`@@` was removed from headers: {text:?}"
     );
+    // One tint the whole way across. Which of the two it is depends on where
+    // the cursor is standing, so the assertion is about uniformity.
+    let tint = buf[(41, band)].style().bg;
     assert!(
-        (41..99u16).all(|x| buf[(x, band)].style().bg == Some(THEME.hint_bg)),
+        tint == Some(THEME.hint_bg) || tint == Some(THEME.hint_cursor_bg),
+        "the band should wear a band colour: {tint:?}"
+    );
+    assert!(
+        (41..99u16).all(|x| buf[(x, band)].style().bg == tint),
         "the band should be tinted the whole way across: {text:?}"
     );
 }
@@ -1628,9 +1760,10 @@ fn a_foreign_hunk_is_dashed_and_names_its_group() {
         .collect();
     assert!(!dashed.is_empty(), "a foreign hunk's edge should be dashed");
 
-    // A foreign hunk has no tier here, so it takes the pane's own border
-    // colour rather than wearing one.
-    assert_eq!(buf[(40, dashed[0])].style().fg, Some(THEME.header_fg));
+    // A foreign hunk wears the same cyan the hunk you ARE reading wears, muted:
+    // same family, but plainly not on this reading list.
+    assert_eq!(buf[(40, dashed[0])].style().fg, Some(THEME.foreign_fg));
+    assert_ne!(THEME.foreign_fg, THEME.header_fg);
 
     // And it says whose it is, by id and label.
     let text = drawn(&mut app);
@@ -1650,10 +1783,20 @@ fn a_foreign_hunk_is_dashed_and_names_its_group() {
         .plan()
         .group_of_hunk(differential_engine::plan::HunkId::from_index(foreign))
         .expect("the foreign hunk belongs to a group");
-    let want = format!("\u{b7} {} {}", owner.id, owner.label);
+    // The id, not the label: the id is what the plan pane's `after:` lines are
+    // keyed by, and the label is a sentence.
+    let (want, label) = (format!("\u{b7} {}", owner.id), owner.label.clone());
     assert!(
         text.contains(&want),
-        "a foreign header must name its group by id and label; looked for {want:?} in:\n{text}"
+        "a foreign header must name its group by id; looked for {want:?} in:\n{text}"
+    );
+    let header = drawn_rows(&mut app)
+        .into_iter()
+        .find(|r| r.contains(&want))
+        .expect("the foreign header's row");
+    assert!(
+        !header.contains(&label),
+        "the group's label belongs in the plan pane, not on a hunk header: {header:?}"
     );
 }
 
@@ -1790,7 +1933,9 @@ fn a_hunks_edge_runs_down_the_panes_own_border_column() {
     let buf = buffer_of(&app);
 
     let lit: Vec<u16> = (1..39u16)
-        .filter(|&y| buf[(40, y)].style().fg == Some(THEME.skim_fg))
+        .filter(|&y| {
+            buf[(40, y)].style().fg == Some(THEME.header_fg) && buf[(40, y)].symbol() == "\u{2502}"
+        })
         .collect();
     assert!(lit.len() > 1, "the edge should run, not mark a single row");
     assert!(
@@ -1829,7 +1974,7 @@ fn only_the_active_hunks_edge_is_coloured() {
     app.focus = Focus::Detail;
     let buf = buffer_of(&app);
     assert!(
-        (1..39u16).all(|y| buf[(40, y)].style().fg != Some(THEME.skim_fg)),
+        (1..39u16).all(|y| buf[(40, y)].style().fg != Some(THEME.header_fg)),
         "no hunk is under the cursor, so no edge should be lit"
     );
     // The edges are still there — muted, not missing.
@@ -1843,7 +1988,7 @@ fn only_the_active_hunks_edge_is_coloured() {
     let active = app.rows[app.cursor].border.unwrap().hunk;
     let buf = buffer_of(&app);
     let lit: Vec<u16> = (1..39u16)
-        .filter(|&y| buf[(40, y)].style().fg == Some(THEME.skim_fg))
+        .filter(|&y| buf[(40, y)].style().fg == Some(THEME.header_fg))
         .collect();
     assert!(!lit.is_empty(), "the hunk under the cursor should be lit");
     let rows_on_screen = &app.rows[app.scroll()..];
@@ -1894,13 +2039,30 @@ fn a_band_says_what_is_hidden_and_what_is_beyond() {
     );
 }
 
-/// A hunk's pill follows its edge, so the marker and the run below it read as
-/// one thing rather than as a label that happens to sit above a line.
+/// A hunk's pill keeps ONE palette. The cursor being in it lights the pill's
+/// leading cell, in the same colour as the edge below — so the marker and the
+/// run read as one thing without a block of colour the eye goes to first.
 #[test]
-fn the_hunk_pill_takes_the_colour_of_its_edge() {
+fn the_lit_hunk_pill_is_a_leading_bar_not_a_fill() {
     let (_r, mut app) = app_with_two_groups_in_one_file();
 
-    // Nothing active: the pill wears the muted colours.
+    // The pill's rows: a tinted row carrying `·` that is not a boundary band.
+    let pill_rows = |buf: &ratatui::buffer::Buffer| -> Vec<u16> {
+        (1..39u16)
+            .filter(|&y| {
+                let t: String = (41..99u16).map(|x| buf[(x, y)].symbol()).collect();
+                t.contains('·') && !t.contains("hidden") && !t.contains("next:")
+            })
+            .collect()
+    };
+    let pill_bg = |buf: &ratatui::buffer::Buffer| -> Option<Color> {
+        pill_rows(buf)
+            .into_iter()
+            .flat_map(|y| (41..99u16).map(move |x| (x, y)))
+            .find_map(|(x, y)| buf[(x, y)].style().bg.filter(|b| *b != Color::Reset))
+    };
+
+    // Nothing active: no pill at all, just the hatched band.
     let boundary = app
         .rows
         .iter()
@@ -1909,49 +2071,45 @@ fn the_hunk_pill_takes_the_colour_of_its_edge() {
     app.cursor = boundary;
     app.focus = Focus::Detail;
     let buf = buffer_of(&app);
-    let pill_bg = |buf: &ratatui::buffer::Buffer| -> Option<Color> {
-        (1..39u16)
-            .filter(|&y| {
-                let t: String = (41..99u16).map(|x| buf[(x, y)].symbol()).collect();
-                // A hunk pill, not the boundary band — both are tinted rows
-                // carrying a `·`.
-                t.contains('·') && !t.contains("hidden") && !t.contains("next:")
-            })
-            .flat_map(|y| (41..99u16).map(move |x| (x, y)))
-            .find_map(|(x, y)| buf[(x, y)].style().bg.filter(|b| *b != Color::Reset))
-    };
+    assert_eq!(pill_bg(&buf), None, "an idle header carries no pill");
+
+    // Cursor in the hunk: the pill appears, muted fill, with one lit cell at
+    // its head in the colour the edge beside it wears.
+    cursor_into_first_box(&mut app);
+    let buf = buffer_of(&app);
     assert_eq!(
         pill_bg(&buf),
         Some(THEME.button_bg),
-        "an idle pill is muted"
+        "a lit pill keeps the muted fill; only its leading cell changes"
     );
-
-    // Cursor in the hunk: the pill takes the same colour as the edge beside it.
-    cursor_into_first_box(&mut app);
-    let buf = buffer_of(&app);
     let edge = (1..39u16)
-        .find_map(|y| buf[(40, y)].style().fg.filter(|c| *c == THEME.skim_fg))
+        .find_map(|y| buf[(40, y)].style().fg.filter(|c| *c == THEME.header_fg))
         .expect("no lit edge");
+    let bar = pill_rows(&buf)
+        .into_iter()
+        .flat_map(|y| (41..99u16).map(move |x| (x, y)))
+        .find(|&(x, y)| {
+            buf[(x, y)].symbol() == "▌" && buf[(x, y)].style().bg == Some(THEME.button_bg)
+        })
+        .expect("no lit bar at the head of the pill");
     assert_eq!(
-        pill_bg(&buf),
+        buf[bar].style().fg,
         Some(edge),
-        "the pill should fill with its edge's colour"
+        "the bar should wear the edge's colour"
     );
 }
 
-/// The counts keep saying added and removed on either fill. `add_fg`/`del_fg`
-/// glow on a dark background and vanish on a bright one, so a lit pill needs
-/// its own pair rather than dropping the colours altogether.
+/// The counts say added and removed in one pair, everywhere. They used to need
+/// a second, darker pair because a lit pill filled with the hunk's accent and
+/// the bright inks vanished on it; a lit pill is one cell now, so it does not.
 #[test]
-fn the_counts_stay_coloured_on_both_pill_fills() {
+fn the_counts_keep_one_pair_of_colours() {
     let (_r, mut app) = app_with_two_groups_in_one_file();
     let inks = |app: &App| -> Vec<Color> {
         let buf = buffer_of(app);
         (1..39u16)
             .filter(|&y| {
                 let t: String = (41..99u16).map(|x| buf[(x, y)].symbol()).collect();
-                // A hunk pill, not the boundary band — both are tinted rows
-                // carrying a `·`.
                 t.contains('·') && !t.contains("hidden") && !t.contains("next:")
             })
             .flat_map(|y| (41..99u16).map(move |x| (x, y)))
@@ -1960,31 +2118,97 @@ fn the_counts_stay_coloured_on_both_pill_fills() {
             .collect()
     };
 
-    // Idle: the ordinary bright pair, on the dark muted fill.
-    let boundary = app
-        .rows
-        .iter()
-        .position(|r| matches!(r.kind, RowKind::ContextEdge { .. }))
-        .expect("a boundary row");
-    app.cursor = boundary;
-    app.focus = Focus::Detail;
-    let idle = inks(&app);
-    assert!(idle.contains(&THEME.add_fg), "no + colour idle: {idle:?}");
-    assert!(idle.contains(&THEME.del_fg), "no − colour idle: {idle:?}");
-
-    // Lit: the pair that reads on the accent, and still two distinct colours.
     cursor_into_first_box(&mut app);
     let lit = inks(&app);
-    assert!(lit.contains(&THEME.add_on_pill), "no + colour lit: {lit:?}");
-    assert!(lit.contains(&THEME.del_on_pill), "no − colour lit: {lit:?}");
-    assert_ne!(THEME.add_on_pill, THEME.del_on_pill);
-    assert_ne!(
-        THEME.add_on_pill, THEME.pill_fg,
-        "a count that matches the pill's own text is not a colour"
-    );
+    assert!(lit.contains(&THEME.add_fg), "no + colour: {lit:?}");
+    assert!(lit.contains(&THEME.del_fg), "no − colour: {lit:?}");
 }
 
 // -------------------------------------------------- the overview surfaces
+
+/// The map folds on the GROUP: a directory the group never enters is one row,
+/// and the files it does not touch inside one it does enter are a count. A
+/// document of any size then fits the float instead of running past it.
+#[test]
+fn the_group_map_folds_what_the_group_does_not_touch() {
+    let r = TestRepo::new();
+    // Every file changes, so every one is a row in the document's tree. Only
+    // ONE of them lands in the group the map is drawn for.
+    let files = [
+        "deep/a/b/c/buried.rs",
+        "src/one.rs",
+        "src/two.rs",
+        "src/three.rs",
+        "src/four.rs",
+        "src/five.rs",
+        "src/target.rs",
+    ];
+    // Structurally distinct, so each file lands in its own shape class and so
+    // in its own group — the map then has six files it must fold.
+    let shapes = [
+        ("fn f() { g(); }\n", "fn f() { h(); }\n"),
+        ("let x = 1;\n", "let x = 2;\n"),
+        ("struct S { a: u8 }\n", "struct S { a: u16 }\n"),
+        ("use a::b;\n", "use a::c;\n"),
+        ("const K: u8 = 1;\n", "const K: u8 = 2;\n"),
+        ("impl T for S {}\n", "impl U for S {}\n"),
+        ("enum E { A, B }\n", "enum E { A, C }\n"),
+    ];
+    for (path, (before, _)) in files.iter().zip(shapes) {
+        r.write(path, before.as_bytes());
+    }
+    r.commit_all("base");
+    for (path, (_, after)) in files.iter().zip(shapes) {
+        r.write(path, after.as_bytes());
+    }
+    r.commit_all("head");
+
+    // One class per group, so the selected group touches exactly one file.
+    let backend = FakeBackend::new("fake", |ids| {
+        let groups: Vec<String> = ids
+            .iter()
+            .enumerate()
+            .map(|(n, id)| json_group(&format!("Group {n}"), "focus", &[id.as_str()]))
+            .collect();
+        format!(r#"{{"groups": [{}]}}"#, groups.join(", "))
+    });
+    let mut app = open_app_with(&r, &backend, ".dfr-map-fold-store");
+    app.focus = Focus::Groups;
+
+    // Walk to the group that owns `src/target.rs`: it is the one whose map has
+    // a folded chain above it AND folded siblings beside it.
+    let mut rows = drawn_rows(&mut app);
+    for _ in 0..files.len() {
+        if rows.iter().any(|l| l.contains("● target.rs")) {
+            break;
+        }
+        app.handle_key(key('j'));
+        rows = drawn_rows(&mut app);
+    }
+
+    // The chain the group never enters is ONE row, with its path joined.
+    assert!(
+        rows.iter().any(|l| l.contains("▸ deep/a/b/c/")),
+        "an untouched chain must fold to one joined row: {rows:#?}"
+    );
+    assert!(
+        !rows.iter().any(|l| l.contains("buried.rs")),
+        "a folded directory must not list its files: {rows:#?}"
+    );
+    // The changed file is lit, and its siblings are a count.
+    assert!(
+        rows.iter().any(|l| l.contains("● target.rs")),
+        "the group's own file must still be lit: {rows:#?}"
+    );
+    assert!(
+        rows.iter().any(|l| l.contains("more")),
+        "the files the group misses must fold to a count: {rows:#?}"
+    );
+    assert!(
+        !rows.iter().any(|l| l.contains("three.rs")),
+        "a folded file must not be named: {rows:#?}"
+    );
+}
 
 /// Reading the plan, a map of the selected group FLOATS over the detail pane —
 /// below the group's header, so its full label survives the plan pane's 40
@@ -2046,9 +2270,22 @@ fn the_file_list_floats_over_the_plan_when_the_detail_is_focused() {
     app.focus = Focus::Detail;
     let text = drawn_as_is(&mut app);
     assert!(text.contains("file 1 of 1"), "no file list drawn: {text}");
+    assert!(text.contains("f.rs"), "the file is not listed: {text}");
+
+    // The current file is marked by the row being lit edge to edge, not by a
+    // glyph in a column of its own.
+    let buf = buffer_of(&app);
+    let row = (1..39u16)
+        .find(|&y| {
+            (1..39u16)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .contains("f.rs")
+        })
+        .expect("the file's row");
     assert!(
-        text.contains("▸ f.rs"),
-        "the current file is not marked: {text}"
+        (1..39u16).all(|x| buf[(x, row)].bg == THEME.selected_bg),
+        "the current file's row should be lit the whole way across"
     );
 }
 
@@ -2142,7 +2379,7 @@ fn the_role_wears_the_same_pill_in_both_panes() {
     let (_r, mut app) = app_with_dependency_edge();
     app.focus = Focus::Detail;
     let buf = buffer_of(&app);
-    let (_, pill_bg) = THEME.pill(None);
+    let (_, pill_bg) = THEME.pill();
 
     // The group header row leads the detail pane and carries the role.
     let detail = (1..39u16)
@@ -2250,7 +2487,7 @@ fn neither_float_appears_in_the_file_view() {
         drawn_as_is(&mut app).contains("files in g"),
         "no map to lose"
     );
-    app.handle_key(key('v'));
+    switch_left_pane(&mut app);
     assert_eq!(app.view_mode, ViewMode::Files);
     let text = drawn_as_is(&mut app);
     assert!(
@@ -2266,7 +2503,7 @@ fn neither_float_appears_in_the_file_view() {
     );
 
     // Both come back on the way out.
-    app.handle_key(key('v'));
+    switch_left_pane(&mut app);
     assert_eq!(app.view_mode, ViewMode::Groups);
     assert!(drawn_as_is(&mut app).contains("file 1 of"));
 }
@@ -2275,7 +2512,7 @@ fn neither_float_appears_in_the_file_view() {
 #[test]
 fn the_file_view_tree_is_drawn_with_guides() {
     let (_r, mut app) = app_with_two_groups_in_one_file();
-    app.handle_key(key('v'));
+    switch_left_pane(&mut app);
     let text = drawn_as_is(&mut app);
     assert!(
         text.contains('└') || text.contains('├'),
@@ -2413,7 +2650,7 @@ fn the_help_modal_is_only_keys() {
     };
     // Every key row, then the footer. No legend in between, and none after.
     let footer = at("press any key");
-    for k in ["j/k", "n/N", "z ", "s ", "v ", "f ", "space", "dd", "quit"] {
+    for k in ["j/k", "n/N", "z ", "s ", "f ", "space", "dd", "quit"] {
         assert!(at(k) < footer, "{k:?} should be in the key table");
     }
     for prose in [
@@ -2441,16 +2678,412 @@ fn the_help_modal_is_only_keys() {
 fn render_dump() {
     let (_r, mut app) = app_with_a_long_file();
     app.focus = Focus::Detail;
+    put_cursor_on(&mut app, |k| matches!(k, RowKind::Diff(_)));
     for mode in ["unified", "split"] {
-        let backend = ratatui::backend::TestBackend::new(120, 30);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal.draw(|f| app.draw(f)).unwrap();
-        let buf = terminal.backend().buffer().clone();
-        println!("\n=== {mode} ===");
-        for y in 0..30u16 {
-            let line: String = (0..120u16).map(|x| buf[(x, y)].symbol()).collect();
-            println!("{line}");
+        // Park on a changed row, so the cursor's gutter block is in the dump.
+        for _ in 0..20 {
+            let y = cursor_screen_row(&app);
+            if row_backgrounds(&mut app, y).iter().any(is_cursor_block) {
+                break;
+            }
+            app.handle_key(key('j'));
         }
+        println!("\n=== diff: {mode} ===");
+        println!("{}", ansi_dump(&mut app, 120, 26));
         app.handle_key(key('s'));
     }
+}
+
+/// The screen as ANSI truecolour, so a paste of it shows what a terminal shows.
+/// `TestBackend` renders styles but only exposes them cell by cell.
+fn ansi_dump(app: &mut App, w: u16, h: u16) -> String {
+    use ratatui::style::{Color, Modifier};
+    let backend = ratatui::backend::TestBackend::new(w, h);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    // The named colours the theme still uses, as the 8-bit codes a terminal
+    // reads — truecolour and named inks have to end up in one escape.
+    let code = |c: Color, base: u8| -> String {
+        match c {
+            Color::Rgb(r, g, b) => format!("{};2;{r};{g};{b}", base + 8),
+            Color::Reset => format!("{}", base + 9),
+            Color::Black => format!("{}", base),
+            Color::Red => format!("{}", base + 1),
+            Color::Green => format!("{}", base + 2),
+            Color::Yellow => format!("{}", base + 3),
+            Color::Blue => format!("{}", base + 4),
+            Color::Magenta => format!("{}", base + 5),
+            Color::Cyan => format!("{}", base + 6),
+            Color::Gray => format!("{}", base + 7),
+            Color::DarkGray => format!("{}", base + 60),
+            Color::LightRed => format!("{}", base + 61),
+            Color::LightGreen => format!("{}", base + 62),
+            Color::LightYellow => format!("{}", base + 63),
+            Color::LightBlue => format!("{}", base + 64),
+            Color::LightMagenta => format!("{}", base + 65),
+            Color::LightCyan => format!("{}", base + 66),
+            Color::White => format!("{}", base + 67),
+            _ => format!("{}", base + 9),
+        }
+    };
+    let mut out = String::new();
+    for y in 0..h {
+        // One escape per RUN, not per cell: a cell-by-cell dump is twenty
+        // times the bytes and unreadable in a diff.
+        let mut worn = String::new();
+        for x in 0..w {
+            let cell = &buf[(x, y)];
+            let mut parts = vec![code(cell.fg, 30), code(cell.bg, 40)];
+            if cell.modifier.contains(Modifier::BOLD) {
+                parts.push("1".to_string());
+            }
+            let style = parts.join(";");
+            if style != worn {
+                out.push_str(&format!("\x1b[0;{style}m"));
+                worn = style;
+            }
+            out.push_str(cell.symbol());
+        }
+        out.push_str("\x1b[0m\n");
+    }
+    out
+}
+
+/// The group map float, folded, over a document with more files than the
+/// selected group touches.
+#[test]
+#[ignore = "prints the pane for a human to look at"]
+fn render_dump_map() {
+    let r = TestRepo::new();
+    let files = [
+        "deep/a/b/c/buried.rs",
+        "src/one.rs",
+        "src/two.rs",
+        "src/three.rs",
+        "src/four.rs",
+        "src/five.rs",
+        "src/target.rs",
+    ];
+    let shapes = [
+        ("fn f() { g(); }\n", "fn f() { h(); }\n"),
+        ("let x = 1;\n", "let x = 2;\n"),
+        ("struct S { a: u8 }\n", "struct S { a: u16 }\n"),
+        ("use a::b;\n", "use a::c;\n"),
+        ("const K: u8 = 1;\n", "const K: u8 = 2;\n"),
+        ("impl T for S {}\n", "impl U for S {}\n"),
+        ("enum E { A, B }\n", "enum E { A, C }\n"),
+    ];
+    for (path, (before, _)) in files.iter().zip(shapes) {
+        r.write(path, before.as_bytes());
+    }
+    r.commit_all("base");
+    for (path, (_, after)) in files.iter().zip(shapes) {
+        r.write(path, after.as_bytes());
+    }
+    r.commit_all("head");
+    let backend = FakeBackend::new("fake", |ids| {
+        let groups: Vec<String> = ids
+            .iter()
+            .enumerate()
+            .map(|(n, id)| json_group(&format!("Group {n}"), "focus", &[id.as_str()]))
+            .collect();
+        format!(r#"{{"groups": [{}]}}"#, groups.join(", "))
+    });
+    let mut app = open_app_with(&r, &backend, ".dfr-map-dump-store");
+    app.focus = Focus::Groups;
+    for _ in 0..files.len() {
+        if drawn_rows(&mut app)
+            .iter()
+            .any(|l| l.contains("● target.rs"))
+        {
+            break;
+        }
+        app.handle_key(key('j'));
+    }
+    println!("\n=== group map, folded ===");
+    println!("{}", ansi_dump(&mut app, 120, 20));
+}
+
+/// The cursor's bar sits just inside the frame on EVERY selectable row — a
+/// header, a fold and a boundary have no line-number block to brighten, and
+/// the row tint alone was too faint to find.
+#[test]
+fn the_cursor_bar_shows_on_rows_that_have_no_gutter() {
+    // The column just inside the detail pane's left border, at width 100.
+    const BAR_X: usize = 41;
+    type Case = (&'static str, fn(&RowKind) -> bool);
+    let cases: [Case; 2] = [
+        ("a context boundary", |k| {
+            matches!(k, RowKind::ContextEdge { .. })
+        }),
+        ("a hunk header", |k| matches!(k, RowKind::HunkHeader { .. })),
+    ];
+    let (_r, mut app) = app_with_a_long_file();
+    for (name, pred) in cases {
+        put_cursor_on(&mut app, pred);
+        let rows = drawn_rows(&mut app);
+        let y = cursor_screen_row(&app) as usize;
+        assert_eq!(
+            rows[y].chars().nth(BAR_X),
+            Some('▌'),
+            "no cursor bar on {name}: {:?}",
+            rows[y]
+        );
+    }
+
+    // A fold row: the skim group's remainder, which no fixture above has.
+    let (_r, mut app) = make_app();
+    app.handle_key(key('j'));
+    put_cursor_on(&mut app, |k| *k == RowKind::Fold);
+    let rows = drawn_rows(&mut app);
+    let y = cursor_screen_row(&app) as usize;
+    assert_eq!(
+        rows[y].chars().nth(BAR_X),
+        Some('▌'),
+        "no cursor bar on a fold row: {:?}",
+        rows[y]
+    );
+}
+
+/// The footer is two pills and two keys: what the review stands at, and the
+/// way to the full key list. Everything else it used to name lives in `?`.
+#[test]
+fn the_footer_is_pills_on_the_left_and_two_keys_on_the_right() {
+    let (_r, mut app) = make_app();
+    let rows = drawn_rows(&mut app);
+    let footer = rows.last().expect("no footer row").clone();
+
+    assert!(
+        footer.contains("classes reviewed") && footer.contains("finding"),
+        "the tallies must still be there: {footer:?}"
+    );
+    assert!(
+        footer.trim_end().ends_with("q quit"),
+        "the keys belong against the right edge: {footer:?}"
+    );
+    for gone in [
+        "j/k",
+        "n/N",
+        "space reviewed",
+        "s split",
+        "v files",
+        "z fold",
+    ] {
+        assert!(
+            !footer.contains(gone),
+            "{gone} moved to the help modal: {footer:?}"
+        );
+    }
+    // Whatever left the footer has to be reachable, so `?` has to name it.
+    app.handle_key(key('?'));
+    let help = drawn_as_is(&mut app);
+    for key_name in ["j/k", "n/N", "space", "s", "v", "z"] {
+        assert!(help.contains(key_name), "`?` must still list {key_name}");
+    }
+
+    // A pill, not a run of grey words: the tally sits on the pill's fill.
+    let backend = ratatui::backend::TestBackend::new(100, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    app.mode = Mode::Normal;
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let (_, fill) = THEME.pill();
+    assert!(
+        (0..100u16).any(|x| buf[(x, 39)].bg == fill),
+        "the tallies must wear the pill's fill"
+    );
+}
+
+/// Standing ON a hunk's header lights its pill's leading cell in the hunk's
+/// own accent. The cursor's bar sits in that same column, so drawing it there
+/// would repaint green (reviewed) or muted cyan (foreign) as plain cyan — and
+/// say the hunk was neither.
+#[test]
+fn the_cursor_on_a_hunk_header_keeps_the_hunks_own_accent() {
+    let (_r, mut app) = app_with_a_long_file();
+    // Reviewed, so the accent is green: an unread own hunk wears the cursor's
+    // own cyan already, and the collision would prove nothing.
+    let header = put_cursor_on(&mut app, |k| matches!(k, RowKind::HunkHeader { .. }));
+    app.handle_key(key(' '));
+    app.cursor = header;
+    let buf = buffer_of(&app);
+    let y = cursor_screen_row(&app);
+    assert_eq!(buf[(41, y)].symbol(), "▌", "no marker on the header");
+    assert_eq!(
+        buf[(41, y)].style().fg,
+        Some(THEME.reviewed_fg),
+        "the header's leading cell must keep the hunk's accent"
+    );
+}
+
+/// `z` acts on the pane it is pressed in. `self.cursor` is a DIFF row wherever
+/// the focus is, so a press in the file tree used to open whatever the diff's
+/// cursor happened to be parked on.
+#[test]
+fn z_in_the_file_tree_folds_the_tree_not_the_diff() {
+    use differential_tui::app::TreeKind;
+    let (_r, mut app) = make_app();
+    switch_left_pane(&mut app);
+    assert_eq!(app.view_mode, ViewMode::Files);
+
+    // Park the diff's cursor on a boundary row, then press `z` in the tree.
+    let boundary = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::ContextEdge { .. }));
+    if let Some(b) = boundary {
+        app.cursor = b;
+    }
+    let rows_before = app.rows.len();
+    let tree_before = app.tree.len();
+
+    app.focus = Focus::Groups;
+    app.selected_file = app
+        .tree
+        .iter()
+        .position(|e| matches!(e.kind, TreeKind::Dir { .. }))
+        .expect("a directory row");
+    app.handle_key(key('z'));
+
+    assert!(
+        app.tree.len() < tree_before,
+        "the directory should have folded"
+    );
+    assert_eq!(
+        app.rows.len(),
+        rows_before,
+        "the diff should not have moved"
+    );
+}
+
+/// A control has to say how to work it — but a screenful of bands each naming
+/// the same key is a wall. The key shows on the cursor's row only.
+#[test]
+fn a_boundary_names_its_key_on_the_cursors_row_only() {
+    let (_r, mut app) = app_with_a_long_file();
+    let pos = put_cursor_on(&mut app, |k| matches!(k, RowKind::ContextEdge { .. }));
+    let rows = drawn_rows(&mut app);
+    let here = cursor_screen_row(&app) as usize;
+    assert!(
+        rows[here].contains("lines hidden") && rows[here].contains("z shows"),
+        "the cursor's band must name its key: {:?}",
+        rows[here]
+    );
+
+    // Every other band says what it hides and nothing more.
+    let elsewhere: Vec<&String> = rows
+        .iter()
+        .enumerate()
+        .filter(|(y, r)| *y != here && r.contains("lines hidden"))
+        .map(|(_, r)| r)
+        .collect();
+    assert!(!elsewhere.is_empty(), "the fixture needs a second band");
+    for row in elsewhere {
+        assert!(
+            !row.contains("z shows"),
+            "a band off the cursor names no key: {row:?}"
+        );
+    }
+
+    // The key follows the label rather than sitting out at the pane's edge.
+    let text = &rows[here];
+    let label = text.find("lines hidden").expect("the label");
+    let key = text.find("z shows").expect("the key");
+    assert!(key > label, "the key follows the label: {text:?}");
+    assert!(
+        key - label < 24,
+        "the key should sit with the label, not a screen away: {text:?}"
+    );
+
+    // The band still fills the pane: the hint eats padding, not width.
+    let width = text.chars().count();
+    app.cursor = app
+        .rows
+        .iter()
+        .enumerate()
+        .position(|(i, r)| i != pos && r.kind.selectable())
+        .expect("another selectable row");
+    let after = drawn_rows(&mut app);
+    assert_eq!(
+        after[here].chars().count(),
+        width,
+        "showing the key must not change the row's width"
+    );
+}
+
+/// A context boundary is a control, and its band carries its own colour the
+/// whole way across — so the row tint that marks the cursor elsewhere never
+/// showed through it. On the cursor's row the band lightens instead.
+#[test]
+fn a_context_boundary_band_lightens_under_the_cursor() {
+    let (_r, mut app) = app_with_a_long_file();
+    let pos = put_cursor_on(&mut app, |k| matches!(k, RowKind::ContextEdge { .. }));
+    let y = cursor_screen_row(&app);
+    let lit = row_backgrounds(&mut app, y);
+    assert!(
+        lit.contains(&THEME.hint_cursor_bg),
+        "the band under the cursor must lighten: {lit:?}"
+    );
+
+    // The same row, with the cursor elsewhere, keeps the muted band.
+    app.cursor = app
+        .rows
+        .iter()
+        .enumerate()
+        .position(|(i, r)| i != pos && r.kind.selectable())
+        .expect("another selectable row");
+    let muted = row_backgrounds(&mut app, y);
+    assert!(
+        !muted.contains(&THEME.hint_cursor_bg),
+        "only the cursor's band lightens: {muted:?}"
+    );
+}
+
+/// A split diff over a pure insertion: one side is hatched, and the cursor's
+/// block still lands in the same column on both.
+#[test]
+#[ignore = "prints the pane for a human to look at"]
+fn render_dump_hatch() {
+    let r = TestRepo::new();
+    r.write("src/a.rs", b"let keep = 1;\nlet tail = 3;\n");
+    r.commit_all("base");
+    r.write(
+        "src/a.rs",
+        b"let keep = 1;\nlet fresh = 2;\nlet tail = 3;\n",
+    );
+    r.commit_all("head");
+    let backend = skim_first_backend();
+    let mut app = open_app_with(&r, &backend, ".dfr-hatch-dump-store");
+    app.handle_key(key('s'));
+    put_cursor_on(&mut app, |k| matches!(k, RowKind::Diff(_)));
+    for _ in 0..20 {
+        let y = cursor_screen_row(&app);
+        if row_backgrounds(&mut app, y).iter().any(is_cursor_block) {
+            break;
+        }
+        app.handle_key(key('j'));
+    }
+    println!("\n=== split over an insertion ===");
+    println!("{}", ansi_dump(&mut app, 120, 16));
+}
+
+/// The plan pane's connector, with a group that follows two others.
+#[test]
+#[ignore = "prints the pane for a human to look at"]
+fn render_dump_plan() {
+    let (_r, mut app) = app_with_dependency_edge();
+    app.focus = Focus::Groups;
+    let follower = (0..app.groups().len())
+        .find(|i| !app.groups()[*i].depends_on.is_empty())
+        .expect("no group follows another");
+    while app.selected_group != follower {
+        app.handle_key(key(if app.selected_group < follower {
+            'j'
+        } else {
+            'k'
+        }));
+    }
+    println!("\n=== plan connector ===");
+    println!("{}", ansi_dump(&mut app, 120, 20));
 }

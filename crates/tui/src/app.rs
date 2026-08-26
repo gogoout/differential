@@ -12,7 +12,7 @@ use differential_engine::plan::{Fold, PlanIndex};
 use differential_engine::review_state::FindingStatus;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use tui_textarea::TextArea;
@@ -27,15 +27,6 @@ use super::vendor::text_utils::truncate_or_pad_spans;
 use super::window::{Expansion, Side};
 
 const SCROLL_MARGIN: usize = 3;
-
-/// The cursor's own cell, at the head of every diff row's gutter.
-///
-/// A background is what marks a change now, and `Line::style` sits UNDER span
-/// styles — so a row-wide cursor colour is invisible on exactly the rows a
-/// reviewer is most likely to be standing on. A glyph reads on any background,
-/// and living inside the reserved gutter cell means moving the cursor never
-/// shifts the pane sideways.
-const CURSOR_MARK: char = '▸';
 
 /// How far a context boundary's rule reaches either side of its label.
 ///
@@ -188,6 +179,48 @@ pub enum ViewMode {
     Groups,
     /// Flattened per-file list, every hunk in file order.
     Files,
+}
+
+/// One row of the group map — the document's file tree with everything the
+/// selected group does not touch folded away.
+///
+/// A separate row type rather than a filtered `Vec<TreeEntry>`: the map folds
+/// on a different question from the file view (does the GROUP touch this?
+/// rather than did the reader press `z`?), and the two folds must not share
+/// state — folding here would move the file view's cursor.
+enum MapRow {
+    /// A directory the group touches. Its children follow.
+    Dir {
+        depth: usize,
+        name: String,
+    },
+    /// A directory the group does not touch, and everything under it. A chain
+    /// of single-child directories is joined, so one row says `a/b/c/`.
+    Folded {
+        depth: usize,
+        name: String,
+        files: usize,
+    },
+    File {
+        depth: usize,
+        file_idx: usize,
+    },
+    /// A run of files the group does not touch, inside one it does.
+    More {
+        depth: usize,
+        files: usize,
+    },
+}
+
+impl MapRow {
+    fn depth(&self) -> usize {
+        match self {
+            MapRow::Dir { depth, .. }
+            | MapRow::Folded { depth, .. }
+            | MapRow::File { depth, .. }
+            | MapRow::More { depth, .. } => *depth,
+        }
+    }
 }
 
 /// One visible row of the file tree: a directory, or a file (indexing into
@@ -886,7 +919,26 @@ impl App {
             self.cursor = pos;
             self.follow_cursor();
         }
-        self.status = if on { "split diff" } else { "unified diff" }.into();
+        // No status line: the pane in front of the reader IS the answer, and a
+        // message saying what they can see costs the footer its one slot for
+        // things they cannot.
+        self.status.clear();
+    }
+
+    /// Open or close the selected group's folded remainder — the skim group's
+    /// hunks past its exemplars, or a noise group entire.
+    fn toggle_group_fold(&mut self) {
+        if self.view_mode != ViewMode::Groups {
+            return;
+        }
+        let Some(g) = self.groups().get(self.selected_group) else {
+            return;
+        };
+        let gid = g.id.clone();
+        if !self.folds_open.insert(gid.clone()) {
+            self.folds_open.remove(&gid);
+        }
+        self.rebuild_rows();
     }
 
     /// Persist the resume position through the session; surface failures in
@@ -1016,36 +1068,41 @@ impl App {
                     .unwrap_or(0);
                 self.follow_cursor();
             }
-            // On a context boundary `z` opens the file up; everywhere else it
-            // keeps its existing meaning. One key for "show me what is being
-            // withheld", whatever is withholding it.
+            // One key for "show me what is being withheld", acting on the pane
+            // it is pressed in. Reading the diff that is a context boundary or
+            // a folded remainder; reading the file tree it is a directory.
+            //
+            // The pane matters: `self.cursor` is a DIFF row wherever the focus
+            // is, so without it a press in the tree opened whatever the diff's
+            // cursor happened to be parked on.
             (KeyCode::Char('z'), _)
-                if matches!(
-                    self.rows.get(self.cursor).map(|r| &r.kind),
-                    Some(RowKind::ContextEdge { .. })
-                ) =>
+                if self.focus == Focus::Detail
+                    && matches!(
+                        self.rows.get(self.cursor).map(|r| &r.kind),
+                        Some(RowKind::ContextEdge { .. })
+                    ) =>
             {
                 self.expand_at_cursor();
             }
-            (KeyCode::Char('z'), _) if self.view_mode == ViewMode::Files => {
+            (KeyCode::Char('z'), _)
+                if self.focus == Focus::Groups && self.view_mode == ViewMode::Files =>
+            {
                 self.toggle_dir();
             }
-            (KeyCode::Char('z'), _) => {
-                if self.view_mode == ViewMode::Groups
-                    && let Some(g) = self.groups().get(self.selected_group)
-                {
-                    let gid = g.id.clone();
-                    if !self.folds_open.insert(gid.clone()) {
-                        self.folds_open.remove(&gid);
-                    }
-                    self.rebuild_rows();
-                }
-            }
+            (KeyCode::Char('z'), _) => self.toggle_group_fold(),
             (KeyCode::Char('n'), KeyModifiers::NONE) => self.jump_hunk(1),
             (KeyCode::Char('N'), _) => self.jump_hunk(-1),
             (KeyCode::Char('s'), KeyModifiers::NONE) => self.toggle_split(),
-            (KeyCode::Char('v'), KeyModifiers::NONE) => self.toggle_file_view(),
-            (KeyCode::Char('f'), KeyModifiers::NONE) => self.open_file_list(),
+            // One key for files, acting on the pane it is pressed in. In the
+            // left pane that is which list of files you are reading — the
+            // plan or the tree; in the diff pane it is which file you want to
+            // be looking at. `v` used to switch the left pane from either
+            // side, which meant a key in one pane silently rearranged the
+            // other.
+            (KeyCode::Char('f'), KeyModifiers::NONE) => match self.focus {
+                Focus::Groups => self.toggle_file_view(),
+                Focus::Detail => self.open_file_list(),
+            },
             (KeyCode::Char(' '), _) => self.toggle_reviewed(),
             (KeyCode::Char('c'), KeyModifiers::NONE) => {
                 if let Some(h) = self.current_hunk() {
@@ -1240,7 +1297,7 @@ impl App {
                 );
             }
             Mode::Help => {
-                let area = centered_rect(panes.body, 62, 21);
+                let area = centered_rect(panes.body, 62, 19);
                 frame.render_widget(Clear, area);
                 frame.render_widget(help_paragraph(), area);
             }
@@ -1346,14 +1403,7 @@ impl App {
         } else {
             format!(" {pane_name} ")
         };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(title)
-            .border_style(if self.focus == Focus::Groups {
-                Style::default().fg(THEME.header_fg)
-            } else {
-                Style::default().fg(THEME.gutter_fg)
-            });
+        let block = pane(title, self.focus == Focus::Groups);
         frame.render_widget(Paragraph::new(items).block(block), area);
     }
 
@@ -1403,13 +1453,24 @@ impl App {
         let (lo, hi) = self.edge_span();
         // The connector: a line from the selected group to each group it
         // follows, so what must be read first is visible without reading ids.
-        let (head_glyph, head_style) = match relation {
-            Relation::Selected => ("◆", Style::default().fg(THEME.header_fg)),
-            Relation::Dependency => ("├", Style::default().fg(THEME.reviewed_fg)),
-            Relation::None if idx > lo && idx < hi => ("│", Style::default().fg(THEME.gutter_fg)),
-            Relation::None => (" ", Style::default().fg(THEME.gutter_fg)),
+        //
+        // The tick wears the arm the file tree's guides wear (`├─`, `└─`), so
+        // it reaches the title it points at rather than stopping a cell short
+        // — the two guides sit a pane apart and had no reason to differ.
+        //
+        // One colour, the pane's own border grey. The connector is chrome: it
+        // says which rows are tied together, and the rows themselves say what
+        // they are. Two accents in one column made the gutter compete with the
+        // labels beside it.
+        let head_glyph = match relation {
+            Relation::Selected => "◆─",
+            Relation::Dependency if idx == hi => "└─",
+            Relation::Dependency => "├─",
+            Relation::None if idx > lo && idx < hi => "│ ",
+            Relation::None => "  ",
         };
-        let tail_glyph = if idx >= lo && idx < hi { "│" } else { " " };
+        let head_style = Style::default().fg(THEME.gutter_fg);
+        let tail_glyph = if idx >= lo && idx < hi { "│ " } else { "  " };
         let done =
             g.class_keys.iter().all(|k| self.session.is_reviewed(k)) && !g.class_keys.is_empty();
         // "?" rather than a tier letter: the back-fill was never classified.
@@ -1428,7 +1489,7 @@ impl App {
         let dim = bg(Style::default().fg(THEME.gutter_fg));
 
         let mut lines = vec![Line::from(vec![
-            Span::styled(format!("{head_glyph} "), head_style),
+            Span::styled(head_glyph.to_string(), head_style),
             Span::styled(
                 // The id is what `after:` references, so it has to be visible.
                 format!("{:>3} ", g.id),
@@ -1453,10 +1514,7 @@ impl App {
         ])];
 
         let mut counts = vec![
-            Span::styled(
-                format!("{tail_glyph} "),
-                Style::default().fg(THEME.gutter_fg),
-            ),
+            Span::styled(tail_glyph.to_string(), Style::default().fg(THEME.gutter_fg)),
             Span::styled(format!("   {} files  ", g.n_files), dim),
             Span::styled(
                 format!("+{}", g.counts.adds),
@@ -1472,7 +1530,7 @@ impl App {
         // header — so it wears the same pill, in the muted colours, rather than
         // trailing off the line as dim text.
         if let Some(r) = g.role {
-            let (fg, pill_bg) = THEME.pill(None);
+            let (fg, pill_bg) = THEME.pill();
             counts.push(Span::styled(" ", dim));
             counts.extend(
                 pill(
@@ -1485,24 +1543,17 @@ impl App {
         }
         lines.push(Line::from(counts));
         if !g.depends_on.is_empty() {
-            // "↓" marks a dependency that appears LATER in the plan: the two
-            // groups depend on each other, so no order can satisfy both.
+            // Every id reads the same. A dependency the ordering could not
+            // honour used to wear a `↓` and a colour of its own, which put a
+            // warning on the row for something the reader can do nothing about
+            // — and the connector already shows it, by running DOWN from the
+            // selected group instead of up.
             let mut spans = vec![
-                Span::styled(
-                    format!("{tail_glyph} "),
-                    Style::default().fg(THEME.gutter_fg),
-                ),
+                Span::styled(tail_glyph.to_string(), Style::default().fg(THEME.gutter_fg)),
                 Span::styled("   after: ".to_string(), dim),
             ];
             for d in &g.depends_on {
-                spans.push(Span::styled(
-                    format!("{}{} ", d.id, if d.unsatisfied { "↓" } else { "" }),
-                    if d.unsatisfied {
-                        bg(Style::default().fg(THEME.skim_fg))
-                    } else {
-                        dim
-                    },
-                ));
+                spans.push(Span::styled(format!("{} ", d.id), dim));
             }
             lines.push(Line::from(spans));
         }
@@ -1646,8 +1697,11 @@ impl App {
                     base
                 };
                 let name = f.path.rsplit('/').next().unwrap_or(&f.path);
+                // No marker glyph: the row the reader is on is the one lit
+                // edge to edge, which says it in the one place they are
+                // already looking.
                 let mut line = Line::from(vec![
-                    Span::styled(if on { "▸ " } else { "  " }.to_string(), style),
+                    Span::styled("  ".to_string(), style),
                     Span::styled(name.to_string(), style),
                 ]);
                 if on {
@@ -1666,15 +1720,7 @@ impl App {
             Some(n) => format!(" file {} of {} ", n + 1, files.len()),
             None => format!(" {} files ", files.len()),
         };
-        frame.render_widget(
-            Paragraph::new(lines).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(title)
-                    .border_style(Style::default().fg(THEME.gutter_fg)),
-            ),
-            area,
-        );
+        frame.render_widget(Paragraph::new(lines).block(pane(title, true)), area);
     }
 
     /// The right pane while the plan has focus: the whole document's file tree
@@ -1694,6 +1740,7 @@ impl App {
             .count()
             .min(6) as u16;
         let top = detail.y + 1 + header;
+        let rows = self.map_rows();
         let area = Rect {
             x: detail.x + 1,
             y: top,
@@ -1701,79 +1748,76 @@ impl App {
             height: detail
                 .height
                 .saturating_sub(header + 2)
-                .min(self.tree.len() as u16 + 2)
+                .min(rows.len() as u16 + 2)
                 .max(3),
         };
         frame.render_widget(Clear, area);
         let inner_h = area.height.saturating_sub(2) as usize;
-        let mine = &self.map_files;
-        let guides = tree_guides(&self.tree);
-        let lines: Vec<Line> = self
-            .tree
+        let dim = Style::default().fg(THEME.gutter_fg);
+        let guides = guides_for_depths(&rows.iter().map(MapRow::depth).collect::<Vec<_>>());
+        let lines: Vec<Line> = rows
             .iter()
             .zip(&guides)
-            .map(|(entry, guide)| {
-                match &entry.kind {
-                    TreeKind::Dir { path } => {
-                        let name = path.rsplit('/').next().unwrap_or(path);
-                        Line::from(vec![
-                            Span::styled(
-                                format!("  {guide}"),
-                                Style::default().fg(THEME.gutter_fg),
-                            ),
-                            Span::styled(format!("{name}/"), Style::default().fg(THEME.context_fg)),
-                        ])
+            .map(|(row, guide)| {
+                let lead = Span::styled(format!("  {guide}"), dim);
+                match row {
+                    MapRow::Dir { name, .. } => Line::from(vec![
+                        lead,
+                        Span::styled(format!("{name}/"), Style::default().fg(THEME.context_fg)),
+                    ]),
+                    // A folded directory keeps the file view's own fold marker,
+                    // and says how much it stands for — a row that hid six
+                    // files without saying so would read as a directory the
+                    // document happens to have nothing in.
+                    MapRow::Folded { name, files, .. } => Line::from(vec![
+                        lead,
+                        Span::styled(format!("▸ {name}/"), dim),
+                        Span::styled(
+                            format!("  {files} file{}", if *files == 1 { "" } else { "s" }),
+                            dim,
+                        ),
+                    ]),
+                    MapRow::More { files, .. } => {
+                        Line::from(vec![lead, Span::styled(format!("… {files} more"), dim)])
                     }
-                    TreeKind::File { file_idx } => {
+                    // Every file row IS one the group touches — the rest fold
+                    // into a `…` row — so it is always lit, and the dot and
+                    // the counts are unconditional.
+                    MapRow::File { file_idx, .. } => {
                         let f = &self.files()[*file_idx];
                         let name = f.path.rsplit('/').next().unwrap_or(&f.path);
-                        let lit = mine.contains(file_idx);
-                        let style = if lit {
-                            Style::default()
-                                .fg(THEME.context_fg)
-                                .add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default().fg(THEME.gutter_fg)
-                        };
+                        let style = Style::default()
+                            .fg(THEME.context_fg)
+                            .add_modifier(Modifier::BOLD);
                         // The marker sits WITH the name, not out in a column of
                         // its own — a dot at the far left of a deep tree points
                         // at nothing.
-                        let mut spans = vec![
-                            Span::styled(
-                                format!("  {guide}"),
-                                Style::default().fg(THEME.gutter_fg),
-                            ),
-                            Span::styled(
-                                if lit { "● " } else { "" }.to_string(),
-                                Style::default().fg(THEME.header_fg),
-                            ),
+                        Line::from(vec![
+                            lead,
+                            Span::styled("● ".to_string(), Style::default().fg(THEME.header_fg)),
                             Span::styled(name.to_string(), style),
-                        ];
-                        if lit {
-                            spans.push(Span::styled("  ", style));
-                            spans.push(Span::styled(
+                            Span::styled("  ", style),
+                            Span::styled(
                                 format!("+{}", f.counts.adds),
                                 Style::default().fg(THEME.add_fg),
-                            ));
-                            spans.push(Span::styled(" ", style));
-                            spans.push(Span::styled(
+                            ),
+                            Span::styled(" ", style),
+                            Span::styled(
                                 format!("−{}", f.counts.dels),
                                 Style::default().fg(THEME.del_fg),
-                            ));
-                        }
-                        Line::from(spans)
+                            ),
+                        ])
                     }
                 }
             })
             .collect();
 
-        // No cursor to follow, so the only scroll it needs is enough to reveal
-        // the first file the group touches — and none at all when it already
-        // fits, which is what a short float mostly is.
-        let first = self
-            .tree
+        // Folding usually leaves the whole map on screen, so this is the rare
+        // case: a group touching more files than the float is tall. Scroll to
+        // the first one it touches, and no further.
+        let first = rows
             .iter()
-            .position(|e| matches!(&e.kind, TreeKind::File { file_idx } if mine.contains(file_idx)))
+            .position(|r| matches!(r, MapRow::File { .. }))
             .unwrap_or(0);
         let scroll = first.saturating_sub(inner_h.saturating_sub(1));
 
@@ -1781,7 +1825,7 @@ impl App {
             Some(g) => format!(
                 " files in {} · {} of {} ",
                 g.id,
-                mine.len(),
+                self.map_files.len(),
                 self.files().len()
             ),
             None => " files ".to_string(),
@@ -1794,12 +1838,7 @@ impl App {
                     .take(inner_h)
                     .collect::<Vec<_>>(),
             )
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(title)
-                    .border_style(Style::default().fg(THEME.header_fg)),
-            ),
+            .block(pane(title, true)),
             area,
         );
     }
@@ -1824,6 +1863,125 @@ impl App {
             .collect()
     }
 
+    /// The group map's rows: the document's tree with everything the selected
+    /// group does not touch folded away.
+    ///
+    /// The float has to fit its box, and a document of any size otherwise runs
+    /// past the bottom of it. Folding on the group answers the question the
+    /// map is asked — what does this group span — with the rest of the tree
+    /// present as context rather than as rows.
+    ///
+    /// Reads `self.tree` and never writes it: the file view's left pane and
+    /// its cursor are the same rows.
+    fn map_rows(&self) -> Vec<MapRow> {
+        let tree = &self.tree;
+        let mine = &self.map_files;
+        let n = tree.len();
+
+        // A row is live if it IS a file the group touches, or holds one.
+        let mut live = vec![false; n];
+        for (i, e) in tree.iter().enumerate() {
+            let TreeKind::File { file_idx } = &e.kind else {
+                continue;
+            };
+            if !mine.contains(file_idx) {
+                continue;
+            }
+            live[i] = true;
+            // Light every ancestor: the rows above it with a smaller depth.
+            let mut depth = e.depth;
+            for j in (0..i).rev() {
+                if tree[j].depth < depth {
+                    live[j] = true;
+                    depth = tree[j].depth;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+            }
+        }
+
+        // First row past a subtree: the next one at or above its own depth.
+        let end_of = |i: usize| {
+            tree[i + 1..]
+                .iter()
+                .position(|e| e.depth <= tree[i].depth)
+                .map_or(n, |k| i + 1 + k)
+        };
+        let leaf = |i: usize| {
+            let path = match &tree[i].kind {
+                TreeKind::Dir { path } => path.as_str(),
+                TreeKind::File { .. } => return String::new(),
+            };
+            path.rsplit('/').next().unwrap_or(path).to_string()
+        };
+
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < n {
+            let depth = tree[i].depth;
+            match &tree[i].kind {
+                TreeKind::Dir { .. } if live[i] => {
+                    out.push(MapRow::Dir {
+                        depth,
+                        name: leaf(i),
+                    });
+                    i += 1;
+                }
+                TreeKind::Dir { .. } => {
+                    // Absorb a chain of single-child directories, so a deep
+                    // path the group never enters costs one row, not four.
+                    let end = end_of(i);
+                    let mut name = leaf(i);
+                    let mut cur = i;
+                    loop {
+                        let mut kids =
+                            (cur + 1..end).filter(|&j| tree[j].depth == tree[cur].depth + 1);
+                        let (Some(only), None) = (kids.next(), kids.next()) else {
+                            break;
+                        };
+                        if !matches!(tree[only].kind, TreeKind::Dir { .. }) {
+                            break;
+                        }
+                        name.push('/');
+                        name.push_str(&leaf(only));
+                        cur = only;
+                    }
+                    out.push(MapRow::Folded {
+                        depth,
+                        name,
+                        files: self.files_of_tree_row(i).len(),
+                    });
+                    i = end;
+                }
+                TreeKind::File { file_idx } if mine.contains(file_idx) => {
+                    out.push(MapRow::File {
+                        depth,
+                        file_idx: *file_idx,
+                    });
+                    i += 1;
+                }
+                TreeKind::File { .. } => {
+                    // A run of files the group misses, side by side, is one row.
+                    let mut j = i;
+                    while j < n
+                        && tree[j].depth == depth
+                        && matches!(&tree[j].kind, TreeKind::File { file_idx }
+                                    if !mine.contains(file_idx))
+                    {
+                        j += 1;
+                    }
+                    out.push(MapRow::More {
+                        depth,
+                        files: j - i,
+                    });
+                    i = j;
+                }
+            }
+        }
+        out
+    }
+
     fn draw_diff(&self, frame: &mut Frame, area: Rect) {
         let inner_h = area.height.saturating_sub(2) as usize;
         let inner_w = area.width.saturating_sub(2) as usize;
@@ -1841,21 +1999,20 @@ impl App {
                 // A hunk's pill follows its edge, so the marker and the run
                 // below it read as one thing — and which is lit is a cursor
                 // question, decided here rather than when the row was built.
-                let pill = match (r.border, &r.kind) {
-                    (Some(b), RowKind::HunkHeader { .. }) => Some(
-                        THEME.pill(
-                            (active == Some(b.hunk))
-                                .then_some(b.active_style.fg)
-                                .flatten(),
-                        ),
-                    ),
-                    _ => None,
+                let marker = match (r.border, &r.kind) {
+                    (Some(b), RowKind::HunkHeader { .. }) if active == Some(b.hunk) => {
+                        b.active_style.fg.map_or(Marker::Idle(&r.idle), Marker::Lit)
+                    }
+                    (_, RowKind::HunkHeader { .. }) => Marker::Idle(&r.idle),
+                    _ => Marker::None,
                 };
-                let mut line = compose_row(&r.content, inner_w, on, pill);
+                // How to work this row, on the one row it can be worked from.
+                let hint = on.then_some(r.hint.as_ref()).flatten();
+                let mut line = compose_row(&r.content, inner_w, on, marker, hint);
                 if on {
                     // Span backgrounds win over a line style, so this colours
                     // exactly the rows that have no change colour of their own
-                    // — on the rest, CURSOR_MARK in the gutter carries it.
+                    // — on the rest, the brightened gutter block carries it.
                     line = line.style(Style::default().bg(THEME.cursor_bg));
                 }
                 line
@@ -1871,37 +2028,70 @@ impl App {
             .filter(|&h| h < self.scroll)
             && let Some(first) = lines.first_mut()
         {
-            *first = compose_row(&self.rows[header].content, inner_w, false, None)
-                .style(Style::default().bg(THEME.sticky_bg));
+            *first = compose_row(
+                &self.rows[header].content,
+                inner_w,
+                false,
+                Marker::None,
+                None,
+            )
+            .style(Style::default().bg(THEME.sticky_bg));
         }
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" detail ")
-            .border_style(if self.focus == Focus::Detail {
-                Style::default().fg(THEME.header_fg)
-            } else {
-                Style::default().fg(THEME.gutter_fg)
-            });
+        let block = pane(" detail ".to_string(), self.focus == Focus::Detail);
         frame.render_widget(Paragraph::new(lines).block(block), area);
 
         // A hunk's edge shares the pane's left border column rather than
         // sitting a cell inside it: no width lost, and no second vertical line
         // a cell away from the first. Drawn over the block, so it comes after.
         let buf = frame.buffer_mut();
+        let on_cursor = |i: usize| i == self.cursor && self.focus == Focus::Detail;
         for (n, row) in self.rows.iter().skip(self.scroll).take(inner_h).enumerate() {
             let y = area.y + 1 + n as u16;
-            // A control's button takes the same column a hunk's edge would.
+            // A control's button takes the same column a hunk's edge would, and
+            // lightens with the band it belongs to.
             if let Some(glyph) = row.button {
+                let band = Style::default().fg(THEME.hint_fg).bg(THEME.hint_bg);
                 let cell = &mut buf[(area.x, y)];
                 cell.set_symbol(glyph);
-                cell.set_style(Style::default().fg(THEME.hint_fg).bg(THEME.hint_bg));
+                cell.set_style(if on_cursor(self.scroll + n) {
+                    THEME.lit_band(band)
+                } else {
+                    band
+                });
                 continue;
             }
             let Some(border) = row.border else { continue };
             let cell = &mut buf[(area.x, y)];
             cell.set_symbol(border.glyph().encode_utf8(&mut [0u8; 4]));
             cell.set_style(chrome(border, active));
+        }
+
+        // The cursor's bar, in the cell just inside the frame. The gutter block
+        // says which LINE the cursor is on, but only a diff row has a gutter:
+        // on a fold or a boundary the cursor was a faint tint and nothing else.
+        // The bar is on every selectable row, so the cursor is one thing to
+        // look for rather than two.
+        //
+        // Not on a hunk HEADER, though. That row is flush to the border, so its
+        // pill's leading cell IS this cell — and standing on the header lights
+        // that cell already, in the hunk's own accent. Drawing over it would
+        // repaint green (reviewed) or muted cyan (foreign) as plain cyan, and
+        // say the hunk was neither.
+        //
+        // Keeps the cell's own background — over a lit gutter it stands on the
+        // change colour rather than punching a hole in it.
+        if self.focus == Focus::Detail
+            && let Some(n) = self.cursor.checked_sub(self.scroll)
+            && n < inner_h
+            && self.rows.get(self.cursor).is_some_and(|r| {
+                r.kind.selectable() && !matches!(r.kind, RowKind::HunkHeader { .. })
+            })
+        {
+            let cell = &mut buf[(area.x + 1, area.y + 1 + n as u16)];
+            cell.set_symbol(CURSOR_BAR);
+            cell.set_fg(THEME.header_fg);
+            cell.modifier.insert(Modifier::BOLD);
         }
     }
 
@@ -1914,14 +2104,64 @@ impl App {
             .iter()
             .filter(|f| f.status == FindingStatus::Open)
             .count();
-        let text = format!(
-            " {done}/{total} classes reviewed · {open} finding(s) · {} · j/k J/K nav · n/N hunk · space reviewed · c finding · s split · v files · z fold/expand · y copy summary · ? help · q quit",
-            self.status
-        );
-        frame.render_widget(
-            Paragraph::new(text).style(Style::default().bg(THEME.status_bg)),
-            area,
-        );
+
+        let bar = Style::default().bg(THEME.status_bg);
+        let (ink, fill) = THEME.pill();
+        // Progress and findings are FACTS about the review, so they wear the
+        // same pill a group's role and a hunk's class wear rather than trailing
+        // off as a run of grey words. Each takes its own colour once it has
+        // something to say: green when everything is read, magenta when
+        // anything is filed.
+        let tally = |lit: bool, accent: Color, text: String| {
+            pill(vec![(if lit { accent } else { ink }, text)], fill)
+                .into_iter()
+                .map(|(st, t)| Span::styled(t, st))
+        };
+        let mut left = vec![Span::styled(" ", bar)];
+        left.extend(tally(
+            total > 0 && done == total,
+            THEME.reviewed_fg,
+            format!("{done}/{total} classes reviewed"),
+        ));
+        left.push(Span::styled(" ", bar));
+        left.extend(tally(
+            open > 0,
+            THEME.finding_fg,
+            format!("{open} finding{}", if open == 1 { "" } else { "s" }),
+        ));
+        if !self.status.is_empty() {
+            left.push(Span::styled(
+                format!("  {}", self.status),
+                bar.fg(THEME.context_fg),
+            ));
+        }
+
+        // Two keys, against the right edge. The rest moved to `?`, which is the
+        // one place a full list belongs — a footer naming ten keys is a wall
+        // the reader stops seeing, and it named them in a different order and a
+        // different wording from the modal that also named them.
+        let right = vec![
+            Span::styled("? ", bar.fg(THEME.header_fg)),
+            Span::styled("help", bar.fg(THEME.context_fg)),
+            Span::styled("  ·  ", bar.fg(THEME.gutter_fg)),
+            Span::styled("q ", bar.fg(THEME.header_fg)),
+            Span::styled("quit", bar.fg(THEME.context_fg)),
+            Span::styled(" ", bar),
+        ];
+
+        let used = |spans: &[Span]| -> usize {
+            spans
+                .iter()
+                .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                .sum()
+        };
+        let gap = (area.width as usize)
+            .saturating_sub(used(&left) + used(&right))
+            .max(1);
+        let mut spans = left;
+        spans.push(Span::styled(" ".repeat(gap), bar));
+        spans.extend(right);
+        frame.render_widget(Paragraph::new(Line::from(spans)).style(bar), area);
     }
 }
 
@@ -1934,47 +2174,64 @@ fn compose_row(
     content: &RowContent,
     width: usize,
     cursor: bool,
-    pill: Option<(ratatui::style::Color, ratatui::style::Color)>,
+    marker: Marker<'_>,
+    hint: Option<&(Style, String)>,
 ) -> Line<'static> {
     match content {
         RowContent::Full(line) => line.clone(),
         RowContent::Unified(half) => {
-            // Recolouring rewrites the row's whole content, which is why a pill
-            // has to be all of it.
+            // A hunk's pill stays in the muted palette whether the cursor is in
+            // it or not. What changes is ONE cell: the pill's leading pad
+            // becomes a bar in the hunk's own accent, so the marker and the
+            // edge below it still read as one thing.
+            //
+            // Filling the whole pill said the same thing far more loudly — a
+            // block of colour the eye went to before the code — and it forced
+            // every ink on the pill to have a second, darker twin for the lit
+            // background. One cell needs no twins.
             let repainted;
-            let half = match pill {
-                Some((fg, bg)) => {
-                    repainted = Half {
-                        gutter: half.gutter.clone(),
-                        pairs: half
-                            .pairs
-                            .iter()
-                            .map(|(st, t)| {
-                                // The counts keep saying added and removed; the
-                                // theme picks the pair that reads on this fill.
-                                let ink = if bg == THEME.button_bg {
-                                    st.fg.unwrap_or(fg)
-                                } else {
-                                    THEME.lit_ink(st.fg)
-                                };
-                                (Style::default().fg(ink).bg(bg), t.clone())
-                            })
-                            .collect(),
-                        fill: half.fill,
-                    };
-                    &repainted
+            let half = if !matches!(marker, Marker::None) || hint.is_some() {
+                let mut pairs = half.pairs.clone();
+                match marker {
+                    // Nothing but the band. A pill on every header was a run of
+                    // labels down the page competing with the code they label;
+                    // the one worth reading is the hunk you are in, and moving
+                    // into a hunk is what asks for it.
+                    Marker::Idle(marks) => pairs = marks.to_vec(),
+                    Marker::Lit(fg) if !pairs.is_empty() => {
+                        pairs[0] = (
+                            pairs[0].0.fg(fg).add_modifier(Modifier::BOLD),
+                            PILL_BAR.to_string(),
+                        );
+                    }
+                    _ => {}
                 }
-                None => half,
+                // Straight after the label, not out at the pane's edge: the
+                // reader's eye is on the words the row carries, and a key
+                // parked a screen away from them is a key they have to go and
+                // look for.
+                if let Some((st, text)) = hint {
+                    pairs.push((*st, text.clone()));
+                }
+                repainted = Half {
+                    gutter: half.gutter.clone(),
+                    pairs,
+                    fill: half.fill,
+                };
+                &repainted
+            } else {
+                half
             };
             Line::from(compose_half(half, width, cursor))
         }
         RowContent::Split { old, new } => {
             let lw = width.saturating_sub(1) / 2;
             let rw = width.saturating_sub(1).saturating_sub(lw);
-            // The marker belongs on the leftmost gutter only.
+            // Both gutters light: a split row IS one row, and a cursor that
+            // showed on one side only read as a cursor on that side's line.
             let mut spans = compose_half(old, lw, cursor);
             spans.push(Span::styled("│", Style::default().fg(THEME.gutter_fg)));
-            spans.extend(compose_half(new, rw, false));
+            spans.extend(compose_half(new, rw, cursor));
             Line::from(spans)
         }
     }
@@ -1996,44 +2253,62 @@ fn chrome(border: Border, active: Option<usize>) -> Style {
 /// One side of a diff row at a known column width: the gutter, the content,
 /// and padding out to the edge in whatever the row is filled with.
 fn compose_half(half: &Half, width: usize, cursor: bool) -> Vec<Span<'static>> {
-    let mut gutter = half.gutter.1.clone();
-    if cursor && let Some(first) = gutter.chars().next() {
-        // The leading cell is reserved for exactly this, so the substitution is
-        // width-preserving and the pane never shifts as the cursor moves. By
-        // CHARACTER, not by byte: on a box edge that cell holds `─`, and a
-        // byte slice would cut it in half.
-        gutter = format!("{CURSOR_MARK}{}", &gutter[first.len_utf8()..]);
-    }
+    let gutter = half.gutter.text.clone();
     let used = UnicodeWidthStr::width(gutter.as_str());
     let rest = width.saturating_sub(used);
+    // The cursor IS the line-number block, brightened. There is no marker glyph
+    // to make room for, so the cell never changes width and the pane never
+    // shifts sideways as the cursor moves.
     let style = if cursor {
-        half.gutter
-            .0
-            .fg(THEME.header_fg)
-            .add_modifier(Modifier::BOLD)
+        half.gutter.cursor
     } else {
-        half.gutter.0
+        half.gutter.style
     };
 
     let mut spans = Vec::new();
     if !gutter.is_empty() {
         spans.push(Span::styled(gutter, style));
     }
+    // A boundary band carries its own colour the whole way across, so the row
+    // tint that marks the cursor everywhere else never showed through it. One
+    // pass re-inks the band and leaves change colours and syntax alone.
+    let pairs: Vec<(Style, String)> = if cursor {
+        half.pairs
+            .iter()
+            .map(|(st, t)| (THEME.lit_band(*st), t.clone()))
+            .collect()
+    } else {
+        half.pairs.clone()
+    };
     match half.fill {
-        Fill::Bg(bg) => spans.extend(truncate_or_pad_spans(&half.pairs, rest, bg)),
-        // An absent side is hatched rather than blank, so a line that does not
-        // exist here cannot be mistaken for one that is empty.
-        Fill::Hatch => spans.push(Span::styled(
-            "╱".repeat(rest),
-            Style::default().fg(THEME.hatch_fg),
+        Fill::Bg(bg) => spans.extend(truncate_or_pad_spans(
+            &pairs,
+            rest,
+            if cursor { THEME.lit_band(bg) } else { bg },
         )),
+        // Hatched, not blank. On the absent side of a split row that says a
+        // line does not exist here rather than that it is empty; on a hunk's
+        // header it stops the pill's fill from reading as a bar that happens
+        // to stop, and carries the band to the pane edge without a colour.
+        Fill::Hatch => {
+            let used: usize = pairs.iter().map(|(_, t)| t.width()).sum();
+            if used >= rest {
+                spans.extend(truncate_or_pad_spans(&pairs, rest, Style::default()));
+            } else {
+                spans.extend(pairs.iter().map(|(st, t)| Span::styled(t.clone(), *st)));
+                spans.push(Span::styled(
+                    "╱".repeat(rest - used),
+                    Style::default().fg(THEME.hatch_fg),
+                ));
+            }
+        }
         // A rule carries the row across the whole pane, separator column and
         // all — the row is about the file, not about one side of it.
         Fill::Rule(style) => {
-            let used: usize = half.pairs.iter().map(|(_, t)| t.width()).sum();
+            let used: usize = pairs.iter().map(|(_, t)| t.width()).sum();
             let ruled = used + 2 * RULE_ARM;
             if ruled >= rest {
-                spans.extend(truncate_or_pad_spans(&half.pairs, rest, style));
+                spans.extend(truncate_or_pad_spans(&pairs, rest, style));
             } else {
                 // Dotted, and only a stub either side; the rest is left blank
                 // so the row does not draw a line across the whole screen.
@@ -2042,7 +2317,7 @@ fn compose_half(half: &Half, width: usize, cursor: bool) -> Vec<Span<'static>> {
                 let dots = Span::styled("┈".repeat(RULE_ARM), style);
                 spans.push(blank(lead));
                 spans.push(dots.clone());
-                spans.extend(half.pairs.iter().map(|(s, t)| Span::styled(t.clone(), *s)));
+                spans.extend(pairs.iter().map(|(s, t)| Span::styled(t.clone(), *s)));
                 spans.push(dots);
                 spans.push(blank(rest - ruled - lead));
             }
@@ -2058,30 +2333,85 @@ fn compose_half(half: &Half, width: usize, cursor: bool) -> Vec<Span<'static>> {
 /// for every ancestor that still has siblings below, then `└─` if it is the
 /// last of its parent's children or `├─` if it is not.
 fn tree_guides(tree: &[TreeEntry]) -> Vec<String> {
+    guides_for_depths(&tree.iter().map(|e| e.depth).collect::<Vec<_>>())
+}
+
+/// The same connectors from depths alone, so a list that is not `TreeEntry`
+/// rows — the group map's folded view — draws the identical guides.
+fn guides_for_depths(depths: &[usize]) -> Vec<String> {
     // Whether a later row shares this row's depth before the tree pops out of
     // it — that is exactly "has a sibling below".
-    let more_after: Vec<bool> = (0..tree.len())
+    let more_after: Vec<bool> = (0..depths.len())
         .map(|i| {
-            tree[i + 1..]
+            depths[i + 1..]
                 .iter()
-                .take_while(|e| e.depth >= tree[i].depth)
-                .any(|e| e.depth == tree[i].depth)
+                .take_while(|&&d| d >= depths[i])
+                .any(|&d| d == depths[i])
         })
         .collect();
 
     let mut open: Vec<bool> = Vec::new();
-    tree.iter()
+    depths
+        .iter()
         .enumerate()
-        .map(|(i, entry)| {
-            open.truncate(entry.depth);
+        .map(|(i, &depth)| {
+            open.truncate(depth);
             let mut prefix: String = open.iter().map(|&o| if o { "│ " } else { "  " }).collect();
-            if entry.depth > 0 || i + 1 < tree.len() {
+            if depth > 0 || i + 1 < depths.len() {
                 prefix.push_str(if more_after[i] { "├─" } else { "└─" });
             }
             open.push(more_after[i]);
             prefix
         })
         .collect()
+}
+
+/// The cursor's own cell, just inside the pane's frame.
+///
+/// A full-height bar rather than an arrow: it has to read at a glance against
+/// a line of code, and against the change colour the gutter block beside it
+/// already carries. In the pane title's cyan, which is the colour this view
+/// uses for "here you are".
+const CURSOR_BAR: &str = "▌";
+
+/// The lit cell at the head of the hunk pill the cursor is in.
+const PILL_BAR: &str = "▌";
+
+/// What a hunk's header shows right now.
+///
+/// Decided at draw time, not when the row is built: whether the cursor is in a
+/// hunk changes without rebuilding rows, and the header is the one row whose
+/// CONTENT turns on it — idle, it is hatch and nothing else.
+#[derive(Clone, Copy)]
+enum Marker<'a> {
+    /// Not a hunk header. Draw the row as it was built.
+    None,
+    /// A hunk header the cursor is not in: the band, carrying only the marks
+    /// the row says survive it.
+    Idle(&'a [(Style, String)]),
+    /// A hunk header the cursor is in: the pill, its leading cell lit.
+    Lit(Color),
+}
+
+/// A pane's frame: always the muted border, with the TITLE carrying focus.
+///
+/// A lit border draws a box around half the screen to say a thing about the
+/// cursor, which is the smallest thing on it — and it competed with the hunk
+/// edge, the one border in this view that means something. The title is where
+/// a reader looks to know which pane they are in anyway.
+fn pane(title: String, focused: bool) -> Block<'static> {
+    let ink = if focused {
+        THEME.header_fg
+    } else {
+        THEME.gutter_fg
+    };
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(THEME.gutter_fg))
+        .title(Span::styled(
+            title,
+            Style::default().fg(ink).add_modifier(Modifier::BOLD),
+        ))
 }
 
 /// Extend `line` with blank, styled cells so a selection background covers
@@ -2126,12 +2456,9 @@ fn help_paragraph() -> Paragraph<'static> {
             Span::styled(what.to_string(), text),
         ])
     };
+    // No title inside the box: the border already carries one, and a name the
+    // reader typed to get here is not what they opened `?` to read.
     let mut lines = vec![
-        Line::from(Span::styled(
-            "differential review",
-            text.add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
         row("j/k", "move · in the plan pane, switch group"),
         row("J/K  { }", "previous / next group"),
         row("tab", "switch pane focus"),
@@ -2141,8 +2468,8 @@ fn help_paragraph() -> Paragraph<'static> {
         row("z", "boundary: show more, or cross into the hunk"),
         row("", "elsewhere: unfold skim remainder / noise"),
         row("s", "unified / split diff"),
-        row("v", "reading plan / file view"),
-        row("f", "file list of this view (enter jumps)"),
+        row("f", "plan pane: reading plan / file tree"),
+        row("", "diff pane: file list (enter jumps)"),
         row("space", "mark the hunk's class reviewed"),
         row("c  ·  dd", "add finding · delete the one under the cursor"),
         row("y  ·  q", "copy findings · quit (state is saved)"),
@@ -2150,10 +2477,5 @@ fn help_paragraph() -> Paragraph<'static> {
         Line::from(Span::styled("  press any key to close", dim)),
     ];
     lines.insert(0, Line::from(""));
-    Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(THEME.header_fg))
-            .title(" help "),
-    )
+    Paragraph::new(lines).block(pane(" help ".to_string(), true))
 }

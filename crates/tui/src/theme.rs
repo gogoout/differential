@@ -16,12 +16,27 @@ pub struct Theme {
     /// what makes the gutter read as an edge rather than as more of the line.
     pub added_gutter_bg: Color,
     pub deleted_gutter_bg: Color,
+    /// The line-number block on the row the cursor is on. Brighter than the
+    /// change block, so the cursor is the strongest cell in the gutter column
+    /// — and still red on a deletion and green on an addition, so a row does
+    /// not stop saying which it is just because you are standing on it.
+    pub added_gutter_cursor_bg: Color,
+    pub deleted_gutter_cursor_bg: Color,
+    /// The line number itself on that row. One ink for all three blocks, light
+    /// enough to read on bright green, bright red and the plain cursor grey.
+    pub cursor_gutter_fg: Color,
     pub added_word_bg: Color,
     pub deleted_word_bg: Color,
     /// Diagonal fill for the side of a split row that has no line at all.
     pub hatch_fg: Color,
-    /// A hunk pill that is not lit: a control, but not the one in hand.
+    /// A pill's own text — a hunk's class, a group's role, the footer's
+    /// tallies. Deliberately quieter than the code it labels: a pill is a
+    /// caption, and the counts and the accent on it are what carry.
     pub button_fg: Color,
+    /// A pill's fill. Bright enough that the lit cell at its head reads as a
+    /// COLOUR on it — cyan for the hunk you are in, a muted cyan for one
+    /// crossed in from another group. Darkening the fill put those two too
+    /// close to tell apart, which is the one thing that cell is for.
     pub button_bg: Color,
     /// Behind a file header pinned to the top of the pane, so a stuck row is
     /// visibly stuck rather than looking like content that will not scroll.
@@ -30,20 +45,22 @@ pub struct Theme {
     /// the code — it marks where the file was cut, and the file is the point.
     pub hint_fg: Color,
     pub hint_bg: Color,
-    /// Text on a LIT pill, whose fill is the hunk's accent — so it has to be
-    /// dark enough to read on yellow, green or cyan alike.
-    pub pill_fg: Color,
-    /// The counts on a lit pill. `add_fg`/`del_fg` are chosen to glow on a dark
-    /// background and are illegible on a bright one, so a lit pill needs its
-    /// own pair — dark enough to read on the accent, saturated enough to still
-    /// say added and removed.
-    pub add_on_pill: Color,
-    pub del_on_pill: Color,
+    /// The same band on the cursor's row. A boundary is a control, and a
+    /// control the reader is standing on has to look like the one they are
+    /// about to press — the band carries its own colour, so the row tint that
+    /// marks the cursor everywhere else never showed through it.
+    pub hint_cursor_fg: Color,
+    pub hint_cursor_bg: Color,
     pub gutter_fg: Color,
     pub context_fg: Color,
     pub cursor_bg: Color,
     pub selected_bg: Color,
     pub header_fg: Color,
+    /// A hunk crossed in from another group. The same cyan the hunk you ARE
+    /// reading wears, muted: it is real code you asked to see, so it belongs
+    /// to the same family — but it is not on this reading list, and a full
+    /// accent would say it was.
+    pub foreign_fg: Color,
     pub focus_fg: Color,
     pub skim_fg: Color,
     pub noise_fg: Color,
@@ -60,22 +77,25 @@ pub const THEME: Theme = Theme {
     deleted_bg: Color::Rgb(58, 22, 22),
     added_gutter_bg: Color::Rgb(24, 68, 33),
     deleted_gutter_bg: Color::Rgb(82, 29, 29),
+    added_gutter_cursor_bg: Color::Rgb(46, 128, 62),
+    deleted_gutter_cursor_bg: Color::Rgb(150, 52, 52),
+    cursor_gutter_fg: Color::Rgb(240, 242, 248),
     added_word_bg: Color::Rgb(28, 92, 42),
     deleted_word_bg: Color::Rgb(110, 38, 38),
     hatch_fg: Color::Rgb(48, 50, 58),
-    button_fg: Color::Rgb(198, 204, 220),
+    button_fg: Color::Rgb(158, 166, 186),
     button_bg: Color::Rgb(58, 63, 83),
     sticky_bg: Color::Rgb(34, 37, 44),
     hint_fg: Color::Rgb(108, 114, 126),
     hint_bg: Color::Rgb(38, 41, 48),
-    pill_fg: Color::Rgb(20, 22, 28),
-    add_on_pill: Color::Rgb(14, 72, 28),
-    del_on_pill: Color::Rgb(112, 20, 20),
+    hint_cursor_fg: Color::Rgb(198, 206, 222),
+    hint_cursor_bg: Color::Rgb(64, 69, 82),
     gutter_fg: Color::DarkGray,
     context_fg: Color::Gray,
     cursor_bg: Color::Rgb(48, 52, 70),
     selected_bg: Color::Rgb(40, 44, 58),
     header_fg: Color::Cyan,
+    foreign_fg: Color::Rgb(84, 132, 146),
     focus_fg: Color::LightRed,
     skim_fg: Color::Yellow,
     noise_fg: Color::DarkGray,
@@ -109,6 +129,40 @@ impl Theme {
         }
     }
 
+    /// The same cell on the cursor's row, from the block it wears otherwise.
+    ///
+    /// Keyed by colour: this is the one place that knows a gutter's blocks, so
+    /// a fourth one means adding it here rather than at the call site. An unchanged line has no block of its own and takes the plain
+    /// cursor grey, which is what makes the cursor readable on every row.
+    pub fn gutter_cursor(&self, block: Option<Color>) -> Style {
+        let bg = match block {
+            Some(c) if c == self.added_gutter_bg => self.added_gutter_cursor_bg,
+            Some(c) if c == self.deleted_gutter_bg => self.deleted_gutter_cursor_bg,
+            _ => self.cursor_bg,
+        };
+        Style::default()
+            .fg(self.cursor_gutter_fg)
+            .bg(bg)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Re-ink one span of a boundary band for the cursor's row.
+    ///
+    /// Keyed by colour, like `gutter_cursor`: this is the one place that knows
+    /// the band's inks. Anything else — a line's change colour, a syntax span
+    /// — passes through untouched, which is what lets one pass over a whole
+    /// row lighten the band and nothing else.
+    pub fn lit_band(&self, style: Style) -> Style {
+        let mut out = style;
+        if style.bg == Some(self.hint_bg) {
+            out = out.bg(self.hint_cursor_bg);
+        }
+        if style.fg == Some(self.hint_fg) {
+            out = out.fg(self.hint_cursor_fg);
+        }
+        out
+    }
+
     pub fn effort_style(&self, effort: differential_engine::schema::Effort) -> Style {
         let fg = match effort {
             differential_engine::schema::Effort::Focus => self.focus_fg,
@@ -131,28 +185,11 @@ impl Theme {
         }
     }
 
-    /// The two colours a pill wears. `accent` is `Some` when this is the hunk
-    /// under the cursor, and the fill then matches its edge so the marker and
-    /// the run below it read as one thing.
-    pub fn pill(&self, accent: Option<Color>) -> (Color, Color) {
-        match accent {
-            Some(bg) => (self.pill_fg, bg),
-            None => (self.button_fg, self.button_bg),
-        }
-    }
-
-    /// Re-ink one span of a pill for a LIT fill.
-    ///
-    /// A pill is built in its muted palette because whether it is lit is a
-    /// cursor question; this maps each ink to its bright-background twin. The
-    /// mapping is by colour, so it is the one place that knows a pill's inks —
-    /// adding a third means adding it here, not just at the call site.
-    pub fn lit_ink(&self, muted: Option<Color>) -> Color {
-        match muted {
-            Some(c) if c == self.add_fg => self.add_on_pill,
-            Some(c) if c == self.del_fg => self.del_on_pill,
-            _ => self.pill_fg,
-        }
+    /// The two colours a pill wears — one pair, always. A hunk's pill says the
+    /// cursor is in it with a lit bar at its head rather than by filling, so
+    /// no ink on a pill ever needs a second twin for a bright background.
+    pub const fn pill(&self) -> (Color, Color) {
+        (self.button_fg, self.button_bg)
     }
 
     pub fn word_emphasis(&self, addition: bool) -> Style {
