@@ -925,6 +925,21 @@ impl App {
         self.status.clear();
     }
 
+    /// Text pasted into the terminal.
+    ///
+    /// Bracketed paste is enabled so a multi-line paste arrives as ONE event
+    /// rather than as a run of keys that would each drive a normal-mode
+    /// action. The event was then dropped, which meant pasting into the
+    /// finding composer did nothing at all.
+    ///
+    /// Only the composer takes it: in normal mode there is no text field for
+    /// it to land in, and a paste there is a mis-aimed one.
+    pub fn handle_paste(&mut self, text: &str) {
+        if let Mode::Editing(_, textarea) = &mut self.mode {
+            textarea.insert_str(text);
+        }
+    }
+
     /// Open or close the selected group's folded remainder — the skim group's
     /// hunks past its exemplars, or a noise group entire.
     fn toggle_group_fold(&mut self) {
@@ -994,7 +1009,31 @@ impl App {
                         self.status = "finding discarded".into();
                         return Vec::new();
                     }
-                    (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
+                    // `enter` saves. A finding is usually one line, and the key
+                    // that ends a line is the key a reader reaches for to be
+                    // done with it. `ctrl-s` still saves too: it costs one arm,
+                    // and it is what the box said for two releases.
+                    //
+                    // A newline is `shift+enter` where the terminal reports it,
+                    // and a trailing `\` before `enter` where it does not —
+                    // most terminals send plain `enter` for both unless the
+                    // kitty keyboard protocol is on, which this reviewer
+                    // deliberately does not ask for.
+                    (KeyCode::Enter, m) if m.contains(KeyModifiers::SHIFT) => {
+                        textarea.insert_newline();
+                        return Vec::new();
+                    }
+                    (KeyCode::Enter, _)
+                        if textarea
+                            .lines()
+                            .get(textarea.cursor().0)
+                            .is_some_and(|l| l.ends_with('\\')) =>
+                    {
+                        textarea.delete_char();
+                        textarea.insert_newline();
+                        return Vec::new();
+                    }
+                    (KeyCode::Enter, _) | (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
                         let body = textarea.lines().join("\n").trim().to_string();
                         self.mode = Mode::Normal;
                         if body.is_empty() {
@@ -1283,21 +1322,23 @@ impl App {
                 };
                 frame.render_widget(
                     Paragraph::new(Line::from(vec![
-                        Span::styled("  ctrl-s ", Style::default().fg(THEME.header_fg)),
+                        Span::styled("  enter ", Style::default().fg(THEME.header_fg)),
                         Span::styled("save", Style::default().fg(THEME.context_fg)),
+                        Span::styled("  │  ", Style::default().fg(THEME.gutter_fg)),
+                        Span::styled("shift+enter ", Style::default().fg(THEME.header_fg)),
+                        Span::styled("or", Style::default().fg(THEME.context_fg)),
+                        Span::styled(" \\↵ ", Style::default().fg(THEME.header_fg)),
+                        Span::styled("newline", Style::default().fg(THEME.context_fg)),
                         Span::styled("  │  ", Style::default().fg(THEME.gutter_fg)),
                         Span::styled("esc ", Style::default().fg(THEME.header_fg)),
                         Span::styled("cancel", Style::default().fg(THEME.context_fg)),
-                        Span::styled("  │  ", Style::default().fg(THEME.gutter_fg)),
-                        Span::styled("enter ", Style::default().fg(THEME.header_fg)),
-                        Span::styled("newline", Style::default().fg(THEME.context_fg)),
                     ]))
                     .alignment(ratatui::layout::Alignment::Center),
                     footer,
                 );
             }
             Mode::Help => {
-                let area = centered_rect(panes.body, 62, 19);
+                let area = centered_rect(panes.body, 62, 21);
                 frame.render_widget(Clear, area);
                 frame.render_widget(help_paragraph(), area);
             }
@@ -2472,6 +2513,8 @@ fn help_paragraph() -> Paragraph<'static> {
         row("", "diff pane: file list (enter jumps)"),
         row("space", "mark the hunk's class reviewed"),
         row("c  ·  dd", "add finding · delete the one under the cursor"),
+        row("", "in the box: enter saves · shift+enter or \\↵ newline"),
+        row("", "esc cancels, here and in any modal"),
         row("y  ·  q", "copy findings · quit (state is saved)"),
         Line::from(""),
         Line::from(Span::styled("  press any key to close", dim)),

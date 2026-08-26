@@ -2612,11 +2612,10 @@ fn the_finding_editor_floats_and_names_its_subject() {
 
     let text = drawn_as_is(&mut app);
     assert!(text.contains("long.rs · L"), "no file·line title: {text}");
-    // The keys are in a footer inside the box, and they are THIS app's keys —
-    // `enter` cannot save, because saving would leave no way to type a second
-    // line: the terminal reports shift+enter as enter without the keyboard
-    // enhancements this app deliberately does not ask for.
-    assert!(text.contains("ctrl-s"), "no save key shown: {text}");
+    // The keys are in a footer inside the box: `enter` saves, and a newline is
+    // shift+enter where the terminal reports it or a trailing `\` where it
+    // does not.
+    assert!(text.contains("enter save"), "no save key shown: {text}");
     assert!(text.contains("esc"), "no cancel key shown: {text}");
     assert!(text.contains("newline"), "no newline key shown: {text}");
 
@@ -2625,6 +2624,82 @@ fn the_finding_editor_floats_and_names_its_subject() {
         text.contains("let filler"),
         "the editor should float over the diff, not replace it: {text}"
     );
+}
+
+/// `enter` saves. A newline is shift+enter, or a trailing `\` before `enter`
+/// for the terminals that report shift+enter as plain enter — which is most of
+/// them without the keyboard enhancements this reviewer does not ask for.
+#[test]
+fn the_composer_saves_on_enter_and_takes_a_newline_two_ways() {
+    let open = |app: &mut App| {
+        put_cursor_on(app, |k| matches!(k, RowKind::HunkHeader { .. }));
+        app.handle_key(key('c'));
+        assert!(matches!(app.mode, Mode::Editing(..)));
+    };
+    let typed = |app: &mut App, text: &str| {
+        for c in text.chars() {
+            app.handle_key(key(c));
+        }
+    };
+    let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    let shift_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
+
+    // Plain enter saves.
+    let (_r, mut app) = app_with_a_long_file();
+    open(&mut app);
+    typed(&mut app, "one line");
+    app.handle_key(enter);
+    assert!(matches!(app.mode, Mode::Normal));
+    assert_eq!(app.session.findings().len(), 1);
+    assert_eq!(app.session.findings()[0].body, "one line");
+
+    // shift+enter makes a second line, and enter then saves both.
+    let (_r, mut app) = app_with_a_long_file();
+    open(&mut app);
+    typed(&mut app, "first");
+    app.handle_key(shift_enter);
+    typed(&mut app, "second");
+    app.handle_key(enter);
+    assert_eq!(app.session.findings()[0].body, "first\nsecond");
+
+    // A trailing `\` before enter does the same, and the `\` is not kept.
+    let (_r, mut app) = app_with_a_long_file();
+    open(&mut app);
+    typed(&mut app, "first\\");
+    app.handle_key(enter);
+    assert!(
+        matches!(app.mode, Mode::Editing(..)),
+        "the box should stay open"
+    );
+    typed(&mut app, "second");
+    app.handle_key(enter);
+    assert_eq!(app.session.findings()[0].body, "first\nsecond");
+
+    // `ctrl-s` still saves, for whoever's terminal passes it.
+    let (_r, mut app) = app_with_a_long_file();
+    open(&mut app);
+    typed(&mut app, "by ctrl-s");
+    app.handle_key(ctrl('s'));
+    assert_eq!(app.session.findings()[0].body, "by ctrl-s");
+}
+
+/// Bracketed paste is enabled so a multi-line paste arrives whole. The event
+/// was dropped, so pasting into the composer did nothing.
+#[test]
+fn a_paste_lands_in_the_composer() {
+    let (_r, mut app) = app_with_a_long_file();
+    put_cursor_on(&mut app, |k| matches!(k, RowKind::HunkHeader { .. }));
+    app.handle_key(key('c'));
+    app.handle_paste("pasted\nover two lines");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.session.findings()[0].body, "pasted\nover two lines");
+
+    // In normal mode there is no field for it, so it does nothing.
+    let (_r, mut app) = app_with_a_long_file();
+    let before = app.rows.len();
+    app.handle_paste("stray");
+    assert!(matches!(app.mode, Mode::Normal));
+    assert_eq!(app.rows.len(), before);
 }
 
 /// The help modal is keys and nothing else. Five lines of prose about the plan

@@ -293,7 +293,7 @@ list belongs; the footer's job is to point at it.
 | `s` | toggle unified / side-by-side diff layout (persisted) |
 | `f` | files, in the pane you are in — plan pane: toggle reading plan ↔ file tree (persisted) · diff pane: the file-list modal (`enter` jumps to the file) |
 | `space` | mark reviewed — the whole selected group/file in the left pane, the hunk's **class** in the diff pane (one exemplar verifies the shape) |
-| `c` | add a finding on the current hunk — a float over the diff, titled with the file and lines it annotates (`ctrl-s` save, `esc` cancel, `enter` newline) |
+| `c` | add a finding on the current hunk — a float over the diff, titled with the file and lines it annotates (`enter` saves · `shift+enter` or a trailing `\` before `enter` makes a newline · `esc` cancels) |
 | `dd` | delete the finding under the cursor |
 | `y` | copy the open-findings summary to the clipboard (markdown list) |
 | `?` | help — the keys, as one uninterrupted table |
@@ -356,11 +356,19 @@ returns). The pane title shows an orphan count when any exist.
 
 **Writing a finding** opens a float over the diff rather than a strip pinned to its foot:
 a note is about lines you should still be able to see. Its border carries the file and line
-range it will anchor to, and its footer the keys. `enter` inserts a newline and `ctrl-s`
-saves — not the other way round, however natural `enter` to save would read, because most
-terminals report `shift+enter` as plain `enter` without the keyboard enhancements this
-reviewer deliberately does not ask for, so binding `enter` to save would leave no way to
-write a second line.
+range it will anchor to, and its footer the keys.
+
+**`enter` saves.** A finding is usually one line, and the key that ends a line is the key a
+reader reaches for to be done with it. A newline is `shift+enter` where the terminal
+reports it, and a **trailing `\` before `enter`** where it does not — most terminals send
+plain `enter` for both without the keyboard enhancements this reviewer deliberately does
+not ask for, so `shift+enter` alone would leave some readers no way to write a second line.
+`ctrl-s` saves as well: it costs one arm, and some terminals swallow it before the app ever
+sees it, which is why it cannot be the only way.
+
+A **paste** lands in the box whole. Bracketed paste is on precisely so a multi-line paste
+arrives as one event instead of a run of keys each driving a normal-mode action; the event
+was being dropped, which read as the box being broken.
 
 ## Findings contract
 
