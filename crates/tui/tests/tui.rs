@@ -2363,6 +2363,33 @@ fn one_hunk_between_two_blocks_is_offered_once_not_twice() {
     assert!(shows_a_foreign_hunk(&app), "z should have crossed it");
 }
 
+/// The finding editor floats over the diff and names what it annotates: a note
+/// whose subject you cannot see is one you have to trust yourself about.
+#[test]
+fn the_finding_editor_floats_and_names_its_subject() {
+    let (_r, mut app) = app_with_a_long_file();
+    app.focus = Focus::Detail;
+    put_cursor_on(&mut app, |k| matches!(k, RowKind::HunkHeader { .. }));
+    app.handle_key(key('c'));
+    assert!(matches!(app.mode, Mode::Editing(_, _)));
+
+    let text = drawn_as_is(&mut app);
+    assert!(text.contains("long.rs · L"), "no file·line title: {text}");
+    // The keys are in a footer inside the box, and they are THIS app's keys —
+    // `enter` cannot save, because saving would leave no way to type a second
+    // line: the terminal reports shift+enter as enter without the keyboard
+    // enhancements this app deliberately does not ask for.
+    assert!(text.contains("ctrl-s"), "no save key shown: {text}");
+    assert!(text.contains("esc"), "no cancel key shown: {text}");
+    assert!(text.contains("newline"), "no newline key shown: {text}");
+
+    // It floats: the diff is still there around it.
+    assert!(
+        text.contains("let filler"),
+        "the editor should float over the diff, not replace it: {text}"
+    );
+}
+
 /// Not an assertion — a readable dump of the pane, so the styling can be
 /// eyeballed with `cargo test -- --ignored --nocapture render_dump`.
 #[test]

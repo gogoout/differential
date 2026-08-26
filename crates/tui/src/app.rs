@@ -1049,11 +1049,26 @@ impl App {
             (KeyCode::Char(' '), _) => self.toggle_reviewed(),
             (KeyCode::Char('c'), KeyModifiers::NONE) => {
                 if let Some(h) = self.current_hunk() {
+                    let hunk = &self.session.doc().hunks[h];
+                    // Name what is being annotated: findings anchor to a hunk,
+                    // and a note whose subject you cannot see is a note you
+                    // have to trust yourself to have written carefully.
+                    let file = hunk.file.rsplit('/').next().unwrap_or(&hunk.file);
+                    let lines = if hunk.new_count > 1 {
+                        format!(
+                            "L{}-{}",
+                            hunk.new_start,
+                            hunk.new_start + hunk.new_count - 1
+                        )
+                    } else {
+                        format!("L{}", hunk.new_start)
+                    };
                     let mut ta = TextArea::default();
                     ta.set_block(
                         Block::default()
                             .borders(Borders::ALL)
-                            .title(" finding — Ctrl-s save · Esc cancel "),
+                            .border_style(Style::default().fg(THEME.header_fg))
+                            .title(format!(" {file} · {lines} ")),
                     );
                     self.mode = Mode::Editing(h, Box::new(ta));
                 } else {
@@ -1196,9 +1211,33 @@ impl App {
 
         match &self.mode {
             Mode::Editing(_, textarea) => {
-                let area = bottom_rect(panes.body, 8);
+                // A float over the diff, not a strip pinned to the bottom: a
+                // finding is about the lines you can still see around it.
+                let area = centered_rect(panes.body, panes.body.width * 3 / 5, 10);
                 frame.render_widget(Clear, area);
                 frame.render_widget(&**textarea, area);
+                // The keys go INSIDE the box, on its last row, where a footer
+                // belongs — the title says what you are annotating.
+                let footer = Rect {
+                    x: area.x + 1,
+                    y: area.y + area.height.saturating_sub(2),
+                    width: area.width.saturating_sub(2),
+                    height: 1,
+                };
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled("  ctrl-s ", Style::default().fg(THEME.header_fg)),
+                        Span::styled("save", Style::default().fg(THEME.context_fg)),
+                        Span::styled("  │  ", Style::default().fg(THEME.gutter_fg)),
+                        Span::styled("esc ", Style::default().fg(THEME.header_fg)),
+                        Span::styled("cancel", Style::default().fg(THEME.context_fg)),
+                        Span::styled("  │  ", Style::default().fg(THEME.gutter_fg)),
+                        Span::styled("enter ", Style::default().fg(THEME.header_fg)),
+                        Span::styled("newline", Style::default().fg(THEME.context_fg)),
+                    ]))
+                    .alignment(ratatui::layout::Alignment::Center),
+                    footer,
+                );
             }
             Mode::Help => {
                 let area = centered_rect(panes.body, 66, 30);
@@ -2059,16 +2098,6 @@ fn pad_to_width(line: &mut Line<'static>, width: usize, bg: ratatui::style::Colo
             " ".repeat(width - used),
             Style::default().bg(bg),
         ));
-    }
-}
-
-fn bottom_rect(area: Rect, height: u16) -> Rect {
-    let h = height.min(area.height);
-    Rect {
-        x: area.x,
-        y: area.y + area.height - h,
-        width: area.width,
-        height: h,
     }
 }
 

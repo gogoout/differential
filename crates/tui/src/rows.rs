@@ -281,6 +281,58 @@ impl Row {
 struct FileSource {
     old: Vec<String>,
     new: Vec<String>,
+    /// Highlighted lines kept between rebuilds, and which lines have been
+    /// offered to syntect at all.
+    ///
+    /// ADR 0021 deliberately went without this: a rebuild costs O(what is
+    /// drawn), which is cheap, so caching looked like complexity for its own
+    /// sake. Measurement disagreed — moving between two groups re-highlighted
+    /// ~2,600 lines each way on a line-heavy range, about half the cost of the
+    /// switch, all of it work already done. The `scanned` marks are separate
+    /// from the spans because a line syntect FAILS on has no spans and must not
+    /// be retried forever.
+    old_hl: Highlights,
+    new_hl: Highlights,
+}
+
+#[derive(Default)]
+struct Highlights {
+    spans: HashMap<usize, HighlightedSpans>,
+    scanned: Vec<bool>,
+}
+
+impl Highlights {
+    /// The parts of `want` that have not been through syntect yet.
+    ///
+    /// Whole ranges, not individual lines: syntect's cost is a forward walk, so
+    /// asking for a run with a hole in it is no cheaper than asking for the run.
+    fn missing(&self, want: &[Range<usize>]) -> Vec<Range<usize>> {
+        want.iter()
+            .filter(|r| (r.start..r.end).any(|i| !self.scanned.get(i).copied().unwrap_or(false)))
+            .cloned()
+            .collect()
+    }
+
+    fn record(&mut self, want: &[Range<usize>], got: HashMap<usize, HighlightedSpans>, len: usize) {
+        if self.scanned.len() < len {
+            self.scanned.resize(len, false);
+        }
+        let end = self.scanned.len();
+        for r in want {
+            for i in r.start..r.end.min(end) {
+                self.scanned[i] = true;
+            }
+        }
+        self.spans.extend(got);
+    }
+
+    /// The spans for `want`, which `record` has already made complete.
+    fn take(&self, want: &[Range<usize>]) -> HashMap<usize, HighlightedSpans> {
+        want.iter()
+            .flat_map(|r| r.start..r.end)
+            .filter_map(|i| self.spans.get(&i).map(|s| (i, s.clone())))
+            .collect()
+    }
 }
 
 fn source_lines(blob: &str) -> Vec<String> {
@@ -332,16 +384,30 @@ impl RowFactory {
         self.source(path);
         let hl = highlighter();
         let p = std::path::Path::new(path);
-        let src = &self.cache[path];
-        let old = hl.highlight_ranges(p, &src.old, old_want);
-        let new = hl.highlight_ranges(p, &src.new, new_want);
-        let scanned = old.as_ref().map_or(0, |h| h.lines_scanned)
-            + new.as_ref().map_or(0, |h| h.lines_scanned);
+        let src = self.cache.get_mut(path).expect("source() just inserted it");
+
+        // Only what has not been through syntect before. Revisiting a group, or
+        // rebuilding after a mark, then costs nothing.
+        let mut scanned = 0;
+        for (want, lines, into) in [
+            (old_want, &src.old, &mut src.old_hl),
+            (new_want, &src.new, &mut src.new_hl),
+        ] {
+            let missing = into.missing(want);
+            if missing.is_empty() {
+                continue;
+            }
+            if let Some(got) = hl.highlight_ranges(p, lines, &missing) {
+                scanned += got.lines_scanned;
+                into.record(&missing, got.spans, lines.len());
+            } else {
+                // No syntax for this file: mark it done so the probe is not
+                // repeated on every rebuild.
+                into.record(&missing, HashMap::new(), lines.len());
+            }
+        }
         self.highlighted += scanned;
-        (
-            old.map(|h| h.spans).unwrap_or_default(),
-            new.map(|h| h.spans).unwrap_or_default(),
-        )
+        (src.old_hl.take(old_want), src.new_hl.take(new_want))
     }
 
     fn source(&mut self, path: &str) -> &FileSource {
@@ -357,7 +423,15 @@ impl RowFactory {
                 source_lines(&blob)
             };
             let (old, new) = (read(&self.base), read(&self.head));
-            self.cache.insert(path.to_string(), FileSource { old, new });
+            self.cache.insert(
+                path.to_string(),
+                FileSource {
+                    old,
+                    new,
+                    old_hl: Highlights::default(),
+                    new_hl: Highlights::default(),
+                },
+            );
         }
         &self.cache[path]
     }

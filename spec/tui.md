@@ -192,7 +192,7 @@ sitting, not a finding, so nothing about it reaches the sidecar store.
 | `v` | toggle the left pane: reading plan ↔ file tree (persisted) |
 | `f` | file-list modal over the current view (`enter` jumps to the file) |
 | `space` | mark reviewed — the whole selected group/file in the left pane, the hunk's **class** in the diff pane (one exemplar verifies the shape) |
-| `c` | add a finding on the current hunk (Ctrl-s save, Esc cancel) |
+| `c` | add a finding on the current hunk — a float over the diff, titled with the file and lines it annotates (`ctrl-s` save, `esc` cancel, `enter` newline) |
 | `dd` | delete the finding under the cursor |
 | `y` | copy the open-findings summary to the clipboard (markdown list) |
 | `?` | help |
@@ -252,6 +252,14 @@ while `feature` moves. Reviewed marks key on class content (sorted member digest
 findings anchor on exact hunk digests and re-anchor on every open (exact digest →
 content match flagged *moved* → orphaned, never dropped; orphans revive when content
 returns). The pane title shows an orphan count when any exist.
+
+**Writing a finding** opens a float over the diff rather than a strip pinned to its foot:
+a note is about lines you should still be able to see. Its border carries the file and line
+range it will anchor to, and its footer the keys. `enter` inserts a newline and `ctrl-s`
+saves — not the other way round, however natural `enter` to save would read, because most
+terminals report `shift+enter` as plain `enter` without the keyboard enhancements this
+reviewer deliberately does not ask for, so binding `enter` to save would leave no way to
+write a second line.
 
 ## Findings contract
 
