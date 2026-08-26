@@ -2372,6 +2372,33 @@ fn counts_are_coloured_in_the_file_modal_and_the_role_is_a_pill() {
     );
 }
 
+/// The role pill hangs off the pane's right edge, so the roles read as a
+/// column. Trailing the counts, each started wherever the counts happened to
+/// end — a word you could only read by finding it first.
+#[test]
+fn the_role_pill_hangs_off_the_plan_panes_right_edge() {
+    let (_r, mut app) = app_with_dependency_edge();
+    app.focus = Focus::Groups;
+    let rows = plan_rows(&mut app);
+    let ends: Vec<usize> = rows
+        .iter()
+        .filter(|r| r.contains("foundation") || r.contains("consumer"))
+        .map(|r| r.trim_end().chars().count())
+        .collect();
+    assert!(ends.len() >= 2, "the fixture needs two roles: {rows:?}");
+    assert!(
+        ends.windows(2).all(|w| w[0] == w[1]),
+        "every role should end in the same column: {ends:?}"
+    );
+    // And that column is the pane's edge, not somewhere in the middle.
+    let width = rows[0].chars().count();
+    assert!(
+        ends[0] + 2 >= width,
+        "the pill should reach the right edge: ends at {} of {width}",
+        ends[0]
+    );
+}
+
 /// One fact, one rendering. The role was a pill in the plan pane and grey
 /// suffix text on the group header three columns away.
 #[test]

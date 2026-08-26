@@ -1552,13 +1552,14 @@ impl App {
 
     fn draw_groups(&self, frame: &mut Frame, area: Rect) {
         let inner_h = area.height.saturating_sub(2) as usize;
+        let inner_w = area.width.saturating_sub(2) as usize;
         let selected = self.selected_entry();
 
         // Entries render as blocks of lines, so scrolling counts ROWS, not
         // entries; keep the whole selected block in view.
         let mut blocks: Vec<Vec<Line>> = match self.view_mode {
             ViewMode::Groups => (0..self.groups().len())
-                .map(|i| self.group_lines(i, i == selected))
+                .map(|i| self.group_lines(i, i == selected, inner_w))
                 .collect(),
             ViewMode::Files => {
                 let reviewed = self.session.reviewed_hunks();
@@ -1570,7 +1571,6 @@ impl App {
         };
         // The selection reads as a row, not as highlighted text: pad its lines
         // out to the pane so the background runs to the right edge.
-        let inner_w = area.width.saturating_sub(2) as usize;
         if let Some(block) = blocks.get_mut(selected) {
             for line in block.iter_mut() {
                 pad_to_width(line, inner_w, THEME.selected_bg);
@@ -1652,7 +1652,11 @@ impl App {
     }
 
     /// One group as 2–3 lines: title, counts, and what it follows.
-    fn group_lines(&self, idx: usize, selected: bool) -> Vec<Line<'static>> {
+    ///
+    /// `width` is the pane's inner width, which the role pill needs: it hangs
+    /// off the RIGHT edge, so it is the one thing here whose position depends
+    /// on how wide the pane is.
+    fn group_lines(&self, idx: usize, selected: bool, width: usize) -> Vec<Line<'static>> {
         let g = &self.groups()[idx];
         let relation = self.relation_to_selected(idx);
         let (lo, hi) = self.edge_span();
@@ -1734,17 +1738,29 @@ impl App {
         // The ordering role is a fact about the group, like the class on a hunk
         // header — so it wears the same pill, in the muted colours, rather than
         // trailing off the line as dim text.
+        //
+        // Against the RIGHT edge, so the roles line up in a column of their
+        // own. Trailing the counts, they started at a different place on every
+        // row — a word you can only read by finding it first.
         if let Some(r) = g.role {
             let (fg, pill_bg) = THEME.pill();
-            counts.push(Span::styled(" ", dim));
-            counts.extend(
-                pill(
-                    vec![(fg, differential_engine::plan::role_name(r).to_string())],
-                    pill_bg,
-                )
-                .into_iter()
-                .map(|(st, t)| Span::styled(t, st)),
-            );
+            let badge: Vec<Span> = pill(
+                vec![(fg, differential_engine::plan::role_name(r).to_string())],
+                pill_bg,
+            )
+            .into_iter()
+            .map(|(st, t)| Span::styled(t, st))
+            .collect();
+            let used: usize = counts
+                .iter()
+                .chain(&badge)
+                .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                .sum();
+            counts.push(Span::styled(
+                " ".repeat(width.saturating_sub(used).max(1)),
+                dim,
+            ));
+            counts.extend(badge);
         }
         lines.push(Line::from(counts));
         if !g.depends_on.is_empty() {

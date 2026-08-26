@@ -28,9 +28,12 @@ behind it.
 
 **Reading plan.** Groups in rank order, each a small block: the group **id**, effort tier
 and label, then file count with added/removed line totals (in their own colours), the
-role — as a pill, in the same muted colours a hunk's title pill wears, since it is a fact
-about the group rather than a decoration on it, and the **same** pill the group's header
-carries in the detail pane — and `after: <ids>` naming the groups it follows — the id column is what makes those
+role — as a pill against the pane's **right edge**, in the same muted colours a hunk's
+title pill wears, since it is a fact about the group rather than a decoration on it, and
+the **same** pill the group's header carries in the detail pane. Right-aligned so the roles
+read as a column: trailing the counts, each began wherever those happened to end, which
+makes a word you can only read by finding it first. Then `after: <ids>` naming the groups
+it follows — the id column is what makes those
 references resolvable.
 
 The trailing **back-filled** group — classes the model omitted, recovered by the coverage
