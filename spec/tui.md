@@ -28,9 +28,12 @@ behind it.
 
 **Reading plan.** Groups in rank order, each a small block: the group **id**, effort tier
 and label, then file count with added/removed line totals (in their own colours), the
-role — as a pill, in the same muted colours a hunk's title pill wears, since it is a fact
-about the group rather than a decoration on it, and the **same** pill the group's header
-carries in the detail pane — and `after: <ids>` naming the groups it follows — the id column is what makes those
+role — as a pill against the pane's **right edge**, in the same muted colours a hunk's
+title pill wears, since it is a fact about the group rather than a decoration on it, and
+the **same** pill the group's header carries in the detail pane. Right-aligned so the roles
+read as a column: trailing the counts, each began wherever those happened to end, which
+makes a word you can only read by finding it first. Then `after: <ids>` naming the groups
+it follows — the id column is what makes those
 references resolvable.
 
 The trailing **back-filled** group — classes the model omitted, recovered by the coverage
@@ -293,9 +296,10 @@ list belongs; the footer's job is to point at it.
 | `s` | toggle unified / side-by-side diff layout (persisted) |
 | `f` | files, in the pane you are in — plan pane: toggle reading plan ↔ file tree (persisted) · diff pane: the file-list modal (`enter` jumps to the file) |
 | `space` | mark reviewed — the whole selected group/file in the left pane, the hunk's **class** in the diff pane (one exemplar verifies the shape) |
-| `c` | add a finding on the current hunk — a float over the diff, titled with the file and lines it annotates (`ctrl-s` save, `esc` cancel, `enter` newline) |
+| `v` | start a line selection at the cursor · `j`/`k` extend it · `v` or `esc` drops it · `c` writes a finding over it |
+| `c` | write a finding — on the line under the cursor, on the lines `v` selected, or on the whole hunk from a row that is not a line; on a line that already carries one, rewrite that one |
 | `dd` | delete the finding under the cursor |
-| `y` | copy the open-findings summary to the clipboard (markdown list) |
+| `y` | copy the open-findings summary to the clipboard — a markdown list of `file:lines: note`, and nothing about groups: a group is how this reviewer chose to READ the branch, and the summary is pasted somewhere that has no idea what `g7` was |
 | `?` | help — the keys, as one uninterrupted table |
 | `q` | quit — state is saved on every change, quitting never loses anything |
 
@@ -354,19 +358,86 @@ findings anchor on exact hunk digests and re-anchor on every open (exact digest 
 content match flagged *moved* → orphaned, never dropped; orphans revive when content
 returns). The pane title shows an orphan count when any exist.
 
+**A finding is about lines.** `c` on a diff row annotates **that line**; `v` first starts a
+selection the cursor extends, and `c` then annotates the run.
+
+A selection **stops at a context boundary, and at a file header** — the two rows that stand
+for a stretch of file the reader is not looking at. Walking past one moves the cursor but
+not the selection: a gap they never opened is a gap they never read, and a note claiming
+those lines claims something nobody said. **Nothing else breaks a run**: a hunk's header,
+its removed and added rows, a note already filed on one of them are all one continuous
+stretch of one file, and a selection has to cross them. A run is in ONE side's numbering,
+the anchor's, and a row that exists in both files answers for either. The highlight shows
+exactly what `c` will file, so it needs no message to explain it.
+
+`v` is a toggle: pressing it again drops the selection, as `esc` does, and `c` leaves by
+using it. On a row that is not a line of
+a file — a hunk header, a fold — `c` annotates the whole hunk, which is what every finding
+used to do.
+
+The anchor is stored as an **offset into the hunk** — signed, since context sits on both
+sides of one — not as a line number. The digest fixes
+the hunk's content, so a hunk that moved in the file still holds the same line at the same
+offset — while its absolute number did not survive the move. ADR 0013 is unchanged by this:
+the anchor is still the digest, with a position inside it. A record written before offsets
+existed reads `0`, which lands it on the hunk's first line — exactly where it was.
+
+A finding is **drawn under the line it annotates**, so a note and its subject are read
+together. One whose line is not on screen — the context around it still folded, or a
+regeneration that could only re-anchor it to the hunk — falls back to its hunk's header,
+where they all used to sit.
+
+A row that exists in **both** files carries both its numbers, and a note anchored to either
+belongs on it. A modification is two rows in the unified layout — the removed line and the
+added one, each anchoring to its own side — and one row in the split layout; without the
+other number a note written on the removed half had nowhere to land after an `s`, and fell
+back to the hunk's header.
+
+**Standing anywhere in a note lights all of it** — every line it covers and the note
+itself: the border column runs the findings colour down them, and the note's rail takes it
+too. A note is drawn under its **last** line, so over a range the note and most of the run
+are not adjacent at all, and adjacency was the only thing that said they belonged together.
+Standing on the first line of a run is standing in the note about that run, which is what
+`c` there rewrites.
+
+**`c` on a line a note already covers opens THAT note**, with its text in the box and
+the cursor at the end. Two notes on one line would each be half the story, and there was no
+way to fix a typo but delete and retype. A **selection** is the exception: picking a run of
+lines is asking for a note about the run, so `v` then `c` always files a new one. Emptying
+the box does not delete the note — that is `dd`, which is a deliberate press, where a note
+lost to a stray keystroke and an `enter` would not be.
+
+It is drawn as a **quoted panel**: every line of the note behind a muted rail, in muted
+italics. It is prose the reviewer wrote about the code above it, so it has to read as a
+different kind of thing from the code without competing with it — which one truncated line
+under a bright marker glyph did not. Every line of the panel is a finding row, so `dd`
+deletes the note from any of them and the cursor never lands on a line belonging to
+nothing.
+
 **Writing a finding** opens a float over the diff rather than a strip pinned to its foot:
 a note is about lines you should still be able to see. Its border carries the file and line
-range it will anchor to, and its footer the keys. `enter` inserts a newline and `ctrl-s`
-saves — not the other way round, however natural `enter` to save would read, because most
-terminals report `shift+enter` as plain `enter` without the keyboard enhancements this
-reviewer deliberately does not ask for, so binding `enter` to save would leave no way to
-write a second line.
+range it will anchor to, and its footer the keys.
+
+**`enter` saves.** A finding is usually one line, and the key that ends a line is the key a
+reader reaches for to be done with it. A newline is `shift+enter` where the terminal
+reports it, and a **trailing `\` before `enter`** where it does not — most terminals send
+plain `enter` for both without the keyboard enhancements this reviewer deliberately does
+not ask for, so `shift+enter` alone would leave some readers no way to write a second line.
+`ctrl-s` saves as well: it costs one arm, and some terminals swallow it before the app ever
+sees it, which is why it cannot be the only way.
+
+A **paste** lands in the box whole. Bracketed paste is on precisely so a multi-line paste
+arrives as one event instead of a run of keys each driving a normal-mode action; the event
+was being dropped, which read as the box being broken.
 
 ## Findings contract
 
 `dfr findings <range>` re-anchors and prints the findings as JSON — each record carries
-`{id, created, body, status, moved, plan_hash, anchor: {file, side, line, hunk_digest,
-line_text}}`. `hunk_digest` keys back into the plan document's `hunks[].digest` and from
+`{id, created, body, status, moved, plan_hash, anchor: {file, side, line, end_line, offset,
+span, hunk_digest, line_text, end_line_text}}`. `line`/`end_line` are the resolved numbers
+for a consumer that only reads; `offset`/`span` are what survive a regeneration. All five
+are additive with defaults, so an older `findings.jsonl` loads unchanged. `hunk_digest` keys back into the plan document's `hunks[].digest` and from
 there to `forge_position`, which is how agent tooling and the future forge consumer act on
 them. The `y` clipboard summary is the human-readable projection: one markdown bullet per
-open finding, `file:line (group label): body`.
+open finding, `file:lines: note`. No group: a group is how this reviewer chose to READ the
+branch, and the summary is pasted somewhere that has no idea what `g7` was.

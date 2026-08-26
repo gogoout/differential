@@ -21,7 +21,7 @@ private, per-clone, worktree-safe, never committable.
 ├── reviews/<review-id>/
 │   ├── plans/<content-hash>.json   # every generated document, immutable
 │   ├── current                     # the active plan's content hash
-│   ├── comments.jsonl              # append-only comment store
+│   ├── findings.jsonl              # the comment store
 │   └── state.json                  # review progress
 └── cache/grouping/<classes-hash>.json
 ```
@@ -40,13 +40,25 @@ Comment record:
 { "id": "...", "created": "...", "body": "...",
   "status": "open" | "resolved" | "orphaned",
   "plan_hash": "<plan this was written against>",
-  "anchor": { "file": "...", "side": "old" | "new", "line": 47,
+  "anchor": { "file": "...", "side": "old" | "new",
+              "line": 47, "end_line": 52,
+              "offset": 3, "span": 5,
               "hunk_digest": "<hunks[].digest>",
-              "context_before": ["..."], "context_after": ["..."] } }
+              "line_text": "...", "end_line_text": "..." } }
 ```
 
 Comments anchor to a hunk's **digest** (exact content hash, stable across regenerations),
-never to its positional id.
+never to its positional id — and to an **offset inside it**, never to a line number. The
+digest fixes the hunk's content, so a hunk that moved in the file still holds the same line
+at the same offset, while its absolute number did not survive the move. `line`/`end_line`
+are the resolved numbers, recomputed on every re-anchor for consumers that only read;
+`offset`/`span` are the durable pair. `offset` is **signed**: a reader can annotate a
+context line, and context sits on both sides of a hunk. `end_line_text` does for the range's far end what
+`line_text` does for its start.
+
+Every field but `file`, `side`, `line` and `hunk_digest` is additive with a default, so a
+`findings.jsonl` written before ranges loads unchanged: `offset: 0`, `span: 0` puts it on
+the hunk's first line, which is where it already was.
 
 ## Re-anchoring on regeneration
 

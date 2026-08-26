@@ -183,7 +183,7 @@ fn finding_lifecycle_add_copy_delete() {
 
     // c opens the editor on the current hunk.
     app.handle_key(key('c'));
-    assert!(matches!(app.mode, Mode::Editing(_, _)));
+    assert!(matches!(app.mode, Mode::Editing { .. }));
     for ch in "off by one".chars() {
         app.handle_key(key(ch));
     }
@@ -2372,6 +2372,33 @@ fn counts_are_coloured_in_the_file_modal_and_the_role_is_a_pill() {
     );
 }
 
+/// The role pill hangs off the pane's right edge, so the roles read as a
+/// column. Trailing the counts, each started wherever the counts happened to
+/// end — a word you could only read by finding it first.
+#[test]
+fn the_role_pill_hangs_off_the_plan_panes_right_edge() {
+    let (_r, mut app) = app_with_dependency_edge();
+    app.focus = Focus::Groups;
+    let rows = plan_rows(&mut app);
+    let ends: Vec<usize> = rows
+        .iter()
+        .filter(|r| r.contains("foundation") || r.contains("consumer"))
+        .map(|r| r.trim_end().chars().count())
+        .collect();
+    assert!(ends.len() >= 2, "the fixture needs two roles: {rows:?}");
+    assert!(
+        ends.windows(2).all(|w| w[0] == w[1]),
+        "every role should end in the same column: {ends:?}"
+    );
+    // And that column is the pane's edge, not somewhere in the middle.
+    let width = rows[0].chars().count();
+    assert!(
+        ends[0] + 2 >= width,
+        "the pill should reach the right edge: ends at {} of {width}",
+        ends[0]
+    );
+}
+
 /// One fact, one rendering. The role was a pill in the plan pane and grey
 /// suffix text on the group header three columns away.
 #[test]
@@ -2608,15 +2635,14 @@ fn the_finding_editor_floats_and_names_its_subject() {
     app.focus = Focus::Detail;
     put_cursor_on(&mut app, |k| matches!(k, RowKind::HunkHeader { .. }));
     app.handle_key(key('c'));
-    assert!(matches!(app.mode, Mode::Editing(_, _)));
+    assert!(matches!(app.mode, Mode::Editing { .. }));
 
     let text = drawn_as_is(&mut app);
     assert!(text.contains("long.rs · L"), "no file·line title: {text}");
-    // The keys are in a footer inside the box, and they are THIS app's keys —
-    // `enter` cannot save, because saving would leave no way to type a second
-    // line: the terminal reports shift+enter as enter without the keyboard
-    // enhancements this app deliberately does not ask for.
-    assert!(text.contains("ctrl-s"), "no save key shown: {text}");
+    // The keys are in a footer inside the box: `enter` saves, and a newline is
+    // shift+enter where the terminal reports it or a trailing `\` where it
+    // does not.
+    assert!(text.contains("enter save"), "no save key shown: {text}");
     assert!(text.contains("esc"), "no cancel key shown: {text}");
     assert!(text.contains("newline"), "no newline key shown: {text}");
 
@@ -2624,6 +2650,687 @@ fn the_finding_editor_floats_and_names_its_subject() {
     assert!(
         text.contains("let filler"),
         "the editor should float over the diff, not replace it: {text}"
+    );
+}
+
+/// `enter` saves. A newline is shift+enter, or a trailing `\` before `enter`
+/// for the terminals that report shift+enter as plain enter — which is most of
+/// them without the keyboard enhancements this reviewer does not ask for.
+#[test]
+fn the_composer_saves_on_enter_and_takes_a_newline_two_ways() {
+    let open = |app: &mut App| {
+        put_cursor_on(app, |k| matches!(k, RowKind::HunkHeader { .. }));
+        app.handle_key(key('c'));
+        assert!(matches!(app.mode, Mode::Editing { .. }));
+    };
+    let typed = |app: &mut App, text: &str| {
+        for c in text.chars() {
+            app.handle_key(key(c));
+        }
+    };
+    let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    let shift_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
+
+    // Plain enter saves.
+    let (_r, mut app) = app_with_a_long_file();
+    open(&mut app);
+    typed(&mut app, "one line");
+    app.handle_key(enter);
+    assert!(matches!(app.mode, Mode::Normal));
+    assert_eq!(app.session.findings().len(), 1);
+    assert_eq!(app.session.findings()[0].body, "one line");
+
+    // shift+enter makes a second line, and enter then saves both.
+    let (_r, mut app) = app_with_a_long_file();
+    open(&mut app);
+    typed(&mut app, "first");
+    app.handle_key(shift_enter);
+    typed(&mut app, "second");
+    app.handle_key(enter);
+    assert_eq!(app.session.findings()[0].body, "first\nsecond");
+
+    // A trailing `\` before enter does the same, and the `\` is not kept.
+    let (_r, mut app) = app_with_a_long_file();
+    open(&mut app);
+    typed(&mut app, "first\\");
+    app.handle_key(enter);
+    assert!(matches!(app.mode, Mode::Editing { .. }));
+    assert!(
+        matches!(app.mode, Mode::Editing { .. }),
+        "the box should stay open"
+    );
+    typed(&mut app, "second");
+    app.handle_key(enter);
+    assert_eq!(app.session.findings()[0].body, "first\nsecond");
+
+    // A `\` the reader went BACK to a line to leave is not a newline request:
+    // the key looks at the character before the cursor, and `delete_char`
+    // takes what the cursor sits after.
+    let (_r, mut app) = app_with_a_long_file();
+    open(&mut app);
+    typed(&mut app, "ends with a slash\\");
+    for _ in 0..5 {
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    }
+    app.handle_key(enter);
+    assert!(
+        matches!(app.mode, Mode::Normal),
+        "enter mid-line still saves"
+    );
+    assert_eq!(
+        app.session.findings()[0].body,
+        "ends with a slash\\",
+        "nothing should have been deleted"
+    );
+
+    // `ctrl-s` still saves, for whoever's terminal passes it.
+    let (_r, mut app) = app_with_a_long_file();
+    open(&mut app);
+    typed(&mut app, "by ctrl-s");
+    app.handle_key(ctrl('s'));
+    assert_eq!(app.session.findings()[0].body, "by ctrl-s");
+}
+
+/// Bracketed paste is enabled so a multi-line paste arrives whole. The event
+/// was dropped, so pasting into the composer did nothing.
+#[test]
+fn a_paste_lands_in_the_composer() {
+    let (_r, mut app) = app_with_a_long_file();
+    put_cursor_on(&mut app, |k| matches!(k, RowKind::HunkHeader { .. }));
+    app.handle_key(key('c'));
+    app.handle_paste("pasted\nover two lines");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.session.findings()[0].body, "pasted\nover two lines");
+
+    // In normal mode there is no field for it, so it does nothing.
+    let (_r, mut app) = app_with_a_long_file();
+    let before = app.rows.len();
+    app.handle_paste("stray");
+    assert!(matches!(app.mode, Mode::Normal));
+    assert_eq!(app.rows.len(), before);
+}
+
+/// `c` on a diff row annotates THAT line, not the whole hunk it sits in.
+#[test]
+fn c_on_a_line_anchors_to_that_line() {
+    let (_r, mut app) = app_with_a_long_file();
+    let row = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Diff(_)) && r.line.is_some())
+        .expect("a diff row with a line");
+    let at = app.rows[row].line.clone().expect("its line");
+    app.cursor = row;
+    app.focus = Focus::Detail;
+
+    app.handle_key(key('c'));
+    app.handle_key(key('x'));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let f = &app.session.findings()[0];
+    assert_eq!(f.anchor.side, at.side);
+    assert_eq!(f.anchor.line, at.line, "the anchor is the cursor's line");
+    assert_eq!(f.anchor.end_line, at.line, "one line, not a range");
+    assert_eq!(f.anchor.line_span(), at.line.to_string());
+}
+
+/// `V` starts a selection the cursor extends; `c` then annotates the run.
+#[test]
+fn v_selects_lines_and_c_annotates_the_run() {
+    let (_r, mut app) = app_with_a_long_file();
+    // Three consecutive rows that are all lines of the same side.
+    let start = app
+        .rows
+        .windows(3)
+        .position(|w| {
+            w.iter()
+                .all(|r| r.line.as_ref().is_some_and(|l| l.side == "new"))
+        })
+        .expect("three new-side rows in a row");
+    app.cursor = start;
+    app.focus = Focus::Detail;
+
+    app.handle_key(key('v'));
+    assert_eq!(app.visual, Some(start));
+    app.handle_key(key('j'));
+    app.handle_key(key('j'));
+
+    app.handle_key(key('c'));
+    assert_eq!(app.visual, None, "writing the finding ends the selection");
+    app.handle_key(key('x'));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let first = app.rows[start].line.clone().unwrap();
+    let last = app.rows[app.cursor].line.clone().unwrap();
+    let f = &app.session.findings()[0];
+    assert_eq!(f.anchor.line, first.line);
+    assert_eq!(f.anchor.end_line, last.line);
+    assert_eq!(f.anchor.span, last.line - first.line);
+    assert_eq!(
+        f.anchor.line_span(),
+        format!("{}-{}", first.line, last.line)
+    );
+
+    // `esc` drops a selection rather than doing anything else.
+    app.handle_key(key('v'));
+    assert!(app.visual.is_some());
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.visual, None);
+}
+
+/// A finding is drawn under the line it annotates, not under the hunk header.
+#[test]
+fn a_finding_sits_under_the_line_it_annotates() {
+    let (_r, mut app) = app_with_a_long_file();
+    let row = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Diff(_)) && r.line.is_some())
+        .expect("a diff row with a line");
+    app.cursor = row;
+    app.focus = Focus::Detail;
+    app.handle_key(key('c'));
+    app.handle_key(key('x'));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let at = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Finding(..)))
+        .expect("a finding row");
+    let above = app.rows[at - 1]
+        .line
+        .clone()
+        .expect("the row above a finding is the line it annotates");
+    assert_eq!(above.line, app.session.findings()[0].anchor.end_line);
+
+    // `dd` still deletes it from wherever it landed.
+    app.cursor = at;
+    app.handle_key(key('d'));
+    app.handle_key(key('d'));
+    assert!(app.session.findings().is_empty());
+}
+
+/// A note is prose about the code above it, so it is drawn as a quoted panel:
+/// every line behind a muted rail, in muted italics.
+#[test]
+fn a_finding_is_a_quoted_panel_of_all_its_lines() {
+    let (_r, mut app) = app_with_a_long_file();
+    let row = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Diff(_)) && r.line.is_some())
+        .expect("a diff row with a line");
+    app.cursor = row;
+    app.focus = Focus::Detail;
+    app.handle_key(key('c'));
+    app.handle_paste("first line\nsecond line");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let at: Vec<usize> = app
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| matches!(r.kind, RowKind::Finding(..)))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(at.len(), 2, "one row per line of the note");
+    assert!(
+        at.windows(2).all(|w| w[1] == w[0] + 1),
+        "the panel is contiguous"
+    );
+
+    let text = drawn_rows(&mut app);
+    let panel: Vec<&String> = text.iter().filter(|r| r.contains("line")).collect();
+    assert!(
+        text.iter().any(|r| r.contains("▍ first line")),
+        "no rail on the note: {panel:?}"
+    );
+    assert!(
+        text.iter().any(|r| r.contains("▍ second line")),
+        "the second line is dropped: {panel:?}"
+    );
+    assert!(
+        !text.iter().any(|r| r.contains("◆ first")),
+        "the marker glyph is gone from the note itself"
+    );
+
+    // `dd` deletes the note from ANY of its lines.
+    app.cursor = at[1];
+    app.handle_key(key('d'));
+    app.handle_key(key('d'));
+    assert!(app.session.findings().is_empty());
+}
+
+/// `c` on a line that already carries a note opens THAT note. Two notes on one
+/// line would each be half the story, and there was no way to fix a typo but
+/// delete and retype.
+#[test]
+fn c_on_a_commented_line_rewrites_the_note() {
+    let (_r, mut app) = app_with_a_long_file();
+    let line = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Diff(_)) && r.line.is_some())
+        .expect("a diff row with a line");
+    app.cursor = line;
+    app.focus = Focus::Detail;
+    app.handle_key(key('c'));
+    app.handle_paste("frist draft");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let id = app.session.findings()[0].id.clone();
+
+    // From the line, and from the note's own row: both open the same note,
+    // with its text already in the box.
+    let note = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Finding(..)))
+        .expect("a note row");
+    for at in [line, note] {
+        app.cursor = at;
+        app.handle_key(key('c'));
+        let Mode::Editing {
+            editor, rewriting, ..
+        } = &app.mode
+        else {
+            panic!("the box should be open");
+        };
+        assert_eq!(rewriting.as_deref(), Some(id.as_str()), "from row {at}");
+        assert_eq!(editor.lines().join("\n"), "frist draft", "from row {at}");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    }
+
+    // The box opens at the END of the note, so a second thought is typed
+    // rather than prepended. Rewriting keeps the id and the anchor.
+    let before = app.session.findings()[0].anchor.line;
+    let clear = |app: &mut App, n: usize| {
+        for _ in 0..n {
+            app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        }
+    };
+    app.cursor = line;
+    app.handle_key(key('c'));
+    app.handle_paste(", on reflection");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.session.findings().len(), 1, "no second note was filed");
+    assert_eq!(app.session.findings()[0].id, id, "the id is a handle");
+    assert_eq!(app.session.findings()[0].body, "frist draft, on reflection");
+    assert_eq!(app.session.findings()[0].anchor.line, before);
+
+    // Emptying the box leaves the note alone: `dd` is how a note is deleted,
+    // and that is a deliberate press.
+    app.cursor = line;
+    app.handle_key(key('c'));
+    clear(&mut app, 64);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.session.findings().len(), 1);
+    assert_eq!(app.session.findings()[0].body, "frist draft, on reflection");
+
+    // A selection is the exception: it asks for a note about the run.
+    app.cursor = line;
+    app.handle_key(key('v'));
+    app.handle_key(key('j'));
+    app.handle_key(key('c'));
+    assert!(
+        matches!(
+            &app.mode,
+            Mode::Editing {
+                rewriting: None,
+                ..
+            }
+        ),
+        "a selection files a new note"
+    );
+}
+
+/// A selection has to cross a hunk. Only a gap the reader never opened stops
+/// it — a hunk's header and its removed and added rows are one continuous
+/// stretch of one file.
+#[test]
+fn a_selection_crosses_a_hunk_from_either_side() {
+    let (_r, mut app) = app_with_a_long_file();
+    app.focus = Focus::Detail;
+    // The removed half of the modification: an OLD-side row, and the one the
+    // run used to get stuck on, since every row after it is new-side.
+    let removed = app
+        .rows
+        .iter()
+        .position(|r| r.line.as_ref().is_some_and(|l| l.side == "old"))
+        .expect("a removed row");
+    let old_line = app.rows[removed].line.clone().unwrap().line;
+
+    app.cursor = removed;
+    app.handle_key(key('v'));
+    for _ in 0..3 {
+        app.handle_key(key('j'));
+    }
+    app.handle_key(key('c'));
+    let Mode::Editing { lines: Some(l), .. } = &app.mode else {
+        panic!("no lines picked");
+    };
+    assert_eq!(l.side, "old", "the anchor's side is the run's side");
+    assert_eq!(l.start, old_line);
+    assert!(
+        l.end > old_line,
+        "an old-side run must reach the context below the hunk: {l:?}"
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    // And the same downward, from the context above through the hunk.
+    let above = app.rows[..removed]
+        .iter()
+        .rposition(|r| r.line.as_ref().is_some_and(|l| l.side == "new"))
+        .expect("a context row above");
+    app.cursor = above;
+    app.handle_key(key('v'));
+    for _ in 0..4 {
+        app.handle_key(key('j'));
+    }
+    app.handle_key(key('c'));
+    let Mode::Editing { lines: Some(l), .. } = &app.mode else {
+        panic!("no lines picked");
+    };
+    let from = app.rows[above].line.clone().unwrap().line;
+    assert_eq!((l.side.as_str(), l.start), ("new", from));
+    // Past the hunk's header, its removed row and its added row: three rows
+    // that are not two consecutive new-side lines, and used to end the run.
+    assert!(
+        l.end >= from + 2,
+        "the run should reach past the hunk: {l:?}"
+    );
+}
+
+/// `v` is how a reader gets into a selection, so it is the key their hand is
+/// on to get out of one.
+#[test]
+fn v_toggles_the_selection_off() {
+    let (_r, mut app) = app_with_a_long_file();
+    app.focus = Focus::Detail;
+    app.cursor = app
+        .rows
+        .iter()
+        .position(|r| r.line.is_some())
+        .expect("a line row");
+
+    app.handle_key(key('v'));
+    assert!(app.visual.is_some());
+    app.handle_key(key('v'));
+    assert_eq!(app.visual, None, "a second v drops it");
+
+    // And it starts a fresh one rather than staying off.
+    app.handle_key(key('v'));
+    assert_eq!(app.visual, Some(app.cursor));
+}
+
+/// A selection stops where the file's line numbers do. Dragging from line 23
+/// across `13 lines hidden` to line 37 used to file a note claiming fifteen
+/// lines, thirteen of which were never on screen.
+#[test]
+fn a_selection_stops_at_a_gap_it_never_opened() {
+    let (_r, mut app) = app_with_a_long_file();
+    app.focus = Focus::Detail;
+    let boundary = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::ContextEdge { .. }) && r.button == Some("↓"))
+        .expect("a downward boundary");
+    let above = app.rows[..boundary]
+        .iter()
+        .rposition(|r| r.line.is_some())
+        .expect("a line above it");
+    let last_seen = app.rows[above].line.clone().unwrap();
+
+    // Select from that line and walk down past the gap onto a line beyond it.
+    app.cursor = above;
+    app.handle_key(key('v'));
+    for _ in 0..6 {
+        app.handle_key(key('j'));
+        if app.cursor > boundary && app.rows[app.cursor].line.is_some() {
+            break;
+        }
+    }
+    let beyond = app.rows[app.cursor]
+        .line
+        .clone()
+        .expect("a line past the gap");
+    assert!(
+        beyond.line > last_seen.line + 1,
+        "the fixture needs a real gap: {} to {}",
+        last_seen.line,
+        beyond.line
+    );
+
+    app.handle_key(key('c'));
+    let Mode::Editing { lines: Some(l), .. } = &app.mode else {
+        panic!("no lines picked");
+    };
+    assert_eq!(
+        (l.start, l.end),
+        (last_seen.line, last_seen.line),
+        "the selection should have stopped at the last line the reader saw"
+    );
+}
+
+/// A note over a RANGE is drawn under its last line, so the run above it is
+/// not adjacent to it. Standing anywhere in the run lights the whole thing.
+#[test]
+fn a_ranged_note_lights_every_line_it_covers() {
+    let (_r, mut app) = app_with_a_long_file();
+    let start = app
+        .rows
+        .windows(3)
+        .position(|w| {
+            w.iter()
+                .all(|r| r.line.as_ref().is_some_and(|l| l.side == "new"))
+        })
+        .expect("three new-side rows in a row");
+    app.cursor = start;
+    app.focus = Focus::Detail;
+
+    app.handle_key(key('v'));
+    app.handle_key(key('j'));
+    app.handle_key(key('j'));
+    app.handle_key(key('c'));
+    app.handle_paste("about all three");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let a = app.session.findings()[0].anchor.clone();
+    assert_eq!(
+        a.end_line - a.line,
+        2,
+        "the fixture needs a three-line note"
+    );
+
+    // The rows of the run, and the note's own row after the last of them.
+    let covered: Vec<usize> = app
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| {
+            r.line
+                .as_ref()
+                .is_some_and(|l| (a.line..=a.end_line).any(|n| l.holds(&a.side, n)))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(covered.len(), 3, "three lines: {covered:?}");
+    let note = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Finding(..)))
+        .expect("a note row");
+    assert_eq!(note, covered[2] + 1, "the note hangs off the LAST line");
+
+    // Standing anywhere in the run, or on the note: the whole cluster lights.
+    let lit = |app: &mut App, rows: &[usize]| -> bool {
+        let buf = buffer_of(app);
+        rows.iter().all(|&i| {
+            let y = (i - app.scroll()) as u16 + 1;
+            buf[(40, y)].style().fg == Some(THEME.finding_fg)
+        })
+    };
+    let cluster: Vec<usize> = covered
+        .iter()
+        .copied()
+        .chain(std::iter::once(note))
+        .collect();
+    for at in cluster.clone() {
+        app.cursor = at;
+        assert!(
+            lit(&mut app, &cluster),
+            "standing on row {at} should light every row of the note"
+        );
+    }
+
+    // And `c` from the FIRST line of the run rewrites that note.
+    app.cursor = covered[0];
+    app.handle_key(key('c'));
+    assert!(
+        matches!(
+            &app.mode,
+            Mode::Editing {
+                rewriting: Some(_),
+                ..
+            }
+        ),
+        "the first line of a run is in the note about that run"
+    );
+}
+
+/// A note is drawn under its line, and the only sign the two belonged together
+/// was that they were adjacent. Standing on either lights both, in the border
+/// column and on the note's own rail.
+#[test]
+fn standing_on_a_note_or_its_line_lights_both() {
+    let (_r, mut app) = app_with_a_long_file();
+    let row = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Diff(_)) && r.line.is_some())
+        .expect("a diff row with a line");
+    app.cursor = row;
+    app.focus = Focus::Detail;
+    app.handle_key(key('c'));
+    app.handle_paste("first\nsecond");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let note = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Finding(..)))
+        .expect("a note row");
+    let line = note - 1;
+
+    // The border column of the line and of both note rows, and the rails.
+    let lit = |app: &mut App| -> (Vec<bool>, Vec<bool>) {
+        let buf = buffer_of(app);
+        let y = |i: usize| (i - app.scroll()) as u16 + 1;
+        let border = (line..=note + 1)
+            .map(|i| buf[(40, y(i))].style().fg == Some(THEME.finding_fg))
+            .collect();
+        let rails = (note..=note + 1)
+            .map(|i| {
+                (41..99u16).any(|x| {
+                    buf[(x, y(i))].symbol() == "▍"
+                        && buf[(x, y(i))].style().fg == Some(THEME.finding_fg)
+                })
+            })
+            .collect();
+        (border, rails)
+    };
+
+    // The cursor is elsewhere: nothing is lit.
+    app.cursor = app
+        .rows
+        .iter()
+        .enumerate()
+        .position(|(i, r)| !(line..=note + 1).contains(&i) && r.kind.selectable())
+        .expect("a row outside the cluster");
+    let (border, rails) = lit(&mut app);
+    assert!(
+        !border.iter().any(|b| *b),
+        "nothing should be lit from away"
+    );
+    assert!(!rails.iter().any(|b| *b), "the rail stays muted from away");
+
+    // On the line, then on each row of the note: all three light every time.
+    for at in [line, note, note + 1] {
+        app.cursor = at;
+        let (border, rails) = lit(&mut app);
+        assert!(
+            border.iter().all(|b| *b),
+            "the border should run findings-coloured down the cluster, from row {at}"
+        );
+        assert!(
+            rails.iter().all(|b| *b),
+            "both rails should be findings-coloured, from row {at}"
+        );
+    }
+}
+
+/// The summary is pasted where nothing knows what `g7` was, so it carries the
+/// file, the lines and the note — and no group.
+#[test]
+fn the_findings_summary_names_no_group() {
+    let (_r, mut app) = app_with_a_long_file();
+    let row = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Diff(_)) && r.line.is_some())
+        .expect("a diff row with a line");
+    let at = app.rows[row].line.clone().unwrap();
+    app.cursor = row;
+    app.focus = Focus::Detail;
+    app.handle_key(key('c'));
+    app.handle_paste("look here");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let summary = app.findings_summary();
+    assert!(
+        summary.contains(&format!("src/long.rs:{}: look here", at.line)),
+        "the summary should be file:lines: note — got {summary:?}"
+    );
+    for label in app.groups().iter().map(|g| g.label.clone()) {
+        assert!(
+            !summary.contains(&label),
+            "the group's label leaked: {summary:?}"
+        );
+    }
+}
+
+/// A finding filed from a hunk header has no line, so it annotates the hunk —
+/// and it is drawn where every finding used to be, under that header.
+#[test]
+fn a_finding_from_a_header_anchors_the_hunk_and_sits_under_it() {
+    let (_r, mut app) = app_with_a_long_file();
+    let header = put_cursor_on(&mut app, |k| matches!(k, RowKind::HunkHeader { .. }));
+    let hunk = app.rows[header].kind.hunk().expect("its hunk");
+    app.handle_key(key('c'));
+    app.handle_key(key('x'));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let f = &app.session.findings()[0];
+    assert_eq!(
+        f.anchor.offset, 0,
+        "a header annotates the hunk's first line"
+    );
+    assert_eq!(f.anchor.span, 0);
+    assert_eq!(f.anchor.hunk_digest, app.session.doc().hunks[hunk].digest);
+
+    let at = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Finding(..)))
+        .expect("a finding row");
+    assert!(
+        app.rows[..at]
+            .iter()
+            .rev()
+            .find_map(|r| r.line.as_ref().map(|l| l.line))
+            .is_some_and(|l| l == f.anchor.end_line)
+            || matches!(app.rows[at - 1].kind, RowKind::HunkHeader { .. }),
+        "it belongs under its line or, failing that, under its header"
     );
 }
 
@@ -3086,4 +3793,82 @@ fn render_dump_plan() {
     }
     println!("\n=== plan connector ===");
     println!("{}", ansi_dump(&mut app, 120, 20));
+}
+
+/// A note stays on the line it was written on when the layout changes.
+///
+/// A modification is TWO rows in unified — the removed line and the added one
+/// — and ONE in split. A note written on the removed half anchors to the old
+/// side, and in split there was no old-side row to hold it, so it fell back to
+/// the hunk's header on every `s`.
+#[test]
+fn a_note_survives_the_diff_layout_it_was_written_in() {
+    let r = TestRepo::new();
+    // 18 lines inserted at the top, so old and new numbers differ throughout.
+    let body = |lead: usize, change: &str| -> Vec<u8> {
+        let mut out = String::new();
+        for i in 1..=lead {
+            out.push_str(&format!("inserted{i} = {i}\n"));
+        }
+        for i in 1..=40 {
+            if i == 30 {
+                out.push_str(change);
+            } else {
+                out.push_str(&format!("keep{i} = {i}\n"));
+            }
+        }
+        out.into_bytes()
+    };
+    r.write("src/f.rs", &body(0, "target = 1\n"));
+    r.commit_all("base");
+    r.write("src/f.rs", &body(18, "target = 2\n"));
+    r.commit_all("head");
+
+    let backend = skim_first_backend();
+    let mut app = open_app_with(&r, &backend, ".dfr-layout-note-store");
+    app.focus = Focus::Detail;
+
+    // The two halves of the modification, in the unified layout.
+    let halves: Vec<usize> = app
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| {
+            r.line
+                .as_ref()
+                .is_some_and(|l| l.text.starts_with("target"))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(halves.len(), 2, "a modification is two rows in unified");
+    let removed = app.rows[halves[0]].line.clone().unwrap();
+    assert_eq!(removed.side, "old", "the first half is the removed line");
+
+    // Write a note on the removed half, then switch layout.
+    app.cursor = halves[0];
+    app.handle_key(key('c'));
+    app.handle_paste("about the old line");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let anchor = app.session.findings()[0].anchor.clone();
+    assert_eq!((anchor.side.as_str(), anchor.line), ("old", removed.line));
+
+    let sits_on_its_line = |app: &App| {
+        let at = app
+            .rows
+            .iter()
+            .position(|r| matches!(r.kind, RowKind::Finding(..)))
+            .expect("a note row");
+        app.rows[at - 1]
+            .line
+            .as_ref()
+            .is_some_and(|l| l.holds(&anchor.side, anchor.end_line))
+    };
+    assert!(sits_on_its_line(&app), "unified: the note left its line");
+    app.handle_key(key('s'));
+    assert!(
+        sits_on_its_line(&app),
+        "split: the note should still sit on the line it annotates"
+    );
+    app.handle_key(key('s'));
+    assert!(sits_on_its_line(&app), "and back again");
 }

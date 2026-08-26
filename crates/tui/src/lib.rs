@@ -183,6 +183,13 @@ fn run_app(terminal: &mut Session, mut app: App) -> anyhow::Result<()> {
                     app.set_viewport(Viewport::measure(Rect::new(0, 0, w, h)));
                     dirty = true;
                 }
+                // Bracketed paste is enabled precisely so this arrives whole.
+                // Dropping it meant a paste into the finding composer did
+                // nothing, which reads as the box being broken.
+                Event::Paste(text) => {
+                    app.handle_paste(&text);
+                    dirty = true;
+                }
                 _ => {}
             }
             drained += 1;

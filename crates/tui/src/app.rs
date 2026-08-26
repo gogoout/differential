@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use differential_engine::FsReviewSession;
 use differential_engine::plan::{Fold, PlanIndex};
-use differential_engine::review_state::FindingStatus;
+use differential_engine::review_state::{Finding, FindingStatus, Lines};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -19,8 +19,8 @@ use tui_textarea::TextArea;
 use unicode_width::UnicodeWidthStr;
 
 use super::rows::{
-    Border, DiffMode, Fill, GroupContext, Half, Row, RowContent, RowFactory, RowKind, RowsContext,
-    build_dir_rows, build_file_rows, build_group_rows, pill,
+    Border, DiffMode, Fill, GroupContext, Half, LineRef, Row, RowContent, RowFactory, RowKind,
+    RowsContext, build_dir_rows, build_file_rows, build_group_rows, pill,
 };
 use super::theme::{THEME, Theme};
 use super::vendor::text_utils::truncate_or_pad_spans;
@@ -134,8 +134,17 @@ pub enum Focus {
 
 pub enum Mode {
     Normal,
-    /// Editing a finding for the given canonical hunk index.
-    Editing(usize, Box<TextArea<'static>>),
+    /// Writing a finding.
+    Editing {
+        /// The canonical hunk it belongs to.
+        hunk: usize,
+        /// The lines the reviewer had picked when the box opened; `None`
+        /// anchors the whole hunk.
+        lines: Option<Lines>,
+        /// The finding being rewritten. `None` files a new one.
+        rewriting: Option<String>,
+        editor: Box<TextArea<'static>>,
+    },
     Help,
     /// File-list modal over the current rows: jump to a file header.
     FileList {
@@ -252,6 +261,12 @@ pub struct App {
     pub selected_file: usize,
     pub rows: Vec<Row>,
     pub cursor: usize,
+    /// The row a line selection is anchored at; the other end is the cursor.
+    ///
+    /// One field, not a mode: `j`/`k` go on moving the cursor and the
+    /// selection is the span between the two ends, so `V` adds a state to
+    /// the model without adding one to the key table.
+    pub visual: Option<usize>,
     scroll: usize,
     group_scroll: usize,
     /// Group ids whose fold is open.
@@ -302,6 +317,7 @@ impl App {
             selected_file: 0,
             rows: Vec::new(),
             cursor: 0,
+            visual: None,
             scroll: 0,
             group_scroll: 0,
             folds_open: HashSet::new(),
@@ -925,6 +941,21 @@ impl App {
         self.status.clear();
     }
 
+    /// Text pasted into the terminal.
+    ///
+    /// Bracketed paste is enabled so a multi-line paste arrives as ONE event
+    /// rather than as a run of keys that would each drive a normal-mode
+    /// action. The event was then dropped, which meant pasting into the
+    /// finding composer did nothing at all.
+    ///
+    /// Only the composer takes it: in normal mode there is no text field for
+    /// it to land in, and a paste there is a mis-aimed one.
+    pub fn handle_paste(&mut self, text: &str) {
+        if let Mode::Editing { editor, .. } = &mut self.mode {
+            editor.insert_str(text);
+        }
+    }
+
     /// Open or close the selected group's folded remainder — the skim group's
     /// hunks past its exemplars, or a noise group entire.
     fn toggle_group_fold(&mut self) {
@@ -986,22 +1017,63 @@ impl App {
                 }
                 return Vec::new();
             }
-            Mode::Editing(hunk, textarea) => {
-                let hunk = *hunk;
+            Mode::Editing {
+                hunk,
+                lines,
+                rewriting,
+                editor: textarea,
+            } => {
+                let (hunk, lines, rewriting) = (*hunk, lines.clone(), rewriting.clone());
                 match (key.code, key.modifiers) {
                     (KeyCode::Esc, _) => {
                         self.mode = Mode::Normal;
                         self.status = "finding discarded".into();
                         return Vec::new();
                     }
-                    (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
+                    // `enter` saves. A finding is usually one line, and the key
+                    // that ends a line is the key a reader reaches for to be
+                    // done with it. `ctrl-s` still saves too: it costs one arm,
+                    // and it is what the box said for two releases.
+                    //
+                    // A newline is `shift+enter` where the terminal reports it,
+                    // and a trailing `\` before `enter` where it does not —
+                    // most terminals send plain `enter` for both unless the
+                    // kitty keyboard protocol is on, which this reviewer
+                    // deliberately does not ask for.
+                    (KeyCode::Enter, m) if m.contains(KeyModifiers::SHIFT) => {
+                        textarea.insert_newline();
+                        return Vec::new();
+                    }
+                    (KeyCode::Enter, _)
+                        // The character before the CURSOR, not the end of the
+                        // line: `delete_char` takes what the cursor sits after,
+                        // so a `\` at the end of a line the reader had gone
+                        // back to edit would have deleted something else.
+                        if {
+                            let (row, col) = textarea.cursor();
+                            textarea
+                                .lines()
+                                .get(row)
+                                .and_then(|l| col.checked_sub(1).and_then(|i| l.chars().nth(i)))
+                                == Some('\\')
+                        } =>
+                    {
+                        textarea.delete_char();
+                        textarea.insert_newline();
+                        return Vec::new();
+                    }
+                    (KeyCode::Enter, _) | (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
                         let body = textarea.lines().join("\n").trim().to_string();
                         self.mode = Mode::Normal;
-                        if body.is_empty() {
-                            self.status = "empty finding discarded".into();
-                            return Vec::new();
+                        match (rewriting, body.is_empty()) {
+                            // Emptying the box does NOT delete the note. That
+                            // is `dd`, which is a deliberate press; a note lost
+                            // to a stray `ctrl-u` and an `enter` is not.
+                            (Some(_), true) => self.status = "finding left as it was".into(),
+                            (Some(id), false) => self.rewrite_finding(&id, body),
+                            (None, true) => self.status = "empty finding discarded".into(),
+                            (None, false) => self.add_finding(hunk, lines, body),
                         }
-                        self.add_finding(hunk, body);
                         return Vec::new();
                     }
                     _ => {
@@ -1104,30 +1176,83 @@ impl App {
                 Focus::Detail => self.open_file_list(),
             },
             (KeyCode::Char(' '), _) => self.toggle_reviewed(),
+            // A selection, so a finding can be about the lines it is about.
+            // One field, not a mode: `j`/`k` keep moving the cursor and the
+            // selection is the span between the two ends, which is what makes
+            // `V` cost nothing to explain.
+            // A toggle. `v` is how a reader gets into a selection, so it is
+            // the key their hand is on to get out of one — `esc` works too,
+            // and so does `c`, which leaves by using it.
+            (KeyCode::Char('v'), KeyModifiers::NONE) if self.visual.is_some() => {
+                self.visual = None;
+                self.status = "selection dropped".into();
+            }
+            (KeyCode::Char('v'), KeyModifiers::NONE) => {
+                if self.rows.get(self.cursor).is_some_and(|r| r.line.is_some()) {
+                    self.visual = Some(self.cursor);
+                    self.status = "select lines · c to write · v or esc to drop".into();
+                } else {
+                    self.status = "move onto a line first".into();
+                }
+            }
+            (KeyCode::Esc, _) if self.visual.is_some() => {
+                self.visual = None;
+                self.status = "selection dropped".into();
+            }
             (KeyCode::Char('c'), KeyModifiers::NONE) => {
                 if let Some(h) = self.current_hunk() {
+                    // A line already carrying a note opens THAT note. Two
+                    // notes on one line would each be half the story, and
+                    // there was no way to correct a typo but delete and
+                    // retype. A SELECTION is the exception: picking a run of
+                    // lines is asking for a note about the run.
+                    let existing = self
+                        .visual
+                        .is_none()
+                        .then(|| self.finding_at_cursor())
+                        .flatten()
+                        .map(|f| (f.id.clone(), f.body.clone(), f.anchor.line_span()));
+                    let lines = self.selected_lines();
+                    // Name what is being annotated: a note whose subject you
+                    // cannot see is a note you have to trust yourself to have
+                    // written carefully.
                     let hunk = &self.session.doc().hunks[h];
-                    // Name what is being annotated: findings anchor to a hunk,
-                    // and a note whose subject you cannot see is a note you
-                    // have to trust yourself to have written carefully.
                     let file = hunk.file.rsplit('/').next().unwrap_or(&hunk.file);
-                    let lines = if hunk.new_count > 1 {
-                        format!(
+                    let at = match (&existing, &lines) {
+                        // A note's own anchor, which may not be the row the
+                        // cursor is on — it can have re-anchored to the hunk.
+                        (Some((_, _, span)), _) => format!("L{span}"),
+                        (None, Some(l)) if l.end > l.start => format!("L{}-{}", l.start, l.end),
+                        (None, Some(l)) => format!("L{}", l.start),
+                        // No line under the cursor — a hunk header, a fold.
+                        // The finding anchors the hunk, so the title says so.
+                        (None, None) if hunk.new_count > 1 => format!(
                             "L{}-{}",
                             hunk.new_start,
                             hunk.new_start + hunk.new_count - 1
-                        )
-                    } else {
-                        format!("L{}", hunk.new_start)
+                        ),
+                        (None, None) => format!("L{}", hunk.new_start),
                     };
-                    let mut ta = TextArea::default();
+                    let mut ta = match &existing {
+                        Some((_, body, _)) => {
+                            TextArea::new(body.lines().map(str::to_string).collect::<Vec<_>>())
+                        }
+                        None => TextArea::default(),
+                    };
+                    ta.move_cursor(tui_textarea::CursorMove::End);
                     ta.set_block(
                         Block::default()
                             .borders(Borders::ALL)
                             .border_style(Style::default().fg(THEME.header_fg))
-                            .title(format!(" {file} · {lines} ")),
+                            .title(format!(" {file} · {at} ")),
                     );
-                    self.mode = Mode::Editing(h, Box::new(ta));
+                    self.visual = None;
+                    self.mode = Mode::Editing {
+                        hunk: h,
+                        lines,
+                        rewriting: existing.map(|(id, _, _)| id),
+                        editor: Box::new(ta),
+                    };
                 } else {
                     self.status = "move onto a hunk first".into();
                 }
@@ -1195,8 +1320,175 @@ impl App {
         Ok(())
     }
 
-    fn add_finding(&mut self, hunk_idx: usize, body: String) {
-        match self.session.add_finding(hunk_idx, body) {
+    /// The rows a note and the lines it annotates occupy, when the cursor is
+    /// in one of them.
+    ///
+    /// A note is drawn under its LAST line, and the only sign that it and the
+    /// run above it belong together was that they were adjacent — which, over
+    /// a range, they mostly are not.
+    fn note_cluster(&self) -> Option<(usize, usize)> {
+        if self.focus != Focus::Detail {
+            return None;
+        }
+        let f = self.finding_at_cursor()?;
+        let (id, path) = (f.id.as_str(), f.anchor.file.as_str());
+        let mut file = "";
+        let (mut lo, mut hi) = (usize::MAX, 0usize);
+        for (i, row) in self.rows.iter().enumerate() {
+            if let RowKind::FileHeader(p) = &row.kind {
+                file = p;
+            }
+            let mine = match (&row.kind, &row.line) {
+                (RowKind::Finding(fid, _), _) => fid == id,
+                (_, Some(l)) => file == path && self.anchor_covers(f, l),
+                _ => false,
+            };
+            if mine {
+                lo = lo.min(i);
+                hi = hi.max(i);
+            }
+        }
+        if lo > hi {
+            return None;
+        }
+        // A note that hangs off its hunk's header covers no line at all; the
+        // row above it is what it points at.
+        if lo > 0 && matches!(self.rows[lo].kind, RowKind::Finding(..)) {
+            lo -= 1;
+        }
+        Some((lo, hi))
+    }
+
+    /// The note the cursor is standing in.
+    ///
+    /// "In", not "on": a note over a RANGE covers every line of it, and it is
+    /// drawn under the last of them. Standing on the first line of a run is
+    /// standing in the note about that run.
+    fn finding_at_cursor(&self) -> Option<&Finding> {
+        let by_id = |id: &str| self.session.findings().iter().find(|f| f.id == id);
+        // On the note itself.
+        if let Some(RowKind::Finding(id, _)) = self.rows.get(self.cursor).map(|r| &r.kind) {
+            return by_id(id);
+        }
+        // On a line the note covers.
+        if let Some(l) = self.rows.get(self.cursor).and_then(|r| r.line.as_ref())
+            && let Some(path) = self.file_path_above(self.cursor)
+            && let Some(f) = self
+                .session
+                .findings()
+                .iter()
+                .find(|f| f.anchor.file == path && self.anchor_covers(f, l))
+        {
+            return Some(f);
+        }
+        // Directly above a note that could only be anchored to its hunk, and
+        // so hangs off the header rather than off any line.
+        if let Some(RowKind::Finding(id, _)) = self.rows.get(self.cursor + 1).map(|r| &r.kind) {
+            return by_id(id);
+        }
+        None
+    }
+
+    /// Does this finding's anchor cover the line this row shows?
+    fn anchor_covers(&self, f: &Finding, l: &LineRef) -> bool {
+        (f.anchor.line..=f.anchor.end_line.max(f.anchor.line)).any(|n| l.holds(&f.anchor.side, n))
+    }
+
+    /// The path of the file header above `row`.
+    fn file_path_above(&self, row: usize) -> Option<&str> {
+        match self.rows.get(self.file_header_above(row)?).map(|r| &r.kind) {
+            Some(RowKind::FileHeader(path)) => Some(path),
+            _ => None,
+        }
+    }
+
+    fn rewrite_finding(&mut self, id: &str, body: String) {
+        match self.session.edit_finding(id, body) {
+            Ok(true) => self.status = "finding rewritten".into(),
+            Ok(false) => self.status = "that finding is gone".into(),
+            Err(e) => self.status = format!("save failed: {e:#}"),
+        }
+        self.rebuild_rows();
+    }
+
+    /// The rows a selection actually covers.
+    ///
+    /// From the anchor toward the cursor, stopping at a **context boundary**
+    /// or a **file header** — the two rows that stand for a stretch of file
+    /// the reader is not looking at. Dragging from line 23 across `13 lines
+    /// hidden` to line 37 would otherwise file a note claiming fifteen lines,
+    /// thirteen of which were never on screen.
+    ///
+    /// Nothing else breaks a run. A hunk's header, its removed and added rows,
+    /// a note already filed on one of them — all of that is one continuous
+    /// stretch of one file, and a selection has to cross it.
+    fn selected_run(&self) -> Vec<(usize, u32)> {
+        let anchor = self.visual.unwrap_or(self.cursor);
+        let at = |i: usize| self.rows.get(i).and_then(|r| r.line.as_ref());
+        // One side, so a run is a run in ONE file's numbering. The anchor's,
+        // since that is the end the reader chose deliberately. A row that
+        // exists in both files answers for either.
+        let Some(side) = at(anchor).or_else(|| at(self.cursor)).map(|l| l.side) else {
+            return Vec::new();
+        };
+
+        let step: isize = if self.cursor >= anchor { 1 } else { -1 };
+        let (mut i, stop) = (anchor as isize, self.cursor as isize);
+        let mut run = Vec::new();
+        loop {
+            let Some(row) = self.rows.get(i as usize) else {
+                break;
+            };
+            if matches!(
+                row.kind,
+                RowKind::ContextEdge { .. } | RowKind::FileHeader(_)
+            ) {
+                break;
+            }
+            if let Some(n) = row.line.as_ref().and_then(|l| l.line_on(side)) {
+                run.push((i as usize, n));
+            }
+            if i == stop {
+                break;
+            }
+            i += step;
+        }
+        run
+    }
+
+    /// The lines the selection covers, as the engine wants them: lowest first,
+    /// both ends' text, one side.
+    ///
+    /// `None` when the cursor is on a row that is not a line of a file — a
+    /// hunk header, a fold — and the finding then anchors the whole hunk.
+    fn selected_lines(&self) -> Option<Lines> {
+        let run = self.selected_run();
+        let side = self
+            .rows
+            .get(self.visual.unwrap_or(self.cursor))
+            .or_else(|| self.rows.get(self.cursor))
+            .and_then(|r| r.line.as_ref())
+            .map(|l| l.side)?;
+        let lo = run.iter().min_by_key(|(_, n)| *n)?;
+        let hi = run.iter().max_by_key(|(_, n)| *n)?;
+        let text = |row: usize| {
+            self.rows[row]
+                .line
+                .as_ref()
+                .map(|l| l.text.clone())
+                .unwrap_or_default()
+        };
+        Some(Lines {
+            side: side.to_string(),
+            start: lo.1,
+            end: hi.1,
+            start_text: text(lo.0),
+            end_text: text(hi.0),
+        })
+    }
+
+    fn add_finding(&mut self, hunk_idx: usize, lines: Option<Lines>, body: String) {
+        match self.session.add_finding(hunk_idx, lines, body) {
             Ok(_) => self.status = "finding saved".into(),
             Err(e) => self.status = format!("save failed: {e:#}"),
         }
@@ -1217,7 +1509,6 @@ impl App {
 
     /// Markdown summary of open findings, for pasting into an agent or PR.
     pub fn findings_summary(&self) -> String {
-        let plan = self.session.plan();
         let mut out = String::new();
         for f in self
             .session
@@ -1225,16 +1516,14 @@ impl App {
             .iter()
             .filter(|f| f.status == FindingStatus::Open)
         {
-            // Findings anchor on digests, which survive regeneration; the
-            // projection resolves one to its owning group.
-            let label = plan
-                .hunk_by_digest(&f.anchor.hunk_digest)
-                .and_then(|h| plan.group_of_hunk(h))
-                .map(|g| format!(" ({})", g.label))
-                .unwrap_or_default();
+            // The file and the lines, and the note. Not the group's label: a
+            // group is how this reviewer chose to READ the branch, and the
+            // summary is pasted somewhere that has no idea what g7 was.
             out.push_str(&format!(
-                "- {}:{}{label}: {}\n",
-                f.anchor.file, f.anchor.line, f.body
+                "- {}:{}: {}\n",
+                f.anchor.file,
+                f.anchor.line_span(),
+                f.body
             ));
         }
         if out.is_empty() {
@@ -1267,7 +1556,9 @@ impl App {
         }
 
         match &self.mode {
-            Mode::Editing(_, textarea) => {
+            Mode::Editing {
+                editor: textarea, ..
+            } => {
                 // A float over the diff, not a strip pinned to the bottom: a
                 // finding is about the lines you can still see around it.
                 let area = centered_rect(panes.body, panes.body.width * 3 / 5, 10);
@@ -1283,21 +1574,23 @@ impl App {
                 };
                 frame.render_widget(
                     Paragraph::new(Line::from(vec![
-                        Span::styled("  ctrl-s ", Style::default().fg(THEME.header_fg)),
+                        Span::styled("  enter ", Style::default().fg(THEME.header_fg)),
                         Span::styled("save", Style::default().fg(THEME.context_fg)),
+                        Span::styled("  │  ", Style::default().fg(THEME.gutter_fg)),
+                        Span::styled("shift+enter ", Style::default().fg(THEME.header_fg)),
+                        Span::styled("or", Style::default().fg(THEME.context_fg)),
+                        Span::styled(" \\↵ ", Style::default().fg(THEME.header_fg)),
+                        Span::styled("newline", Style::default().fg(THEME.context_fg)),
                         Span::styled("  │  ", Style::default().fg(THEME.gutter_fg)),
                         Span::styled("esc ", Style::default().fg(THEME.header_fg)),
                         Span::styled("cancel", Style::default().fg(THEME.context_fg)),
-                        Span::styled("  │  ", Style::default().fg(THEME.gutter_fg)),
-                        Span::styled("enter ", Style::default().fg(THEME.header_fg)),
-                        Span::styled("newline", Style::default().fg(THEME.context_fg)),
                     ]))
                     .alignment(ratatui::layout::Alignment::Center),
                     footer,
                 );
             }
             Mode::Help => {
-                let area = centered_rect(panes.body, 62, 19);
+                let area = centered_rect(panes.body, 62, 20);
                 frame.render_widget(Clear, area);
                 frame.render_widget(help_paragraph(), area);
             }
@@ -1347,13 +1640,14 @@ impl App {
 
     fn draw_groups(&self, frame: &mut Frame, area: Rect) {
         let inner_h = area.height.saturating_sub(2) as usize;
+        let inner_w = area.width.saturating_sub(2) as usize;
         let selected = self.selected_entry();
 
         // Entries render as blocks of lines, so scrolling counts ROWS, not
         // entries; keep the whole selected block in view.
         let mut blocks: Vec<Vec<Line>> = match self.view_mode {
             ViewMode::Groups => (0..self.groups().len())
-                .map(|i| self.group_lines(i, i == selected))
+                .map(|i| self.group_lines(i, i == selected, inner_w))
                 .collect(),
             ViewMode::Files => {
                 let reviewed = self.session.reviewed_hunks();
@@ -1365,7 +1659,6 @@ impl App {
         };
         // The selection reads as a row, not as highlighted text: pad its lines
         // out to the pane so the background runs to the right edge.
-        let inner_w = area.width.saturating_sub(2) as usize;
         if let Some(block) = blocks.get_mut(selected) {
             for line in block.iter_mut() {
                 pad_to_width(line, inner_w, THEME.selected_bg);
@@ -1447,7 +1740,11 @@ impl App {
     }
 
     /// One group as 2–3 lines: title, counts, and what it follows.
-    fn group_lines(&self, idx: usize, selected: bool) -> Vec<Line<'static>> {
+    ///
+    /// `width` is the pane's inner width, which the role pill needs: it hangs
+    /// off the RIGHT edge, so it is the one thing here whose position depends
+    /// on how wide the pane is.
+    fn group_lines(&self, idx: usize, selected: bool, width: usize) -> Vec<Line<'static>> {
         let g = &self.groups()[idx];
         let relation = self.relation_to_selected(idx);
         let (lo, hi) = self.edge_span();
@@ -1529,17 +1826,29 @@ impl App {
         // The ordering role is a fact about the group, like the class on a hunk
         // header — so it wears the same pill, in the muted colours, rather than
         // trailing off the line as dim text.
+        //
+        // Against the RIGHT edge, so the roles line up in a column of their
+        // own. Trailing the counts, they started at a different place on every
+        // row — a word you can only read by finding it first.
         if let Some(r) = g.role {
             let (fg, pill_bg) = THEME.pill();
-            counts.push(Span::styled(" ", dim));
-            counts.extend(
-                pill(
-                    vec![(fg, differential_engine::plan::role_name(r).to_string())],
-                    pill_bg,
-                )
-                .into_iter()
-                .map(|(st, t)| Span::styled(t, st)),
-            );
+            let badge: Vec<Span> = pill(
+                vec![(fg, differential_engine::plan::role_name(r).to_string())],
+                pill_bg,
+            )
+            .into_iter()
+            .map(|(st, t)| Span::styled(t, st))
+            .collect();
+            let used: usize = counts
+                .iter()
+                .chain(&badge)
+                .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                .sum();
+            counts.push(Span::styled(
+                " ".repeat(width.saturating_sub(used).max(1)),
+                dim,
+            ));
+            counts.extend(badge);
         }
         lines.push(Line::from(counts));
         if !g.depends_on.is_empty() {
@@ -1988,6 +2297,14 @@ impl App {
         // Which box is lit. Only one at a time: a screenful of accents is a
         // screenful of nothing, so every other box is muted to the gutter.
         let active = self.current_hunk();
+        // What the selection will actually annotate, not the rows the cursor
+        // walked over: it stops at a gap, and the highlight has to say so.
+        let selection = self.visual.and_then(|_| {
+            let rows: Vec<usize> = self.selected_run().iter().map(|(i, _)| *i).collect();
+            Some((*rows.iter().min()?, *rows.iter().max()?))
+        });
+        let note = self.note_cluster();
+        let in_note = |i: usize| note.is_some_and(|(lo, hi)| (lo..=hi).contains(&i));
         let lines: Vec<Line> = self
             .rows
             .iter()
@@ -2004,6 +2321,7 @@ impl App {
                         b.active_style.fg.map_or(Marker::Idle(&r.idle), Marker::Lit)
                     }
                     (_, RowKind::HunkHeader { .. }) => Marker::Idle(&r.idle),
+                    (_, RowKind::Finding(..)) if in_note(i) => Marker::Note,
                     _ => Marker::None,
                 };
                 // How to work this row, on the one row it can be worked from.
@@ -2014,6 +2332,11 @@ impl App {
                     // exactly the rows that have no change colour of their own
                     // — on the rest, the brightened gutter block carries it.
                     line = line.style(Style::default().bg(THEME.cursor_bg));
+                } else if selection.is_some_and(|(lo, hi)| (lo..=hi).contains(&i)) {
+                    // The rest of a line selection, in the plan pane's own
+                    // selection colour: quieter than the cursor's row, which
+                    // is still one end of it.
+                    line = line.style(Style::default().bg(THEME.selected_bg));
                 }
                 line
             })
@@ -2061,10 +2384,19 @@ impl App {
                 });
                 continue;
             }
-            let Some(border) = row.border else { continue };
-            let cell = &mut buf[(area.x, y)];
-            cell.set_symbol(border.glyph().encode_utf8(&mut [0u8; 4]));
-            cell.set_style(chrome(border, active));
+            if let Some(border) = row.border {
+                let cell = &mut buf[(area.x, y)];
+                cell.set_symbol(border.glyph().encode_utf8(&mut [0u8; 4]));
+                cell.set_style(chrome(border, active));
+            }
+            // A note and the line it annotates, while the cursor is on either:
+            // the border column carries the findings colour down both, which
+            // is what says they are one thing. Whatever glyph is in that cell
+            // — a hunk's edge, or the pane's own border on a note's row —
+            // keeps its shape and takes the colour.
+            if in_note(self.scroll + n) {
+                buf[(area.x, y)].set_fg(THEME.finding_fg);
+            }
         }
 
         // The cursor's bar, in the cell just inside the frame. The gutter block
@@ -2203,6 +2535,11 @@ fn compose_row(
                             pairs[0].0.fg(fg).add_modifier(Modifier::BOLD),
                             PILL_BAR.to_string(),
                         );
+                    }
+                    // The rail only. The prose stays quiet: what the colour
+                    // says is which rows belong together, not read this.
+                    Marker::Note if !pairs.is_empty() => {
+                        pairs[0].0 = pairs[0].0.fg(THEME.finding_fg);
                     }
                     _ => {}
                 }
@@ -2391,6 +2728,10 @@ enum Marker<'a> {
     Idle(&'a [(Style, String)]),
     /// A hunk header the cursor is in: the pill, its leading cell lit.
     Lit(Color),
+    /// A note the cursor is standing in, or beside: its rail takes the
+    /// findings colour, so the note and the line it is about read as one
+    /// thing rather than as two rows that happen to be adjacent.
+    Note,
 }
 
 /// A pane's frame: always the muted border, with the TITLE carrying focus.
@@ -2471,6 +2812,7 @@ fn help_paragraph() -> Paragraph<'static> {
         row("f", "plan pane: reading plan / file tree"),
         row("", "diff pane: file list (enter jumps)"),
         row("space", "mark the hunk's class reviewed"),
+        row("v", "select lines · j/k extends · v or esc drops"),
         row("c  ·  dd", "add finding · delete the one under the cursor"),
         row("y  ·  q", "copy findings · quit (state is saved)"),
         Line::from(""),
