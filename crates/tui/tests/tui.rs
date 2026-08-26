@@ -3388,11 +3388,20 @@ fn f_opens_every_finding_in_one_list() {
             "{want:?} missing from the list: {rows:#?}"
         );
     }
-    // Each note says where it is, so the list answers without the diff.
-    assert!(
-        rows.iter().any(|r| r.contains("src/long.rs:")),
-        "no location on the notes"
-    );
+    // Each note says where it is, so the list answers without the diff — and
+    // the location column is as wide as the longest of them, so a long path
+    // still leaves a gap rather than butting against its note.
+    let listed: Vec<&String> = rows.iter().filter(|r| r.contains("src/long.rs:")).collect();
+    assert_eq!(listed.len(), 2, "both notes should say where they are");
+    for row in listed {
+        let at = row.find("src/long.rs:").expect("the location");
+        let note = row.find("the ").expect("the note");
+        let gap = &row[at..note];
+        assert!(
+            gap.ends_with("  "),
+            "no gap between the location and the note: {row:?}"
+        );
+    }
 
     // `esc` closes it and moves nothing.
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));

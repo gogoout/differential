@@ -1799,6 +1799,16 @@ impl App {
                 let inner_h = area.height.saturating_sub(3) as usize;
 
                 let dim = Style::default().fg(THEME.gutter_fg);
+                // The location column is as wide as the longest location, so
+                // the notes line up and a long path still gets its gap. Capped
+                // at half the box, past which a path would push every note off
+                // the right-hand side.
+                let at_col = entries
+                    .iter()
+                    .map(|e| UnicodeWidthStr::width(e.at.as_str()))
+                    .max()
+                    .unwrap_or(0)
+                    .min(inner_w / 2);
                 let mut lines: Vec<Line> = Vec::new();
                 for (i, e) in entries.iter().enumerate() {
                     if rule_at == Some(i) {
@@ -1822,9 +1832,11 @@ impl App {
                         if on { st.bg(THEME.selected_bg) } else { st }
                     };
                     let moved = if e.moved { " (moved)" } else { "" };
+                    let at = format!("  {:<at_col$}  ", e.at);
                     // Cut the note, not the box: a body that reached the border
                     // was chopped mid-word against it and read as broken.
-                    let room = inner_w.saturating_sub(AT_COLUMN + moved.len() + 1);
+                    let room = inner_w
+                        .saturating_sub(UnicodeWidthStr::width(at.as_str()) + moved.len() + 1);
                     let body: String = if e.body.chars().count() > room {
                         e.body
                             .chars()
@@ -1835,10 +1847,7 @@ impl App {
                         e.body.clone()
                     };
                     let mut line = Line::from(vec![
-                        Span::styled(
-                            format!("  {:<width$}", e.at, width = AT_COLUMN - 2),
-                            bg(dim),
-                        ),
+                        Span::styled(at, bg(dim)),
                         Span::styled(body, style),
                         Span::styled(moved.to_string(), bg(dim)),
                     ]);
@@ -3068,10 +3077,6 @@ fn pad_to_width(line: &mut Line<'static>, width: usize, bg: ratatui::style::Colo
         ));
     }
 }
-
-/// Width of the findings modal's location column, `src/app.rs:1307` and the
-/// gap after it. Wide enough for most paths and fixed, so the notes line up.
-const AT_COLUMN: usize = 26;
 
 /// Keep `selected` inside a window `height` tall, moving `scroll` as little as
 /// it takes. The diff pane's own `follow_cursor` keeps a margin; a list this
