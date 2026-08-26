@@ -410,6 +410,52 @@ impl RowFactory {
         (src.old_hl.take(old_want), src.new_hl.take(new_want))
     }
 
+    /// Read every file the rows are about to draw, in one `git` call.
+    ///
+    /// Reading a blob costs a process; doing it lazily per file meant two
+    /// spawns per file, which was most of the wait the first time a group
+    /// opened. The caller already knows the whole set, so it says so.
+    fn prefetch(&mut self, paths: &[&str]) {
+        let want: Vec<&str> = paths
+            .iter()
+            .copied()
+            .filter(|p| !self.cache.contains_key(*p))
+            .collect();
+        if want.is_empty() {
+            return;
+        }
+        // Both sides of every file, one list: old then new per path.
+        let specs: Vec<(&str, &[u8])> = want
+            .iter()
+            .flat_map(|p| {
+                [
+                    (self.base.as_str(), p.as_bytes()),
+                    (self.head.as_str(), p.as_bytes()),
+                ]
+            })
+            .collect();
+        let Ok(blobs) = self.repo.blobs(&specs) else {
+            // A failed batch is not fatal: `source` still reads a file on its
+            // own, and reports absence the way it always did.
+            return;
+        };
+        for (path, sides) in want.iter().zip(blobs.chunks(2)) {
+            let lines = |b: &Option<Vec<u8>>| match b {
+                Some(bytes) => source_lines(&String::from_utf8_lossy(bytes)),
+                None => Vec::new(),
+            };
+            self.cache.insert(
+                (*path).to_string(),
+                FileSource {
+                    old: lines(&sides[0]),
+                    new: lines(&sides[1]),
+                    old_hl: Highlights::default(),
+                    new_hl: Highlights::default(),
+                },
+            );
+        }
+    }
+
     fn source(&mut self, path: &str) -> &FileSource {
         if !self.cache.contains_key(path) {
             let read = |rev: &str| -> Vec<String> {
@@ -520,6 +566,15 @@ fn hunk_list_rows(
         .iter()
         .map(|f| (f.path.as_str(), f))
         .collect();
+
+    // Every file at once, before any of them is drawn: one `git` call for the
+    // group rather than two spawns per file.
+    let mut paths: Vec<&str> = hunks
+        .iter()
+        .map(|&h| ctx.doc.hunks[h].file.as_str())
+        .collect();
+    paths.dedup();
+    factory.prefetch(&paths);
 
     let mut i = 0;
     while i < hunks.len() {

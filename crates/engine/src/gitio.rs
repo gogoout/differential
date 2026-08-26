@@ -122,24 +122,43 @@ impl Repo {
     /// Blob content at `rev:path`. `Ok(None)` when the path does not exist at
     /// that revision; any other failure is a real error.
     fn blob(&self, rev: &str, path: &[u8]) -> Result<Option<Vec<u8>>, EngineError> {
-        // ONE process, not two. `--batch` states absence as the word "missing"
-        // rather than as an exit code, so the existence probe this used to
-        // spawn first is not merely saved but replaced by something more
-        // explicit. The saving is the point: a spawn costs milliseconds, and
-        // the reviewer reads two blobs for every file it draws (ADR 0021).
-        //
-        // The spec goes in on stdin, which also keeps the path as raw bytes
-        // without an `OsString` detour. `-z` is not optional: git paths may
-        // contain a newline, and line-delimited input splits such a path into
-        // two specs that both come back "missing" — a wrong answer with no
-        // error attached to it.
-        let mut spec = rev.as_bytes().to_vec();
-        spec.push(b':');
-        spec.extend_from_slice(path);
-        spec.push(0);
-        let out = self.run(["cat-file", "--batch", "-z"], Some(&spec))?;
-        parse_batch_blob(&out).map_err(|msg| EngineError::GitCommand {
-            command: format!("cat-file --batch <{rev}:{}>", String::from_utf8_lossy(path)),
+        Ok(self.blobs(&[(rev, path)])?.pop().flatten())
+    }
+
+    /// Several blobs, one process.
+    ///
+    /// `--batch` states absence as the word "missing" rather than as an exit
+    /// code, so the existence probe this used to spawn first is not merely
+    /// saved but replaced by something more explicit. And it reads a LIST from
+    /// stdin, which is what makes the batch free: the protocol was always
+    /// there, only the loop is new. A spawn costs milliseconds and the reviewer
+    /// reads two blobs for every file it draws (ADR 0021).
+    ///
+    /// The specs go in on stdin, which also keeps paths as raw bytes without an
+    /// `OsString` detour. `-z` is not optional: git paths may contain a
+    /// newline, and line-delimited input splits such a path into two specs that
+    /// both come back "missing" — a wrong answer with no error attached to it.
+    fn blobs(&self, specs: &[(&str, &[u8])]) -> Result<Vec<Option<Vec<u8>>>, EngineError> {
+        if specs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let wire: Vec<Vec<u8>> = specs
+            .iter()
+            .map(|(rev, path)| {
+                let mut s = rev.as_bytes().to_vec();
+                s.push(b':');
+                s.extend_from_slice(path);
+                s
+            })
+            .collect();
+        let mut stdin = Vec::new();
+        for s in &wire {
+            stdin.extend_from_slice(s);
+            stdin.push(0);
+        }
+        let out = self.run(["cat-file", "--batch", "-z"], Some(&stdin))?;
+        parse_batch_blobs(&out, &wire).map_err(|msg| EngineError::GitCommand {
+            command: format!("cat-file --batch ({} specs)", specs.len()),
             code: None,
             stderr: msg,
         })
@@ -195,6 +214,10 @@ impl Repo {
 impl ports::ObjectReader for Repo {
     fn blob(&self, rev: &str, path: &[u8]) -> Result<Option<Vec<u8>>, EngineError> {
         Repo::blob(self, rev, path)
+    }
+
+    fn blobs(&self, specs: &[(&str, &[u8])]) -> Result<Vec<Option<Vec<u8>>>, EngineError> {
+        Repo::blobs(self, specs)
     }
 
     fn require_object(&self, oid: &str) -> Result<(), EngineError> {
@@ -571,54 +594,67 @@ fn parse_refs(bytes: &[u8]) -> HashMap<String, Vec<String>> {
     out
 }
 
-/// One `cat-file --batch -z` response.
+/// A `cat-file --batch -z` stream: one response per spec, in the order asked.
 ///
-/// `<oid> SP <type> SP <size> LF <contents> LF`, or `<spec> SP "missing" LF`
-/// when the path is not there. `-z` changes only the INPUT framing, so the
-/// header is still LF-terminated.
+/// Each is `<oid> SP <type> SP <size> LF <contents> LF`, or
+/// `<spec> SP "missing" LF` when the path is not there. `-z` changes only the
+/// INPUT framing, so headers are still LF-terminated.
 ///
-/// Neither shape can be recognised by looking at one end of the response, and
-/// both near-misses are reachable:
+/// Telling the two apart needs the specs, because both near-misses are real:
 ///
-/// - the echoed spec of a missing path carries the path, and a git path may
-///   contain a newline — so the first line is not necessarily the header;
-/// - a blob whose contents happen to END with " missing" produces a response
-///   ending in exactly the bytes a missing response ends with.
+/// - a missing response echoes the spec, and a git path may contain a newline,
+///   so scanning for the next LF does not reliably find the end of the line;
+/// - a blob whose contents happen to END with " missing" looks, from the tail,
+///   exactly like an absent one.
 ///
-/// So the found shape is tested FIRST and strictly — a hex oid, a type, a
-/// number — and absence is only concluded when that fails. Anything that is
-/// neither is a broken repository, not an absent file, and the two must never
-/// render identically.
-fn parse_batch_blob(out: &[u8]) -> Result<Option<Vec<u8>>, String> {
-    if let Some(end) = out.iter().position(|&b| b == b'\n') {
-        let header = String::from_utf8_lossy(&out[..end]).into_owned();
-        let fields: Vec<&str> = header.split(' ').collect();
-        let looks_like_a_header = fields.len() == 3
-            && !fields[0].is_empty()
-            && fields[0].bytes().all(|b| b.is_ascii_hexdigit())
-            && fields[2].parse::<usize>().is_ok();
-        if looks_like_a_header {
-            if fields[1] != "blob" {
-                return Err(format!("{header}: not a blob"));
-            }
-            let size: usize = fields[2].parse().expect("checked above");
-            let body = &out[end + 1..];
-            if body.len() < size {
-                return Err(format!(
-                    "{header}: body is {} bytes, header said {size}",
-                    body.len()
-                ));
-            }
-            return Ok(Some(body[..size].to_vec()));
+/// Knowing the spec settles both: absence is an EXACT match for
+/// `<spec> " missing\n"` at the current position, and everything else must be a
+/// header — a hex oid, a type, a number — or the repository is broken, which is
+/// not the same as a file being absent and must never render as one.
+fn parse_batch_blobs(out: &[u8], specs: &[Vec<u8>]) -> Result<Vec<Option<Vec<u8>>>, String> {
+    const MISSING: &[u8] = b" missing\n";
+    let mut at = 0usize;
+    let mut got = Vec::with_capacity(specs.len());
+
+    for spec in specs {
+        let rest = out
+            .get(at..)
+            .ok_or_else(|| "output ended early".to_string())?;
+        if rest.starts_with(spec) && rest[spec.len()..].starts_with(MISSING) {
+            got.push(None);
+            at += spec.len() + MISSING.len();
+            continue;
         }
+        let end = rest
+            .iter()
+            .position(|&b| b == b'\n')
+            .ok_or_else(|| "no header line in cat-file output".to_string())?;
+        let header = String::from_utf8_lossy(&rest[..end]).into_owned();
+        let fields: Vec<&str> = header.split(' ').collect();
+        if fields.len() != 3
+            || fields[0].is_empty()
+            || !fields[0].bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(format!("unrecognised cat-file response: {header}"));
+        }
+        if fields[1] != "blob" {
+            return Err(format!("{header}: not a blob"));
+        }
+        let size: usize = fields[2]
+            .parse()
+            .map_err(|_| format!("{header}: unparsable size"))?;
+        let body = &rest[end + 1..];
+        if body.len() < size {
+            return Err(format!(
+                "{header}: body is {} bytes, header said {size}",
+                body.len()
+            ));
+        }
+        got.push(Some(body[..size].to_vec()));
+        // header LF + body + the LF git writes after it
+        at += end + 1 + size + 1;
     }
-    if out.ends_with(b" missing\n") {
-        return Ok(None);
-    }
-    Err(format!(
-        "unrecognised cat-file output ({} bytes)",
-        out.len()
-    ))
+    Ok(got)
 }
 
 fn trim_newline(b: &[u8]) -> &[u8] {
@@ -644,49 +680,87 @@ fn describe(cmd: &Command) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_batch_blob, parse_refs, parse_rev_list};
+    use super::{parse_batch_blobs, parse_refs, parse_rev_list};
 
     /// The absent/broken distinction the old two-spawn probe existed for, now
-    /// carried by `--batch`'s own vocabulary.
+    /// carried by `--batch`'s own vocabulary — and read against the specs that
+    /// were sent, which is what makes both near-misses decidable.
     #[test]
     fn batch_blob_separates_absent_from_broken() {
         let oid = "e".repeat(40);
+        let one = |spec: &str| vec![spec.as_bytes().to_vec()];
+
         let found = format!("{oid} blob 6\nhello\n\n");
         assert_eq!(
-            parse_batch_blob(found.as_bytes()).unwrap().as_deref(),
+            parse_batch_blobs(found.as_bytes(), &one("HEAD:a"))
+                .unwrap()
+                .remove(0)
+                .as_deref(),
             Some(&b"hello\n"[..]),
             "the body is exactly the declared size, trailing LF excluded"
         );
 
         // A path that is not there is absence, not failure.
-        assert_eq!(parse_batch_blob(b"HEAD:nope missing\n").unwrap(), None);
-        // A blob whose CONTENT ends in " missing" produces exactly the bytes
-        // an absent path produces at the end of the response. The found shape
-        // has to win, or a real file reads as a deleted one.
+        assert_eq!(
+            parse_batch_blobs(b"HEAD:nope missing\n", &one("HEAD:nope")).unwrap(),
+            vec![None]
+        );
+        // A blob whose CONTENT ends in " missing" produces exactly the bytes an
+        // absent path produces at the end of the response.
         let ends_missing = format!("{oid} blob 9\nx missing\n");
         assert_eq!(
-            parse_batch_blob(ends_missing.as_bytes())
+            parse_batch_blobs(ends_missing.as_bytes(), &one("HEAD:a"))
                 .unwrap()
+                .remove(0)
                 .as_deref(),
             Some(&b"x missing"[..]),
             "a blob ending in \" missing\" must not be read as absent"
         );
-        // A path whose name contains a space still parses: absence is read off
-        // the END of the response, so nothing about the echoed spec is
-        // positional.
-        assert_eq!(parse_batch_blob(b"HEAD:a b.txt missing\n").unwrap(), None);
-        // Nor is a path containing a NEWLINE mistaken for a broken repository
-        // — which is the whole reason the input is NUL-delimited.
+        // A space in the path is not positional: the spec is matched whole.
         assert_eq!(
-            parse_batch_blob(b"HEAD:we\nird.txt missing\n").unwrap(),
-            None
+            parse_batch_blobs(b"HEAD:a b.txt missing\n", &one("HEAD:a b.txt")).unwrap(),
+            vec![None]
+        );
+        // Nor is a NEWLINE in one — which is the whole reason the input is
+        // NUL-delimited, and the reason the spec has to be matched rather than
+        // the next LF looked for.
+        assert_eq!(
+            parse_batch_blobs(b"HEAD:we\nird.txt missing\n", &one("HEAD:we\nird.txt")).unwrap(),
+            vec![None]
         );
 
         // A tree or a commit at that path is a broken assumption, not a file.
-        assert!(parse_batch_blob(format!("{oid} tree 42\n").as_bytes()).is_err());
+        assert!(parse_batch_blobs(format!("{oid} tree 42\n").as_bytes(), &one("HEAD:a")).is_err());
         // A truncated body must never be mistaken for a short file.
-        assert!(parse_batch_blob(format!("{oid} blob 99\nshort\n").as_bytes()).is_err());
-        assert!(parse_batch_blob(b"no newline at all").is_err());
+        assert!(
+            parse_batch_blobs(format!("{oid} blob 99\nshort\n").as_bytes(), &one("HEAD:a"))
+                .is_err()
+        );
+        assert!(parse_batch_blobs(b"no newline at all", &one("HEAD:a")).is_err());
+    }
+
+    /// Many specs, one stream: each response has to be found by walking, since
+    /// only the previous one's declared size says where the next begins.
+    #[test]
+    fn batch_blobs_walks_a_stream_of_responses() {
+        let oid = "a".repeat(40);
+        let specs = vec![
+            b"HEAD:one".to_vec(),
+            b"HEAD:gone".to_vec(),
+            b"HEAD:two".to_vec(),
+        ];
+        let mut out = format!("{oid} blob 4\nabcd\n").into_bytes();
+        out.extend_from_slice(b"HEAD:gone missing\n");
+        out.extend_from_slice(format!("{oid} blob 2\nxy\n").as_bytes());
+
+        assert_eq!(
+            parse_batch_blobs(&out, &specs).unwrap(),
+            vec![Some(b"abcd".to_vec()), None, Some(b"xy".to_vec()),],
+            "answers come back in the order the specs were given"
+        );
+
+        // A stream that stops early is a broken repository, not three absences.
+        assert!(parse_batch_blobs(&out[..10], &specs).is_err());
     }
 
     /// Bytes in, bytes out: a blob that is not UTF-8 survives intact.
@@ -696,7 +770,10 @@ mod tests {
         let mut raw = format!("{oid} blob 4\n").into_bytes();
         raw.extend_from_slice(&[0x00, 0xff, 0xfe, 0x0a, 0x0a]);
         assert_eq!(
-            parse_batch_blob(&raw).unwrap().unwrap(),
+            parse_batch_blobs(&raw, &[b"HEAD:a".to_vec()])
+                .unwrap()
+                .remove(0)
+                .unwrap(),
             vec![0x00, 0xff, 0xfe, 0x0a]
         );
     }
