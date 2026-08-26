@@ -2249,9 +2249,22 @@ fn the_file_list_floats_over_the_plan_when_the_detail_is_focused() {
     app.focus = Focus::Detail;
     let text = drawn_as_is(&mut app);
     assert!(text.contains("file 1 of 1"), "no file list drawn: {text}");
+    assert!(text.contains("f.rs"), "the file is not listed: {text}");
+
+    // The current file is marked by the row being lit edge to edge, not by a
+    // glyph in a column of its own.
+    let buf = buffer_of(&app);
+    let row = (1..39u16)
+        .find(|&y| {
+            (1..39u16)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .contains("f.rs")
+        })
+        .expect("the file's row");
     assert!(
-        text.contains("▸ f.rs"),
-        "the current file is not marked: {text}"
+        (1..39u16).all(|x| buf[(x, row)].bg == THEME.selected_bg),
+        "the current file's row should be lit the whole way across"
     );
 }
 

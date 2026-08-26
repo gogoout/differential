@@ -1677,8 +1677,11 @@ impl App {
                     base
                 };
                 let name = f.path.rsplit('/').next().unwrap_or(&f.path);
+                // No marker glyph: the row the reader is on is the one lit
+                // edge to edge, which says it in the one place they are
+                // already looking.
                 let mut line = Line::from(vec![
-                    Span::styled(if on { "▸ " } else { "  " }.to_string(), style),
+                    Span::styled("  ".to_string(), style),
                     Span::styled(name.to_string(), style),
                 ]);
                 if on {

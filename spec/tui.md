@@ -72,14 +72,18 @@ the question the float is asked. The fold is the map's own: it never touches the
 view's folds, whose state belongs to the reader's `z` and to that pane's cursor.
 
 Reading the **detail**, a flat list of the files in view floats over the foot of the plan
-pane, the current one marked and the title counting `file 2 of 7`.
+pane, the current one lit edge to edge and the title counting `file 2 of 7`. Lit, not
+marked with a glyph: the row the reader is on is the one place they are already looking,
+and a marker column costs every other row two cells to say nothing.
 
 Neither float appears in the **file view**, where the left pane is already a file tree: a
 map of one group would name a group nothing is selecting, and a file list would be the pane
 behind it. Both trees are drawn with the same connector guides.
 
-**A file header sticks.** Scrolled past it, the filename pins to the pane's top row, which
-costs a row only while it would otherwise be invisible. The hunk pill does not stick with
+**A file header sticks.** It is the path and nothing else — no leading glyph, since the
+one bar in this column belongs to a hunk's edge and a second one a row above it said
+nothing the bold cyan path had not already said. Scrolled past it, the filename pins to
+the pane's top row, which costs a row only while it would otherwise be invisible. The hunk pill does not stick with
 it: two pinned rows is most of a small pane, and the pill's information is in the plan pane
 anyway.
 

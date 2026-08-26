@@ -751,7 +751,7 @@ fn header_rows(ctx: &GroupContext, rows: &mut Vec<Row>) {
 
 fn file_header_row(doc: &schema::PlanDocument, path: &str) -> Row {
     let entry = doc.files.iter().find(|f| f.path == path);
-    let mut text = format!("▍{path}");
+    let mut text = path.to_string();
     if let Some(f) = entry {
         if let Some(old) = &f.old_path {
             let sim = f

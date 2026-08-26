@@ -29,7 +29,9 @@ pub struct Theme {
     pub deleted_word_bg: Color,
     /// Diagonal fill for the side of a split row that has no line at all.
     pub hatch_fg: Color,
-    /// A hunk pill that is not lit: a control, but not the one in hand.
+    /// A pill's own text — a hunk's class, a group's role, the footer's
+    /// tallies. Deliberately quieter than the code it labels: a pill is a
+    /// caption, and the counts and the accent on it are what carry.
     pub button_fg: Color,
     pub button_bg: Color,
     /// Behind a file header pinned to the top of the pane, so a stuck row is
@@ -77,7 +79,7 @@ pub const THEME: Theme = Theme {
     added_word_bg: Color::Rgb(28, 92, 42),
     deleted_word_bg: Color::Rgb(110, 38, 38),
     hatch_fg: Color::Rgb(48, 50, 58),
-    button_fg: Color::Rgb(198, 204, 220),
+    button_fg: Color::Rgb(158, 166, 186),
     button_bg: Color::Rgb(58, 63, 83),
     sticky_bg: Color::Rgb(34, 37, 44),
     hint_fg: Color::Rgb(108, 114, 126),
