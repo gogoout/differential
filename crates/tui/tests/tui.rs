@@ -1909,7 +1909,9 @@ fn the_hunk_pill_takes_the_colour_of_its_edge() {
         (1..39u16)
             .filter(|&y| {
                 let t: String = (41..99u16).map(|x| buf[(x, y)].symbol()).collect();
-                t.contains('·') && !t.contains("more")
+                // A hunk pill, not the boundary band — both are tinted rows
+                // carrying a `·`.
+                t.contains('·') && !t.contains("hidden") && !t.contains("next:")
             })
             .flat_map(|y| (41..99u16).map(move |x| (x, y)))
             .find_map(|(x, y)| buf[(x, y)].style().bg.filter(|b| *b != Color::Reset))
@@ -1944,7 +1946,9 @@ fn the_counts_stay_coloured_on_both_pill_fills() {
         (1..39u16)
             .filter(|&y| {
                 let t: String = (41..99u16).map(|x| buf[(x, y)].symbol()).collect();
-                t.contains('·') && !t.contains("more")
+                // A hunk pill, not the boundary band — both are tinted rows
+                // carrying a `·`.
+                t.contains('·') && !t.contains("hidden") && !t.contains("next:")
             })
             .flat_map(|y| (41..99u16).map(move |x| (x, y)))
             .filter(|&(x, y)| matches!(buf[(x, y)].symbol(), "+" | "−"))
@@ -1978,47 +1982,56 @@ fn the_counts_stay_coloured_on_both_pill_fills() {
 
 // -------------------------------------------------- the overview surfaces
 
-/// Reading the plan, the right pane is a map of the selected group: which files
-/// it spans, without walking its hunks.
+/// Reading the plan, a map of the selected group FLOATS over the detail pane —
+/// below the group's header, so its full label survives the plan pane's 40
+/// columns, and above the diff, which carries on underneath as a preview of
+/// what entering the group will show.
 #[test]
-fn the_right_pane_maps_the_group_when_the_plan_is_focused() {
+fn the_group_map_floats_over_the_diff_when_the_plan_is_focused() {
     let (_r, mut app) = app_with_two_groups_in_one_file();
     app.focus = Focus::Groups;
     let text = drawn_as_is(&mut app);
 
     assert!(
         text.contains("files in g"),
-        "the title names the group: {text}"
+        "the float names the group: {text}"
     );
-    assert!(
-        text.contains("src/") && text.contains("f.rs"),
-        "the tree should list the document's files: {text}"
-    );
-    // A lit file carries a marker and its counts; the map is not the diff.
+    assert!(text.contains("f.rs"), "the tree should list files: {text}");
     assert!(
         text.contains('●'),
         "no file is marked as the group's: {text}"
     );
+    // Tree guides, not bare indentation.
     assert!(
-        !text.contains("let filler"),
-        "the map should not be showing diff content: {text}"
+        text.contains('└') || text.contains('├'),
+        "no tree guides: {text}"
     );
 
-    // Tab and the diff is back.
-    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    let text = drawn_as_is(&mut app);
-    assert!(text.contains(" detail "), "the title should follow: {text}");
+    // The group's header is above the float, and the diff below it.
+    assert!(
+        text.contains("[focus] Group 0"),
+        "the group's title should be uncovered: {text}"
+    );
     assert!(
         text.contains("let filler"),
-        "the diff should be back: {text}"
+        "the diff should carry on underneath the float: {text}"
     );
+
+    // Tab and the float is gone.
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    let text = drawn_as_is(&mut app);
+    assert!(
+        !text.contains("files in g"),
+        "the float should lift: {text}"
+    );
+    assert!(text.contains("let filler"));
 }
 
-/// Reading the detail, the left pane splits to say where in the group you are.
+/// Reading the detail, a list of the files in view floats over the foot of the
+/// plan pane to say where you are and how much is left.
 #[test]
-fn the_left_pane_shows_where_you_are_when_the_detail_is_focused() {
+fn the_file_list_floats_over_the_plan_when_the_detail_is_focused() {
     let (_r, mut app) = app_with_two_groups_in_one_file();
-    app.set_area(ratatui::layout::Rect::new(0, 0, 100, 40));
 
     app.focus = Focus::Groups;
     assert!(
@@ -2035,27 +2048,24 @@ fn the_left_pane_shows_where_you_are_when_the_detail_is_focused() {
     );
 }
 
-/// The guard for the geometry change: pane heights depend on focus now, so a
-/// `Tab` has to re-derive them or the scroll maths runs against a stale height.
+/// Both overviews FLOAT, so focus never changes a pane's height. This is the
+/// guarantee `spec/tui.md` opens with, and the reason splitting a pane on focus
+/// was the wrong shape.
 #[test]
-fn pane_heights_follow_focus() {
+fn focus_never_changes_a_pane_height() {
     let (_r, mut app) = app_with_two_groups_in_one_file();
-    app.set_area(ratatui::layout::Rect::new(0, 0, 100, 40));
-    app.focus = Focus::Groups;
-    app.set_area(ratatui::layout::Rect::new(0, 0, 100, 40));
-    let plan_alone = app.viewport().plan_rows;
-
+    app.set_viewport(Viewport {
+        detail_rows: 30,
+        plan_rows: 30,
+    });
+    let before = app.viewport();
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     assert_eq!(app.focus, Focus::Detail);
-    assert!(
-        app.viewport().plan_rows < plan_alone,
-        "the plan pane should have given room to the file list: {} vs {plan_alone}",
-        app.viewport().plan_rows
+    assert_eq!(
+        app.viewport(),
+        before,
+        "a float must not take room from the pane it covers"
     );
-
-    // And back again.
-    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    assert_eq!(app.viewport().plan_rows, plan_alone);
 }
 
 /// A long file stops saying which file it is once its header scrolls away.

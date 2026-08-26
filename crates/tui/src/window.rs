@@ -63,7 +63,14 @@ pub struct Boundary {
     pub hunk: usize,
     pub side: Side,
     /// Context lines still hidden in the current gap.
+    ///
+    /// Where two blocks meet, BOTH boundaries carry the same figure: they are
+    /// two ends of one gap, and a reviewer opening one end watches the other's
+    /// count fall too.
     pub hidden: usize,
+    /// How many lines the gap holds in total, which is what identifies two
+    /// boundaries as ends of the same one.
+    pub gap: usize,
     /// The hunk immediately past the gap, once the gap is exhausted.
     pub next: Option<usize>,
 }
@@ -248,7 +255,7 @@ pub fn plan(
         }
     }
 
-    spans
+    let mut blocks: Vec<Block> = spans
         .into_iter()
         .map(|s| {
             let (up_avail, down_avail) = (avail_up(s.lo), avail_down(s.hi));
@@ -298,18 +305,21 @@ pub fn plan(
 
             // An edge with lines left offers them; an edge with none offers the
             // hunk beyond, if there is one. Nothing at all only at a file edge.
-            let edge = |hidden: usize, side: Side, owner: usize, beyond: Option<usize>| {
-                let next = (hidden == 0).then_some(beyond).flatten();
-                (hidden > 0 || next.is_some()).then(|| Boundary {
-                    hunk: hunks[owner].index,
-                    side,
-                    hidden,
-                    next,
-                })
-            };
+            let edge =
+                |hidden: usize, gap: usize, side: Side, owner: usize, beyond: Option<usize>| {
+                    let next = (hidden == 0).then_some(beyond).flatten();
+                    (hidden > 0 || next.is_some()).then(|| Boundary {
+                        hunk: hunks[owner].index,
+                        side,
+                        hidden,
+                        gap,
+                        next,
+                    })
+                };
             Block {
                 top: edge(
                     up_avail - up,
+                    up_avail,
                     Side::Up,
                     s.up_owner,
                     s.lo.checked_sub(1).map(|p| hunks[p].index),
@@ -317,13 +327,33 @@ pub fn plan(
                 segments,
                 bottom: edge(
                     down_avail - down,
+                    down_avail,
                     Side::Down,
                     s.down_owner,
                     hunks.get(s.hi + 1).map(|c| c.index),
                 ),
             }
         })
-        .collect()
+        .collect();
+
+    // Two blocks that meet describe ONE gap, and both boundary rows should
+    // report what is left of it. Each was reporting only its own side's
+    // remainder, so opening the top one by ten left the bottom one still
+    // claiming the old number for lines it could no longer reach.
+    for i in 1..blocks.len() {
+        let (above, below) = blocks.split_at_mut(i);
+        let (Some(a), Some(b)) = (above[i - 1].bottom.as_mut(), below[0].top.as_mut()) else {
+            continue;
+        };
+        // Same gap only if they are adjacent — a hunk between them is two gaps.
+        if a.next.is_some() || b.next.is_some() || a.gap != b.gap {
+            continue;
+        }
+        let shared = a.hidden + b.hidden - a.gap.min(a.hidden + b.hidden);
+        a.hidden = shared;
+        b.hidden = shared;
+    }
+    blocks
 }
 
 #[cfg(test)]
@@ -565,6 +595,7 @@ mod tests {
                 hunk: 0,
                 side: Side::Down,
                 hidden: 0,
+                gap: 4,
                 next: Some(1),
             })
         );
@@ -681,6 +712,40 @@ mod tests {
         );
         // And the top boundary belongs to the hunk that reached up there.
         assert_eq!(blocks[0].top.as_ref().map(|b| b.hunk), Some(2));
+    }
+
+    /// Two boundaries over one gap are two ends of the same thing, so both
+    /// report what is left of it. Each reporting only its own side meant
+    /// opening the top by ten left the bottom still claiming the old figure for
+    /// lines it could no longer reach.
+    #[test]
+    fn both_ends_of_one_gap_report_the_same_remainder() {
+        let a = entry(20, 2, 20, 2);
+        let z = entry(60, 2, 60, 2);
+        let hunks = [shown(0, &a), shown(1, &z)];
+
+        let idle = plan(&hunks, &HashMap::new(), 3, 200, 200);
+        assert_eq!(idle.len(), 2, "the gap is far too wide to have merged");
+        let (top, bottom) = (
+            idle[0].bottom.as_ref().unwrap().hidden,
+            idle[1].top.as_ref().unwrap().hidden,
+        );
+        assert_eq!(top, bottom, "an untouched gap already agreed");
+
+        // Open it from the TOP only; both ends must fall by the same ten.
+        let opened = HashMap::from([(0, grow(0, 10))]);
+        let after = plan(&hunks, &opened, 3, 200, 200);
+        assert_eq!(after.len(), 2);
+        let (t2, b2) = (
+            after[0].bottom.as_ref().unwrap().hidden,
+            after[1].top.as_ref().unwrap().hidden,
+        );
+        assert_eq!(t2, b2, "the two ends disagree: {t2} vs {b2}");
+        assert_eq!(
+            t2,
+            top - 10,
+            "ten lines were shown, so ten fewer are hidden"
+        );
     }
 
     /// `crossed_*` is a count of hunks, and it saturates. The UI can only

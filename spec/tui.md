@@ -10,10 +10,9 @@ order — keys before and after it each see the geometry that was true when they
 pressed. Row *contents* still compose their columns at draw time from the pane width, which
 is why a resize never rebuilds rows.
 
-The model holds the terminal's **rectangle**, and the pane heights are derived from it —
-because they depend on focus as well as on size, and focus is a key away. `Tab` re-derives
-them for the same reason a resize does. Deriving rather than pushing is what keeps the
-guarantee true once the panes stopped being a fixed split.
+The panes are a fixed split and **focus never changes a height**: the overviews below float
+over a pane rather than taking room from one, which is what keeps the heights a function of
+the terminal alone.
 
 **Reading plan.** Groups in rank order, each a small block: the group **id**, effort tier
 and label, then file count with added/removed line totals (in their own colours), the
@@ -47,19 +46,20 @@ hunk beneath it, selecting a file shows that file's hunks in position order rega
 grouping, each hunk header carrying its group's label. Reviewed marks are shared between
 the views — they key on class content either way.
 
-**The pane you are not in is a map of the other.** Focus decides what each side shows,
-which is what makes an unfocused pane worth its space.
+**Focus floats a map of the other pane.** Each side keeps its own job; what changes is what
+is laid over it, so an unfocused pane earns its space without either pane losing any.
 
-Reading the **plan**, the right pane is the document's file tree with the selected group's
-files lit — `files in g0 · 3 of 8` — so what a group spans is one look rather than a walk
-through its hunks. It is deliberately not interactive: it is a map, and a second cursor in
-a second pane is a thing to explain and to get wrong. It scrolls only far enough to reveal
-the first file the group touches.
+Reading the **plan**, the document's file tree floats over the detail pane with the selected
+group's files lit — `files in g0 · 3 of 8` — so what a group spans is one look rather than a
+walk through its hunks. It sits **below the group's header block**, leaving the full label
+and description readable where the 40-column plan pane truncates them, and the diff carries
+on underneath as a preview of what entering the group will show. The tree is drawn with
+connector guides and marks a lit file beside its name rather than out in a column of its
+own. Deliberately not interactive: it is a map, and a second cursor in a second pane is a
+thing to explain and to get wrong.
 
-Reading the **detail**, the right pane is the diff again, and the left pane splits: the
-plan above, and below it a flat list of the files in view with the current one marked and
-the title counting `file 2 of 7`. The list is bounded — a three-file review does not give
-half its plan pane to three names, and a three-hundred-file one does not swallow it.
+Reading the **detail**, a flat list of the files in view floats over the foot of the plan
+pane, the current one marked and the title counting `file 2 of 7`.
 
 **A file header sticks.** Scrolled past it, the filename pins to the pane's top row, which
 costs a row only while it would otherwise be invisible. The hunk pill does not stick with
@@ -111,8 +111,10 @@ and stays there — a label that drifted with the pane width would be harder to 
 column.
 
 A **context boundary** is a control, not a caption: a tinted band across the pane with its
-arrow in the border column, saying `29 lines hidden` or, once the gap is spent,
-`next: C42 "Group 42"`. Deliberately not `@@ …` — that is the notation the hunk headers
+arrow in the border column, saying `29 lines hidden · z shows 10` or, once the gap is spent,
+`next: C42 "Group 42" · z shows it` — a control that does not say how to work it is a label.
+Where two boundaries are the two ends of one gap they carry the **same** count, so opening
+one end drops the other's figure too. Deliberately not `@@ …` — that is the notation the hunk headers
 dropped, and the gutters either side already carry the numbers.
 
 Where two blocks meet, the two boundary rows describing that one gap sit **adjacent with no

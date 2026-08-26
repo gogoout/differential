@@ -886,6 +886,8 @@ fn boundary_row(ctx: &RowsContext, b: &window::Boundary, step: usize) -> Row {
     } else {
         arrow
     };
+    // The key goes on the band. It is a control, and a control that does not
+    // say how to work it is a label.
     let label = match b.next {
         // The gap is exhausted and a hunk stands beyond it. Name it, so the
         // wall is visible and crossing is a deliberate press.
@@ -896,9 +898,9 @@ fn boundary_row(ctx: &RowsContext, b: &window::Boundary, step: usize) -> Row {
                 .group_of_hunk(HunkId::from_index(next))
                 .map(|g| format!(" “{}”", g.label))
                 .unwrap_or_default();
-            format!("next: {class}{group}")
+            format!("next: {class}{group} · z shows it")
         }
-        None => format!("{} lines hidden", b.hidden),
+        None => format!("{} lines hidden · z shows {}", b.hidden, step.min(b.hidden)),
     };
     // A band, not a rule: two of these sit adjacent where two blocks meet, and
     // a tinted row with the arrow in the border column reads as one seam in the

@@ -69,29 +69,21 @@ impl Default for ReviewOptions {
 /// three-row window cannot produce nonsense.
 const MIN_VIEWPORT: usize = 8;
 
-/// The reviewer's panes.
-///
-/// `files` is the flat file list under the plan, present only while the detail
-/// pane has focus — the pane you are not in is where a map of the other one
-/// goes.
+/// The reviewer's panes: a fixed-width plan pane, the detail, a status row.
 pub struct Panes {
     pub body: Rect,
     pub plan: Rect,
-    pub files: Option<Rect>,
     pub detail: Rect,
     pub status: Rect,
 }
 
 /// The one layout. `draw` places widgets with it and the event loop measures
-/// with it, so the two can never disagree about how tall the diff pane is.
-/// The one layout.
+/// with it, so the two can never disagree about how tall the detail pane is.
 ///
-/// Takes the focus because the panes depend on it: reading the plan, the right
-/// pane is a map of the selected group; reading the detail, the left pane
-/// splits to say where in the group you are. `files` is how many files the list
-/// would show, so a three-file review does not give half its plan pane to a
-/// list of three.
-pub fn layout(area: Rect, focus: Focus, files: usize) -> Panes {
+/// Focus does NOT enter into it. The overviews each focus brings up float over
+/// a pane rather than splitting one, which is what lets the pane heights stay a
+/// function of the terminal alone — and lets a key never change them.
+pub fn layout(area: Rect) -> Panes {
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(1)])
@@ -100,33 +92,17 @@ pub fn layout(area: Rect, focus: Focus, files: usize) -> Panes {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(40), Constraint::Min(0)])
         .split(outer[0]);
-
-    let (plan, list) = if focus == Focus::Detail && files > 0 {
-        let want = (files as u16 + 2).min(panes[0].height / 2);
-        let split = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(want)])
-            .split(panes[0]);
-        (split[0], Some(split[1]))
-    } else {
-        (panes[0], None)
-    };
-
     Panes {
         body: outer[0],
-        plan,
-        files: list,
+        plan: panes[0],
         detail: panes[1],
         status: outer[1],
     }
 }
 
-/// Measured pane geometry, held in the model so scroll math is arithmetic over
-/// a known height rather than a guess corrected one frame later.
-///
-/// DERIVED, not pushed: pane heights depend on focus now, and focus is a key
-/// away, so the model stores the terminal's `Rect` and recomputes this whenever
-/// either moves. Still model state, still settled before a key is handled.
+/// Measured terminal geometry, pushed into the model BEFORE any key is
+/// handled — so scroll math is arithmetic over a known height rather than a
+/// guess corrected one frame later.
 ///
 /// Deliberately carries no WIDTH. Row building must never depend on width
 /// (`RowContent::Split` defers its columns to draw time precisely so a resize
@@ -139,8 +115,8 @@ pub struct Viewport {
 }
 
 impl Viewport {
-    pub fn measure(area: Rect, focus: Focus, files: usize) -> Self {
-        let panes = layout(area, focus, files);
+    pub fn measure(area: Rect) -> Self {
+        let panes = layout(area);
         Viewport {
             // Every pane is bordered.
             detail_rows: panes.detail.height.saturating_sub(2) as usize,
@@ -257,12 +233,6 @@ pub struct App {
     pub status: String,
     /// Measured geometry. An input to update, never a draw-time output.
     viewport: Viewport,
-    /// The terminal, as last measured. Held because the viewport is DERIVED
-    /// from it and the focus, and focus is a key away — without the `Rect` a
-    /// `Tab` would have to wait for a resize to get its pane heights right.
-    /// `None` before the first measurement, and in tests that set a viewport
-    /// directly.
-    area: Option<Rect>,
     pending_d: bool,
 }
 
@@ -300,7 +270,6 @@ impl App {
             opts,
             status: String::new(),
             viewport: Viewport::default(),
-            area: None,
             pending_d: false,
         };
         app.rebuild_tree();
@@ -581,34 +550,11 @@ impl App {
         self.follow_cursor();
     }
 
-    /// Fold the terminal's size into the model.
+    /// Fold measured geometry into the model.
     ///
-    /// A resize is an event like any other: the viewport is re-derived and both
-    /// scroll offsets re-clamped here, in update, rather than discovered while
-    /// rendering.
-    pub fn set_area(&mut self, area: Rect) {
-        self.area = Some(area);
-        self.remeasure();
-    }
-
-    /// Re-derive the viewport from the stored terminal size.
-    ///
-    /// Called on a resize and after anything that changes the panes — which now
-    /// means focus, since the pane you are not in becomes a map of the other
-    /// and takes space to do it.
-    fn remeasure(&mut self) {
-        if let Some(area) = self.area {
-            self.viewport = Viewport::measure(area, self.focus, self.file_list_len());
-        }
-        self.follow_cursor();
-        self.follow_plan_scroll();
-    }
-
-    /// Set the pane heights directly, for tests that want a small terminal
-    /// without a `Rect`. A stored area would override this on the next focus
-    /// change, so setting one here would make the test lie.
+    /// A resize is an event like any other: both scroll offsets are re-clamped
+    /// here, in update, rather than discovered while rendering.
     pub fn set_viewport(&mut self, viewport: Viewport) {
-        self.area = None;
         self.viewport = viewport;
         self.follow_cursor();
         self.follow_plan_scroll();
@@ -871,14 +817,6 @@ impl App {
         out
     }
 
-    fn file_list_len(&self) -> usize {
-        if self.focus == Focus::Detail {
-            self.file_list().len()
-        } else {
-            0
-        }
-    }
-
     /// The row index of the file header the cursor is under.
     ///
     /// Walked backwards from the cursor, because a diff row does not name its
@@ -1017,10 +955,7 @@ impl App {
                 self.focus = match self.focus {
                     Focus::Groups => Focus::Detail,
                     Focus::Detail => Focus::Groups,
-                };
-                // The panes differ by focus, so the heights the scroll maths
-                // uses have just changed.
-                self.remeasure();
+                }
             }
             (KeyCode::Enter, _) if self.focus == Focus::Groups => {
                 // Enter opens a directory rather than jumping to the diff.
@@ -1222,19 +1157,19 @@ impl App {
     // ------------------------------------------------------------- drawing
 
     pub fn draw(&self, frame: &mut Frame) {
-        let panes = layout(frame.area(), self.focus, self.file_list_len());
+        let panes = layout(frame.area());
         self.draw_groups(frame, panes.plan);
-        if let Some(area) = panes.files {
-            self.draw_file_list(frame, area);
-        }
-        // Reading the plan, the right pane is a map of the selected group;
-        // reading the detail, it is the diff. The pane you are not in is where
-        // an overview of the other one goes.
+        self.draw_diff(frame, panes.detail);
+        self.draw_status(frame, panes.status);
+
+        // Each focus FLOATS a map of the other pane rather than replacing or
+        // splitting one. The diff carries on underneath, so browsing the plan
+        // still previews what entering it will show — and pane heights stay a
+        // function of the terminal, never of a key.
         match self.focus {
             Focus::Groups => self.draw_group_map(frame, panes.detail),
-            Focus::Detail => self.draw_diff(frame, panes.detail),
+            Focus::Detail => self.draw_file_list(frame, panes.plan),
         }
-        self.draw_status(frame, panes.status);
 
         match &self.mode {
             Mode::Editing(_, textarea) => {
@@ -1594,8 +1529,27 @@ impl App {
         }
     }
 
-    /// The flat file list under the plan: where you are, and how much is left.
-    fn draw_file_list(&self, frame: &mut Frame, area: Rect) {
+    /// The flat file list, floating over the foot of the plan pane: where you
+    /// are, and how much is left.
+    fn draw_file_list(&self, frame: &mut Frame, plan: Rect) {
+        let files_len = self.file_list().len();
+        if files_len == 0 {
+            return;
+        }
+        let h = (files_len as u16 + 2)
+            .min(plan.height.saturating_sub(2))
+            .max(3);
+        let area = Rect {
+            x: plan.x,
+            y: plan.y + plan.height.saturating_sub(h),
+            width: plan.width,
+            height: h,
+        };
+        frame.render_widget(Clear, area);
+        self.draw_file_list_in(frame, area);
+    }
+
+    fn draw_file_list_in(&self, frame: &mut Frame, area: Rect) {
         let reviewed = self.session.reviewed_hunks();
         let here = self.file_at_cursor();
         let files = self.file_list();
@@ -1662,21 +1616,46 @@ impl App {
     ///
     /// Deliberately not interactive. It is a map; a second cursor in a second
     /// pane is a thing to explain and to get wrong.
-    fn draw_group_map(&self, frame: &mut Frame, area: Rect) {
+    fn draw_group_map(&self, frame: &mut Frame, detail: Rect) {
+        // Below the group's header block, so its full label and description —
+        // which the 40-column plan pane truncates — stay readable, and the diff
+        // carries on beneath the float.
+        let header = self
+            .rows
+            .iter()
+            .take_while(|r| matches!(r.kind, RowKind::GroupHeader | RowKind::Blank))
+            .count()
+            .min(6) as u16;
+        let top = detail.y + 1 + header;
+        let area = Rect {
+            x: detail.x + 1,
+            y: top,
+            width: detail.width.saturating_sub(2),
+            height: detail
+                .height
+                .saturating_sub(header + 2)
+                .min(self.tree.len() as u16 + 2)
+                .max(3),
+        };
+        frame.render_widget(Clear, area);
         let inner_h = area.height.saturating_sub(2) as usize;
         let mine = self.files_of_selected_group();
+        let guides = tree_guides(&self.tree);
         let lines: Vec<Line> = self
             .tree
             .iter()
-            .map(|entry| {
-                let indent = "  ".repeat(entry.depth);
+            .zip(&guides)
+            .map(|(entry, guide)| {
                 match &entry.kind {
                     TreeKind::Dir { path } => {
                         let name = path.rsplit('/').next().unwrap_or(path);
-                        Line::from(Span::styled(
-                            format!("  {indent}{name}/"),
-                            Style::default().fg(THEME.gutter_fg),
-                        ))
+                        Line::from(vec![
+                            Span::styled(
+                                format!("  {guide}"),
+                                Style::default().fg(THEME.gutter_fg),
+                            ),
+                            Span::styled(format!("{name}/"), Style::default().fg(THEME.context_fg)),
+                        ])
                     }
                     TreeKind::File { file_idx } => {
                         let f = &self.files()[*file_idx];
@@ -1689,9 +1668,16 @@ impl App {
                         } else {
                             Style::default().fg(THEME.gutter_fg)
                         };
+                        // The marker sits WITH the name, not out in a column of
+                        // its own — a dot at the far left of a deep tree points
+                        // at nothing.
                         let mut spans = vec![
                             Span::styled(
-                                format!("{} {indent}", if lit { "●" } else { " " }),
+                                format!("  {guide}"),
+                                Style::default().fg(THEME.gutter_fg),
+                            ),
+                            Span::styled(
+                                if lit { "● " } else { "" }.to_string(),
                                 Style::default().fg(THEME.header_fg),
                             ),
                             Span::styled(name.to_string(), style),
@@ -1715,13 +1701,14 @@ impl App {
             .collect();
 
         // No cursor to follow, so the only scroll it needs is enough to reveal
-        // the first file the group touches.
+        // the first file the group touches — and none at all when it already
+        // fits, which is what a short float mostly is.
         let first = self
             .tree
             .iter()
             .position(|e| matches!(&e.kind, TreeKind::File { file_idx } if mine.contains(file_idx)))
             .unwrap_or(0);
-        let scroll = first.saturating_sub(inner_h / 3);
+        let scroll = first.saturating_sub(inner_h.saturating_sub(1));
 
         let title = match self.groups().get(self.selected_group) {
             Some(g) => format!(
@@ -1994,6 +1981,39 @@ fn compose_half(half: &Half, width: usize, cursor: bool) -> Vec<Span<'static>> {
         }
     }
     spans
+}
+
+/// The connector prefix for each row of a tree, in order.
+///
+/// A tree drawn as bare indentation reads as a list that happens to be ragged;
+/// the guides are what say which directory a file is under. Each row gets `│ `
+/// for every ancestor that still has siblings below, then `└─` if it is the
+/// last of its parent's children or `├─` if it is not.
+fn tree_guides(tree: &[TreeEntry]) -> Vec<String> {
+    // Whether a later row shares this row's depth before the tree pops out of
+    // it — that is exactly "has a sibling below".
+    let more_after: Vec<bool> = (0..tree.len())
+        .map(|i| {
+            tree[i + 1..]
+                .iter()
+                .take_while(|e| e.depth >= tree[i].depth)
+                .any(|e| e.depth == tree[i].depth)
+        })
+        .collect();
+
+    let mut open: Vec<bool> = Vec::new();
+    tree.iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            open.truncate(entry.depth);
+            let mut prefix: String = open.iter().map(|&o| if o { "│ " } else { "  " }).collect();
+            if entry.depth > 0 || i + 1 < tree.len() {
+                prefix.push_str(if more_after[i] { "├─" } else { "└─" });
+            }
+            open.push(more_after[i]);
+            prefix
+        })
+        .collect()
 }
 
 /// Extend `line` with blank, styled cells so a selection background covers
