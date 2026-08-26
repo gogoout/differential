@@ -116,6 +116,15 @@ fn make_app() -> (TestRepo, App) {
     (r, app)
 }
 
+/// Switch the left pane between the reading plan and the file tree. `f` acts
+/// on the pane it is pressed in, so this presses it there and puts focus back.
+fn switch_left_pane(app: &mut App) {
+    let focus = app.focus;
+    app.focus = Focus::Groups;
+    app.handle_key(key('f'));
+    app.focus = focus;
+}
+
 fn key(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
 }
@@ -252,7 +261,7 @@ fn file_view_lists_all_files_and_shares_review_marks() {
     let (r, mut app) = make_app();
     assert_eq!(app.view_mode, ViewMode::Groups);
 
-    app.handle_key(key('v'));
+    switch_left_pane(&mut app);
     assert_eq!(app.view_mode, ViewMode::Files);
     assert_eq!(app.files().len(), 4);
     let store = FsReviewStore::at(r.root.join(".dfr-test-store")).unwrap();
@@ -274,7 +283,7 @@ fn file_view_lists_all_files_and_shares_review_marks() {
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     app.handle_key(key(' '));
     assert_eq!(app.session.reviewed_count(), 1);
-    app.handle_key(key('v'));
+    switch_left_pane(&mut app);
     assert_eq!(app.view_mode, ViewMode::Groups);
     assert!(!store.load_state().unwrap().file_view);
     assert_eq!(app.session.reviewed_count(), 1);
@@ -298,7 +307,7 @@ fn file_view_shows_hunks_across_groups_with_labels() {
     let mut app = open_app(&r);
     assert_eq!(app.groups().len(), 2, "two shapes → two groups");
 
-    app.handle_key(key('v'));
+    switch_left_pane(&mut app);
     let hunk_headers = app
         .rows
         .iter()
@@ -314,7 +323,7 @@ fn file_view_shows_hunks_across_groups_with_labels() {
 fn file_view_resume_restores_view_and_file() {
     use differential_tui::app::ViewMode;
     let (r, mut app) = make_app();
-    app.handle_key(key('v'));
+    switch_left_pane(&mut app);
     app.handle_key(key('J')); // next tree row
     let path = app.selected_path().unwrap();
     app.handle_key(key('q'));
@@ -329,8 +338,9 @@ fn file_view_resume_restores_view_and_file() {
 fn file_list_modal_opens_jumps_and_closes() {
     use differential_tui::app::Mode;
     let (_r, mut app) = make_app();
-    // Group 1 ("Close work" or the skim sweep) — use whichever is selected;
-    // ensure some file headers exist in the current rows.
+    // `f` opens the list from the DIFF pane; in the plan pane it switches the
+    // left pane instead.
+    app.focus = Focus::Detail;
     app.handle_key(key('f'));
     let (n_entries, first_path) = match &app.mode {
         Mode::FileList { entries, .. } => (entries.len(), entries[0].path.clone()),
@@ -544,7 +554,7 @@ fn n_and_shift_n_jump_between_hunks() {
 fn file_view_is_a_collapsible_tree() {
     use differential_tui::app::{TreeKind, ViewMode};
     let (_r, mut app) = make_app();
-    app.handle_key(key('v'));
+    switch_left_pane(&mut app);
     assert_eq!(app.view_mode, ViewMode::Files);
 
     // The fixture's files all live under src/, so the tree has a src/ node
@@ -2477,7 +2487,7 @@ fn neither_float_appears_in_the_file_view() {
         drawn_as_is(&mut app).contains("files in g"),
         "no map to lose"
     );
-    app.handle_key(key('v'));
+    switch_left_pane(&mut app);
     assert_eq!(app.view_mode, ViewMode::Files);
     let text = drawn_as_is(&mut app);
     assert!(
@@ -2493,7 +2503,7 @@ fn neither_float_appears_in_the_file_view() {
     );
 
     // Both come back on the way out.
-    app.handle_key(key('v'));
+    switch_left_pane(&mut app);
     assert_eq!(app.view_mode, ViewMode::Groups);
     assert!(drawn_as_is(&mut app).contains("file 1 of"));
 }
@@ -2502,7 +2512,7 @@ fn neither_float_appears_in_the_file_view() {
 #[test]
 fn the_file_view_tree_is_drawn_with_guides() {
     let (_r, mut app) = app_with_two_groups_in_one_file();
-    app.handle_key(key('v'));
+    switch_left_pane(&mut app);
     let text = drawn_as_is(&mut app);
     assert!(
         text.contains('└') || text.contains('├'),
@@ -2640,7 +2650,7 @@ fn the_help_modal_is_only_keys() {
     };
     // Every key row, then the footer. No legend in between, and none after.
     let footer = at("press any key");
-    for k in ["j/k", "n/N", "z ", "s ", "v ", "f ", "space", "dd", "quit"] {
+    for k in ["j/k", "n/N", "z ", "s ", "f ", "space", "dd", "quit"] {
         assert!(at(k) < footer, "{k:?} should be in the key table");
     }
     for prose in [

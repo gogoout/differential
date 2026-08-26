@@ -14,6 +14,12 @@ The panes are a fixed split and **focus never changes a height**: the overviews 
 over a pane rather than taking room from one, which is what keeps the heights a function of
 the terminal alone.
 
+**One key for files, acting on the pane it is pressed in.** In the left pane `f` chooses
+which list of files you are reading — the plan or the tree. In the diff pane it chooses
+which file you are looking at. It used to be two keys, and the one that switched the left
+pane worked from either side, so a press in the diff pane silently rearranged the pane
+behind it.
+
 **Reading plan.** Groups in rank order, each a small block: the group **id**, effort tier
 and label, then file count with added/removed line totals (in their own colours), the
 role — as a pill, in the same muted colours a hunk's title pill wears, since it is a fact
@@ -45,7 +51,7 @@ changes contribute zero and a rename counts as two files (the canonical view is
 `--no-renames`). Skim groups show one exemplar per shape class with the remainder folded
 behind a single line; noise groups are folded entirely.
 
-**File view.** `v` switches the left pane to a **tree** of every file in the document
+**File view.** `f`, in the left pane, switches it to a **tree** of every file in the document
 (including binary/submodule changes the group view cannot surface). Directories nest,
 show their aggregate counts, and fold with `z`/`enter`; selecting a directory shows every
 hunk beneath it, selecting a file shows that file's hunks in position order regardless of
@@ -279,8 +285,7 @@ list belongs; the footer's job is to point at it.
 | `n`/`N` | next / previous hunk (skipping hunks crossed in from other groups) |
 | `z` | on a `──` context boundary row: show more of the file, or cross into the hunk it names · elsewhere, fold the skim remainder or noise group (plan view) or a directory (file view) |
 | `s` | toggle unified / side-by-side diff layout (persisted) |
-| `v` | toggle the left pane: reading plan ↔ file tree (persisted) |
-| `f` | file-list modal over the current view (`enter` jumps to the file) |
+| `f` | files, in the pane you are in — plan pane: toggle reading plan ↔ file tree (persisted) · diff pane: the file-list modal (`enter` jumps to the file) |
 | `space` | mark reviewed — the whole selected group/file in the left pane, the hunk's **class** in the diff pane (one exemplar verifies the shape) |
 | `c` | add a finding on the current hunk — a float over the diff, titled with the file and lines it annotates (`ctrl-s` save, `esc` cancel, `enter` newline) |
 | `dd` | delete the finding under the cursor |

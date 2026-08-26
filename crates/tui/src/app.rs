@@ -1086,8 +1086,16 @@ impl App {
             (KeyCode::Char('n'), KeyModifiers::NONE) => self.jump_hunk(1),
             (KeyCode::Char('N'), _) => self.jump_hunk(-1),
             (KeyCode::Char('s'), KeyModifiers::NONE) => self.toggle_split(),
-            (KeyCode::Char('v'), KeyModifiers::NONE) => self.toggle_file_view(),
-            (KeyCode::Char('f'), KeyModifiers::NONE) => self.open_file_list(),
+            // One key for files, acting on the pane it is pressed in. In the
+            // left pane that is which list of files you are reading — the
+            // plan or the tree; in the diff pane it is which file you want to
+            // be looking at. `v` used to switch the left pane from either
+            // side, which meant a key in one pane silently rearranged the
+            // other.
+            (KeyCode::Char('f'), KeyModifiers::NONE) => match self.focus {
+                Focus::Groups => self.toggle_file_view(),
+                Focus::Detail => self.open_file_list(),
+            },
             (KeyCode::Char(' '), _) => self.toggle_reviewed(),
             (KeyCode::Char('c'), KeyModifiers::NONE) => {
                 if let Some(h) = self.current_hunk() {
@@ -2448,8 +2456,8 @@ fn help_paragraph() -> Paragraph<'static> {
         row("z", "boundary: show more, or cross into the hunk"),
         row("", "elsewhere: unfold skim remainder / noise"),
         row("s", "unified / split diff"),
-        row("v", "reading plan / file view"),
-        row("f", "file list of this view (enter jumps)"),
+        row("f", "plan pane: reading plan / file tree"),
+        row("", "diff pane: file list (enter jumps)"),
         row("space", "mark the hunk's class reviewed"),
         row("c  ·  dd", "add finding · delete the one under the cursor"),
         row("y  ·  q", "copy findings · quit (state is saved)"),
