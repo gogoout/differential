@@ -1155,7 +1155,7 @@ impl App {
             // One field, not a mode: `j`/`k` keep moving the cursor and the
             // selection is the span between the two ends, which is what makes
             // `V` cost nothing to explain.
-            (KeyCode::Char('V'), _) => {
+            (KeyCode::Char('v'), KeyModifiers::NONE) => {
                 if self.rows.get(self.cursor).is_some_and(|r| r.line.is_some()) {
                     self.visual = Some(self.cursor);
                     self.status = "select lines · c to write · esc to drop".into();
@@ -1319,7 +1319,6 @@ impl App {
 
     /// Markdown summary of open findings, for pasting into an agent or PR.
     pub fn findings_summary(&self) -> String {
-        let plan = self.session.plan();
         let mut out = String::new();
         for f in self
             .session
@@ -1327,15 +1326,11 @@ impl App {
             .iter()
             .filter(|f| f.status == FindingStatus::Open)
         {
-            // Findings anchor on digests, which survive regeneration; the
-            // projection resolves one to its owning group.
-            let label = plan
-                .hunk_by_digest(&f.anchor.hunk_digest)
-                .and_then(|h| plan.group_of_hunk(h))
-                .map(|g| format!(" ({})", g.label))
-                .unwrap_or_default();
+            // The file and the lines, and the note. Not the group's label: a
+            // group is how this reviewer chose to READ the branch, and the
+            // summary is pasted somewhere that has no idea what g7 was.
             out.push_str(&format!(
-                "- {}:{}{label}: {}\n",
+                "- {}:{}: {}\n",
                 f.anchor.file,
                 f.anchor.line_span(),
                 f.body
@@ -2585,7 +2580,7 @@ fn help_paragraph() -> Paragraph<'static> {
         row("f", "plan pane: reading plan / file tree"),
         row("", "diff pane: file list (enter jumps)"),
         row("space", "mark the hunk's class reviewed"),
-        row("V", "select lines · j/k extends · esc drops"),
+        row("v", "select lines · j/k extends · esc drops"),
         row("c  ·  dd", "add finding · delete the one under the cursor"),
         row("", "in the box: enter saves · shift+enter or \\↵ newline"),
         row("", "esc cancels, here and in any modal"),

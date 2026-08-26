@@ -994,16 +994,44 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
     );
 }
 
-/// One finding, as the row that shows it.
-fn finding_row(f: &Finding, hunk: usize) -> Row {
+/// One finding, as the rows that show it.
+///
+/// A quoted panel: every line of the note behind a muted rail, in muted
+/// italics. It is prose the reviewer wrote about the code above it, so it has
+/// to read as a different KIND of thing from the code without competing with
+/// it — which a bright marker glyph on one truncated line did not.
+///
+/// Every line is a `Finding` row, so `dd` deletes the note from any of them
+/// and the cursor never lands on a line that belongs to nothing.
+fn finding_rows(f: &Finding, hunk: usize) -> Vec<Row> {
+    let rail = Style::default().fg(THEME.gutter_fg);
+    let prose = Style::default()
+        .fg(THEME.hint_fg)
+        .add_modifier(Modifier::ITALIC);
     let moved = if f.moved { " (moved)" } else { "" };
-    Row::full(
-        RowKind::Finding(f.id.clone(), hunk),
-        Line::from(Span::styled(
-            format!("  ◆ {}{moved}", f.body.lines().next().unwrap_or("")),
-            Style::default().fg(THEME.finding_fg),
-        )),
-    )
+    let mut lines: Vec<String> = f.body.lines().map(str::to_string).collect();
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    let last = lines.len() - 1;
+    lines
+        .into_iter()
+        .enumerate()
+        .map(|(i, text)| {
+            let text = if i == last {
+                format!("{text}{moved}")
+            } else {
+                text
+            };
+            Row::full(
+                RowKind::Finding(f.id.clone(), hunk),
+                Line::from(vec![
+                    Span::styled("  ▏ ".to_string(), rail),
+                    Span::styled(text, prose),
+                ]),
+            )
+        })
+        .collect()
 }
 
 /// Put each finding under the line it annotates.
@@ -1045,7 +1073,7 @@ fn place_findings(ctx: &RowsContext, rows: &mut Vec<Row>) {
         out.push(row);
         for f in here {
             left.retain(|g| g.id != f.id);
-            out.push(finding_row(f, hunk));
+            out.extend(finding_rows(f, hunk));
         }
     }
 
@@ -1066,7 +1094,7 @@ fn place_findings(ctx: &RowsContext, rows: &mut Vec<Row>) {
             let hunk = row.kind.hunk().unwrap_or(0);
             with_headers.push(row);
             for f in under {
-                with_headers.push(finding_row(f, hunk));
+                with_headers.extend(finding_rows(f, hunk));
             }
         }
         out = with_headers;

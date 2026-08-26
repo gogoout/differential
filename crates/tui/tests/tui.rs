@@ -2742,7 +2742,7 @@ fn v_selects_lines_and_c_annotates_the_run() {
     app.cursor = start;
     app.focus = Focus::Detail;
 
-    app.handle_key(key('V'));
+    app.handle_key(key('v'));
     assert_eq!(app.visual, Some(start));
     app.handle_key(key('j'));
     app.handle_key(key('j'));
@@ -2764,7 +2764,7 @@ fn v_selects_lines_and_c_annotates_the_run() {
     );
 
     // `esc` drops a selection rather than doing anything else.
-    app.handle_key(key('V'));
+    app.handle_key(key('v'));
     assert!(app.visual.is_some());
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.visual, None);
@@ -2801,6 +2801,87 @@ fn a_finding_sits_under_the_line_it_annotates() {
     app.handle_key(key('d'));
     app.handle_key(key('d'));
     assert!(app.session.findings().is_empty());
+}
+
+/// A note is prose about the code above it, so it is drawn as a quoted panel:
+/// every line behind a muted rail, in muted italics.
+#[test]
+fn a_finding_is_a_quoted_panel_of_all_its_lines() {
+    let (_r, mut app) = app_with_a_long_file();
+    let row = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Diff(_)) && r.line.is_some())
+        .expect("a diff row with a line");
+    app.cursor = row;
+    app.focus = Focus::Detail;
+    app.handle_key(key('c'));
+    app.handle_paste("first line\nsecond line");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let at: Vec<usize> = app
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| matches!(r.kind, RowKind::Finding(..)))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(at.len(), 2, "one row per line of the note");
+    assert!(
+        at.windows(2).all(|w| w[1] == w[0] + 1),
+        "the panel is contiguous"
+    );
+
+    let text = drawn_rows(&mut app);
+    let panel: Vec<&String> = text.iter().filter(|r| r.contains("line")).collect();
+    assert!(
+        text.iter().any(|r| r.contains("▏ first line")),
+        "no rail on the note: {panel:?}"
+    );
+    assert!(
+        text.iter().any(|r| r.contains("▏ second line")),
+        "the second line is dropped: {panel:?}"
+    );
+    assert!(
+        !text.iter().any(|r| r.contains("◆ first")),
+        "the marker glyph is gone from the note itself"
+    );
+
+    // `dd` deletes the note from ANY of its lines.
+    app.cursor = at[1];
+    app.handle_key(key('d'));
+    app.handle_key(key('d'));
+    assert!(app.session.findings().is_empty());
+}
+
+/// The summary is pasted where nothing knows what `g7` was, so it carries the
+/// file, the lines and the note — and no group.
+#[test]
+fn the_findings_summary_names_no_group() {
+    let (_r, mut app) = app_with_a_long_file();
+    let row = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Diff(_)) && r.line.is_some())
+        .expect("a diff row with a line");
+    let at = app.rows[row].line.clone().unwrap();
+    app.cursor = row;
+    app.focus = Focus::Detail;
+    app.handle_key(key('c'));
+    app.handle_paste("look here");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let summary = app.findings_summary();
+    assert!(
+        summary.contains(&format!("src/long.rs:{}: look here", at.line)),
+        "the summary should be file:lines: note — got {summary:?}"
+    );
+    for label in app.groups().iter().map(|g| g.label.clone()) {
+        assert!(
+            !summary.contains(&label),
+            "the group's label leaked: {summary:?}"
+        );
+    }
 }
 
 /// A finding filed from a hunk header has no line, so it annotates the hunk —

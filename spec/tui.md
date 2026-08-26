@@ -293,10 +293,10 @@ list belongs; the footer's job is to point at it.
 | `s` | toggle unified / side-by-side diff layout (persisted) |
 | `f` | files, in the pane you are in — plan pane: toggle reading plan ↔ file tree (persisted) · diff pane: the file-list modal (`enter` jumps to the file) |
 | `space` | mark reviewed — the whole selected group/file in the left pane, the hunk's **class** in the diff pane (one exemplar verifies the shape) |
-| `V` | start a line selection at the cursor · `j`/`k` extend it · `esc` drops it · `c` writes a finding over it |
+| `v` | start a line selection at the cursor · `j`/`k` extend it · `esc` drops it · `c` writes a finding over it |
 | `c` | add a finding on the current hunk — a float over the diff, titled with the file and lines it annotates (`enter` saves · `shift+enter` or a trailing `\` before `enter` makes a newline · `esc` cancels) |
 | `dd` | delete the finding under the cursor |
-| `y` | copy the open-findings summary to the clipboard (markdown list) |
+| `y` | copy the open-findings summary to the clipboard — a markdown list of `file:lines: note`, and nothing about groups: a group is how this reviewer chose to READ the branch, and the summary is pasted somewhere that has no idea what `g7` was |
 | `?` | help — the keys, as one uninterrupted table |
 | `q` | quit — state is saved on every change, quitting never loses anything |
 
@@ -370,6 +370,13 @@ A finding is **drawn under the line it annotates**, so a note and its subject ar
 together. One whose line is not on screen — the context around it still folded, or a
 regeneration that could only re-anchor it to the hunk — falls back to its hunk's header,
 where they all used to sit.
+
+It is drawn as a **quoted panel**: every line of the note behind a muted rail, in muted
+italics. It is prose the reviewer wrote about the code above it, so it has to read as a
+different kind of thing from the code without competing with it — which one truncated line
+under a bright marker glyph did not. Every line of the panel is a finding row, so `dd`
+deletes the note from any of them and the cursor never lands on a line belonging to
+nothing.
 
 **Writing a finding** opens a float over the diff rather than a strip pinned to its foot:
 a note is about lines you should still be able to see. Its border carries the file and line
