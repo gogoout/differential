@@ -2903,8 +2903,18 @@ fn a_boundary_names_its_key_on_the_cursors_row_only() {
         );
     }
 
-    // The hint displaces padding, so the band keeps its width.
-    let width = rows[here].chars().count();
+    // The key follows the label rather than sitting out at the pane's edge.
+    let text = &rows[here];
+    let label = text.find("lines hidden").expect("the label");
+    let key = text.find("z shows").expect("the key");
+    assert!(key > label, "the key follows the label: {text:?}");
+    assert!(
+        key - label < 24,
+        "the key should sit with the label, not a screen away: {text:?}"
+    );
+
+    // The band still fills the pane: the hint eats padding, not width.
+    let width = text.chars().count();
     app.cursor = app
         .rows
         .iter()

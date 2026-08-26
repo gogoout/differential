@@ -173,7 +173,9 @@ arrow in the border column, **lighter on the cursor's row** — a control the re
 standing on has to look like the one they are about to press, and the band carries its own
 colour the whole way across, so the tint that marks the cursor everywhere else never
 showed through it. It says `29 lines hidden` or, once the gap is spent,
-`next: C42 "Group 42"` — and, on the cursor's row, `z shows 10` or `z shows it` — a control that does not say how to work it is a label. But a screenful of bands each naming
+`next: C42 "Group 42"` — and, on the cursor's row, `z shows 10` or `z shows it`, straight
+after the label rather than out at the pane's edge, where a key is a key you have to go and
+look for — a control that does not say how to work it is a label. But a screenful of bands each naming
 the same key is a wall the reader stops reading, so the key appears on the **cursor's row
 only**. Whether a row is the cursor's is a cursor question, so the row carries the text and
 drawing chooses — the same way a hunk's accent works, one column over.

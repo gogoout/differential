@@ -1990,11 +1990,9 @@ impl App {
                     }
                     _ => None,
                 };
-                let mut line = compose_row(&r.content, inner_w, on, accent);
                 // How to work this row, on the one row it can be worked from.
-                if on && let Some((st, text)) = &r.hint {
-                    write_over(&mut line, st, text);
-                }
+                let hint = on.then_some(r.hint.as_ref()).flatten();
+                let mut line = compose_row(&r.content, inner_w, on, accent, hint);
                 if on {
                     // Span backgrounds win over a line style, so this colours
                     // exactly the rows that have no change colour of their own
@@ -2014,7 +2012,7 @@ impl App {
             .filter(|&h| h < self.scroll)
             && let Some(first) = lines.first_mut()
         {
-            *first = compose_row(&self.rows[header].content, inner_w, false, None)
+            *first = compose_row(&self.rows[header].content, inner_w, false, None, None)
                 .style(Style::default().bg(THEME.sticky_bg));
         }
 
@@ -2150,6 +2148,7 @@ fn compose_row(
     width: usize,
     cursor: bool,
     accent: Option<Color>,
+    hint: Option<&(Style, String)>,
 ) -> Line<'static> {
     match content {
         RowContent::Full(line) => line.clone(),
@@ -2164,21 +2163,31 @@ fn compose_row(
             // every ink on the pill to have a second, darker twin for the lit
             // background. One cell needs no twins.
             let repainted;
-            let half = match accent {
-                Some(fg) if !half.pairs.is_empty() => {
-                    let mut pairs = half.pairs.clone();
+            let half = if accent.is_some() || hint.is_some() {
+                let mut pairs = half.pairs.clone();
+                if let Some(fg) = accent
+                    && !pairs.is_empty()
+                {
                     pairs[0] = (
                         pairs[0].0.fg(fg).add_modifier(Modifier::BOLD),
                         PILL_BAR.to_string(),
                     );
-                    repainted = Half {
-                        gutter: half.gutter.clone(),
-                        pairs,
-                        fill: half.fill,
-                    };
-                    &repainted
                 }
-                _ => half,
+                // Straight after the label, not out at the pane's edge: the
+                // reader's eye is on the words the row carries, and a key
+                // parked a screen away from them is a key they have to go and
+                // look for.
+                if let Some((st, text)) = hint {
+                    pairs.push((*st, text.clone()));
+                }
+                repainted = Half {
+                    gutter: half.gutter.clone(),
+                    pairs,
+                    fill: half.fill,
+                };
+                &repainted
+            } else {
+                half
             };
             Line::from(compose_half(half, width, cursor))
         }
@@ -2321,38 +2330,6 @@ fn guides_for_depths(depths: &[usize]) -> Vec<String> {
 /// already carries. In the pane title's cyan, which is the colour this view
 /// uses for "here you are".
 const CURSOR_BAR: &str = "▌";
-
-/// Overwrite the tail of a composed row with `text`, keeping its width.
-///
-/// The row is already padded to the pane, so a hint has to displace cells
-/// rather than be appended — otherwise the line grows and the pane scrolls
-/// sideways. Written from the right so the label the row carries survives.
-fn write_over(line: &mut Line<'static>, style: &Style, text: &str) {
-    let want = UnicodeWidthStr::width(text);
-    let mut budget = 0usize;
-    while let Some(last) = line.spans.pop() {
-        let w = UnicodeWidthStr::width(last.content.as_ref());
-        if budget + w >= want {
-            // Keep whatever of this span the hint does not need.
-            let mut head = String::new();
-            let mut kept = 0usize;
-            for c in last.content.chars() {
-                let cw = UnicodeWidthStr::width(c.to_string().as_str());
-                if kept + cw > budget + w - want {
-                    break;
-                }
-                head.push(c);
-                kept += cw;
-            }
-            if !head.is_empty() {
-                line.spans.push(Span::styled(head, last.style));
-            }
-            break;
-        }
-        budget += w;
-    }
-    line.spans.push(Span::styled(text.to_string(), *style));
-}
 
 /// The lit cell at the head of the hunk pill the cursor is in.
 const PILL_BAR: &str = "▌";

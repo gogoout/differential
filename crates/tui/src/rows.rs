@@ -1124,10 +1124,7 @@ fn boundary_row(ctx: &RowsContext, b: &window::Boundary, step: usize, both_ends:
                 .group_of_hunk(HunkId::from_index(next))
                 .map(|g| format!(" “{}”", g.label))
                 .unwrap_or_default();
-            (
-                format!("next: {class}{group}"),
-                "space shows it".to_string(),
-            )
+            (format!("next: {class}{group}"), "z shows it".to_string())
         }
         None => (
             format!("{} lines hidden", b.hidden),
