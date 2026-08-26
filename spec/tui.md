@@ -137,13 +137,17 @@ it says which rows are tied together, and the rows themselves say what they are.
 **Only the hunk the cursor is in wears a colour**; every other edge is muted to the gutter,
 because a screenful of accents is no accent at all. Which box is lit is a cursor question
 and the cursor moves without rebuilding rows, so a row carries the colour it *would* take
-and drawing chooses. The band's chrome — the class, the separators, the label, the rule —
-**fills with that same colour**, so the marker and the run below it read as one thing
-rather than as a label that happens to sit above a line. The `+N`/`−M` counts stay coloured
-on either fill, in the pair that reads on it — the ordinary bright green and red glow on the
-muted pill and vanish on a lit one, so a lit pill has darker twins. A **foreign** hunk takes
-the pane's border colour rather than a tier colour: it has no tier here, and wearing one
-would say it did.
+and drawing chooses. What it changes is **one cell**: the pill's leading pad becomes a bar
+in that same colour, so the marker and the run below it read as one thing rather than as a
+label that happens to sit above a line. The pill itself keeps its muted fill either way.
+
+Filling the whole pill said this far more loudly than it needed to — a block of colour the
+eye went to before the code — and it cost the palette a second, darker ink for every span
+that could sit on a pill, since `add_fg`/`del_fg` glow on a dark background and vanish on a
+bright one. One cell needs no twins, so the `+N`/`−M` counts are one pair everywhere.
+
+A **foreign** hunk takes the pane's border colour rather than a tier colour: it has no tier
+here, and wearing one would say it did.
 
 Headers and boundary rows rule out to the pane edge and cross the split separator, because
 what they describe is not one side of the file. A boundary **divides**, so its rule runs on

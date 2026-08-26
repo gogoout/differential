@@ -2000,13 +2000,30 @@ fn a_band_says_what_is_hidden_and_what_is_beyond() {
     );
 }
 
-/// A hunk's pill follows its edge, so the marker and the run below it read as
-/// one thing rather than as a label that happens to sit above a line.
+/// A hunk's pill keeps ONE palette. The cursor being in it lights the pill's
+/// leading cell, in the same colour as the edge below — so the marker and the
+/// run read as one thing without a block of colour the eye goes to first.
 #[test]
-fn the_hunk_pill_takes_the_colour_of_its_edge() {
+fn the_lit_hunk_pill_is_a_leading_bar_not_a_fill() {
     let (_r, mut app) = app_with_two_groups_in_one_file();
 
-    // Nothing active: the pill wears the muted colours.
+    // The pill's rows: a tinted row carrying `·` that is not a boundary band.
+    let pill_rows = |buf: &ratatui::buffer::Buffer| -> Vec<u16> {
+        (1..39u16)
+            .filter(|&y| {
+                let t: String = (41..99u16).map(|x| buf[(x, y)].symbol()).collect();
+                t.contains('·') && !t.contains("hidden") && !t.contains("next:")
+            })
+            .collect()
+    };
+    let pill_bg = |buf: &ratatui::buffer::Buffer| -> Option<Color> {
+        pill_rows(buf)
+            .into_iter()
+            .flat_map(|y| (41..99u16).map(move |x| (x, y)))
+            .find_map(|(x, y)| buf[(x, y)].style().bg.filter(|b| *b != Color::Reset))
+    };
+
+    // Nothing active: the muted fill, and no bar.
     let boundary = app
         .rows
         .iter()
@@ -2015,49 +2032,49 @@ fn the_hunk_pill_takes_the_colour_of_its_edge() {
     app.cursor = boundary;
     app.focus = Focus::Detail;
     let buf = buffer_of(&app);
-    let pill_bg = |buf: &ratatui::buffer::Buffer| -> Option<Color> {
-        (1..39u16)
-            .filter(|&y| {
-                let t: String = (41..99u16).map(|x| buf[(x, y)].symbol()).collect();
-                // A hunk pill, not the boundary band — both are tinted rows
-                // carrying a `·`.
-                t.contains('·') && !t.contains("hidden") && !t.contains("next:")
-            })
-            .flat_map(|y| (41..99u16).map(move |x| (x, y)))
-            .find_map(|(x, y)| buf[(x, y)].style().bg.filter(|b| *b != Color::Reset))
-    };
     assert_eq!(
         pill_bg(&buf),
         Some(THEME.button_bg),
         "an idle pill is muted"
     );
 
-    // Cursor in the hunk: the pill takes the same colour as the edge beside it.
+    // Cursor in the hunk: the SAME fill, plus one lit cell at the pill's head,
+    // in the colour the edge beside it wears.
     cursor_into_first_box(&mut app);
     let buf = buffer_of(&app);
+    assert_eq!(
+        pill_bg(&buf),
+        Some(THEME.button_bg),
+        "a lit pill keeps the muted fill; only its leading cell changes"
+    );
     let edge = (1..39u16)
         .find_map(|y| buf[(40, y)].style().fg.filter(|c| *c == THEME.skim_fg))
         .expect("no lit edge");
+    let bar = pill_rows(&buf)
+        .into_iter()
+        .flat_map(|y| (41..99u16).map(move |x| (x, y)))
+        .find(|&(x, y)| {
+            buf[(x, y)].symbol() == "▌" && buf[(x, y)].style().bg == Some(THEME.button_bg)
+        })
+        .expect("no lit bar at the head of the pill");
     assert_eq!(
-        pill_bg(&buf),
+        buf[bar].style().fg,
         Some(edge),
-        "the pill should fill with its edge's colour"
+        "the bar should wear the edge's colour"
     );
 }
 
-/// The counts keep saying added and removed on either fill. `add_fg`/`del_fg`
-/// glow on a dark background and vanish on a bright one, so a lit pill needs
-/// its own pair rather than dropping the colours altogether.
+/// The counts say added and removed in one pair, everywhere. They used to need
+/// a second, darker pair because a lit pill filled with the hunk's accent and
+/// the bright inks vanished on it; a lit pill is one cell now, so it does not.
 #[test]
-fn the_counts_stay_coloured_on_both_pill_fills() {
+fn the_counts_keep_one_pair_of_colours() {
     let (_r, mut app) = app_with_two_groups_in_one_file();
     let inks = |app: &App| -> Vec<Color> {
         let buf = buffer_of(app);
         (1..39u16)
             .filter(|&y| {
                 let t: String = (41..99u16).map(|x| buf[(x, y)].symbol()).collect();
-                // A hunk pill, not the boundary band — both are tinted rows
-                // carrying a `·`.
                 t.contains('·') && !t.contains("hidden") && !t.contains("next:")
             })
             .flat_map(|y| (41..99u16).map(move |x| (x, y)))
@@ -2066,7 +2083,6 @@ fn the_counts_stay_coloured_on_both_pill_fills() {
             .collect()
     };
 
-    // Idle: the ordinary bright pair, on the dark muted fill.
     let boundary = app
         .rows
         .iter()
@@ -2078,16 +2094,10 @@ fn the_counts_stay_coloured_on_both_pill_fills() {
     assert!(idle.contains(&THEME.add_fg), "no + colour idle: {idle:?}");
     assert!(idle.contains(&THEME.del_fg), "no − colour idle: {idle:?}");
 
-    // Lit: the pair that reads on the accent, and still two distinct colours.
     cursor_into_first_box(&mut app);
     let lit = inks(&app);
-    assert!(lit.contains(&THEME.add_on_pill), "no + colour lit: {lit:?}");
-    assert!(lit.contains(&THEME.del_on_pill), "no − colour lit: {lit:?}");
-    assert_ne!(THEME.add_on_pill, THEME.del_on_pill);
-    assert_ne!(
-        THEME.add_on_pill, THEME.pill_fg,
-        "a count that matches the pill's own text is not a colour"
-    );
+    assert!(lit.contains(&THEME.add_fg), "no + colour lit: {lit:?}");
+    assert!(lit.contains(&THEME.del_fg), "no − colour lit: {lit:?}");
 }
 
 // -------------------------------------------------- the overview surfaces
@@ -2332,7 +2342,7 @@ fn the_role_wears_the_same_pill_in_both_panes() {
     let (_r, mut app) = app_with_dependency_edge();
     app.focus = Focus::Detail;
     let buf = buffer_of(&app);
-    let (_, pill_bg) = THEME.pill(None);
+    let (_, pill_bg) = THEME.pill();
 
     // The group header row leads the detail pane and carries the role.
     let detail = (1..39u16)
@@ -2841,7 +2851,7 @@ fn the_footer_is_pills_on_the_left_and_two_keys_on_the_right() {
     app.mode = Mode::Normal;
     terminal.draw(|f| app.draw(f)).unwrap();
     let buf = terminal.backend().buffer().clone();
-    let (_, fill) = THEME.pill(None);
+    let (_, fill) = THEME.pill();
     assert!(
         (0..100u16).any(|x| buf[(x, 39)].bg == fill),
         "the tallies must wear the pill's fill"

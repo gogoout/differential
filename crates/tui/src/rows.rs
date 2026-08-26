@@ -698,7 +698,7 @@ fn header_rows(ctx: &GroupContext, rows: &mut Vec<Row>) {
     // the grey suffix this replaces was the same `g.role` wearing a different
     // face on the other side of the screen.
     if let Some(r) = g.role {
-        let (fg, bg) = THEME.pill(None);
+        let (fg, bg) = THEME.pill();
         header.push(Span::styled(" ".to_string(), Style::default()));
         header.extend(
             pill(vec![(fg, role_name(r).to_string())], bg)
@@ -866,9 +866,10 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
     } else {
         BoxStyle::Own
     };
-    // Built in the MUTED palette: whether this pill is the lit one is a cursor
-    // question, and drawing re-inks it through `Theme::lit_ink`.
-    let (fg, bg) = THEME.pill(None);
+    // One palette. Whether the cursor is in this hunk is a cursor question, and
+    // drawing answers it by lighting the pill's leading cell — not by re-inking
+    // the pill, which would need a second ink for every span on it.
+    let (fg, bg) = THEME.pill();
     let mut parts = vec![
         (fg, format!("{} · ", hunk.class)),
         (THEME.add_fg, format!("+{}", hunk.new_count)),

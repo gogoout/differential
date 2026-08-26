@@ -1506,7 +1506,7 @@ impl App {
         // header — so it wears the same pill, in the muted colours, rather than
         // trailing off the line as dim text.
         if let Some(r) = g.role {
-            let (fg, pill_bg) = THEME.pill(None);
+            let (fg, pill_bg) = THEME.pill();
             counts.push(Span::styled(" ", dim));
             counts.extend(
                 pill(
@@ -1976,17 +1976,13 @@ impl App {
                 // A hunk's pill follows its edge, so the marker and the run
                 // below it read as one thing — and which is lit is a cursor
                 // question, decided here rather than when the row was built.
-                let pill = match (r.border, &r.kind) {
-                    (Some(b), RowKind::HunkHeader { .. }) => Some(
-                        THEME.pill(
-                            (active == Some(b.hunk))
-                                .then_some(b.active_style.fg)
-                                .flatten(),
-                        ),
-                    ),
+                let accent = match (r.border, &r.kind) {
+                    (Some(b), RowKind::HunkHeader { .. }) if active == Some(b.hunk) => {
+                        b.active_style.fg
+                    }
                     _ => None,
                 };
-                let mut line = compose_row(&r.content, inner_w, on, pill);
+                let mut line = compose_row(&r.content, inner_w, on, accent);
                 if on {
                     // Span backgrounds win over a line style, so this colours
                     // exactly the rows that have no change colour of their own
@@ -2073,7 +2069,7 @@ impl App {
             .count();
 
         let bar = Style::default().bg(THEME.status_bg);
-        let (ink, fill) = THEME.pill(None);
+        let (ink, fill) = THEME.pill();
         // Progress and findings are FACTS about the review, so they wear the
         // same pill a group's role and a hunk's class wear rather than trailing
         // off as a run of grey words. Each takes its own colour once it has
@@ -2141,37 +2137,36 @@ fn compose_row(
     content: &RowContent,
     width: usize,
     cursor: bool,
-    pill: Option<(ratatui::style::Color, ratatui::style::Color)>,
+    accent: Option<Color>,
 ) -> Line<'static> {
     match content {
         RowContent::Full(line) => line.clone(),
         RowContent::Unified(half) => {
-            // Recolouring rewrites the row's whole content, which is why a pill
-            // has to be all of it.
+            // A hunk's pill stays in the muted palette whether the cursor is in
+            // it or not. What changes is ONE cell: the pill's leading pad
+            // becomes a bar in the hunk's own accent, so the marker and the
+            // edge below it still read as one thing.
+            //
+            // Filling the whole pill said the same thing far more loudly — a
+            // block of colour the eye went to before the code — and it forced
+            // every ink on the pill to have a second, darker twin for the lit
+            // background. One cell needs no twins.
             let repainted;
-            let half = match pill {
-                Some((fg, bg)) => {
+            let half = match accent {
+                Some(fg) if !half.pairs.is_empty() => {
+                    let mut pairs = half.pairs.clone();
+                    pairs[0] = (
+                        pairs[0].0.fg(fg).add_modifier(Modifier::BOLD),
+                        PILL_BAR.to_string(),
+                    );
                     repainted = Half {
                         gutter: half.gutter.clone(),
-                        pairs: half
-                            .pairs
-                            .iter()
-                            .map(|(st, t)| {
-                                // The counts keep saying added and removed; the
-                                // theme picks the pair that reads on this fill.
-                                let ink = if bg == THEME.button_bg {
-                                    st.fg.unwrap_or(fg)
-                                } else {
-                                    THEME.lit_ink(st.fg)
-                                };
-                                (Style::default().fg(ink).bg(bg), t.clone())
-                            })
-                            .collect(),
+                        pairs,
                         fill: half.fill,
                     };
                     &repainted
                 }
-                None => half,
+                _ => half,
             };
             Line::from(compose_half(half, width, cursor))
         }
@@ -2314,6 +2309,9 @@ fn guides_for_depths(depths: &[usize]) -> Vec<String> {
 /// already carries. In the pane title's cyan, which is the colour this view
 /// uses for "here you are".
 const CURSOR_BAR: &str = "▌";
+
+/// The lit cell at the head of the hunk pill the cursor is in.
+const PILL_BAR: &str = "▌";
 
 /// A pane's frame: always the muted border, with the TITLE carrying focus.
 ///

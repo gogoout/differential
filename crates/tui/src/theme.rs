@@ -45,15 +45,6 @@ pub struct Theme {
     /// marks the cursor everywhere else never showed through it.
     pub hint_cursor_fg: Color,
     pub hint_cursor_bg: Color,
-    /// Text on a LIT pill, whose fill is the hunk's accent — so it has to be
-    /// dark enough to read on yellow, green or cyan alike.
-    pub pill_fg: Color,
-    /// The counts on a lit pill. `add_fg`/`del_fg` are chosen to glow on a dark
-    /// background and are illegible on a bright one, so a lit pill needs its
-    /// own pair — dark enough to read on the accent, saturated enough to still
-    /// say added and removed.
-    pub add_on_pill: Color,
-    pub del_on_pill: Color,
     pub gutter_fg: Color,
     pub context_fg: Color,
     pub cursor_bg: Color,
@@ -88,9 +79,6 @@ pub const THEME: Theme = Theme {
     hint_bg: Color::Rgb(38, 41, 48),
     hint_cursor_fg: Color::Rgb(198, 206, 222),
     hint_cursor_bg: Color::Rgb(64, 69, 82),
-    pill_fg: Color::Rgb(20, 22, 28),
-    add_on_pill: Color::Rgb(14, 72, 28),
-    del_on_pill: Color::Rgb(112, 20, 20),
     gutter_fg: Color::DarkGray,
     context_fg: Color::Gray,
     cursor_bg: Color::Rgb(48, 52, 70),
@@ -186,28 +174,11 @@ impl Theme {
         }
     }
 
-    /// The two colours a pill wears. `accent` is `Some` when this is the hunk
-    /// under the cursor, and the fill then matches its edge so the marker and
-    /// the run below it read as one thing.
-    pub fn pill(&self, accent: Option<Color>) -> (Color, Color) {
-        match accent {
-            Some(bg) => (self.pill_fg, bg),
-            None => (self.button_fg, self.button_bg),
-        }
-    }
-
-    /// Re-ink one span of a pill for a LIT fill.
-    ///
-    /// A pill is built in its muted palette because whether it is lit is a
-    /// cursor question; this maps each ink to its bright-background twin. The
-    /// mapping is by colour, so it is the one place that knows a pill's inks —
-    /// adding a third means adding it here, not just at the call site.
-    pub fn lit_ink(&self, muted: Option<Color>) -> Color {
-        match muted {
-            Some(c) if c == self.add_fg => self.add_on_pill,
-            Some(c) if c == self.del_fg => self.del_on_pill,
-            _ => self.pill_fg,
-        }
+    /// The two colours a pill wears — one pair, always. A hunk's pill says the
+    /// cursor is in it with a lit bar at its head rather than by filling, so
+    /// no ink on a pill ever needs a second twin for a bright background.
+    pub const fn pill(&self) -> (Color, Color) {
+        (self.button_fg, self.button_bg)
     }
 
     pub fn word_emphasis(&self, addition: bool) -> Style {
