@@ -1590,7 +1590,7 @@ impl App {
                 );
             }
             Mode::Help => {
-                let area = centered_rect(panes.body, 62, 22);
+                let area = centered_rect(panes.body, 62, 20);
                 frame.render_widget(Clear, area);
                 frame.render_widget(help_paragraph(), area);
             }
@@ -2814,8 +2814,6 @@ fn help_paragraph() -> Paragraph<'static> {
         row("space", "mark the hunk's class reviewed"),
         row("v", "select lines · j/k extends · v or esc drops"),
         row("c  ·  dd", "add finding · delete the one under the cursor"),
-        row("", "in the box: enter saves · shift+enter or \\↵ newline"),
-        row("", "esc cancels, here and in any modal"),
         row("y  ·  q", "copy findings · quit (state is saved)"),
         Line::from(""),
         Line::from(Span::styled("  press any key to close", dim)),
