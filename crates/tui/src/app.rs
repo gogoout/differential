@@ -12,7 +12,7 @@ use differential_engine::plan::{Fold, PlanIndex};
 use differential_engine::review_state::FindingStatus;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use tui_textarea::TextArea;
@@ -2057,7 +2057,7 @@ impl App {
         {
             let cell = &mut buf[(area.x + 1, area.y + 1 + n as u16)];
             cell.set_symbol(CURSOR_BAR);
-            cell.set_fg(THEME.cursor_gutter_fg);
+            cell.set_fg(THEME.header_fg);
             cell.modifier.insert(Modifier::BOLD);
         }
     }
@@ -2071,14 +2071,64 @@ impl App {
             .iter()
             .filter(|f| f.status == FindingStatus::Open)
             .count();
-        let text = format!(
-            " {done}/{total} classes reviewed · {open} finding(s) · {} · j/k J/K nav · n/N hunk · space reviewed · c finding · s split · v files · z fold/expand · y copy summary · ? help · q quit",
-            self.status
-        );
-        frame.render_widget(
-            Paragraph::new(text).style(Style::default().bg(THEME.status_bg)),
-            area,
-        );
+
+        let bar = Style::default().bg(THEME.status_bg);
+        let (ink, fill) = THEME.pill(None);
+        // Progress and findings are FACTS about the review, so they wear the
+        // same pill a group's role and a hunk's class wear rather than trailing
+        // off as a run of grey words. Each takes its own colour once it has
+        // something to say: green when everything is read, magenta when
+        // anything is filed.
+        let tally = |lit: bool, accent: Color, text: String| {
+            pill(vec![(if lit { accent } else { ink }, text)], fill)
+                .into_iter()
+                .map(|(st, t)| Span::styled(t, st))
+        };
+        let mut left = vec![Span::styled(" ", bar)];
+        left.extend(tally(
+            total > 0 && done == total,
+            THEME.reviewed_fg,
+            format!("{done}/{total} classes reviewed"),
+        ));
+        left.push(Span::styled(" ", bar));
+        left.extend(tally(
+            open > 0,
+            THEME.finding_fg,
+            format!("{open} finding{}", if open == 1 { "" } else { "s" }),
+        ));
+        if !self.status.is_empty() {
+            left.push(Span::styled(
+                format!("  {}", self.status),
+                bar.fg(THEME.context_fg),
+            ));
+        }
+
+        // Two keys, against the right edge. The rest moved to `?`, which is the
+        // one place a full list belongs — a footer naming ten keys is a wall
+        // the reader stops seeing, and it named them in a different order and a
+        // different wording from the modal that also named them.
+        let right = vec![
+            Span::styled("? ", bar.fg(THEME.header_fg)),
+            Span::styled("help", bar.fg(THEME.context_fg)),
+            Span::styled("  ·  ", bar.fg(THEME.gutter_fg)),
+            Span::styled("q ", bar.fg(THEME.header_fg)),
+            Span::styled("quit", bar.fg(THEME.context_fg)),
+            Span::styled(" ", bar),
+        ];
+
+        let used = |spans: &[Span]| -> usize {
+            spans
+                .iter()
+                .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                .sum()
+        };
+        let gap = (area.width as usize)
+            .saturating_sub(used(&left) + used(&right))
+            .max(1);
+        let mut spans = left;
+        spans.push(Span::styled(" ".repeat(gap), bar));
+        spans.extend(right);
+        frame.render_widget(Paragraph::new(Line::from(spans)).style(bar), area);
     }
 }
 
@@ -2261,7 +2311,8 @@ fn guides_for_depths(depths: &[usize]) -> Vec<String> {
 ///
 /// A full-height bar rather than an arrow: it has to read at a glance against
 /// a line of code, and against the change colour the gutter block beside it
-/// already carries.
+/// already carries. In the pane title's cyan, which is the colour this view
+/// uses for "here you are".
 const CURSOR_BAR: &str = "▌";
 
 /// A pane's frame: always the muted border, with the TITLE carrying focus.

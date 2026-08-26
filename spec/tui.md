@@ -217,6 +217,17 @@ costs what is on screen rather than the size of the files the group touches (ADR
 How far each hunk is expanded is **transient**, like an open fold: a reading aid for this
 sitting, not a finding, so nothing about it reaches the sidecar store.
 
+**The footer is two pills and two keys.** What the review stands at goes on the left, as
+pills — `0/88 classes reviewed` and `3 findings` — because those are facts about the
+review, the same as a group's role and a hunk's class, and they wore a run of grey words
+that read as chrome. Each takes its own colour once it has something to say: green when
+every class is read, magenta when anything is filed. A transient message follows them.
+
+Against the right edge sit `? help` and `q quit`, and nothing else. The footer named ten
+keys, in a different order and a different wording from the modal that also named them —
+a wall the reader stops seeing, and two lists to keep in step. `?` is the one place a full
+list belongs; the footer's job is to point at it.
+
 ## Keys
 
 | key | action |

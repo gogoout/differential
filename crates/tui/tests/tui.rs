@@ -2799,6 +2799,55 @@ fn the_cursor_bar_shows_on_rows_that_have_no_gutter() {
     );
 }
 
+/// The footer is two pills and two keys: what the review stands at, and the
+/// way to the full key list. Everything else it used to name lives in `?`.
+#[test]
+fn the_footer_is_pills_on_the_left_and_two_keys_on_the_right() {
+    let (_r, mut app) = make_app();
+    let rows = drawn_rows(&mut app);
+    let footer = rows.last().expect("no footer row").clone();
+
+    assert!(
+        footer.contains("classes reviewed") && footer.contains("finding"),
+        "the tallies must still be there: {footer:?}"
+    );
+    assert!(
+        footer.trim_end().ends_with("q quit"),
+        "the keys belong against the right edge: {footer:?}"
+    );
+    for gone in [
+        "j/k",
+        "n/N",
+        "space reviewed",
+        "s split",
+        "v files",
+        "z fold",
+    ] {
+        assert!(
+            !footer.contains(gone),
+            "{gone} moved to the help modal: {footer:?}"
+        );
+    }
+    // Whatever left the footer has to be reachable, so `?` has to name it.
+    app.handle_key(key('?'));
+    let help = drawn_as_is(&mut app);
+    for key_name in ["j/k", "n/N", "space", "s", "v", "z"] {
+        assert!(help.contains(key_name), "`?` must still list {key_name}");
+    }
+
+    // A pill, not a run of grey words: the tally sits on the pill's fill.
+    let backend = ratatui::backend::TestBackend::new(100, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    app.mode = Mode::Normal;
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let (_, fill) = THEME.pill(None);
+    assert!(
+        (0..100u16).any(|x| buf[(x, 39)].bg == fill),
+        "the tallies must wear the pill's fill"
+    );
+}
+
 /// A context boundary is a control, and its band carries its own colour the
 /// whole way across — so the row tint that marks the cursor elsewhere never
 /// showed through it. On the cursor's row the band lightens instead.
