@@ -176,10 +176,6 @@ pub struct FindingEntry {
     pub body: String,
     pub orphaned: bool,
     pub moved: bool,
-    /// The row to jump to. `None` when the note is not in the rows at all —
-    /// another group is selected, its context is folded, or it is orphaned and
-    /// has no row at any depth of unfolding.
-    pub row_idx: Option<usize>,
 }
 
 pub struct FileListEntry {
@@ -808,17 +804,10 @@ impl App {
     /// `selected` indexes findings and nothing has to skip a row it cannot
     /// land on.
     fn open_findings(&mut self) {
-        // The rows a note was laid into, by id — the same rows the diff pane
-        // shows, so the list and the diff cannot disagree about where one is.
-        let row_of: HashMap<&str, usize> = self
-            .rows
-            .iter()
-            .enumerate()
-            .filter_map(|(i, r)| match &r.kind {
-                RowKind::Finding(id, _) => Some((id.as_str(), i)),
-                _ => None,
-            })
-            .collect();
+        // No row index is kept. A note's row exists only in the view that is
+        // built, so one captured here would be stale the moment the reader
+        // navigates — `jump_to_finding` re-finds it by id after selecting the
+        // group or file that owns it.
         let mut entries: Vec<FindingEntry> = self
             .session
             .findings()
@@ -828,7 +817,6 @@ impl App {
                 body: f.body.lines().next().unwrap_or("").to_string(),
                 orphaned: f.status == FindingStatus::Orphaned,
                 moved: f.moved,
-                row_idx: row_of.get(f.id.as_str()).copied(),
                 id: f.id.clone(),
             })
             .collect();
@@ -1105,7 +1093,11 @@ impl App {
                 // be the thing that empties the store.
                 if *confirming {
                     *confirming = false;
-                    if key.code == KeyCode::Char('y') {
+                    // A bare `y`, like every other single-character key here.
+                    // Some terminals report ctrl-y as `Char('y')` with a
+                    // modifier, and the one irreversible action in this
+                    // reviewer should not answer to a chord nobody aimed.
+                    if (key.code, key.modifiers) == (KeyCode::Char('y'), KeyModifiers::NONE) {
                         self.clear_findings();
                     } else {
                         self.status = "nothing deleted".into();
@@ -1927,7 +1919,10 @@ impl App {
                 let text = Style::default().fg(THEME.context_fg);
                 let footer = if *confirming {
                     Line::from(Span::styled(
-                        format!("  delete all {} findings?  y / n", entries.len()),
+                        match entries.len() {
+                            1 => "  delete this finding?  y / n".to_string(),
+                            n => format!("  delete all {n} findings?  y / n"),
+                        },
                         Style::default()
                             .fg(THEME.finding_fg)
                             .add_modifier(Modifier::BOLD),

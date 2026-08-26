@@ -3582,13 +3582,21 @@ fn d_clears_everything_but_only_after_a_yes() {
     assert!(
         drawn_rows(&mut app)
             .iter()
-            .any(|r| r.contains("delete all 1 findings?")),
+            .any(|r| r.contains("delete this finding?")),
         "the confirmation should be on screen"
     );
 
     // Anything but `y` is a slip, and a slip must not empty the store.
     app.handle_key(key('n'));
     assert_eq!(app.session.findings().len(), 1);
+    assert!(app.status.contains("nothing deleted"));
+
+    // A BARE `y`. Some terminals report ctrl-y as `Char('y')` with a modifier,
+    // and the one irreversible action here must not answer to a chord. The
+    // list is still open — cancelling closed the question, not the list.
+    app.handle_key(key('D'));
+    app.handle_key(ctrl('y'));
+    assert_eq!(app.session.findings().len(), 1, "ctrl-y is not a yes");
     assert!(app.status.contains("nothing deleted"));
 
     app.handle_key(key('D'));
