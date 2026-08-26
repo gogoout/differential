@@ -1493,15 +1493,6 @@ fn space_on_context_marks_the_hunk_that_context_belongs_to() {
 #[test]
 fn a_hunk_header_is_a_band_carrying_the_class_and_the_size() {
     let (_r, mut app) = app_with_a_long_file();
-    let text = drawn(&mut app);
-    assert!(
-        !text.contains("@@"),
-        "the diff-syntax coordinates should be gone"
-    );
-    // What the header uniquely says survives: the shape class and the change's
-    // size. Each hunk here replaces one line with one line.
-    assert!(text.contains("+1"), "the added count: {text}");
-    assert!(text.contains("−1"), "the removed count");
     // Still a selectable row, so n/N, space and c keep working on it.
     let header = app
         .rows
@@ -1510,6 +1501,31 @@ fn a_hunk_header_is_a_band_carrying_the_class_and_the_size() {
         .expect("a hunk header row");
     assert!(app.rows[header].kind.selectable());
     assert!(app.rows[header].kind.hunk().is_some());
+
+    // Idle, the header is the band and nothing else.
+    let boundary = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::ContextEdge { .. }))
+        .expect("a boundary row");
+    app.cursor = boundary;
+    app.focus = Focus::Detail;
+    let idle = drawn(&mut app);
+    assert!(
+        !idle.contains("· C"),
+        "an idle header shows no pill: {idle}"
+    );
+
+    // Move into the hunk and it says what it uniquely says: the size of the
+    // change and the shape class. Each hunk here replaces one line with one.
+    cursor_into_first_box(&mut app);
+    let text = drawn(&mut app);
+    assert!(
+        !text.contains("@@"),
+        "the diff-syntax coordinates should be gone"
+    );
+    assert!(text.contains("+1"), "the added count: {text}");
+    assert!(text.contains("−1"), "the removed count");
 }
 
 /// Two boundary rows describing one gap sit adjacent with no blank between
@@ -2036,7 +2052,7 @@ fn the_lit_hunk_pill_is_a_leading_bar_not_a_fill() {
             .find_map(|(x, y)| buf[(x, y)].style().bg.filter(|b| *b != Color::Reset))
     };
 
-    // Nothing active: the muted fill, and no bar.
+    // Nothing active: no pill at all, just the hatched band.
     let boundary = app
         .rows
         .iter()
@@ -2045,14 +2061,10 @@ fn the_lit_hunk_pill_is_a_leading_bar_not_a_fill() {
     app.cursor = boundary;
     app.focus = Focus::Detail;
     let buf = buffer_of(&app);
-    assert_eq!(
-        pill_bg(&buf),
-        Some(THEME.button_bg),
-        "an idle pill is muted"
-    );
+    assert_eq!(pill_bg(&buf), None, "an idle header carries no pill");
 
-    // Cursor in the hunk: the SAME fill, plus one lit cell at the pill's head,
-    // in the colour the edge beside it wears.
+    // Cursor in the hunk: the pill appears, muted fill, with one lit cell at
+    // its head in the colour the edge beside it wears.
     cursor_into_first_box(&mut app);
     let buf = buffer_of(&app);
     assert_eq!(
@@ -2096,21 +2108,10 @@ fn the_counts_keep_one_pair_of_colours() {
             .collect()
     };
 
-    let boundary = app
-        .rows
-        .iter()
-        .position(|r| matches!(r.kind, RowKind::ContextEdge { .. }))
-        .expect("a boundary row");
-    app.cursor = boundary;
-    app.focus = Focus::Detail;
-    let idle = inks(&app);
-    assert!(idle.contains(&THEME.add_fg), "no + colour idle: {idle:?}");
-    assert!(idle.contains(&THEME.del_fg), "no − colour idle: {idle:?}");
-
     cursor_into_first_box(&mut app);
     let lit = inks(&app);
-    assert!(lit.contains(&THEME.add_fg), "no + colour lit: {lit:?}");
-    assert!(lit.contains(&THEME.del_fg), "no − colour lit: {lit:?}");
+    assert!(lit.contains(&THEME.add_fg), "no + colour: {lit:?}");
+    assert!(lit.contains(&THEME.del_fg), "no − colour: {lit:?}");
 }
 
 // -------------------------------------------------- the overview surfaces

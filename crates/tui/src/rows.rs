@@ -244,6 +244,13 @@ pub struct Row {
     /// A glyph drawn in the pane's left border column, for rows that are a
     /// control rather than content.
     pub button: Option<&'static str>,
+    /// What a hunk header keeps while the cursor is somewhere else.
+    ///
+    /// The marks — reviewed, and how many findings stand against the hunk —
+    /// are FACTS about the hunk, and they are what a reader scans a file for.
+    /// The rest of the pill describes it, and a column of descriptions down
+    /// the page competes with the code it describes.
+    pub idle: Vec<(Style, String)>,
     /// How to work this row, shown only while the cursor is ON it.
     ///
     /// A control that does not say how to work it is a label — but a screenful
@@ -278,6 +285,12 @@ impl Row {
         if let RowContent::Unified(half) = &mut self.content {
             half.pairs = pairs;
         }
+        self
+    }
+
+    /// What survives on this row when the cursor is elsewhere.
+    pub fn with_idle(mut self, pairs: Vec<(Style, String)>) -> Self {
+        self.idle = pairs;
         self
     }
 
@@ -324,6 +337,7 @@ impl Row {
             border: None,
             button: None,
             hint: None,
+            idle: Vec::new(),
             content: RowContent::Unified(Half {
                 gutter: Gutter::flat(" ", Style::default()),
                 pairs: line
@@ -812,6 +826,7 @@ fn column_header_row() -> Row {
         border: None,
         button: None,
         hint: None,
+        idle: Vec::new(),
         content: RowContent::Split {
             old: label("old"),
             new: label("new"),
@@ -865,7 +880,6 @@ fn hunk_accent(ctx: &RowsContext, hi: usize, foreign: bool) -> Style {
 fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<Row>) {
     let hunk = &ctx.doc.hunks[hi];
     let reviewed = ctx.reviewed.contains(&hi);
-    let check = if reviewed { " ✓ reviewed" } else { "" };
     // A foreign hunk ALWAYS names its group: that is the whole point of it
     // being on screen at all, and the dashed border says "not yours" without
     // saying whose.
@@ -874,24 +888,22 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
     // their `after:` lines are keyed by, so it is what turns "some other
     // group" into a row you can go and look at — and the label is a sentence,
     // which made the header longer than the code beneath it.
-    let group_label = if ctx.show_group_labels || foreign {
-        ctx.plan
-            .group_of_hunk(HunkId::from_index(hi))
-            .map(|g| format!(" · {}", g.id))
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
+    let group_id = (ctx.show_group_labels || foreign)
+        .then(|| {
+            ctx.plan
+                .group_of_hunk(HunkId::from_index(hi))
+                .map(|g| g.id.clone())
+        })
+        .flatten();
+    let group_label = group_id
+        .as_ref()
+        .map(|id| format!(" · {id}"))
+        .unwrap_or_default();
     let n_findings = ctx
         .findings
         .iter()
         .filter(|f| f.anchor.hunk_digest == hunk.digest)
         .count();
-    let notes = if n_findings > 0 {
-        format!("  ◆ {n_findings} finding(s)")
-    } else {
-        String::new()
-    };
     // A band across the pane rather than a `@@ -a,b +c,d @@` line. Those
     // coordinates were the only way to know where you were when the gutter
     // showed one number; now every row carries both, so the header repeated
@@ -911,22 +923,51 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
     // leading with it put a token they cannot read at a glance in front of two
     // numbers they can.
     let (fg, bg) = THEME.pill();
+
+    // The marks first, since they are what an idle header keeps: whose group
+    // the hunk is, `✓` for a class already read, `◆ N` for what stands filed
+    // against it. A reader scans a file for those; the class and the counts
+    // they ask a hunk for once they are in it.
+    let mut marks: Vec<(ratatui::style::Color, String)> = Vec::new();
+    let mark = |c, t: String, marks: &mut Vec<(ratatui::style::Color, String)>| {
+        if !marks.is_empty() {
+            marks.push((fg, " ".to_string()));
+        }
+        marks.push((c, t));
+    };
+    if let Some(id) = &group_id {
+        mark(fg, id.clone(), &mut marks);
+    }
+    if reviewed {
+        mark(THEME.reviewed_fg, "✓".to_string(), &mut marks);
+    }
+    if n_findings > 0 {
+        mark(THEME.finding_fg, format!("◆ {n_findings}"), &mut marks);
+    }
+
     let mut parts = vec![(THEME.add_fg, format!("+{}", hunk.new_count))];
     if hunk.old_count > 0 {
         parts.push((fg, " ".to_string()));
         parts.push((THEME.del_fg, format!("−{}", hunk.old_count)));
     }
-    parts.push((fg, format!(" · {}{group_label}{check}", hunk.class)));
-    if !notes.is_empty() {
-        parts.push((THEME.finding_fg, notes));
+    parts.push((fg, format!(" · {}{group_label}", hunk.class)));
+    if !marks.is_empty() {
+        parts.push((fg, "  ".to_string()));
+        parts.extend(marks.iter().cloned());
     }
+    let idle = if marks.is_empty() {
+        Vec::new()
+    } else {
+        pill(marks, bg)
+    };
     rows.push(
         Row::banner(
             RowKind::HunkHeader { hunk: hi, foreign },
             Line::default(),
-            Fill::Bg(Style::default()),
+            Fill::Hatch,
         )
         .with_pairs(pill(parts, bg))
+        .with_idle(idle)
         .flush()
         .bordered(box_style, hi, hunk_accent(ctx, hi, foreign)),
     );
@@ -1040,6 +1081,7 @@ fn file_rows(
                             border: None,
                             button: None,
                             hint: None,
+                            idle: Vec::new(),
                             content: row,
                         });
                     }
@@ -1065,6 +1107,7 @@ fn file_rows(
                                 border: None,
                                 button: None,
                                 hint: None,
+                                idle: Vec::new(),
                                 content,
                             }
                             .bordered(box_style, *hunk, accent),

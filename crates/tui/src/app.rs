@@ -1282,7 +1282,7 @@ impl App {
                 );
             }
             Mode::Help => {
-                let area = centered_rect(panes.body, 62, 21);
+                let area = centered_rect(panes.body, 62, 19);
                 frame.render_widget(Clear, area);
                 frame.render_widget(help_paragraph(), area);
             }
@@ -1984,15 +1984,16 @@ impl App {
                 // A hunk's pill follows its edge, so the marker and the run
                 // below it read as one thing — and which is lit is a cursor
                 // question, decided here rather than when the row was built.
-                let accent = match (r.border, &r.kind) {
+                let marker = match (r.border, &r.kind) {
                     (Some(b), RowKind::HunkHeader { .. }) if active == Some(b.hunk) => {
-                        b.active_style.fg
+                        b.active_style.fg.map_or(Marker::Idle(&r.idle), Marker::Lit)
                     }
-                    _ => None,
+                    (_, RowKind::HunkHeader { .. }) => Marker::Idle(&r.idle),
+                    _ => Marker::None,
                 };
                 // How to work this row, on the one row it can be worked from.
                 let hint = on.then_some(r.hint.as_ref()).flatten();
-                let mut line = compose_row(&r.content, inner_w, on, accent, hint);
+                let mut line = compose_row(&r.content, inner_w, on, marker, hint);
                 if on {
                     // Span backgrounds win over a line style, so this colours
                     // exactly the rows that have no change colour of their own
@@ -2012,8 +2013,14 @@ impl App {
             .filter(|&h| h < self.scroll)
             && let Some(first) = lines.first_mut()
         {
-            *first = compose_row(&self.rows[header].content, inner_w, false, None, None)
-                .style(Style::default().bg(THEME.sticky_bg));
+            *first = compose_row(
+                &self.rows[header].content,
+                inner_w,
+                false,
+                Marker::None,
+                None,
+            )
+            .style(Style::default().bg(THEME.sticky_bg));
         }
 
         let block = pane(" detail ".to_string(), self.focus == Focus::Detail);
@@ -2147,7 +2154,7 @@ fn compose_row(
     content: &RowContent,
     width: usize,
     cursor: bool,
-    accent: Option<Color>,
+    marker: Marker<'_>,
     hint: Option<&(Style, String)>,
 ) -> Line<'static> {
     match content {
@@ -2163,15 +2170,21 @@ fn compose_row(
             // every ink on the pill to have a second, darker twin for the lit
             // background. One cell needs no twins.
             let repainted;
-            let half = if accent.is_some() || hint.is_some() {
+            let half = if !matches!(marker, Marker::None) || hint.is_some() {
                 let mut pairs = half.pairs.clone();
-                if let Some(fg) = accent
-                    && !pairs.is_empty()
-                {
-                    pairs[0] = (
-                        pairs[0].0.fg(fg).add_modifier(Modifier::BOLD),
-                        PILL_BAR.to_string(),
-                    );
+                match marker {
+                    // Nothing but the band. A pill on every header was a run of
+                    // labels down the page competing with the code they label;
+                    // the one worth reading is the hunk you are in, and moving
+                    // into a hunk is what asks for it.
+                    Marker::Idle(marks) => pairs = marks.to_vec(),
+                    Marker::Lit(fg) if !pairs.is_empty() => {
+                        pairs[0] = (
+                            pairs[0].0.fg(fg).add_modifier(Modifier::BOLD),
+                            PILL_BAR.to_string(),
+                        );
+                    }
+                    _ => {}
                 }
                 // Straight after the label, not out at the pane's edge: the
                 // reader's eye is on the words the row carries, and a key
@@ -2253,12 +2266,22 @@ fn compose_half(half: &Half, width: usize, cursor: bool) -> Vec<Span<'static>> {
             rest,
             if cursor { THEME.lit_band(bg) } else { bg },
         )),
-        // An absent side is hatched rather than blank, so a line that does not
-        // exist here cannot be mistaken for one that is empty.
-        Fill::Hatch => spans.push(Span::styled(
-            "╱".repeat(rest),
-            Style::default().fg(THEME.hatch_fg),
-        )),
+        // Hatched, not blank. On the absent side of a split row that says a
+        // line does not exist here rather than that it is empty; on a hunk's
+        // header it stops the pill's fill from reading as a bar that happens
+        // to stop, and carries the band to the pane edge without a colour.
+        Fill::Hatch => {
+            let used: usize = pairs.iter().map(|(_, t)| t.width()).sum();
+            if used >= rest {
+                spans.extend(truncate_or_pad_spans(&pairs, rest, Style::default()));
+            } else {
+                spans.extend(pairs.iter().map(|(st, t)| Span::styled(t.clone(), *st)));
+                spans.push(Span::styled(
+                    "╱".repeat(rest - used),
+                    Style::default().fg(THEME.hatch_fg),
+                ));
+            }
+        }
         // A rule carries the row across the whole pane, separator column and
         // all — the row is about the file, not about one side of it.
         Fill::Rule(style) => {
@@ -2334,6 +2357,22 @@ const CURSOR_BAR: &str = "▌";
 /// The lit cell at the head of the hunk pill the cursor is in.
 const PILL_BAR: &str = "▌";
 
+/// What a hunk's header shows right now.
+///
+/// Decided at draw time, not when the row is built: whether the cursor is in a
+/// hunk changes without rebuilding rows, and the header is the one row whose
+/// CONTENT turns on it — idle, it is hatch and nothing else.
+#[derive(Clone, Copy)]
+enum Marker<'a> {
+    /// Not a hunk header. Draw the row as it was built.
+    None,
+    /// A hunk header the cursor is not in: the band, carrying only the marks
+    /// the row says survive it.
+    Idle(&'a [(Style, String)]),
+    /// A hunk header the cursor is in: the pill, its leading cell lit.
+    Lit(Color),
+}
+
 /// A pane's frame: always the muted border, with the TITLE carrying focus.
 ///
 /// A lit border draws a box around half the screen to say a thing about the
@@ -2397,12 +2436,9 @@ fn help_paragraph() -> Paragraph<'static> {
             Span::styled(what.to_string(), text),
         ])
     };
+    // No title inside the box: the border already carries one, and a name the
+    // reader typed to get here is not what they opened `?` to read.
     let mut lines = vec![
-        Line::from(Span::styled(
-            "differential review",
-            text.add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
         row("j/k", "move · in the plan pane, switch group"),
         row("J/K  { }", "previous / next group"),
         row("tab", "switch pane focus"),

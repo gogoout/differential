@@ -117,8 +117,9 @@ read as a cursor on that side's line. The absent side keeps a blank line-number 
 the same width, so the block lands in the same column on a row that exists on one side
 only — where a marker glyph used to vanish into the `╱` fill.
 
-**A hunk is a pill and an edge.** Its header is a filled pill — ` +25 −3 · C31 `, the size
-of the change and then the shape class — rather than a `@@ -479,0 +480,25 @@` line: every row
+**A hunk is a pill and an edge.** Its header is a band of `╱` hatch, and a pill appears on
+it only for the hunk the cursor is in — ` +25 −3 · C31 `, the size of the change and then
+the shape class — rather than a `@@ -479,0 +480,25 @@` line: every row
 carries both line numbers in its gutter, so the coordinates repeated what was already on
 screen in a notation you had to decode. What the header uniquely says stays on it: the
 counts, the class, the reviewed mark, the finding count, and the group's id where that is
@@ -148,14 +149,27 @@ it says which rows are tied together, and the rows themselves say what they are.
 **Only the hunk the cursor is in wears a colour**; every other edge is muted to the gutter,
 because a screenful of accents is no accent at all. Which box is lit is a cursor question
 and the cursor moves without rebuilding rows, so a row carries the colour it *would* take
-and drawing chooses. What it changes is **one cell**: the pill's leading pad becomes a bar
-in that same colour, so the marker and the run below it read as one thing rather than as a
-label that happens to sit above a line. The pill itself keeps its muted fill either way.
+and drawing chooses. What it changes is the header's **whole content**: idle, the row is
+hatch and nothing else; the cursor moving in is what puts the pill there, its leading cell
+lit in the accent so the marker and the run below it read as one thing rather than as a
+label that happens to sit above a line.
+
+A pill on every header was a column of labels down the page competing with the code they
+label, and the one worth reading is the hunk you are in. Entering a hunk is one keypress,
+and it is the same press that makes its header worth reading.
+
+What an idle header keeps is the **marks**: the group's id where the hunk is foreign, `✓`
+where its class is read, and `◆ N` for the findings filed against it. Those are facts about
+the hunk and they are what a reader scans a file for; the class and the counts describe it,
+and describing every hunk at once is the column that was in the way. The hatch carries the
+rest of the row, so a hunk still begins somewhere visible without a word on it.
 
 Filling the whole pill said this far more loudly than it needed to — a block of colour the
 eye went to before the code — and it cost the palette a second, darker ink for every span
 that could sit on a pill, since `add_fg`/`del_fg` glow on a dark background and vanish on a
-bright one. One cell needs no twins, so the `+N`/`−M` counts are one pair everywhere.
+bright one. One cell needs no twins, so the `+N`/`−M` counts are one pair everywhere. The
+fill stays bright: that lit cell is cyan for your hunk and a muted cyan for a foreign one,
+and a darker fill put the two too close to tell apart.
 
 **Cyan is where you are.** The pane title wears it, the cursor's bar wears it, and so does
 the edge of the hunk you are reading — one colour for one idea, rather than a third accent
