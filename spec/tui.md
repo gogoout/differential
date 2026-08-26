@@ -380,11 +380,14 @@ added one, each anchoring to its own side — and one row in the split layout; w
 other number a note written on the removed half had nowhere to land after an `s`, and fell
 back to the hunk's header.
 
-**Standing on a note, or on the line it annotates, lights both** — the border column runs
-the findings colour down the pair, and the note's rail takes it too. A note is drawn under
-its line, and the only sign the two belonged together was that they were adjacent.
+**Standing anywhere in a note lights all of it** — every line it covers and the note
+itself: the border column runs the findings colour down them, and the note's rail takes it
+too. A note is drawn under its **last** line, so over a range the note and most of the run
+are not adjacent at all, and adjacency was the only thing that said they belonged together.
+Standing on the first line of a run is standing in the note about that run, which is what
+`c` there rewrites.
 
-**`c` on a line that already carries a note opens THAT note**, with its text in the box and
+**`c` on a line a note already covers opens THAT note**, with its text in the box and
 the cursor at the end. Two notes on one line would each be half the story, and there was no
 way to fix a typo but delete and retype. A **selection** is the exception: picking a run of
 lines is asking for a note about the run, so `v` then `c` always files a new one. Emptying

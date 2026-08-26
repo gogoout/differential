@@ -2963,6 +2963,92 @@ fn c_on_a_commented_line_rewrites_the_note() {
     );
 }
 
+/// A note over a RANGE is drawn under its last line, so the run above it is
+/// not adjacent to it. Standing anywhere in the run lights the whole thing.
+#[test]
+fn a_ranged_note_lights_every_line_it_covers() {
+    let (_r, mut app) = app_with_a_long_file();
+    let start = app
+        .rows
+        .windows(3)
+        .position(|w| {
+            w.iter()
+                .all(|r| r.line.as_ref().is_some_and(|l| l.side == "new"))
+        })
+        .expect("three new-side rows in a row");
+    app.cursor = start;
+    app.focus = Focus::Detail;
+
+    app.handle_key(key('v'));
+    app.handle_key(key('j'));
+    app.handle_key(key('j'));
+    app.handle_key(key('c'));
+    app.handle_paste("about all three");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let a = app.session.findings()[0].anchor.clone();
+    assert_eq!(
+        a.end_line - a.line,
+        2,
+        "the fixture needs a three-line note"
+    );
+
+    // The rows of the run, and the note's own row after the last of them.
+    let covered: Vec<usize> = app
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| {
+            r.line
+                .as_ref()
+                .is_some_and(|l| (a.line..=a.end_line).any(|n| l.holds(&a.side, n)))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(covered.len(), 3, "three lines: {covered:?}");
+    let note = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Finding(..)))
+        .expect("a note row");
+    assert_eq!(note, covered[2] + 1, "the note hangs off the LAST line");
+
+    // Standing anywhere in the run, or on the note: the whole cluster lights.
+    let lit = |app: &mut App, rows: &[usize]| -> bool {
+        let buf = buffer_of(app);
+        rows.iter().all(|&i| {
+            let y = (i - app.scroll()) as u16 + 1;
+            buf[(40, y)].style().fg == Some(THEME.finding_fg)
+        })
+    };
+    let cluster: Vec<usize> = covered
+        .iter()
+        .copied()
+        .chain(std::iter::once(note))
+        .collect();
+    for at in cluster.clone() {
+        app.cursor = at;
+        assert!(
+            lit(&mut app, &cluster),
+            "standing on row {at} should light every row of the note"
+        );
+    }
+
+    // And `c` from the FIRST line of the run rewrites that note.
+    app.cursor = covered[0];
+    app.handle_key(key('c'));
+    assert!(
+        matches!(
+            &app.mode,
+            Mode::Editing {
+                rewriting: Some(_),
+                ..
+            }
+        ),
+        "the first line of a run is in the note about that run"
+    );
+}
+
 /// A note is drawn under its line, and the only sign the two belonged together
 /// was that they were adjacent. Standing on either lights both, in the border
 /// column and on the note's own rail.

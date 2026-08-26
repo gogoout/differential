@@ -1305,36 +1305,41 @@ impl App {
         Ok(())
     }
 
-    /// The rows a note and the line it annotates occupy, when the cursor is on
-    /// one of them.
+    /// The rows a note and the lines it annotates occupy, when the cursor is
+    /// in one of them.
     ///
-    /// A note is drawn under its line, and the only sign that the two belong
-    /// together was that they were adjacent. Standing on either lights both.
+    /// A note is drawn under its LAST line, and the only sign that it and the
+    /// run above it belong together was that they were adjacent — which, over
+    /// a range, they mostly are not.
     fn note_cluster(&self) -> Option<(usize, usize)> {
         if self.focus != Focus::Detail {
             return None;
         }
-        let is_note = |i: usize| {
-            matches!(
-                self.rows.get(i).map(|r| &r.kind),
-                Some(RowKind::Finding(..))
-            )
-        };
-        let (mut lo, mut hi) = if is_note(self.cursor) {
-            (self.cursor, self.cursor)
-        } else if is_note(self.cursor + 1) {
-            // A line is commented when a note follows it.
-            (self.cursor, self.cursor + 1)
-        } else {
-            return None;
-        };
-        // Back to the row the note hangs off — a line, or the hunk's header
-        // where the note could only be re-anchored to the hunk.
-        while lo > 0 && is_note(lo) {
-            lo -= 1;
+        let f = self.finding_at_cursor()?;
+        let (id, path) = (f.id.as_str(), f.anchor.file.as_str());
+        let mut file = "";
+        let (mut lo, mut hi) = (usize::MAX, 0usize);
+        for (i, row) in self.rows.iter().enumerate() {
+            if let RowKind::FileHeader(p) = &row.kind {
+                file = p;
+            }
+            let mine = match (&row.kind, &row.line) {
+                (RowKind::Finding(fid, _), _) => fid == id,
+                (_, Some(l)) => file == path && self.anchor_covers(f, l),
+                _ => false,
+            };
+            if mine {
+                lo = lo.min(i);
+                hi = hi.max(i);
+            }
         }
-        while is_note(hi + 1) {
-            hi += 1;
+        if lo > hi {
+            return None;
+        }
+        // A note that hangs off its hunk's header covers no line at all; the
+        // row above it is what it points at.
+        if lo > 0 && matches!(self.rows[lo].kind, RowKind::Finding(..)) {
+            lo -= 1;
         }
         Some((lo, hi))
     }
@@ -1373,21 +1378,47 @@ impl App {
         })
     }
 
-    /// The note the cursor is standing on, or the first of those on the line
-    /// below it.
+    /// The note the cursor is standing in.
     ///
-    /// Read off the ROWS, not re-derived from the anchors: `place_findings`
-    /// already decided which line each note hangs under, and two answers to
-    /// that question would eventually disagree.
+    /// "In", not "on": a note over a RANGE covers every line of it, and it is
+    /// drawn under the last of them. Standing on the first line of a run is
+    /// standing in the note about that run.
     fn finding_at_cursor(&self) -> Option<&Finding> {
-        let id = match self.rows.get(self.cursor).map(|r| &r.kind) {
-            Some(RowKind::Finding(id, _)) => id,
-            _ => match self.rows.get(self.cursor + 1).map(|r| &r.kind) {
-                Some(RowKind::Finding(id, _)) => id,
-                _ => return None,
-            },
-        };
-        self.session.findings().iter().find(|f| &f.id == id)
+        let by_id = |id: &str| self.session.findings().iter().find(|f| f.id == id);
+        // On the note itself.
+        if let Some(RowKind::Finding(id, _)) = self.rows.get(self.cursor).map(|r| &r.kind) {
+            return by_id(id);
+        }
+        // On a line the note covers.
+        if let Some(l) = self.rows.get(self.cursor).and_then(|r| r.line.as_ref())
+            && let Some(path) = self.file_path_above(self.cursor)
+            && let Some(f) = self
+                .session
+                .findings()
+                .iter()
+                .find(|f| f.anchor.file == path && self.anchor_covers(f, l))
+        {
+            return Some(f);
+        }
+        // Directly above a note that could only be anchored to its hunk, and
+        // so hangs off the header rather than off any line.
+        if let Some(RowKind::Finding(id, _)) = self.rows.get(self.cursor + 1).map(|r| &r.kind) {
+            return by_id(id);
+        }
+        None
+    }
+
+    /// Does this finding's anchor cover the line this row shows?
+    fn anchor_covers(&self, f: &Finding, l: &LineRef) -> bool {
+        (f.anchor.line..=f.anchor.end_line.max(f.anchor.line)).any(|n| l.holds(&f.anchor.side, n))
+    }
+
+    /// The path of the file header above `row`.
+    fn file_path_above(&self, row: usize) -> Option<&str> {
+        match self.rows.get(self.file_header_above(row)?).map(|r| &r.kind) {
+            Some(RowKind::FileHeader(path)) => Some(path),
+            _ => None,
+        }
     }
 
     fn rewrite_finding(&mut self, id: &str, body: String) {
