@@ -183,7 +183,7 @@ fn finding_lifecycle_add_copy_delete() {
 
     // c opens the editor on the current hunk.
     app.handle_key(key('c'));
-    assert!(matches!(app.mode, Mode::Editing(..)));
+    assert!(matches!(app.mode, Mode::Editing { .. }));
     for ch in "off by one".chars() {
         app.handle_key(key(ch));
     }
@@ -2608,7 +2608,7 @@ fn the_finding_editor_floats_and_names_its_subject() {
     app.focus = Focus::Detail;
     put_cursor_on(&mut app, |k| matches!(k, RowKind::HunkHeader { .. }));
     app.handle_key(key('c'));
-    assert!(matches!(app.mode, Mode::Editing(..)));
+    assert!(matches!(app.mode, Mode::Editing { .. }));
 
     let text = drawn_as_is(&mut app);
     assert!(text.contains("long.rs · L"), "no file·line title: {text}");
@@ -2634,7 +2634,7 @@ fn the_composer_saves_on_enter_and_takes_a_newline_two_ways() {
     let open = |app: &mut App| {
         put_cursor_on(app, |k| matches!(k, RowKind::HunkHeader { .. }));
         app.handle_key(key('c'));
-        assert!(matches!(app.mode, Mode::Editing(..)));
+        assert!(matches!(app.mode, Mode::Editing { .. }));
     };
     let typed = |app: &mut App, text: &str| {
         for c in text.chars() {
@@ -2668,7 +2668,7 @@ fn the_composer_saves_on_enter_and_takes_a_newline_two_ways() {
     typed(&mut app, "first\\");
     app.handle_key(enter);
     assert!(
-        matches!(app.mode, Mode::Editing(..)),
+        matches!(app.mode, Mode::Editing { .. }),
         "the box should stay open"
     );
     typed(&mut app, "second");
@@ -2852,6 +2852,159 @@ fn a_finding_is_a_quoted_panel_of_all_its_lines() {
     app.handle_key(key('d'));
     app.handle_key(key('d'));
     assert!(app.session.findings().is_empty());
+}
+
+/// `c` on a line that already carries a note opens THAT note. Two notes on one
+/// line would each be half the story, and there was no way to fix a typo but
+/// delete and retype.
+#[test]
+fn c_on_a_commented_line_rewrites_the_note() {
+    let (_r, mut app) = app_with_a_long_file();
+    let line = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Diff(_)) && r.line.is_some())
+        .expect("a diff row with a line");
+    app.cursor = line;
+    app.focus = Focus::Detail;
+    app.handle_key(key('c'));
+    app.handle_paste("frist draft");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let id = app.session.findings()[0].id.clone();
+
+    // From the line, and from the note's own row: both open the same note,
+    // with its text already in the box.
+    let note = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Finding(..)))
+        .expect("a note row");
+    for at in [line, note] {
+        app.cursor = at;
+        app.handle_key(key('c'));
+        let Mode::Editing {
+            editor, rewriting, ..
+        } = &app.mode
+        else {
+            panic!("the box should be open");
+        };
+        assert_eq!(rewriting.as_deref(), Some(id.as_str()), "from row {at}");
+        assert_eq!(editor.lines().join("\n"), "frist draft", "from row {at}");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    }
+
+    // The box opens at the END of the note, so a second thought is typed
+    // rather than prepended. Rewriting keeps the id and the anchor.
+    let before = app.session.findings()[0].anchor.line;
+    let clear = |app: &mut App, n: usize| {
+        for _ in 0..n {
+            app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        }
+    };
+    app.cursor = line;
+    app.handle_key(key('c'));
+    app.handle_paste(", on reflection");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.session.findings().len(), 1, "no second note was filed");
+    assert_eq!(app.session.findings()[0].id, id, "the id is a handle");
+    assert_eq!(app.session.findings()[0].body, "frist draft, on reflection");
+    assert_eq!(app.session.findings()[0].anchor.line, before);
+
+    // Emptying the box leaves the note alone: `dd` is how a note is deleted,
+    // and that is a deliberate press.
+    app.cursor = line;
+    app.handle_key(key('c'));
+    clear(&mut app, 64);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.session.findings().len(), 1);
+    assert_eq!(app.session.findings()[0].body, "frist draft, on reflection");
+
+    // A selection is the exception: it asks for a note about the run.
+    app.cursor = line;
+    app.handle_key(key('v'));
+    app.handle_key(key('j'));
+    app.handle_key(key('c'));
+    assert!(
+        matches!(
+            &app.mode,
+            Mode::Editing {
+                rewriting: None,
+                ..
+            }
+        ),
+        "a selection files a new note"
+    );
+}
+
+/// A note is drawn under its line, and the only sign the two belonged together
+/// was that they were adjacent. Standing on either lights both, in the border
+/// column and on the note's own rail.
+#[test]
+fn standing_on_a_note_or_its_line_lights_both() {
+    let (_r, mut app) = app_with_a_long_file();
+    let row = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Diff(_)) && r.line.is_some())
+        .expect("a diff row with a line");
+    app.cursor = row;
+    app.focus = Focus::Detail;
+    app.handle_key(key('c'));
+    app.handle_paste("first\nsecond");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let note = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Finding(..)))
+        .expect("a note row");
+    let line = note - 1;
+
+    // The border column of the line and of both note rows, and the rails.
+    let lit = |app: &mut App| -> (Vec<bool>, Vec<bool>) {
+        let buf = buffer_of(app);
+        let y = |i: usize| (i - app.scroll()) as u16 + 1;
+        let border = (line..=note + 1)
+            .map(|i| buf[(40, y(i))].style().fg == Some(THEME.finding_fg))
+            .collect();
+        let rails = (note..=note + 1)
+            .map(|i| {
+                (41..99u16).any(|x| {
+                    buf[(x, y(i))].symbol() == "▍"
+                        && buf[(x, y(i))].style().fg == Some(THEME.finding_fg)
+                })
+            })
+            .collect();
+        (border, rails)
+    };
+
+    // The cursor is elsewhere: nothing is lit.
+    app.cursor = app
+        .rows
+        .iter()
+        .enumerate()
+        .position(|(i, r)| !(line..=note + 1).contains(&i) && r.kind.selectable())
+        .expect("a row outside the cluster");
+    let (border, rails) = lit(&mut app);
+    assert!(
+        !border.iter().any(|b| *b),
+        "nothing should be lit from away"
+    );
+    assert!(!rails.iter().any(|b| *b), "the rail stays muted from away");
+
+    // On the line, then on each row of the note: all three light every time.
+    for at in [line, note, note + 1] {
+        app.cursor = at;
+        let (border, rails) = lit(&mut app);
+        assert!(
+            border.iter().all(|b| *b),
+            "the border should run findings-coloured down the cluster, from row {at}"
+        );
+        assert!(
+            rails.iter().all(|b| *b),
+            "both rails should be findings-coloured, from row {at}"
+        );
+    }
 }
 
 /// The summary is pasted where nothing knows what `g7` was, so it carries the
@@ -3378,4 +3531,82 @@ fn render_dump_plan() {
     }
     println!("\n=== plan connector ===");
     println!("{}", ansi_dump(&mut app, 120, 20));
+}
+
+/// A note stays on the line it was written on when the layout changes.
+///
+/// A modification is TWO rows in unified — the removed line and the added one
+/// — and ONE in split. A note written on the removed half anchors to the old
+/// side, and in split there was no old-side row to hold it, so it fell back to
+/// the hunk's header on every `s`.
+#[test]
+fn a_note_survives_the_diff_layout_it_was_written_in() {
+    let r = TestRepo::new();
+    // 18 lines inserted at the top, so old and new numbers differ throughout.
+    let body = |lead: usize, change: &str| -> Vec<u8> {
+        let mut out = String::new();
+        for i in 1..=lead {
+            out.push_str(&format!("inserted{i} = {i}\n"));
+        }
+        for i in 1..=40 {
+            if i == 30 {
+                out.push_str(change);
+            } else {
+                out.push_str(&format!("keep{i} = {i}\n"));
+            }
+        }
+        out.into_bytes()
+    };
+    r.write("src/f.rs", &body(0, "target = 1\n"));
+    r.commit_all("base");
+    r.write("src/f.rs", &body(18, "target = 2\n"));
+    r.commit_all("head");
+
+    let backend = skim_first_backend();
+    let mut app = open_app_with(&r, &backend, ".dfr-layout-note-store");
+    app.focus = Focus::Detail;
+
+    // The two halves of the modification, in the unified layout.
+    let halves: Vec<usize> = app
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| {
+            r.line
+                .as_ref()
+                .is_some_and(|l| l.text.starts_with("target"))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(halves.len(), 2, "a modification is two rows in unified");
+    let removed = app.rows[halves[0]].line.clone().unwrap();
+    assert_eq!(removed.side, "old", "the first half is the removed line");
+
+    // Write a note on the removed half, then switch layout.
+    app.cursor = halves[0];
+    app.handle_key(key('c'));
+    app.handle_paste("about the old line");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let anchor = app.session.findings()[0].anchor.clone();
+    assert_eq!((anchor.side.as_str(), anchor.line), ("old", removed.line));
+
+    let sits_on_its_line = |app: &App| {
+        let at = app
+            .rows
+            .iter()
+            .position(|r| matches!(r.kind, RowKind::Finding(..)))
+            .expect("a note row");
+        app.rows[at - 1]
+            .line
+            .as_ref()
+            .is_some_and(|l| l.holds(&anchor.side, anchor.end_line))
+    };
+    assert!(sits_on_its_line(&app), "unified: the note left its line");
+    app.handle_key(key('s'));
+    assert!(
+        sits_on_its_line(&app),
+        "split: the note should still sit on the line it annotates"
+    );
+    app.handle_key(key('s'));
+    assert!(sits_on_its_line(&app), "and back again");
 }

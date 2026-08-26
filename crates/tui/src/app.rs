@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use differential_engine::FsReviewSession;
 use differential_engine::plan::{Fold, PlanIndex};
-use differential_engine::review_state::{FindingStatus, Lines};
+use differential_engine::review_state::{Finding, FindingStatus, Lines};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -134,9 +134,17 @@ pub enum Focus {
 
 pub enum Mode {
     Normal,
-    /// Editing a finding for the given canonical hunk index, over the lines
-    /// the reviewer had picked when the box opened. `None` anchors the hunk.
-    Editing(usize, Option<Lines>, Box<TextArea<'static>>),
+    /// Writing a finding.
+    Editing {
+        /// The canonical hunk it belongs to.
+        hunk: usize,
+        /// The lines the reviewer had picked when the box opened; `None`
+        /// anchors the whole hunk.
+        lines: Option<Lines>,
+        /// The finding being rewritten. `None` files a new one.
+        rewriting: Option<String>,
+        editor: Box<TextArea<'static>>,
+    },
     Help,
     /// File-list modal over the current rows: jump to a file header.
     FileList {
@@ -943,8 +951,8 @@ impl App {
     /// Only the composer takes it: in normal mode there is no text field for
     /// it to land in, and a paste there is a mis-aimed one.
     pub fn handle_paste(&mut self, text: &str) {
-        if let Mode::Editing(_, _, textarea) = &mut self.mode {
-            textarea.insert_str(text);
+        if let Mode::Editing { editor, .. } = &mut self.mode {
+            editor.insert_str(text);
         }
     }
 
@@ -1009,8 +1017,13 @@ impl App {
                 }
                 return Vec::new();
             }
-            Mode::Editing(hunk, lines, textarea) => {
-                let (hunk, lines) = (*hunk, lines.clone());
+            Mode::Editing {
+                hunk,
+                lines,
+                rewriting,
+                editor: textarea,
+            } => {
+                let (hunk, lines, rewriting) = (*hunk, lines.clone(), rewriting.clone());
                 match (key.code, key.modifiers) {
                     (KeyCode::Esc, _) => {
                         self.mode = Mode::Normal;
@@ -1044,11 +1057,15 @@ impl App {
                     (KeyCode::Enter, _) | (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
                         let body = textarea.lines().join("\n").trim().to_string();
                         self.mode = Mode::Normal;
-                        if body.is_empty() {
-                            self.status = "empty finding discarded".into();
-                            return Vec::new();
+                        match (rewriting, body.is_empty()) {
+                            // Emptying the box does NOT delete the note. That
+                            // is `dd`, which is a deliberate press; a note lost
+                            // to a stray `ctrl-u` and an `enter` is not.
+                            (Some(_), true) => self.status = "finding left as it was".into(),
+                            (Some(id), false) => self.rewrite_finding(&id, body),
+                            (None, true) => self.status = "empty finding discarded".into(),
+                            (None, false) => self.add_finding(hunk, lines, body),
                         }
-                        self.add_finding(hunk, lines, body);
                         return Vec::new();
                     }
                     _ => {
@@ -1169,25 +1186,45 @@ impl App {
             }
             (KeyCode::Char('c'), KeyModifiers::NONE) => {
                 if let Some(h) = self.current_hunk() {
+                    // A line already carrying a note opens THAT note. Two
+                    // notes on one line would each be half the story, and
+                    // there was no way to correct a typo but delete and
+                    // retype. A SELECTION is the exception: picking a run of
+                    // lines is asking for a note about the run.
+                    let existing = self
+                        .visual
+                        .is_none()
+                        .then(|| self.finding_at_cursor())
+                        .flatten()
+                        .map(|f| (f.id.clone(), f.body.clone(), f.anchor.line_span()));
                     let lines = self.selected_lines();
                     // Name what is being annotated: a note whose subject you
                     // cannot see is a note you have to trust yourself to have
                     // written carefully.
                     let hunk = &self.session.doc().hunks[h];
                     let file = hunk.file.rsplit('/').next().unwrap_or(&hunk.file);
-                    let at = match &lines {
-                        Some(l) if l.end > l.start => format!("L{}-{}", l.start, l.end),
-                        Some(l) => format!("L{}", l.start),
+                    let at = match (&existing, &lines) {
+                        // A note's own anchor, which may not be the row the
+                        // cursor is on — it can have re-anchored to the hunk.
+                        (Some((_, _, span)), _) => format!("L{span}"),
+                        (None, Some(l)) if l.end > l.start => format!("L{}-{}", l.start, l.end),
+                        (None, Some(l)) => format!("L{}", l.start),
                         // No line under the cursor — a hunk header, a fold.
                         // The finding anchors the hunk, so the title says so.
-                        None if hunk.new_count > 1 => format!(
+                        (None, None) if hunk.new_count > 1 => format!(
                             "L{}-{}",
                             hunk.new_start,
                             hunk.new_start + hunk.new_count - 1
                         ),
-                        None => format!("L{}", hunk.new_start),
+                        (None, None) => format!("L{}", hunk.new_start),
                     };
-                    let mut ta = TextArea::default();
+                    let mut ta = match &existing {
+                        Some((_, body, _)) => {
+                            TextArea::new(body.lines().map(str::to_string).collect::<Vec<_>>())
+                        }
+                        None => TextArea::default(),
+                    };
+                    ta.move_cursor(tui_textarea::CursorMove::End);
                     ta.set_block(
                         Block::default()
                             .borders(Borders::ALL)
@@ -1195,7 +1232,12 @@ impl App {
                             .title(format!(" {file} · {at} ")),
                     );
                     self.visual = None;
-                    self.mode = Mode::Editing(h, lines, Box::new(ta));
+                    self.mode = Mode::Editing {
+                        hunk: h,
+                        lines,
+                        rewriting: existing.map(|(id, _, _)| id),
+                        editor: Box::new(ta),
+                    };
                 } else {
                     self.status = "move onto a hunk first".into();
                 }
@@ -1263,6 +1305,40 @@ impl App {
         Ok(())
     }
 
+    /// The rows a note and the line it annotates occupy, when the cursor is on
+    /// one of them.
+    ///
+    /// A note is drawn under its line, and the only sign that the two belong
+    /// together was that they were adjacent. Standing on either lights both.
+    fn note_cluster(&self) -> Option<(usize, usize)> {
+        if self.focus != Focus::Detail {
+            return None;
+        }
+        let is_note = |i: usize| {
+            matches!(
+                self.rows.get(i).map(|r| &r.kind),
+                Some(RowKind::Finding(..))
+            )
+        };
+        let (mut lo, mut hi) = if is_note(self.cursor) {
+            (self.cursor, self.cursor)
+        } else if is_note(self.cursor + 1) {
+            // A line is commented when a note follows it.
+            (self.cursor, self.cursor + 1)
+        } else {
+            return None;
+        };
+        // Back to the row the note hangs off — a line, or the hunk's header
+        // where the note could only be re-anchored to the hunk.
+        while lo > 0 && is_note(lo) {
+            lo -= 1;
+        }
+        while is_note(hi + 1) {
+            hi += 1;
+        }
+        Some((lo, hi))
+    }
+
     /// The rows the selection covers, as the engine wants them: lowest line
     /// first, both ends' text, one side.
     ///
@@ -1295,6 +1371,32 @@ impl App {
             start_text: first.text.clone(),
             end_text: last.text.clone(),
         })
+    }
+
+    /// The note the cursor is standing on, or the first of those on the line
+    /// below it.
+    ///
+    /// Read off the ROWS, not re-derived from the anchors: `place_findings`
+    /// already decided which line each note hangs under, and two answers to
+    /// that question would eventually disagree.
+    fn finding_at_cursor(&self) -> Option<&Finding> {
+        let id = match self.rows.get(self.cursor).map(|r| &r.kind) {
+            Some(RowKind::Finding(id, _)) => id,
+            _ => match self.rows.get(self.cursor + 1).map(|r| &r.kind) {
+                Some(RowKind::Finding(id, _)) => id,
+                _ => return None,
+            },
+        };
+        self.session.findings().iter().find(|f| &f.id == id)
+    }
+
+    fn rewrite_finding(&mut self, id: &str, body: String) {
+        match self.session.edit_finding(id, body) {
+            Ok(true) => self.status = "finding rewritten".into(),
+            Ok(false) => self.status = "that finding is gone".into(),
+            Err(e) => self.status = format!("save failed: {e:#}"),
+        }
+        self.rebuild_rows();
     }
 
     fn add_finding(&mut self, hunk_idx: usize, lines: Option<Lines>, body: String) {
@@ -1366,7 +1468,9 @@ impl App {
         }
 
         match &self.mode {
-            Mode::Editing(_, _, textarea) => {
+            Mode::Editing {
+                editor: textarea, ..
+            } => {
                 // A float over the diff, not a strip pinned to the bottom: a
                 // finding is about the lines you can still see around it.
                 let area = centered_rect(panes.body, panes.body.width * 3 / 5, 10);
@@ -2092,6 +2196,8 @@ impl App {
         let selection = self
             .visual
             .map(|v| (v.min(self.cursor), v.max(self.cursor)));
+        let note = self.note_cluster();
+        let in_note = |i: usize| note.is_some_and(|(lo, hi)| (lo..=hi).contains(&i));
         let lines: Vec<Line> = self
             .rows
             .iter()
@@ -2108,6 +2214,7 @@ impl App {
                         b.active_style.fg.map_or(Marker::Idle(&r.idle), Marker::Lit)
                     }
                     (_, RowKind::HunkHeader { .. }) => Marker::Idle(&r.idle),
+                    (_, RowKind::Finding(..)) if in_note(i) => Marker::Note,
                     _ => Marker::None,
                 };
                 // How to work this row, on the one row it can be worked from.
@@ -2170,10 +2277,19 @@ impl App {
                 });
                 continue;
             }
-            let Some(border) = row.border else { continue };
-            let cell = &mut buf[(area.x, y)];
-            cell.set_symbol(border.glyph().encode_utf8(&mut [0u8; 4]));
-            cell.set_style(chrome(border, active));
+            if let Some(border) = row.border {
+                let cell = &mut buf[(area.x, y)];
+                cell.set_symbol(border.glyph().encode_utf8(&mut [0u8; 4]));
+                cell.set_style(chrome(border, active));
+            }
+            // A note and the line it annotates, while the cursor is on either:
+            // the border column carries the findings colour down both, which
+            // is what says they are one thing. Whatever glyph is in that cell
+            // — a hunk's edge, or the pane's own border on a note's row —
+            // keeps its shape and takes the colour.
+            if in_note(self.scroll + n) {
+                buf[(area.x, y)].set_fg(THEME.finding_fg);
+            }
         }
 
         // The cursor's bar, in the cell just inside the frame. The gutter block
@@ -2312,6 +2428,11 @@ fn compose_row(
                             pairs[0].0.fg(fg).add_modifier(Modifier::BOLD),
                             PILL_BAR.to_string(),
                         );
+                    }
+                    // The rail only. The prose stays quiet: what the colour
+                    // says is which rows belong together, not read this.
+                    Marker::Note if !pairs.is_empty() => {
+                        pairs[0].0 = pairs[0].0.fg(THEME.finding_fg);
                     }
                     _ => {}
                 }
@@ -2500,6 +2621,10 @@ enum Marker<'a> {
     Idle(&'a [(Style, String)]),
     /// A hunk header the cursor is in: the pill, its leading cell lit.
     Lit(Color),
+    /// A note the cursor is standing in, or beside: its rail takes the
+    /// findings colour, so the note and the line it is about read as one
+    /// thing rather than as two rows that happen to be adjacent.
+    Note,
 }
 
 /// A pane's frame: always the muted border, with the TITLE carrying focus.

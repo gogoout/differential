@@ -294,7 +294,7 @@ list belongs; the footer's job is to point at it.
 | `f` | files, in the pane you are in — plan pane: toggle reading plan ↔ file tree (persisted) · diff pane: the file-list modal (`enter` jumps to the file) |
 | `space` | mark reviewed — the whole selected group/file in the left pane, the hunk's **class** in the diff pane (one exemplar verifies the shape) |
 | `v` | start a line selection at the cursor · `j`/`k` extend it · `esc` drops it · `c` writes a finding over it |
-| `c` | add a finding on the current hunk — a float over the diff, titled with the file and lines it annotates (`enter` saves · `shift+enter` or a trailing `\` before `enter` makes a newline · `esc` cancels) |
+| `c` | write a finding — on the line under the cursor, on the lines `v` selected, or on the whole hunk from a row that is not a line; on a line that already carries one, rewrite that one |
 | `dd` | delete the finding under the cursor |
 | `y` | copy the open-findings summary to the clipboard — a markdown list of `file:lines: note`, and nothing about groups: a group is how this reviewer chose to READ the branch, and the summary is pasted somewhere that has no idea what `g7` was |
 | `?` | help — the keys, as one uninterrupted table |
@@ -370,6 +370,23 @@ A finding is **drawn under the line it annotates**, so a note and its subject ar
 together. One whose line is not on screen — the context around it still folded, or a
 regeneration that could only re-anchor it to the hunk — falls back to its hunk's header,
 where they all used to sit.
+
+A row that exists in **both** files carries both its numbers, and a note anchored to either
+belongs on it. A modification is two rows in the unified layout — the removed line and the
+added one, each anchoring to its own side — and one row in the split layout; without the
+other number a note written on the removed half had nowhere to land after an `s`, and fell
+back to the hunk's header.
+
+**Standing on a note, or on the line it annotates, lights both** — the border column runs
+the findings colour down the pair, and the note's rail takes it too. A note is drawn under
+its line, and the only sign the two belonged together was that they were adjacent.
+
+**`c` on a line that already carries a note opens THAT note**, with its text in the box and
+the cursor at the end. Two notes on one line would each be half the story, and there was no
+way to fix a typo but delete and retype. A **selection** is the exception: picking a run of
+lines is asking for a note about the run, so `v` then `c` always files a new one. Emptying
+the box does not delete the note — that is `dd`, which is a deliberate press, where a note
+lost to a stray keystroke and an `enter` would not be.
 
 It is drawn as a **quoted panel**: every line of the note behind a muted rail, in muted
 italics. It is prose the reviewer wrote about the code above it, so it has to read as a

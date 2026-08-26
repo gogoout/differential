@@ -248,7 +248,22 @@ pub struct LineRef {
     /// "old" | "new"
     pub side: &'static str,
     pub line: u32,
+    /// The same row's number on the OTHER side, where the row shows one.
+    ///
+    /// A row that exists in both files has two numbers, and which of them a
+    /// note anchors to depends on the layout it was written in — a
+    /// modification is two rows in unified and one in split. Carrying both
+    /// means a note written in either layout is placed in either.
+    pub other: Option<(&'static str, u32)>,
     pub text: String,
+}
+
+impl LineRef {
+    /// Does a note anchored to `(side, line)` belong on this row?
+    pub fn holds(&self, side: &str, line: u32) -> bool {
+        (self.side == side && self.line == line)
+            || self.other.is_some_and(|(s, n)| s == side && n == line)
+    }
 }
 
 pub struct Row {
@@ -1056,16 +1071,15 @@ fn place_findings(ctx: &RowsContext, rows: &mut Vec<Row>) {
         if let RowKind::FileHeader(path) = &row.kind {
             file.clone_from(path);
         }
-        // Deliberately keyed on (file, side, line) and not on the hunk digest
-        // as well: a context row's hunk is the one it sits NEXT to, which is a
-        // guess, and a line is in exactly one place either way.
+        // Keyed on the file and the line, not on the hunk digest as well: a
+        // context row's hunk is the one it sits NEXT to, which is a guess, and
+        // a line is in exactly one place either way. `holds` takes both of a
+        // row's numbers, so a note survives the layout it was written in.
         let here: Vec<&Finding> = match (&row.kind, &row.line) {
             (RowKind::Diff(_), Some(l)) => left
                 .iter()
                 .copied()
-                .filter(|f| {
-                    f.anchor.file == file && f.anchor.side == l.side && f.anchor.end_line == l.line
-                })
+                .filter(|f| f.anchor.file == file && l.holds(&f.anchor.side, f.anchor.end_line))
                 .collect(),
             _ => Vec::new(),
         };
@@ -1196,11 +1210,14 @@ fn file_rows(
                             button: None,
                             hint: None,
                             idle: Vec::new(),
-                            // An unchanged line exists on both sides; the new
-                            // one is what a reader is annotating.
+                            // An unchanged line exists on both sides. A note
+                            // written here is about the code as it will be, so
+                            // it anchors NEW — but the row shows both numbers,
+                            // so a note on either belongs on it.
                             line: Some(LineRef {
                                 side: "new",
                                 line: w as u32,
+                                other: Some(("old", o as u32)),
                                 text: text.to_string(),
                             }),
                             content: row,
@@ -1423,13 +1440,15 @@ fn render_change_row(
     new_hl: &HashMap<usize, HighlightedSpans>,
     mode: DiffMode,
 ) -> Vec<(RowContent, Option<LineRef>)> {
-    let at = |side, n: Option<usize>, text: &str| {
+    let at = |side, n: Option<usize>, text: &str, other: Option<(&'static str, u32)>| {
         n.map(|n| LineRef {
             side,
             line: n as u32,
+            other,
             text: text.to_string(),
         })
     };
+    let other = |side, n: Option<usize>| n.map(|n| (side, n as u32));
     let old_half = || {
         let (n, text) = (old_n?, row.old_line.as_ref()?.1.as_str());
         Some(half(
@@ -1465,7 +1484,7 @@ fn render_change_row(
         let (o, w) = (old_n.unwrap_or(0), new_n.unwrap_or(0));
         return vec![(
             context_row(text, o, w, new_hl.get(&w.saturating_sub(1)), mode),
-            at("new", new_n, text).or_else(|| at("old", old_n, text)),
+            at("new", new_n, text, other("old", old_n)).or_else(|| at("old", old_n, text, None)),
         )];
     }
 
@@ -1479,7 +1498,12 @@ fn render_change_row(
                 old: old_half().unwrap_or_else(Half::hatch),
                 new: new_half().unwrap_or_else(Half::hatch),
             },
-            at("new", new_n, new_text).or_else(|| at("old", old_n, old_text)),
+            // One row, both sides. A note written on the removed half in the
+            // unified layout is anchored OLD, and this is the row that holds
+            // it here — without the other side it had nowhere to land, and
+            // fell back to the hunk's header on every `s`.
+            at("new", new_n, new_text, other("old", old_n))
+                .or_else(|| at("old", old_n, old_text, None)),
         )];
     }
     // Unified: a Modified row is the removed line followed by the added one,
@@ -1490,7 +1514,7 @@ fn render_change_row(
     {
         out.push((
             RowContent::Unified(unify(h, old_n, None)),
-            at("old", old_n, old_text),
+            at("old", old_n, old_text, None),
         ));
     }
     if !matches!(row.change_type, ChangeType::Delete)
@@ -1498,7 +1522,7 @@ fn render_change_row(
     {
         out.push((
             RowContent::Unified(unify(h, None, new_n)),
-            at("new", new_n, new_text),
+            at("new", new_n, new_text, None),
         ));
     }
     out

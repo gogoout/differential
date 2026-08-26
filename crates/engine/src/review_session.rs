@@ -258,6 +258,21 @@ impl<S: ReviewStore> ReviewSession<S> {
         Ok(self.findings.last().expect("just pushed"))
     }
 
+    /// Rewrite a finding's body in place. Returns whether one was found.
+    ///
+    /// The id is a handle, not a hash of the text: rewriting a note is not
+    /// filing a different one, and the anchor it was written against is the
+    /// thing worth keeping. `plan_hash` stays too — the note still describes
+    /// the plan it was written on.
+    pub fn edit_finding(&mut self, id: &str, body: String) -> Result<bool, EngineError> {
+        let Some(f) = self.findings.iter_mut().find(|f| f.id == id) else {
+            return Ok(false);
+        };
+        f.body = body;
+        self.store.save_findings(&self.findings)?;
+        Ok(true)
+    }
+
     /// Delete a finding by id. Returns whether anything was removed.
     pub fn delete_finding(&mut self, id: &str) -> Result<bool, EngineError> {
         let before = self.findings.len();
