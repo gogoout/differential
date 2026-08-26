@@ -61,6 +61,10 @@ thing to explain and to get wrong.
 Reading the **detail**, a flat list of the files in view floats over the foot of the plan
 pane, the current one marked and the title counting `file 2 of 7`.
 
+Neither float appears in the **file view**, where the left pane is already a file tree: a
+map of one group would name a group nothing is selecting, and a file list would be the pane
+behind it. Both trees are drawn with the same connector guides.
+
 **A file header sticks.** Scrolled past it, the filename pins to the pane's top row, which
 costs a row only while it would otherwise be invisible. The hunk pill does not stick with
 it: two pinned rows is most of a small pane, and the pill's information is in the plan pane
@@ -118,9 +122,13 @@ one end drops the other's figure too. Deliberately not `@@ …` — that is the 
 dropped, and the gutters either side already carry the numbers.
 
 Where two blocks meet, the two boundary rows describing that one gap sit **adjacent with no
-blank between them**, so the seam reads as one band. They stay two rows rather than merging
-into one: each keeps its own `z`, so no key has to mean two directions. A gap that fits in
-a single press shows `↕` instead of a direction to choose.
+blank between them**, so the seam reads as one band. They stay two rows while there is a
+direction to choose — each keeps its own `z`, so no key has to mean two things — and both
+carry the **same** count, since they are two ends of one gap and opening either shortens it.
+
+Once one press would close the gap the choice is gone, and so is the second row: a single
+`↕` band says the whole of what is left. Which point that happens at depends on
+`context_step`, so a wider step collapses the seam sooner.
 
 Pills are square. The half-circle caps that would round them are drawn at inconsistent
 widths across terminals and fonts, and a pill a cell wider in one terminal than another is

@@ -13,7 +13,7 @@ use differential_engine::ports::ReviewStore;
 use differential_engine::schema::SourceKind;
 use differential_engine::store::{FsGroupingCache, FsReviewStore};
 use differential_testutil::{FakeBackend, TestRepo, json_group};
-use differential_tui::app::{App, Effect, Focus, Mode, ReviewOptions, Viewport};
+use differential_tui::app::{App, Effect, Focus, Mode, ReviewOptions, ViewMode, Viewport};
 use differential_tui::rows::{BoxStyle, RowFactory, RowKind};
 use differential_tui::theme::THEME;
 use differential_tui::window::Side;
@@ -1093,29 +1093,33 @@ fn expanded_windows_that_meet_merge_into_one_block() {
         .next_back()
         .expect("a second hunk");
 
-    for _ in 0..4 {
-        if !edges(&app)
-            .iter()
-            .any(|(h, s)| *h == lower && *s == Side::Up)
-        {
-            break;
-        }
+    // Press on whichever end of the middle gap is still offered. Once one press
+    // would close it the two rows collapse to one, so "the upward one is gone"
+    // is not the same as "the gap is closed".
+    for _ in 0..8 {
+        let mid = edges(&app)
+            .into_iter()
+            .find(|&(h, s)| (h == lower && s == Side::Up) || (h != lower && s == Side::Down));
+        let Some((h, side)) = mid else { break };
         put_cursor_on(
             &mut app,
-            |k| matches!(*k, RowKind::ContextEdge { hunk: h, side: Side::Up, .. } if h == lower),
+            |k| matches!(*k, RowKind::ContextEdge { hunk: x, side: sd, .. } if x == h && sd == side),
         );
         app.handle_key(key('z'));
     }
 
-    // One block: exactly one upward and one downward boundary survive, and no
-    // line of the file is drawn twice.
+    // One block: one boundary at each outer end, and no line drawn twice.
     let e = edges(&app);
     assert_eq!(
         e.iter().filter(|(_, s)| *s == Side::Up).count(),
         1,
         "merged windows share one top boundary, got {e:?}"
     );
-    assert_eq!(e.iter().filter(|(_, s)| *s == Side::Down).count(), 1);
+    assert_eq!(
+        e.iter().filter(|(_, s)| *s == Side::Down).count(),
+        1,
+        "and one bottom, got {e:?}"
+    );
     let text = drawn(&mut app);
     assert_eq!(
         text.matches("let filler25 =").count(),
@@ -2176,6 +2180,107 @@ fn an_empty_document_draws_without_panicking() {
     app.focus = Focus::Detail;
     let _ = drawn_as_is(&mut app);
     assert!(app.file_at_cursor().is_none());
+}
+
+/// A gap wide enough to need several presses shows both of its ends. Narrow it
+/// until one press would close it and there is nothing left to choose between
+/// them, so it collapses to a single row.
+#[test]
+fn a_gap_one_press_wide_is_one_row_not_two() {
+    let (_r, mut app) = app_with_a_long_file();
+    app.focus = Focus::Detail;
+
+    let edge_rows = |app: &App| -> Vec<(usize, Side)> {
+        app.rows
+            .iter()
+            .filter_map(|r| match r.kind {
+                RowKind::ContextEdge { hunk, side, .. } => Some((hunk, side)),
+                _ => None,
+            })
+            .collect()
+    };
+    // Two hunks mid-file: an outer end each, plus both ends of the gap between.
+    assert_eq!(
+        edge_rows(&app).len(),
+        4,
+        "expected two outer ends and both ends of the middle gap"
+    );
+
+    // The middle gap is thirteen lines against a ten-line step, so one press
+    // leaves three — close enough that the next press finishes it.
+    let (upper, _) = edge_rows(&app)[0];
+    put_cursor_on(
+        &mut app,
+        |k| matches!(*k, RowKind::ContextEdge { hunk: h, side: Side::Down, .. } if h == upper),
+    );
+    app.handle_key(key('z'));
+
+    let rows = edge_rows(&app);
+    assert_eq!(
+        rows.len(),
+        3,
+        "the middle gap should now speak with one row, got {rows:?}"
+    );
+    assert!(
+        app.rows.iter().any(|r| r.button == Some("↕")),
+        "a one-press gap should offer both directions at once"
+    );
+    // And it still works: one more press closes it and the blocks merge.
+    put_cursor_on(
+        &mut app,
+        |k| matches!(*k, RowKind::ContextEdge { hunk: h, side: Side::Down, .. } if h == upper),
+    );
+    app.handle_key(key('z'));
+    assert_eq!(
+        edge_rows(&app).len(),
+        2,
+        "closing the gap should leave only the outer ends"
+    );
+}
+
+/// The file view's left pane IS a file tree, so neither float belongs there: a
+/// map of one group would name a group nothing is selecting, and a file list
+/// would be the pane behind it.
+#[test]
+fn neither_float_appears_in_the_file_view() {
+    let (_r, mut app) = app_with_two_groups_in_one_file();
+
+    app.focus = Focus::Groups;
+    assert!(
+        drawn_as_is(&mut app).contains("files in g"),
+        "no map to lose"
+    );
+    app.handle_key(key('v'));
+    assert_eq!(app.view_mode, ViewMode::Files);
+    let text = drawn_as_is(&mut app);
+    assert!(
+        !text.contains("files in g"),
+        "the group map should not follow into the file view: {text}"
+    );
+
+    app.focus = Focus::Detail;
+    let text = drawn_as_is(&mut app);
+    assert!(
+        !text.contains("file 1 of"),
+        "nor should the file list: {text}"
+    );
+
+    // Both come back on the way out.
+    app.handle_key(key('v'));
+    assert_eq!(app.view_mode, ViewMode::Groups);
+    assert!(drawn_as_is(&mut app).contains("file 1 of"));
+}
+
+/// The file view's tree gets the same connectors the floating map draws.
+#[test]
+fn the_file_view_tree_is_drawn_with_guides() {
+    let (_r, mut app) = app_with_two_groups_in_one_file();
+    app.handle_key(key('v'));
+    let text = drawn_as_is(&mut app);
+    assert!(
+        text.contains('└') || text.contains('├'),
+        "the file tree should have guides: {text}"
+    );
 }
 
 /// Not an assertion — a readable dump of the pane, so the styling can be

@@ -231,6 +231,12 @@ pub struct App {
     expanded: HashMap<usize, Expansion>,
     opts: ReviewOptions,
     pub status: String,
+    /// The overviews' inputs, computed when the rows are. Both used to be
+    /// derived inside `draw`, which meant an O(hunks) scan with a string
+    /// compare per hunk on EVERY frame — enough to make a large review feel
+    /// stuck on each keypress.
+    map_files: HashSet<usize>,
+    listed_files: Vec<usize>,
     /// Measured geometry. An input to update, never a draw-time output.
     viewport: Viewport,
     pending_d: bool,
@@ -269,6 +275,8 @@ impl App {
             expanded: HashMap::new(),
             opts,
             status: String::new(),
+            map_files: HashSet::new(),
+            listed_files: Vec::new(),
             viewport: Viewport::default(),
             pending_d: false,
         };
@@ -527,6 +535,7 @@ impl App {
         {
             self.cursor = self.next_selectable(0, 1).unwrap_or(0);
         }
+        self.rebuild_overviews();
     }
 
     fn next_selectable(&self, from: usize, dir: isize) -> Option<usize> {
@@ -815,6 +824,14 @@ impl App {
             }
         }
         out
+    }
+
+    /// Recompute what the two overviews draw. Called with the rows, because
+    /// that is what they describe — and never from `draw`, which runs on every
+    /// keypress.
+    fn rebuild_overviews(&mut self) {
+        self.listed_files = self.file_list();
+        self.map_files = self.files_of_selected_group();
     }
 
     /// The row index of the file header the cursor is under.
@@ -1166,9 +1183,15 @@ impl App {
         // splitting one. The diff carries on underneath, so browsing the plan
         // still previews what entering it will show — and pane heights stay a
         // function of the terminal, never of a key.
-        match self.focus {
-            Focus::Groups => self.draw_group_map(frame, panes.detail),
-            Focus::Detail => self.draw_file_list(frame, panes.plan),
+        //
+        // Only in the reading plan, though. The file view's left pane IS a file
+        // tree: a floating map of one group would name a group nothing is
+        // selecting, and a floating file list would be the pane behind it.
+        if self.view_mode == ViewMode::Groups {
+            match self.focus {
+                Focus::Groups => self.draw_group_map(frame, panes.detail),
+                Focus::Detail => self.draw_file_list(frame, panes.plan),
+            }
         }
 
         match &self.mode {
@@ -1238,8 +1261,9 @@ impl App {
                 .collect(),
             ViewMode::Files => {
                 let reviewed = self.session.reviewed_hunks();
+                let guides = tree_guides(&self.tree);
                 (0..self.tree.len())
-                    .map(|i| self.tree_lines(i, i == selected, &reviewed))
+                    .map(|i| self.tree_lines(i, i == selected, &reviewed, &guides[i]))
                     .collect()
             }
         };
@@ -1453,6 +1477,10 @@ impl App {
         row: usize,
         selected: bool,
         reviewed: &HashSet<usize>,
+        // Passed in, not computed here: this runs once per visible row, and
+        // building the whole tree's connectors inside it would be quadratic on
+        // every frame.
+        guide: &str,
     ) -> Vec<Line<'static>> {
         let entry = &self.tree[row];
         let bg = |st: Style| {
@@ -1462,7 +1490,7 @@ impl App {
                 st
             }
         };
-        let indent = "  ".repeat(entry.depth);
+        let indent = guide;
         let files = self.files_of_tree_row(row);
         let (adds, dels): (usize, usize) = files
             .iter()
@@ -1507,7 +1535,7 @@ impl App {
                 let f = &self.files()[*file_idx];
                 let name = f.path.rsplit('/').next().unwrap_or(&f.path).to_string();
                 let mut spans = vec![
-                    Span::styled(format!("{mark}{indent}  "), dim),
+                    Span::styled(format!("{mark}{indent}"), dim),
                     Span::styled(name, name_style),
                     Span::styled("  ", dim),
                 ];
@@ -1532,7 +1560,7 @@ impl App {
     /// The flat file list, floating over the foot of the plan pane: where you
     /// are, and how much is left.
     fn draw_file_list(&self, frame: &mut Frame, plan: Rect) {
-        let files_len = self.file_list().len();
+        let files_len = self.listed_files.len();
         if files_len == 0 {
             return;
         }
@@ -1552,7 +1580,7 @@ impl App {
     fn draw_file_list_in(&self, frame: &mut Frame, area: Rect) {
         let reviewed = self.session.reviewed_hunks();
         let here = self.file_at_cursor();
-        let files = self.file_list();
+        let files = &self.listed_files;
         let inner_w = area.width.saturating_sub(2) as usize;
         // Keep the current file in view; the list can outrun its pane.
         let h = area.height.saturating_sub(2) as usize;
@@ -1639,7 +1667,7 @@ impl App {
         };
         frame.render_widget(Clear, area);
         let inner_h = area.height.saturating_sub(2) as usize;
-        let mine = self.files_of_selected_group();
+        let mine = &self.map_files;
         let guides = tree_guides(&self.tree);
         let lines: Vec<Line> = self
             .tree
@@ -1744,13 +1772,14 @@ impl App {
         let Some(g) = self.groups().get(self.selected_group) else {
             return HashSet::new();
         };
+        let id = g.id.as_str();
         self.files()
             .iter()
             .enumerate()
             .filter(|(_, f)| {
                 f.hunks
                     .iter()
-                    .any(|h| plan.group_of_hunk(*h).is_some_and(|owner| owner.id == g.id))
+                    .any(|h| plan.group_of_hunk(*h).is_some_and(|owner| owner.id == id))
             })
             .map(|(i, _)| i)
             .collect()

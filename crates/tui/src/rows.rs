@@ -800,8 +800,13 @@ fn file_rows(
     let (old_hl, new_hl) = factory.highlight(path, &old_want, &new_want);
     let src = factory.source(path);
 
+    // Set when the previous block's bottom row already spoke for the gap on its
+    // own, so this block's top row would only repeat it.
+    let mut spoken_for = false;
     for (n, block) in blocks.iter().enumerate() {
-        if let Some(b) = &block.top {
+        if let Some(b) = &block.top
+            && !spoken_for
+        {
             rows.push(boundary_row(ctx, b, ctx.context_step));
         }
         // A context row acts on the hunk it sits next to — the one below when
@@ -861,8 +866,15 @@ fn file_rows(
                 }
             }
         }
+        spoken_for = false;
         if let Some(b) = &block.bottom {
             rows.push(boundary_row(ctx, b, ctx.context_step));
+            // One press closes this gap, so there is no direction left to
+            // choose: the row below would carry the same count and the same
+            // `↕`. Two rows saying one thing is one row too many.
+            spoken_for = b.next.is_none()
+                && b.hidden <= ctx.context_step
+                && blocks.get(n + 1).is_some_and(|next| next.top.is_some());
         }
         // A blank separates a block from what follows — but NOT two boundary
         // rows, which describe one gap between two blocks and read as one band
