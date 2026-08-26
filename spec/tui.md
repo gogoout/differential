@@ -195,7 +195,7 @@ sitting, not a finding, so nothing about it reaches the sidecar store.
 | `c` | add a finding on the current hunk — a float over the diff, titled with the file and lines it annotates (`ctrl-s` save, `esc` cancel, `enter` newline) |
 | `dd` | delete the finding under the cursor |
 | `y` | copy the open-findings summary to the clipboard (markdown list) |
-| `?` | help |
+| `?` | help — the keys, as one uninterrupted table |
 | `q` | quit — state is saved on every change, quitting never loses anything |
 
 ## No range: the picker

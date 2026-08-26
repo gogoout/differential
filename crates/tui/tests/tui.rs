@@ -2390,6 +2390,50 @@ fn the_finding_editor_floats_and_names_its_subject() {
     );
 }
 
+/// The help modal is keys and nothing else. Five lines of prose about the plan
+/// pane and the diff's colours used to sit between `n/N` and `s`.
+#[test]
+fn the_help_modal_is_only_keys() {
+    let (_r, mut app) = make_app();
+    app.handle_key(key('?'));
+    assert!(matches!(app.mode, Mode::Help));
+
+    let backend = ratatui::backend::TestBackend::new(100, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let rows: Vec<String> = (0..40u16)
+        .map(|y| (0..100u16).map(|x| buf[(x, y)].symbol()).collect())
+        .collect();
+
+    let at = |needle: &str| {
+        rows.iter()
+            .position(|r| r.contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} missing from help"))
+    };
+    // Every key row, then the footer. No legend in between, and none after.
+    let footer = at("press any key");
+    for k in ["j/k", "n/N", "z ", "s ", "v ", "f ", "space", "dd", "quit"] {
+        assert!(at(k) < footer, "{k:?} should be in the key table");
+    }
+    for prose in [
+        "reading the panes",
+        "plan row",
+        "no -/+ columns",
+        "floats a map",
+    ] {
+        assert!(
+            !rows.iter().any(|r| r.contains(prose)),
+            "{prose:?} is a legend line and should not be in the help modal"
+        );
+    }
+
+    // The key column is aligned: every description starts in one column.
+    let col = |needle: &str| rows[at(needle)].find(needle).unwrap();
+    assert_eq!(col("previous / next group"), col("half page"));
+    assert_eq!(col("half page"), col("unified / split diff"));
+}
+
 /// Not an assertion — a readable dump of the pane, so the styling can be
 /// eyeballed with `cargo test -- --ignored --nocapture render_dump`.
 #[test]
