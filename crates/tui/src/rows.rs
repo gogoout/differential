@@ -237,6 +237,20 @@ pub enum RowContent {
     },
 }
 
+/// Where a diff row sits in the file: which side, which line, and its text.
+///
+/// What a finding anchored to a LINE is built from. A `RowKind::Diff` carries
+/// only its hunk, because that is what `space` and `n`/`N` act on; the line
+/// numbers were computed and then formatted straight into a gutter string, so
+/// nothing structured survived for `c` to read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LineRef {
+    /// "old" | "new"
+    pub side: &'static str,
+    pub line: u32,
+    pub text: String,
+}
+
 pub struct Row {
     pub kind: RowKind,
     pub content: RowContent,
@@ -244,6 +258,9 @@ pub struct Row {
     /// A glyph drawn in the pane's left border column, for rows that are a
     /// control rather than content.
     pub button: Option<&'static str>,
+    /// The source line this row shows, for a finding anchored to it. `None` on
+    /// every row that is not one line of a file.
+    pub line: Option<LineRef>,
     /// What a hunk header keeps while the cursor is somewhere else.
     ///
     /// The marks — reviewed, and how many findings stand against the hunk —
@@ -338,6 +355,7 @@ impl Row {
             button: None,
             hint: None,
             idle: Vec::new(),
+            line: None,
             content: RowContent::Unified(Half {
                 gutter: Gutter::flat(" ", Style::default()),
                 pairs: line
@@ -675,6 +693,8 @@ fn hunk_list_rows(
         );
         i = end;
     }
+
+    place_findings(ctx, rows);
 }
 
 /// Rows for a directory: every hunk beneath it, in file order. The shared
@@ -827,6 +847,7 @@ fn column_header_row() -> Row {
         button: None,
         hint: None,
         idle: Vec::new(),
+        line: None,
         content: RowContent::Split {
             old: label("old"),
             new: label("new"),
@@ -971,21 +992,86 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
         .flush()
         .bordered(box_style, hi, hunk_accent(ctx, hi, foreign)),
     );
+}
 
-    for f in ctx
-        .findings
-        .iter()
-        .filter(|f| f.anchor.hunk_digest == hunk.digest)
-    {
-        let moved = if f.moved { " (moved)" } else { "" };
-        rows.push(Row::full(
-            RowKind::Finding(f.id.clone(), hi),
-            Line::from(Span::styled(
-                format!("  ◆ {}{moved}", f.body.lines().next().unwrap_or("")),
-                Style::default().fg(THEME.finding_fg),
-            )),
-        ));
+/// One finding, as the row that shows it.
+fn finding_row(f: &Finding, hunk: usize) -> Row {
+    let moved = if f.moved { " (moved)" } else { "" };
+    Row::full(
+        RowKind::Finding(f.id.clone(), hunk),
+        Line::from(Span::styled(
+            format!("  ◆ {}{moved}", f.body.lines().next().unwrap_or("")),
+            Style::default().fg(THEME.finding_fg),
+        )),
+    )
+}
+
+/// Put each finding under the line it annotates.
+///
+/// A finding anchors to a LINE, and a note under the line it is about is one
+/// you read without holding a number in your head. Findings all sat under the
+/// hunk header instead, because that was the only thing they could anchor to.
+///
+/// A finding whose line is not on screen still has to appear — the context
+/// around it may still be folded, or a regeneration may have re-anchored it to
+/// the hunk — so anything unplaced falls back to its hunk's header, where they
+/// all used to be.
+fn place_findings(ctx: &RowsContext, rows: &mut Vec<Row>) {
+    if ctx.findings.is_empty() {
+        return;
     }
+    let mut left: Vec<&Finding> = ctx.findings.iter().collect();
+    let mut out: Vec<Row> = Vec::with_capacity(rows.len() + left.len());
+    let mut file = String::new();
+
+    for row in std::mem::take(rows) {
+        if let RowKind::FileHeader(path) = &row.kind {
+            file.clone_from(path);
+        }
+        // Deliberately keyed on (file, side, line) and not on the hunk digest
+        // as well: a context row's hunk is the one it sits NEXT to, which is a
+        // guess, and a line is in exactly one place either way.
+        let here: Vec<&Finding> = match (&row.kind, &row.line) {
+            (RowKind::Diff(_), Some(l)) => left
+                .iter()
+                .copied()
+                .filter(|f| {
+                    f.anchor.file == file && f.anchor.side == l.side && f.anchor.end_line == l.line
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let hunk = row.kind.hunk().unwrap_or(0);
+        out.push(row);
+        for f in here {
+            left.retain(|g| g.id != f.id);
+            out.push(finding_row(f, hunk));
+        }
+    }
+
+    // Whatever found no line goes back under its hunk's header.
+    if !left.is_empty() {
+        let mut with_headers = Vec::with_capacity(out.len() + left.len());
+        for row in out {
+            let under: Vec<&Finding> = match &row.kind {
+                RowKind::HunkHeader { hunk, .. } => {
+                    let digest = &ctx.doc.hunks[*hunk].digest;
+                    left.iter()
+                        .copied()
+                        .filter(|f| &f.anchor.hunk_digest == digest)
+                        .collect()
+                }
+                _ => Vec::new(),
+            };
+            let hunk = row.kind.hunk().unwrap_or(0);
+            with_headers.push(row);
+            for f in under {
+                with_headers.push(finding_row(f, hunk));
+            }
+        }
+        out = with_headers;
+    }
+    *rows = out;
 }
 
 /// One file's rows: the blocks its shown hunks form, each hunk's header sitting
@@ -1082,6 +1168,13 @@ fn file_rows(
                             button: None,
                             hint: None,
                             idle: Vec::new(),
+                            // An unchanged line exists on both sides; the new
+                            // one is what a reader is annotating.
+                            line: Some(LineRef {
+                                side: "new",
+                                line: w as u32,
+                                text: text.to_string(),
+                            }),
                             content: row,
                         });
                     }
@@ -1100,7 +1193,7 @@ fn file_rows(
                     };
                     let accent = hunk_accent(ctx, *hunk, *foreign);
                     hunk_header_rows(ctx, *hunk, *foreign, rows);
-                    for content in change_rows(src, old, new, &old_hl, &new_hl, ctx.mode) {
+                    for (content, line) in change_rows(src, old, new, &old_hl, &new_hl, ctx.mode) {
                         rows.push(
                             Row {
                                 kind: RowKind::Diff(*hunk),
@@ -1108,6 +1201,7 @@ fn file_rows(
                                 button: None,
                                 hint: None,
                                 idle: Vec::new(),
+                                line,
                                 content,
                             }
                             .bordered(box_style, *hunk, accent),
@@ -1273,7 +1367,7 @@ fn change_rows(
     old_hl: &HashMap<usize, HighlightedSpans>,
     new_hl: &HashMap<usize, HighlightedSpans>,
     mode: DiffMode,
-) -> Vec<RowContent> {
+) -> Vec<(RowContent, Option<LineRef>)> {
     let slice = |lines: &[String], r: &Range<usize>| -> String {
         lines
             .get(r.start.saturating_sub(1)..r.end.saturating_sub(1).min(lines.len()))
@@ -1300,7 +1394,14 @@ fn render_change_row(
     old_hl: &HashMap<usize, HighlightedSpans>,
     new_hl: &HashMap<usize, HighlightedSpans>,
     mode: DiffMode,
-) -> Vec<RowContent> {
+) -> Vec<(RowContent, Option<LineRef>)> {
+    let at = |side, n: Option<usize>, text: &str| {
+        n.map(|n| LineRef {
+            side,
+            line: n as u32,
+            text: text.to_string(),
+        })
+    };
     let old_half = || {
         let (n, text) = (old_n?, row.old_line.as_ref()?.1.as_str());
         Some(half(
@@ -1334,32 +1435,43 @@ fn render_change_row(
             .map(|(_, t)| t.as_str())
             .unwrap_or("");
         let (o, w) = (old_n.unwrap_or(0), new_n.unwrap_or(0));
-        return vec![context_row(
-            text,
-            o,
-            w,
-            new_hl.get(&w.saturating_sub(1)),
-            mode,
+        return vec![(
+            context_row(text, o, w, new_hl.get(&w.saturating_sub(1)), mode),
+            at("new", new_n, text).or_else(|| at("old", old_n, text)),
         )];
     }
 
+    let old_text = row.old_line.as_ref().map(|(_, t)| t.as_str()).unwrap_or("");
+    let new_text = row.new_line.as_ref().map(|(_, t)| t.as_str()).unwrap_or("");
     if mode == DiffMode::Split {
-        return vec![RowContent::Split {
-            old: old_half().unwrap_or_else(Half::hatch),
-            new: new_half().unwrap_or_else(Half::hatch),
-        }];
+        // One row, two sides. It anchors to the new side where there is one:
+        // a note on a modification is a note on what the change became.
+        return vec![(
+            RowContent::Split {
+                old: old_half().unwrap_or_else(Half::hatch),
+                new: new_half().unwrap_or_else(Half::hatch),
+            },
+            at("new", new_n, new_text).or_else(|| at("old", old_n, old_text)),
+        )];
     }
-    // Unified: a Modified row is the removed line followed by the added one.
+    // Unified: a Modified row is the removed line followed by the added one,
+    // and each anchors to its own side.
     let mut out = Vec::new();
     if !matches!(row.change_type, ChangeType::Insert)
         && let Some(h) = old_half()
     {
-        out.push(RowContent::Unified(unify(h, old_n, None)));
+        out.push((
+            RowContent::Unified(unify(h, old_n, None)),
+            at("old", old_n, old_text),
+        ));
     }
     if !matches!(row.change_type, ChangeType::Delete)
         && let Some(h) = new_half()
     {
-        out.push(RowContent::Unified(unify(h, None, new_n)));
+        out.push((
+            RowContent::Unified(unify(h, None, new_n)),
+            at("new", new_n, new_text),
+        ));
     }
     out
 }
@@ -1471,9 +1583,14 @@ mod tests {
         let out = render_change_row(&row, Some(7), Some(9), &no_hl, &no_hl, mode);
 
         assert_eq!(out.len(), 1, "one row, not a removal plus an addition");
-        let RowContent::Unified(half) = &out[0] else {
+        let RowContent::Unified(half) = &out[0].0 else {
             panic!("expected a unified row, got {:?}", out[0]);
         };
+        assert_eq!(
+            out[0].1.as_ref().map(|l| (l.side, l.line)),
+            Some(("new", 9)),
+            "a context row anchors to its new-side line"
+        );
         assert!(
             matches!(half.fill, Fill::Bg(s) if s.bg.is_none()),
             "context carries no change colour: {:?}",
@@ -1488,7 +1605,7 @@ mod tests {
 
         // Split mode shows it once on each side, neither of them hatched.
         let out = render_change_row(&row, Some(7), Some(9), &no_hl, &no_hl, DiffMode::Split);
-        let RowContent::Split { old, new } = &out[0] else {
+        let RowContent::Split { old, new } = &out[0].0 else {
             panic!("expected a split row");
         };
         assert!(matches!(old.fill, Fill::Bg(_)) && matches!(new.fill, Fill::Bg(_)));
@@ -1515,8 +1632,18 @@ mod tests {
             ),
             other => panic!("expected unified, got {other:?}"),
         };
-        let (removed_gutter, removed) = text(&out[0]);
-        let (added_gutter, added) = text(&out[1]);
+        let (removed_gutter, removed) = text(&out[0].0);
+        let (added_gutter, added) = text(&out[1].0);
+        // Each half anchors to its own side, so a note on the removed line is
+        // a note on the old file and one on the added line is on the new.
+        assert_eq!(
+            out[0].1.as_ref().map(|l| (l.side, l.line)),
+            Some(("old", 4))
+        );
+        assert_eq!(
+            out[1].1.as_ref().map(|l| (l.side, l.line)),
+            Some(("new", 4))
+        );
         assert_eq!(removed, "was()");
         assert_eq!(added, "now()");
         // The removal fills the OLD column only, the addition the NEW column,

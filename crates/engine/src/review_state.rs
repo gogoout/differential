@@ -46,16 +46,85 @@ pub enum FindingStatus {
     Orphaned,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Anchor {
     pub file: String,
     /// "old" | "new"
     pub side: String,
+    /// First anchored line, in file coordinates. DERIVED — `offset` is what
+    /// survives a regeneration, and this is recomputed from it.
     pub line: u32,
+    /// Last anchored line. Equal to `line` for a single-line anchor; `0` on a
+    /// record written before ranges existed, which reads as "just `line`".
+    #[serde(default)]
+    pub end_line: u32,
+    /// Lines from the hunk's start to `line`.
+    ///
+    /// This, not `line`, is what the anchor is really made of. The digest
+    /// fixes the hunk's CONTENT, so a hunk that moved in the file still holds
+    /// the same line at the same offset — while its absolute line number did
+    /// not survive the move. A record written before offsets existed has `0`,
+    /// which lands it on the hunk's first line: exactly where it used to.
+    #[serde(default)]
+    pub offset: u32,
+    /// Lines the anchor spans past `offset`. `0` is a single line.
+    #[serde(default)]
+    pub span: u32,
     pub hunk_digest: String,
     /// The anchored line's text — the fuzzy re-anchor key.
     #[serde(default)]
     pub line_text: String,
+    /// The last anchored line's text, for the same job at the range's far end.
+    #[serde(default)]
+    pub end_line_text: String,
+}
+
+impl Anchor {
+    /// Where the anchor's side of `hunk` begins in the file.
+    fn hunk_start(&self, old_start: u32, new_start: u32) -> u32 {
+        if self.side == "old" {
+            old_start
+        } else {
+            new_start
+        }
+        .max(1)
+    }
+
+    /// The lines this annotates, as a reader writes them: `47`, or `47-52`.
+    ///
+    /// One place decides it, because `end_line` is `0` on a record written
+    /// before ranges existed and every consumer would otherwise have to know
+    /// that.
+    pub fn line_span(&self) -> String {
+        if self.end_line > self.line {
+            format!("{}-{}", self.line, self.end_line)
+        } else {
+            self.line.to_string()
+        }
+    }
+
+    /// Recompute the line numbers from the offset the anchor really carries.
+    fn resolve(&mut self, start: u32) {
+        self.line = start.saturating_add(self.offset);
+        self.end_line = self.line.saturating_add(self.span);
+    }
+}
+
+/// The lines a reviewer pointed at, in file coordinates.
+///
+/// An observation, not a decision: a renderer reports what its cursor was on,
+/// and the engine turns it into an anchor — which side, how far into the hunk,
+/// how many lines, and what text to re-find it by. `None` at the call site
+/// means the whole hunk, which is what a finding filed from its header
+/// annotates.
+#[derive(Debug, Clone)]
+pub struct Lines {
+    /// "old" | "new"
+    pub side: String,
+    pub start: u32,
+    pub end: u32,
+    pub start_text: String,
+    pub end_text: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,20 +187,12 @@ pub fn reanchor(
         if f.plan_hash == plan_hash {
             continue; // written against this exact plan
         }
-        // 1. Exact digest.
-        if let Some((idx, h)) = doc
-            .hunks
-            .iter()
-            .enumerate()
-            .find(|(_, h)| h.digest == f.anchor.hunk_digest)
-        {
-            let _ = idx;
+        // 1. Exact digest. The content is identical, so the offset holds and
+        //    only the hunk's position in the file has to be re-read.
+        if let Some(h) = doc.hunks.iter().find(|h| h.digest == f.anchor.hunk_digest) {
             f.anchor.file = h.file.clone();
-            f.anchor.line = if f.anchor.side == "old" {
-                h.old_start.max(1)
-            } else {
-                h.new_start.max(1)
-            };
+            let start = f.anchor.hunk_start(h.old_start, h.new_start);
+            f.anchor.resolve(start);
             f.plan_hash = plan_hash.to_string();
             f.moved = false;
             if f.status == FindingStatus::Orphaned {
@@ -139,25 +200,34 @@ pub fn reanchor(
             }
             continue;
         }
-        // 2. Same-file content match on the anchored line text.
+        // 2. Same-file content match on the anchored line text. The hunk is
+        //    not the one this was written against, so the offset is re-found
+        //    from where the text now sits inside it — the anchor's own side
+        //    first, since a line can appear on both.
         let text = f.anchor.line_text.as_bytes();
+        let at = |lines: &[Vec<u8>]| lines.iter().position(|l| l == text);
         let matched = (!text.is_empty())
             .then(|| {
                 view.hunks.iter().enumerate().find(|(_, h)| {
                     let file = view.file_of(h);
                     file.path == f.anchor.file.as_bytes()
-                        && (h.added.iter().any(|l| l == text)
-                            || h.removed.iter().any(|l| l == text))
+                        && (at(&h.added).is_some() || at(&h.removed).is_some())
                 })
             })
             .flatten();
         if let Some((hi, h)) = matched {
             f.anchor.hunk_digest = doc.hunks[hi].digest.clone();
-            f.anchor.line = if f.anchor.side == "old" {
-                h.old_start.max(1)
+            let own = if f.anchor.side == "old" {
+                &h.removed
             } else {
-                h.new_start.max(1)
+                &h.added
             };
+            f.anchor.offset = at(own)
+                .or_else(|| at(&h.added))
+                .or_else(|| at(&h.removed))
+                .unwrap_or(0) as u32;
+            let start = f.anchor.hunk_start(h.old_start, h.new_start);
+            f.anchor.resolve(start);
             f.plan_hash = plan_hash.to_string();
             f.moved = true;
             if f.status == FindingStatus::Orphaned {

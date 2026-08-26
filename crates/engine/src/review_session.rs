@@ -14,7 +14,7 @@ use crate::EngineError;
 use crate::model::DiffView;
 use crate::plan;
 use crate::ports::ReviewStore;
-use crate::review_state::{Anchor, Finding, ReviewState, reanchor};
+use crate::review_state::{Anchor, Finding, Lines, ReviewState, reanchor};
 
 pub struct ReviewSession<S: ReviewStore> {
     store: S,
@@ -177,32 +177,80 @@ impl<S: ReviewStore> ReviewSession<S> {
         self.store.save_state(&self.state)
     }
 
-    /// Create a finding anchored on `hunk` and persist it.
-    pub fn add_finding(&mut self, hunk: usize, body: String) -> Result<&Finding, EngineError> {
+    /// Create a finding on `hunk` and persist it.
+    ///
+    /// `lines` is what the reviewer pointed at; `None` anchors the hunk's
+    /// first changed line, which is what a finding filed from its header
+    /// annotates. Either way the anchor is stored as an OFFSET into the hunk,
+    /// so it survives the hunk moving in the file (see `Anchor::offset`).
+    pub fn add_finding(
+        &mut self,
+        hunk: usize,
+        lines: Option<Lines>,
+        body: String,
+    ) -> Result<&Finding, EngineError> {
         let h = &self.doc.hunks[hunk];
-        let side = if h.new_count > 0 { "new" } else { "old" };
-        let line = if h.new_count > 0 {
-            h.new_start.max(1)
+        let lines = lines.unwrap_or_else(|| {
+            let vh = &self.view.hunks[hunk];
+            let text = vh
+                .added
+                .first()
+                .or(vh.removed.first())
+                .map(|l| String::from_utf8_lossy(l).into_owned())
+                .unwrap_or_default();
+            let new_side = h.new_count > 0;
+            let line = if new_side {
+                h.new_start.max(1)
+            } else {
+                h.old_start.max(1)
+            };
+            Lines {
+                side: if new_side { "new" } else { "old" }.into(),
+                start: line,
+                end: line,
+                start_text: text.clone(),
+                end_text: text,
+            }
+        });
+        let old_side = lines.side == "old";
+        let (start, count) = if old_side {
+            (h.old_start.max(1), h.old_count)
         } else {
-            h.old_start.max(1)
+            (h.new_start.max(1), h.new_count)
         };
+        let end = lines.end.max(lines.start);
+
+        // The re-anchor key comes from the HUNK's own bytes wherever the line
+        // is one of its changed lines: `reanchor` matches against those bytes,
+        // and a renderer's text has been through tab expansion and trimming on
+        // the way to the screen. Outside the changed lines — a context line the
+        // reader expanded into view — there is nothing in the hunk to read, so
+        // what the renderer saw is what there is.
         let vh = &self.view.hunks[hunk];
-        let line_text = vh
-            .added
-            .first()
-            .or(vh.removed.first())
-            .map(|l| String::from_utf8_lossy(l).into_owned())
-            .unwrap_or_default();
+        let side_lines = if old_side { &vh.removed } else { &vh.added };
+        let raw = |line: u32| -> Option<String> {
+            (line >= start && line < start.saturating_add(count))
+                .then(|| side_lines.get((line - start) as usize))
+                .flatten()
+                .map(|l| String::from_utf8_lossy(l).into_owned())
+        };
+        let line_text = raw(lines.start).unwrap_or(lines.start_text);
+        let end_line_text = raw(end).unwrap_or(lines.end_text);
+
         let finding = Finding::new(
             crate::review_state::now_unix(),
             body,
             self.plan_hash.clone(),
             Anchor {
                 file: h.file.clone(),
-                side: side.into(),
-                line,
+                side: lines.side,
+                line: lines.start,
+                end_line: end,
+                offset: lines.start.saturating_sub(start),
+                span: end - lines.start,
                 hunk_digest: h.digest.clone(),
                 line_text,
+                end_line_text,
             },
         );
         self.findings.push(finding);

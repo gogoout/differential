@@ -293,6 +293,7 @@ list belongs; the footer's job is to point at it.
 | `s` | toggle unified / side-by-side diff layout (persisted) |
 | `f` | files, in the pane you are in — plan pane: toggle reading plan ↔ file tree (persisted) · diff pane: the file-list modal (`enter` jumps to the file) |
 | `space` | mark reviewed — the whole selected group/file in the left pane, the hunk's **class** in the diff pane (one exemplar verifies the shape) |
+| `V` | start a line selection at the cursor · `j`/`k` extend it · `esc` drops it · `c` writes a finding over it |
 | `c` | add a finding on the current hunk — a float over the diff, titled with the file and lines it annotates (`enter` saves · `shift+enter` or a trailing `\` before `enter` makes a newline · `esc` cancels) |
 | `dd` | delete the finding under the cursor |
 | `y` | copy the open-findings summary to the clipboard (markdown list) |
@@ -354,6 +355,22 @@ findings anchor on exact hunk digests and re-anchor on every open (exact digest 
 content match flagged *moved* → orphaned, never dropped; orphans revive when content
 returns). The pane title shows an orphan count when any exist.
 
+**A finding is about lines.** `c` on a diff row annotates **that line**; `V` first starts a
+selection the cursor extends, and `c` then annotates the run. On a row that is not a line of
+a file — a hunk header, a fold — `c` annotates the whole hunk, which is what every finding
+used to do.
+
+The anchor is stored as an **offset into the hunk**, not as a line number. The digest fixes
+the hunk's content, so a hunk that moved in the file still holds the same line at the same
+offset — while its absolute number did not survive the move. ADR 0013 is unchanged by this:
+the anchor is still the digest, with a position inside it. A record written before offsets
+existed reads `0`, which lands it on the hunk's first line — exactly where it was.
+
+A finding is **drawn under the line it annotates**, so a note and its subject are read
+together. One whose line is not on screen — the context around it still folded, or a
+regeneration that could only re-anchor it to the hunk — falls back to its hunk's header,
+where they all used to sit.
+
 **Writing a finding** opens a float over the diff rather than a strip pinned to its foot:
 a note is about lines you should still be able to see. Its border carries the file and line
 range it will anchor to, and its footer the keys.
@@ -373,8 +390,10 @@ was being dropped, which read as the box being broken.
 ## Findings contract
 
 `dfr findings <range>` re-anchors and prints the findings as JSON — each record carries
-`{id, created, body, status, moved, plan_hash, anchor: {file, side, line, hunk_digest,
-line_text}}`. `hunk_digest` keys back into the plan document's `hunks[].digest` and from
+`{id, created, body, status, moved, plan_hash, anchor: {file, side, line, end_line, offset,
+span, hunk_digest, line_text, end_line_text}}`. `line`/`end_line` are the resolved numbers
+for a consumer that only reads; `offset`/`span` are what survive a regeneration. All five
+are additive with defaults, so an older `findings.jsonl` loads unchanged. `hunk_digest` keys back into the plan document's `hunks[].digest` and from
 there to `forge_position`, which is how agent tooling and the future forge consumer act on
 them. The `y` clipboard summary is the human-readable projection: one markdown bullet per
 open finding, `file:line (group label): body`.

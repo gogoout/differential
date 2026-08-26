@@ -219,7 +219,7 @@ fn review_sidecar_layout_is_frozen() {
     let mut session = ReviewSession::open(store, out.document.unwrap(), out.view).unwrap();
     let plan_hash = session.plan_hash().to_string();
     session.toggle_reviewed(0).unwrap();
-    session.add_finding(0, "a finding".into()).unwrap();
+    session.add_finding(0, None, "a finding".into()).unwrap();
 
     let names: BTreeSet<String> = std::fs::read_dir(&root)
         .unwrap()

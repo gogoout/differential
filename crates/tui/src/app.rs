@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use differential_engine::FsReviewSession;
 use differential_engine::plan::{Fold, PlanIndex};
-use differential_engine::review_state::FindingStatus;
+use differential_engine::review_state::{FindingStatus, Lines};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -19,8 +19,8 @@ use tui_textarea::TextArea;
 use unicode_width::UnicodeWidthStr;
 
 use super::rows::{
-    Border, DiffMode, Fill, GroupContext, Half, Row, RowContent, RowFactory, RowKind, RowsContext,
-    build_dir_rows, build_file_rows, build_group_rows, pill,
+    Border, DiffMode, Fill, GroupContext, Half, LineRef, Row, RowContent, RowFactory, RowKind,
+    RowsContext, build_dir_rows, build_file_rows, build_group_rows, pill,
 };
 use super::theme::{THEME, Theme};
 use super::vendor::text_utils::truncate_or_pad_spans;
@@ -134,8 +134,9 @@ pub enum Focus {
 
 pub enum Mode {
     Normal,
-    /// Editing a finding for the given canonical hunk index.
-    Editing(usize, Box<TextArea<'static>>),
+    /// Editing a finding for the given canonical hunk index, over the lines
+    /// the reviewer had picked when the box opened. `None` anchors the hunk.
+    Editing(usize, Option<Lines>, Box<TextArea<'static>>),
     Help,
     /// File-list modal over the current rows: jump to a file header.
     FileList {
@@ -252,6 +253,12 @@ pub struct App {
     pub selected_file: usize,
     pub rows: Vec<Row>,
     pub cursor: usize,
+    /// The row a line selection is anchored at; the other end is the cursor.
+    ///
+    /// One field, not a mode: `j`/`k` go on moving the cursor and the
+    /// selection is the span between the two ends, so `V` adds a state to
+    /// the model without adding one to the key table.
+    pub visual: Option<usize>,
     scroll: usize,
     group_scroll: usize,
     /// Group ids whose fold is open.
@@ -302,6 +309,7 @@ impl App {
             selected_file: 0,
             rows: Vec::new(),
             cursor: 0,
+            visual: None,
             scroll: 0,
             group_scroll: 0,
             folds_open: HashSet::new(),
@@ -935,7 +943,7 @@ impl App {
     /// Only the composer takes it: in normal mode there is no text field for
     /// it to land in, and a paste there is a mis-aimed one.
     pub fn handle_paste(&mut self, text: &str) {
-        if let Mode::Editing(_, textarea) = &mut self.mode {
+        if let Mode::Editing(_, _, textarea) = &mut self.mode {
             textarea.insert_str(text);
         }
     }
@@ -1001,8 +1009,8 @@ impl App {
                 }
                 return Vec::new();
             }
-            Mode::Editing(hunk, textarea) => {
-                let hunk = *hunk;
+            Mode::Editing(hunk, lines, textarea) => {
+                let (hunk, lines) = (*hunk, lines.clone());
                 match (key.code, key.modifiers) {
                     (KeyCode::Esc, _) => {
                         self.mode = Mode::Normal;
@@ -1040,7 +1048,7 @@ impl App {
                             self.status = "empty finding discarded".into();
                             return Vec::new();
                         }
-                        self.add_finding(hunk, body);
+                        self.add_finding(hunk, lines, body);
                         return Vec::new();
                     }
                     _ => {
@@ -1143,30 +1151,51 @@ impl App {
                 Focus::Detail => self.open_file_list(),
             },
             (KeyCode::Char(' '), _) => self.toggle_reviewed(),
+            // A selection, so a finding can be about the lines it is about.
+            // One field, not a mode: `j`/`k` keep moving the cursor and the
+            // selection is the span between the two ends, which is what makes
+            // `V` cost nothing to explain.
+            (KeyCode::Char('V'), _) => {
+                if self.rows.get(self.cursor).is_some_and(|r| r.line.is_some()) {
+                    self.visual = Some(self.cursor);
+                    self.status = "select lines · c to write · esc to drop".into();
+                } else {
+                    self.status = "move onto a line first".into();
+                }
+            }
+            (KeyCode::Esc, _) if self.visual.is_some() => {
+                self.visual = None;
+                self.status = "selection dropped".into();
+            }
             (KeyCode::Char('c'), KeyModifiers::NONE) => {
                 if let Some(h) = self.current_hunk() {
+                    let lines = self.selected_lines();
+                    // Name what is being annotated: a note whose subject you
+                    // cannot see is a note you have to trust yourself to have
+                    // written carefully.
                     let hunk = &self.session.doc().hunks[h];
-                    // Name what is being annotated: findings anchor to a hunk,
-                    // and a note whose subject you cannot see is a note you
-                    // have to trust yourself to have written carefully.
                     let file = hunk.file.rsplit('/').next().unwrap_or(&hunk.file);
-                    let lines = if hunk.new_count > 1 {
-                        format!(
+                    let at = match &lines {
+                        Some(l) if l.end > l.start => format!("L{}-{}", l.start, l.end),
+                        Some(l) => format!("L{}", l.start),
+                        // No line under the cursor — a hunk header, a fold.
+                        // The finding anchors the hunk, so the title says so.
+                        None if hunk.new_count > 1 => format!(
                             "L{}-{}",
                             hunk.new_start,
                             hunk.new_start + hunk.new_count - 1
-                        )
-                    } else {
-                        format!("L{}", hunk.new_start)
+                        ),
+                        None => format!("L{}", hunk.new_start),
                     };
                     let mut ta = TextArea::default();
                     ta.set_block(
                         Block::default()
                             .borders(Borders::ALL)
                             .border_style(Style::default().fg(THEME.header_fg))
-                            .title(format!(" {file} · {lines} ")),
+                            .title(format!(" {file} · {at} ")),
                     );
-                    self.mode = Mode::Editing(h, Box::new(ta));
+                    self.visual = None;
+                    self.mode = Mode::Editing(h, lines, Box::new(ta));
                 } else {
                     self.status = "move onto a hunk first".into();
                 }
@@ -1234,8 +1263,42 @@ impl App {
         Ok(())
     }
 
-    fn add_finding(&mut self, hunk_idx: usize, body: String) {
-        match self.session.add_finding(hunk_idx, body) {
+    /// The rows the selection covers, as the engine wants them: lowest line
+    /// first, both ends' text, one side.
+    ///
+    /// `None` when the cursor is on a row that is not a line of a file — a
+    /// hunk header, a fold — and the finding then anchors the whole hunk.
+    fn selected_lines(&self) -> Option<Lines> {
+        let (lo, hi) = match self.visual {
+            Some(v) => (v.min(self.cursor), v.max(self.cursor)),
+            None => (self.cursor, self.cursor),
+        };
+        let refs: Vec<&LineRef> = (lo..=hi)
+            .filter_map(|i| self.rows.get(i).and_then(|r| r.line.as_ref()))
+            .collect();
+        // One side, so a range is a range in one file's numbering. The
+        // cursor's own side wins; in unified mode a modification is two rows
+        // and a selection over both would otherwise mix the two.
+        let side = self
+            .rows
+            .get(self.cursor)
+            .and_then(|r| r.line.as_ref())
+            .map(|l| l.side)
+            .or_else(|| refs.first().map(|l| l.side))?;
+        let mut same: Vec<&&LineRef> = refs.iter().filter(|l| l.side == side).collect();
+        same.sort_by_key(|l| l.line);
+        let (first, last) = (same.first()?, same.last()?);
+        Some(Lines {
+            side: side.to_string(),
+            start: first.line,
+            end: last.line,
+            start_text: first.text.clone(),
+            end_text: last.text.clone(),
+        })
+    }
+
+    fn add_finding(&mut self, hunk_idx: usize, lines: Option<Lines>, body: String) {
+        match self.session.add_finding(hunk_idx, lines, body) {
             Ok(_) => self.status = "finding saved".into(),
             Err(e) => self.status = format!("save failed: {e:#}"),
         }
@@ -1273,7 +1336,9 @@ impl App {
                 .unwrap_or_default();
             out.push_str(&format!(
                 "- {}:{}{label}: {}\n",
-                f.anchor.file, f.anchor.line, f.body
+                f.anchor.file,
+                f.anchor.line_span(),
+                f.body
             ));
         }
         if out.is_empty() {
@@ -1306,7 +1371,7 @@ impl App {
         }
 
         match &self.mode {
-            Mode::Editing(_, textarea) => {
+            Mode::Editing(_, _, textarea) => {
                 // A float over the diff, not a strip pinned to the bottom: a
                 // finding is about the lines you can still see around it.
                 let area = centered_rect(panes.body, panes.body.width * 3 / 5, 10);
@@ -1338,7 +1403,7 @@ impl App {
                 );
             }
             Mode::Help => {
-                let area = centered_rect(panes.body, 62, 21);
+                let area = centered_rect(panes.body, 62, 22);
                 frame.render_widget(Clear, area);
                 frame.render_widget(help_paragraph(), area);
             }
@@ -2029,6 +2094,9 @@ impl App {
         // Which box is lit. Only one at a time: a screenful of accents is a
         // screenful of nothing, so every other box is muted to the gutter.
         let active = self.current_hunk();
+        let selection = self
+            .visual
+            .map(|v| (v.min(self.cursor), v.max(self.cursor)));
         let lines: Vec<Line> = self
             .rows
             .iter()
@@ -2055,6 +2123,11 @@ impl App {
                     // exactly the rows that have no change colour of their own
                     // — on the rest, the brightened gutter block carries it.
                     line = line.style(Style::default().bg(THEME.cursor_bg));
+                } else if selection.is_some_and(|(lo, hi)| (lo..=hi).contains(&i)) {
+                    // The rest of a line selection, in the plan pane's own
+                    // selection colour: quieter than the cursor's row, which
+                    // is still one end of it.
+                    line = line.style(Style::default().bg(THEME.selected_bg));
                 }
                 line
             })
@@ -2512,6 +2585,7 @@ fn help_paragraph() -> Paragraph<'static> {
         row("f", "plan pane: reading plan / file tree"),
         row("", "diff pane: file list (enter jumps)"),
         row("space", "mark the hunk's class reviewed"),
+        row("V", "select lines · j/k extends · esc drops"),
         row("c  ·  dd", "add finding · delete the one under the cursor"),
         row("", "in the box: enter saves · shift+enter or \\↵ newline"),
         row("", "esc cancels, here and in any modal"),

@@ -183,7 +183,7 @@ fn finding_lifecycle_add_copy_delete() {
 
     // c opens the editor on the current hunk.
     app.handle_key(key('c'));
-    assert!(matches!(app.mode, Mode::Editing(_, _)));
+    assert!(matches!(app.mode, Mode::Editing(..)));
     for ch in "off by one".chars() {
         app.handle_key(key(ch));
     }
@@ -2608,7 +2608,7 @@ fn the_finding_editor_floats_and_names_its_subject() {
     app.focus = Focus::Detail;
     put_cursor_on(&mut app, |k| matches!(k, RowKind::HunkHeader { .. }));
     app.handle_key(key('c'));
-    assert!(matches!(app.mode, Mode::Editing(_, _)));
+    assert!(matches!(app.mode, Mode::Editing(..)));
 
     let text = drawn_as_is(&mut app);
     assert!(text.contains("long.rs · L"), "no file·line title: {text}");
@@ -2700,6 +2700,142 @@ fn a_paste_lands_in_the_composer() {
     app.handle_paste("stray");
     assert!(matches!(app.mode, Mode::Normal));
     assert_eq!(app.rows.len(), before);
+}
+
+/// `c` on a diff row annotates THAT line, not the whole hunk it sits in.
+#[test]
+fn c_on_a_line_anchors_to_that_line() {
+    let (_r, mut app) = app_with_a_long_file();
+    let row = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Diff(_)) && r.line.is_some())
+        .expect("a diff row with a line");
+    let at = app.rows[row].line.clone().expect("its line");
+    app.cursor = row;
+    app.focus = Focus::Detail;
+
+    app.handle_key(key('c'));
+    app.handle_key(key('x'));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let f = &app.session.findings()[0];
+    assert_eq!(f.anchor.side, at.side);
+    assert_eq!(f.anchor.line, at.line, "the anchor is the cursor's line");
+    assert_eq!(f.anchor.end_line, at.line, "one line, not a range");
+    assert_eq!(f.anchor.line_span(), at.line.to_string());
+}
+
+/// `V` starts a selection the cursor extends; `c` then annotates the run.
+#[test]
+fn v_selects_lines_and_c_annotates_the_run() {
+    let (_r, mut app) = app_with_a_long_file();
+    // Three consecutive rows that are all lines of the same side.
+    let start = app
+        .rows
+        .windows(3)
+        .position(|w| {
+            w.iter()
+                .all(|r| r.line.as_ref().is_some_and(|l| l.side == "new"))
+        })
+        .expect("three new-side rows in a row");
+    app.cursor = start;
+    app.focus = Focus::Detail;
+
+    app.handle_key(key('V'));
+    assert_eq!(app.visual, Some(start));
+    app.handle_key(key('j'));
+    app.handle_key(key('j'));
+
+    app.handle_key(key('c'));
+    assert_eq!(app.visual, None, "writing the finding ends the selection");
+    app.handle_key(key('x'));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let first = app.rows[start].line.clone().unwrap();
+    let last = app.rows[app.cursor].line.clone().unwrap();
+    let f = &app.session.findings()[0];
+    assert_eq!(f.anchor.line, first.line);
+    assert_eq!(f.anchor.end_line, last.line);
+    assert_eq!(f.anchor.span, last.line - first.line);
+    assert_eq!(
+        f.anchor.line_span(),
+        format!("{}-{}", first.line, last.line)
+    );
+
+    // `esc` drops a selection rather than doing anything else.
+    app.handle_key(key('V'));
+    assert!(app.visual.is_some());
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.visual, None);
+}
+
+/// A finding is drawn under the line it annotates, not under the hunk header.
+#[test]
+fn a_finding_sits_under_the_line_it_annotates() {
+    let (_r, mut app) = app_with_a_long_file();
+    let row = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Diff(_)) && r.line.is_some())
+        .expect("a diff row with a line");
+    app.cursor = row;
+    app.focus = Focus::Detail;
+    app.handle_key(key('c'));
+    app.handle_key(key('x'));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let at = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Finding(..)))
+        .expect("a finding row");
+    let above = app.rows[at - 1]
+        .line
+        .clone()
+        .expect("the row above a finding is the line it annotates");
+    assert_eq!(above.line, app.session.findings()[0].anchor.end_line);
+
+    // `dd` still deletes it from wherever it landed.
+    app.cursor = at;
+    app.handle_key(key('d'));
+    app.handle_key(key('d'));
+    assert!(app.session.findings().is_empty());
+}
+
+/// A finding filed from a hunk header has no line, so it annotates the hunk —
+/// and it is drawn where every finding used to be, under that header.
+#[test]
+fn a_finding_from_a_header_anchors_the_hunk_and_sits_under_it() {
+    let (_r, mut app) = app_with_a_long_file();
+    let header = put_cursor_on(&mut app, |k| matches!(k, RowKind::HunkHeader { .. }));
+    let hunk = app.rows[header].kind.hunk().expect("its hunk");
+    app.handle_key(key('c'));
+    app.handle_key(key('x'));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let f = &app.session.findings()[0];
+    assert_eq!(
+        f.anchor.offset, 0,
+        "a header annotates the hunk's first line"
+    );
+    assert_eq!(f.anchor.span, 0);
+    assert_eq!(f.anchor.hunk_digest, app.session.doc().hunks[hunk].digest);
+
+    let at = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::Finding(..)))
+        .expect("a finding row");
+    assert!(
+        app.rows[..at]
+            .iter()
+            .rev()
+            .find_map(|r| r.line.as_ref().map(|l| l.line))
+            .is_some_and(|l| l == f.anchor.end_line)
+            || matches!(app.rows[at - 1].kind, RowKind::HunkHeader { .. }),
+        "it belongs under its line or, failing that, under its header"
+    );
 }
 
 /// The help modal is keys and nothing else. Five lines of prose about the plan
