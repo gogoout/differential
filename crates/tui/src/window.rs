@@ -104,6 +104,14 @@ pub struct Block {
     pub top: Option<Boundary>,
     pub segments: Vec<Segment>,
     pub bottom: Option<Boundary>,
+    /// The hunks this block spans, as positions in the file's hunk list.
+    ///
+    /// Two blocks are the two sides of ONE gap exactly when they are adjacent
+    /// here — `above.hi + 1 == below.lo`. Nothing else identifies a gap: two
+    /// gaps flanking an unlisted hunk can hold the same number of lines, and
+    /// deciding by that number conflates them.
+    pub lo: usize,
+    pub hi: usize,
 }
 
 /// One hunk of a file, as the planner needs it: its canonical index, whether
@@ -317,6 +325,8 @@ pub fn plan(
                     })
                 };
             Block {
+                lo: s.lo,
+                hi: s.hi,
                 top: edge(
                     up_avail - up,
                     up_avail,
@@ -341,14 +351,18 @@ pub fn plan(
     // remainder, so opening the top one by ten left the bottom one still
     // claiming the old number for lines it could no longer reach.
     for i in 1..blocks.len() {
+        // ADJACENT IN THE HUNK LIST, not merely next to each other in the
+        // render and holding gaps of the same size. An unlisted hunk between
+        // two blocks gives them a gap each, and those two can be the same
+        // length by coincidence — sharing a count across them would invent a
+        // figure for lines on the far side of a hunk neither has reached.
+        if blocks[i - 1].hi + 1 != blocks[i].lo {
+            continue;
+        }
         let (above, below) = blocks.split_at_mut(i);
         let (Some(a), Some(b)) = (above[i - 1].bottom.as_mut(), below[0].top.as_mut()) else {
             continue;
         };
-        // Same gap only if they are adjacent — a hunk between them is two gaps.
-        if a.next.is_some() || b.next.is_some() || a.gap != b.gap {
-            continue;
-        }
         let shared = a.hidden + b.hidden - a.gap.min(a.hidden + b.hidden);
         a.hidden = shared;
         b.hidden = shared;
@@ -745,6 +759,40 @@ mod tests {
             t2,
             top - 10,
             "ten lines were shown, so ten fewer are hidden"
+        );
+    }
+
+    /// Two gaps flanking an unlisted hunk are TWO gaps, however alike their
+    /// lengths. Identifying them by length alone conflates them, and the hunk
+    /// sitting between them is what disappears.
+    #[test]
+    fn equal_length_gaps_around_an_unlisted_hunk_stay_separate() {
+        let a = entry(20, 1, 20, 1);
+        let mid = entry(40, 1, 40, 1);
+        let z = entry(60, 1, 60, 1);
+        let hunks = [
+            shown(0, &a),
+            Candidate {
+                index: 1,
+                shown: false,
+                entry: &mid,
+            },
+            shown(2, &z),
+        ];
+        let blocks = plan(&hunks, &HashMap::new(), 3, 200, 200);
+        assert_eq!(blocks.len(), 2);
+        let (below, above) = (
+            blocks[0].bottom.as_ref().unwrap(),
+            blocks[1].top.as_ref().unwrap(),
+        );
+        // Both gaps are 19 lines with 3 shown, so both counts are 16 — equal by
+        // coincidence, not because they are the same gap.
+        assert_eq!(below.gap, above.gap, "the fixture needs equal lengths");
+        assert_eq!(
+            (below.hidden, above.hidden),
+            (16, 16),
+            "each end counts its OWN gap; sharing here would invent a number \
+             for lines on the far side of a hunk neither has reached"
         );
     }
 

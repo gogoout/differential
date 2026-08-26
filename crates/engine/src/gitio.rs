@@ -650,6 +650,13 @@ fn parse_batch_blobs(out: &[u8], specs: &[Vec<u8>]) -> Result<Vec<Option<Vec<u8>
                 body.len()
             ));
         }
+        // git writes an LF after the body. Check it rather than assume it: on
+        // a malformed stream the alternative is to walk on from the wrong
+        // offset and read the next response as this one's neighbour, which
+        // desyncs everything after it without ever reporting a fault.
+        if body.get(size) != Some(&b'\n') {
+            return Err(format!("{header}: body is not LF-terminated"));
+        }
         got.push(Some(body[..size].to_vec()));
         // header LF + body + the LF git writes after it
         at += end + 1 + size + 1;
@@ -761,6 +768,13 @@ mod tests {
 
         // A stream that stops early is a broken repository, not three absences.
         assert!(parse_batch_blobs(&out[..10], &specs).is_err());
+
+        // And one where the body is not LF-terminated where the header said it
+        // would end: walking on from there would read the next response as this
+        // one's neighbour and desync the rest without reporting a fault.
+        let mut bad = format!("{oid} blob 4\nabcd").into_bytes();
+        bad.extend_from_slice(b"XHEAD:gone missing\n");
+        assert!(parse_batch_blobs(&bad, &specs[..2]).is_err());
     }
 
     /// Bytes in, bytes out: a blob that is not UTF-8 survives intact.
