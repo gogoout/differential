@@ -2835,11 +2835,11 @@ fn a_finding_is_a_quoted_panel_of_all_its_lines() {
     let text = drawn_rows(&mut app);
     let panel: Vec<&String> = text.iter().filter(|r| r.contains("line")).collect();
     assert!(
-        text.iter().any(|r| r.contains("▏ first line")),
+        text.iter().any(|r| r.contains("▍ first line")),
         "no rail on the note: {panel:?}"
     );
     assert!(
-        text.iter().any(|r| r.contains("▏ second line")),
+        text.iter().any(|r| r.contains("▍ second line")),
         "the second line is dropped: {panel:?}"
     );
     assert!(

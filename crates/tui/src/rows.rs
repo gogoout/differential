@@ -1026,7 +1026,7 @@ fn finding_rows(f: &Finding, hunk: usize) -> Vec<Row> {
             Row::full(
                 RowKind::Finding(f.id.clone(), hunk),
                 Line::from(vec![
-                    Span::styled("  ▏ ".to_string(), rail),
+                    Span::styled("  ▍ ".to_string(), rail),
                     Span::styled(text, prose),
                 ]),
             )
