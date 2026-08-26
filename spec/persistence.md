@@ -52,7 +52,8 @@ never to its positional id — and to an **offset inside it**, never to a line n
 digest fixes the hunk's content, so a hunk that moved in the file still holds the same line
 at the same offset, while its absolute number did not survive the move. `line`/`end_line`
 are the resolved numbers, recomputed on every re-anchor for consumers that only read;
-`offset`/`span` are the durable pair. `end_line_text` does for the range's far end what
+`offset`/`span` are the durable pair. `offset` is **signed**: a reader can annotate a
+context line, and context sits on both sides of a hunk. `end_line_text` does for the range's far end what
 `line_text` does for its start.
 
 Every field but `file`, `side`, `line` and `hunk_digest` is additive with a default, so a

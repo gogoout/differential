@@ -58,7 +58,8 @@ pub struct Anchor {
     /// record written before ranges existed, which reads as "just `line`".
     #[serde(default)]
     pub end_line: u32,
-    /// Lines from the hunk's start to `line`.
+    /// Lines from the hunk's start to `line`. **Signed**: a reader can
+    /// annotate a context line, and context sits on both sides of a hunk.
     ///
     /// This, not `line`, is what the anchor is really made of. The digest
     /// fixes the hunk's CONTENT, so a hunk that moved in the file still holds
@@ -66,7 +67,7 @@ pub struct Anchor {
     /// not survive the move. A record written before offsets existed has `0`,
     /// which lands it on the hunk's first line: exactly where it used to.
     #[serde(default)]
-    pub offset: u32,
+    pub offset: i32,
     /// Lines the anchor spans past `offset`. `0` is a single line.
     #[serde(default)]
     pub span: u32,
@@ -104,8 +105,13 @@ impl Anchor {
     }
 
     /// Recompute the line numbers from the offset the anchor really carries.
+    ///
+    /// Clamped at 1, never at 0: a line number is 1-based, and an offset that
+    /// would put one above the top of the file is a broken anchor, not line
+    /// zero.
     fn resolve(&mut self, start: u32) {
-        self.line = start.saturating_add(self.offset);
+        let at = i64::from(start) + i64::from(self.offset);
+        self.line = at.max(1).min(i64::from(u32::MAX)) as u32;
         self.end_line = self.line.saturating_add(self.span);
     }
 }
@@ -225,7 +231,7 @@ pub fn reanchor(
             f.anchor.offset = at(own)
                 .or_else(|| at(&h.added))
                 .or_else(|| at(&h.removed))
-                .unwrap_or(0) as u32;
+                .unwrap_or(0) as i32;
             let start = f.anchor.hunk_start(h.old_start, h.new_start);
             f.anchor.resolve(start);
             f.plan_hash = plan_hash.to_string();

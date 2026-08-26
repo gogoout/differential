@@ -246,7 +246,11 @@ impl<S: ReviewStore> ReviewSession<S> {
                 side: lines.side,
                 line: lines.start,
                 end_line: end,
-                offset: lines.start.saturating_sub(start),
+                // Signed, and never clamped: a note on a context line ABOVE
+                // the hunk sits at a negative offset, and clamping it to zero
+                // silently walked the note down to the hunk's first line on
+                // the next regeneration.
+                offset: (i64::from(lines.start) - i64::from(start)) as i32,
                 span: end - lines.start,
                 hunk_digest: h.digest.clone(),
                 line_text,

@@ -462,3 +462,69 @@ fn doc_class_keys(session: &FsReviewSession) -> Vec<String> {
         .map(|c| session.class_key(&c.id).to_string())
         .collect()
 }
+
+/// A reader can annotate a CONTEXT line, and context sits on both sides of a
+/// hunk. An offset clamped at zero walked every note written above a hunk down
+/// to that hunk's first line on the next regeneration — silently, and not even
+/// flagged as moved.
+#[test]
+fn a_note_above_its_hunk_keeps_its_distance() {
+    let r = TestRepo::new();
+    let body = |lead: usize, change: &str| -> Vec<u8> {
+        let mut out = String::new();
+        for i in 1..=lead {
+            out.push_str(&format!("inserted{i} = {i}\n"));
+        }
+        for i in 1..=20 {
+            if i == 15 {
+                out.push_str(change);
+            } else {
+                out.push_str(&format!("keep{i} = {i}\n"));
+            }
+        }
+        out.into_bytes()
+    };
+    r.write("f.txt", &body(0, "target = 1\n"));
+    let base = r.commit_all("base");
+    r.write("f.txt", &body(0, "target = 2\n"));
+    let head1 = r.commit_all("head1");
+
+    let (doc1, _) = doc_and_view(&r, &base, &head1);
+    let h = &doc1.hunks[0];
+    // `keep12`, three unchanged lines above the hunk.
+    let line = h.new_start - 3;
+    let mut findings = vec![Finding::new(
+        FIXED_TIME,
+        "about the line above".into(),
+        "plan1".into(),
+        Anchor {
+            file: "f.txt".into(),
+            side: "new".into(),
+            line,
+            end_line: line,
+            offset: i32::try_from(line).unwrap() - i32::try_from(h.new_start).unwrap(),
+            span: 0,
+            hunk_digest: h.digest.clone(),
+            line_text: "keep12 = 12".into(),
+            end_line_text: "keep12 = 12".into(),
+        },
+    )];
+    assert_eq!(findings[0].anchor.offset, -3, "above the hunk is negative");
+
+    // Push the whole file down five lines. The hunk's content is untouched.
+    r.write("f.txt", &body(5, "target = 2\n"));
+    let head2 = r.commit_all("head2");
+    let (doc2, view2) = doc_and_view(&r, &base, &head2);
+    reanchor(&mut findings, &doc2, &view2, "plan2");
+
+    let moved_to = String::from_utf8(body(5, "target = 2\n"))
+        .unwrap()
+        .lines()
+        .position(|l| l == "keep12 = 12")
+        .map(|i| i as u32 + 1)
+        .expect("keep12 is still in the file");
+    assert_eq!(
+        findings[0].anchor.line, moved_to,
+        "the note should still be on keep12, not on the hunk's first line"
+    );
+}

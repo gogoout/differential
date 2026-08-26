@@ -363,7 +363,8 @@ selection the cursor extends, and `c` then annotates the run. On a row that is n
 a file — a hunk header, a fold — `c` annotates the whole hunk, which is what every finding
 used to do.
 
-The anchor is stored as an **offset into the hunk**, not as a line number. The digest fixes
+The anchor is stored as an **offset into the hunk** — signed, since context sits on both
+sides of one — not as a line number. The digest fixes
 the hunk's content, so a hunk that moved in the file still holds the same line at the same
 offset — while its absolute number did not survive the move. ADR 0013 is unchanged by this:
 the anchor is still the digest, with a position inside it. A record written before offsets
