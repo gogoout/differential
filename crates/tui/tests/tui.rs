@@ -2874,6 +2874,51 @@ fn the_footer_is_pills_on_the_left_and_two_keys_on_the_right() {
     );
 }
 
+/// A control has to say how to work it — but a screenful of bands each naming
+/// the same key is a wall. The key shows on the cursor's row only.
+#[test]
+fn a_boundary_names_its_key_on_the_cursors_row_only() {
+    let (_r, mut app) = app_with_a_long_file();
+    let pos = put_cursor_on(&mut app, |k| matches!(k, RowKind::ContextEdge { .. }));
+    let rows = drawn_rows(&mut app);
+    let here = cursor_screen_row(&app) as usize;
+    assert!(
+        rows[here].contains("lines hidden") && rows[here].contains("z shows"),
+        "the cursor's band must name its key: {:?}",
+        rows[here]
+    );
+
+    // Every other band says what it hides and nothing more.
+    let elsewhere: Vec<&String> = rows
+        .iter()
+        .enumerate()
+        .filter(|(y, r)| *y != here && r.contains("lines hidden"))
+        .map(|(_, r)| r)
+        .collect();
+    assert!(!elsewhere.is_empty(), "the fixture needs a second band");
+    for row in elsewhere {
+        assert!(
+            !row.contains("z shows"),
+            "a band off the cursor names no key: {row:?}"
+        );
+    }
+
+    // The hint displaces padding, so the band keeps its width.
+    let width = rows[here].chars().count();
+    app.cursor = app
+        .rows
+        .iter()
+        .enumerate()
+        .position(|(i, r)| i != pos && r.kind.selectable())
+        .expect("another selectable row");
+    let after = drawn_rows(&mut app);
+    assert_eq!(
+        after[here].chars().count(),
+        width,
+        "showing the key must not change the row's width"
+    );
+}
+
 /// A context boundary is a control, and its band carries its own colour the
 /// whole way across — so the row tint that marks the cursor elsewhere never
 /// showed through it. On the cursor's row the band lightens instead.

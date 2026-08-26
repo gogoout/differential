@@ -31,7 +31,9 @@ The plan is a **DAG, not a tree**: a group can follow several others, and the gr
 even contain cycles (two groups that each define symbols the other uses). The ordering
 stage breaks a cycle deterministically, which means some edge cannot be honoured; the
 plan says so rather than hiding it — a dependency listed **later** than the group that
-follows it is marked `↓`. Selecting a group draws a connector in the left gutter linking
+follows it is visible in the connector, which runs **down** from the selected group rather
+than up. The `after:` line does not mark it: every id there reads the same, since a warning
+on a row is worth its weight only when the reader can do something about it. Selecting a group draws a connector in the left gutter linking
 it (`◆`) to every group it **follows**, so what has to be read first is visible without
 reading ids. One direction only: the reverse edge is deliberately not drawn, so the gutter
 says the same thing as the `after:` line beneath it rather than something different. Each
@@ -170,8 +172,11 @@ A **context boundary** is a control, not a caption: a tinted band across the pan
 arrow in the border column, **lighter on the cursor's row** — a control the reader is
 standing on has to look like the one they are about to press, and the band carries its own
 colour the whole way across, so the tint that marks the cursor everywhere else never
-showed through it. It says `29 lines hidden · z shows 10` or, once the gap is spent,
-`next: C42 "Group 42" · z shows it` — a control that does not say how to work it is a label.
+showed through it. It says `29 lines hidden` or, once the gap is spent,
+`next: C42 "Group 42"` — and, on the cursor's row, `z shows 10` or `z shows it` — a control that does not say how to work it is a label. But a screenful of bands each naming
+the same key is a wall the reader stops reading, so the key appears on the **cursor's row
+only**. Whether a row is the cursor's is a cursor question, so the row carries the text and
+drawing chooses — the same way a hunk's accent works, one column over.
 Where two boundaries are the two ends of one gap they carry the **same** count, so opening
 one end drops the other's figure too. Deliberately not `@@ …` — that is the notation the hunk headers
 dropped, and the gutters either side already carry the numbers.
@@ -195,7 +200,7 @@ worse than a pill with corners.
 **Context is expandable.** Canonical `-U0` hunks carry no context, so it is read out of the
 base and head blobs — three lines either side by default. Where more of the file is
 available, the pane says so on a **boundary row** at each end of what is shown
-(`── ↑ 16 more above — z shows 10 ──`); put the cursor on it and `z` pulls in another step.
+(`── ↑ 16 more above ──`); put the cursor on it and `z` pulls in another step.
 Both numbers come from `[review]` in the user config (`context`, `context_step`). Expand
 two hunks until their windows meet and the boundary rows between them disappear: the file
 reads as one continuous stretch, each hunk keeping its own header band so `n`/`N` and
@@ -206,7 +211,7 @@ for one rather than acting on a row that is only about how much of the file is v
 **A window stops at a neighbouring hunk, and says so.** Grouping is by shape class, so one
 file routinely holds hunks belonging to several groups. When a window reaches one this view
 does not list, the boundary row does not vanish — it **names** it
-(`↓ next: C31 "Rename sweep" — z shows it`), and another `z` pulls that hunk in. So a long
+(`↓ next: C31 "Rename sweep"`), and another `z` pulls that hunk in. So a long
 expansion can never silently swallow someone else's change, and a wall can never be
 mistaken for the end of the file. A boundary row disappears at one place only: a real file
 edge.

@@ -244,6 +244,14 @@ pub struct Row {
     /// A glyph drawn in the pane's left border column, for rows that are a
     /// control rather than content.
     pub button: Option<&'static str>,
+    /// How to work this row, shown only while the cursor is ON it.
+    ///
+    /// A control that does not say how to work it is a label — but a screenful
+    /// of bands each naming the same key is a wall the reader stops reading.
+    /// The key belongs on the one row they can press it for. Whether that is
+    /// this row is a cursor question, so the row carries the text and drawing
+    /// chooses, exactly as it does for a hunk's accent.
+    pub hint: Option<(Style, String)>,
 }
 
 impl Row {
@@ -270,6 +278,12 @@ impl Row {
         if let RowContent::Unified(half) = &mut self.content {
             half.pairs = pairs;
         }
+        self
+    }
+
+    /// Text the row adds while the cursor is on it — the key that works it.
+    pub fn with_hint(mut self, style: Style, text: String) -> Self {
+        self.hint = Some((style, text));
         self
     }
 
@@ -309,6 +323,7 @@ impl Row {
             kind,
             border: None,
             button: None,
+            hint: None,
             content: RowContent::Unified(Half {
                 gutter: Gutter::flat(" ", Style::default()),
                 pairs: line
@@ -580,16 +595,19 @@ pub fn build_group_rows(factory: &mut RowFactory, ctx: &GroupContext) -> Vec<Row
         Deferral::FoldedNoise => "folded generated hunks",
         Deferral::SkimRemainder => "remaining hunks, same shapes as the exemplars above",
     };
-    rows.push(Row::full(
-        RowKind::Fold,
-        Line::from(Span::styled(
-            format!(
-                "  ── {} {what} — press z to unfold ──",
-                split.deferred.len()
-            ),
-            Style::default().fg(THEME.noise_fg),
-        )),
-    ));
+    rows.push(
+        Row::full(
+            RowKind::Fold,
+            Line::from(Span::styled(
+                format!("  ── {} {what} ──", split.deferred.len()),
+                Style::default().fg(THEME.noise_fg),
+            )),
+        )
+        .with_hint(
+            Style::default().fg(THEME.hint_cursor_fg),
+            "  ·  z to show".to_string(),
+        ),
+    );
     rows
 }
 
@@ -793,6 +811,7 @@ fn column_header_row() -> Row {
         kind: RowKind::ColumnHeader,
         border: None,
         button: None,
+        hint: None,
         content: RowContent::Split {
             old: label("old"),
             new: label("new"),
@@ -1017,6 +1036,7 @@ fn file_rows(
                             kind: RowKind::Diff(owner),
                             border: None,
                             button: None,
+                            hint: None,
                             content: row,
                         });
                     }
@@ -1041,6 +1061,7 @@ fn file_rows(
                                 kind: RowKind::Diff(*hunk),
                                 border: None,
                                 button: None,
+                                hint: None,
                                 content,
                             }
                             .bordered(box_style, *hunk, accent),
@@ -1089,9 +1110,11 @@ fn boundary_row(ctx: &RowsContext, b: &window::Boundary, step: usize, both_ends:
             Side::Down => "↓",
         }
     };
-    // The key goes on the band. It is a control, and a control that does not
-    // say how to work it is a label.
-    let label = match b.next {
+    // The key goes on the band while the cursor is on it. A control that does
+    // not say how to work it is a label — but every band saying the same key
+    // at once is a wall, so the row carries the key and drawing shows it on
+    // the one row the reader can press it for.
+    let (label, hint) = match b.next {
         // The gap is exhausted and a hunk stands beyond it. Name it, so the
         // wall is visible and crossing is a deliberate press.
         Some(next) => {
@@ -1101,9 +1124,15 @@ fn boundary_row(ctx: &RowsContext, b: &window::Boundary, step: usize, both_ends:
                 .group_of_hunk(HunkId::from_index(next))
                 .map(|g| format!(" “{}”", g.label))
                 .unwrap_or_default();
-            format!("next: {class}{group} · z shows it")
+            (
+                format!("next: {class}{group}"),
+                "space shows it".to_string(),
+            )
         }
-        None => format!("{} lines hidden · z shows {}", b.hidden, step.min(b.hidden)),
+        None => (
+            format!("{} lines hidden", b.hidden),
+            format!("z shows {}", step.min(b.hidden)),
+        ),
     };
     // A band, not a rule: two of these sit adjacent where two blocks meet, and
     // a tinted row with the arrow in the border column reads as one seam in the
@@ -1123,6 +1152,13 @@ fn boundary_row(ctx: &RowsContext, b: &window::Boundary, step: usize, both_ends:
         Fill::Bg(Style::default().bg(THEME.hint_bg)),
     )
     .with_button(arrow, Style::default().bg(THEME.hint_bg))
+    .with_hint(
+        Style::default()
+            .fg(THEME.hint_cursor_fg)
+            .bg(THEME.hint_cursor_bg)
+            .add_modifier(Modifier::BOLD),
+        format!("  ·  {hint}"),
+    )
 }
 
 /// Every line the blocks will draw, as sorted ranges per side.

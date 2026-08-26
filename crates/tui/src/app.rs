@@ -919,7 +919,26 @@ impl App {
             self.cursor = pos;
             self.follow_cursor();
         }
-        self.status = if on { "split diff" } else { "unified diff" }.into();
+        // No status line: the pane in front of the reader IS the answer, and a
+        // message saying what they can see costs the footer its one slot for
+        // things they cannot.
+        self.status.clear();
+    }
+
+    /// Open or close the selected group's folded remainder — the skim group's
+    /// hunks past its exemplars, or a noise group entire.
+    fn toggle_group_fold(&mut self) {
+        if self.view_mode != ViewMode::Groups {
+            return;
+        }
+        let Some(g) = self.groups().get(self.selected_group) else {
+            return;
+        };
+        let gid = g.id.clone();
+        if !self.folds_open.insert(gid.clone()) {
+            self.folds_open.remove(&gid);
+        }
+        self.rebuild_rows();
     }
 
     /// Persist the resume position through the session; surface failures in
@@ -1063,17 +1082,7 @@ impl App {
             (KeyCode::Char('z'), _) if self.view_mode == ViewMode::Files => {
                 self.toggle_dir();
             }
-            (KeyCode::Char('z'), _) => {
-                if self.view_mode == ViewMode::Groups
-                    && let Some(g) = self.groups().get(self.selected_group)
-                {
-                    let gid = g.id.clone();
-                    if !self.folds_open.insert(gid.clone()) {
-                        self.folds_open.remove(&gid);
-                    }
-                    self.rebuild_rows();
-                }
-            }
+            (KeyCode::Char('z'), _) => self.toggle_group_fold(),
             (KeyCode::Char('n'), KeyModifiers::NONE) => self.jump_hunk(1),
             (KeyCode::Char('N'), _) => self.jump_hunk(-1),
             (KeyCode::Char('s'), KeyModifiers::NONE) => self.toggle_split(),
@@ -1519,21 +1528,17 @@ impl App {
         }
         lines.push(Line::from(counts));
         if !g.depends_on.is_empty() {
-            // "↓" marks a dependency that appears LATER in the plan: the two
-            // groups depend on each other, so no order can satisfy both.
+            // Every id reads the same. A dependency the ordering could not
+            // honour used to wear a `↓` and a colour of its own, which put a
+            // warning on the row for something the reader can do nothing about
+            // — and the connector already shows it, by running DOWN from the
+            // selected group instead of up.
             let mut spans = vec![
                 Span::styled(tail_glyph.to_string(), Style::default().fg(THEME.gutter_fg)),
                 Span::styled("   after: ".to_string(), dim),
             ];
             for d in &g.depends_on {
-                spans.push(Span::styled(
-                    format!("{}{} ", d.id, if d.unsatisfied { "↓" } else { "" }),
-                    if d.unsatisfied {
-                        bg(Style::default().fg(THEME.skim_fg))
-                    } else {
-                        dim
-                    },
-                ));
+                spans.push(Span::styled(format!("{} ", d.id), dim));
             }
             lines.push(Line::from(spans));
         }
@@ -1986,6 +1991,10 @@ impl App {
                     _ => None,
                 };
                 let mut line = compose_row(&r.content, inner_w, on, accent);
+                // How to work this row, on the one row it can be worked from.
+                if on && let Some((st, text)) = &r.hint {
+                    write_over(&mut line, st, text);
+                }
                 if on {
                     // Span backgrounds win over a line style, so this colours
                     // exactly the rows that have no change colour of their own
@@ -2313,6 +2322,38 @@ fn guides_for_depths(depths: &[usize]) -> Vec<String> {
 /// uses for "here you are".
 const CURSOR_BAR: &str = "▌";
 
+/// Overwrite the tail of a composed row with `text`, keeping its width.
+///
+/// The row is already padded to the pane, so a hint has to displace cells
+/// rather than be appended — otherwise the line grows and the pane scrolls
+/// sideways. Written from the right so the label the row carries survives.
+fn write_over(line: &mut Line<'static>, style: &Style, text: &str) {
+    let want = UnicodeWidthStr::width(text);
+    let mut budget = 0usize;
+    while let Some(last) = line.spans.pop() {
+        let w = UnicodeWidthStr::width(last.content.as_ref());
+        if budget + w >= want {
+            // Keep whatever of this span the hint does not need.
+            let mut head = String::new();
+            let mut kept = 0usize;
+            for c in last.content.chars() {
+                let cw = UnicodeWidthStr::width(c.to_string().as_str());
+                if kept + cw > budget + w - want {
+                    break;
+                }
+                head.push(c);
+                kept += cw;
+            }
+            if !head.is_empty() {
+                line.spans.push(Span::styled(head, last.style));
+            }
+            break;
+        }
+        budget += w;
+    }
+    line.spans.push(Span::styled(text.to_string(), *style));
+}
+
 /// The lit cell at the head of the hunk pill the cursor is in.
 const PILL_BAR: &str = "▌";
 
@@ -2403,10 +2444,5 @@ fn help_paragraph() -> Paragraph<'static> {
         Line::from(Span::styled("  press any key to close", dim)),
     ];
     lines.insert(0, Line::from(""));
-    Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(THEME.header_fg))
-            .title(" help "),
-    )
+    Paragraph::new(lines).block(pane(" help ".to_string(), true))
 }
