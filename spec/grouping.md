@@ -35,7 +35,7 @@ number: model-assigned hunks / offered hunks. Unknown effort strings mean `focus
 
 ## Assembly
 
-Group order is presentation only (the foundation-first DAG is the ordering stage): focus
+Group order is presentation only (the foundation-first sort is the ordering stage): focus
 groups in model order (gate group last), skim groups by descending hunk count, the noise
 group, then the back-fill. `role` is `null` except the noise group (`"noise"`);
 `depends_on` is empty until the ordering stage exists.

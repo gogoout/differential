@@ -1,6 +1,6 @@
 //! Turn audited work groups into the document's `groups`, `reading_plan` and
 //! grouping-audit fields. Ordering here is presentation only (focus → skim →
-//! noise → back-fill); the foundation-first DAG is the ordering stage's job.
+//! noise → back-fill); the foundation-first sort is the ordering stage's job.
 
 use std::collections::HashMap;
 

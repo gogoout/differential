@@ -42,8 +42,8 @@ than `[focus]`/`F`. It is must-read either way, but for a different reason: noth
 judged it. The shadow-branch renderer has always said so on its commit subject, and the
 two renderers read the flag from the same projection so they cannot disagree.
 
-The plan is a **DAG, not a tree**: a group can follow several others, and the graph can
-even contain cycles (two groups that each define symbols the other uses). The ordering
+The plan is a **graph, not a tree**: a group can follow several others, and it is not
+acyclic — it can contain cycles (two groups that each define symbols the other uses). The ordering
 stage breaks a cycle deterministically, which means some edge cannot be honoured; the
 plan says so rather than hiding it — a dependency listed **later** than the group that
 follows it is visible in the connector, which runs **down** from the selected group rather

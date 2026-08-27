@@ -9,6 +9,8 @@ Everything is saved as it happens.
 
 Project home: <https://github.com/gogoout/differential>
 
+![The dfr review reviewer, mid-review](https://raw.githubusercontent.com/gogoout/differential/main/assets/screenshot.png)
+
 ## The three screens
 
 A session moves through them in order.
