@@ -972,10 +972,15 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
     // numbers they can.
     let (fg, bg) = THEME.pill();
 
-    // The marks first, since they are what an idle header keeps: whose group
-    // the hunk is, `✓` for a class already read, `◆ N` for what stands filed
-    // against it. A reader scans a file for those; the class and the counts
-    // they ask a hunk for once they are in it.
+    // The marks an idle header keeps: whose group the hunk is, `✓` for a class
+    // already read, `◆ N` for what stands filed against it. A reader scans a
+    // file for those; the class and the counts they ask a hunk for once they
+    // are in it.
+    //
+    // The group id is in the IDLE list only. The active pill already names it,
+    // right after the class, and appending the marks whole put it there a
+    // second time two cells later — `· C158 · g11  g11`, which reads as two
+    // facts about the hunk rather than one said twice.
     let mut marks: Vec<(ratatui::style::Color, String)> = Vec::new();
     let mark = |c, t: String, marks: &mut Vec<(ratatui::style::Color, String)>| {
         if !marks.is_empty() {
@@ -983,15 +988,21 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
         }
         marks.push((c, t));
     };
-    if let Some(id) = &group_id {
-        mark(fg, id.clone(), &mut marks);
-    }
     if reviewed {
         mark(THEME.reviewed_fg, "✓".to_string(), &mut marks);
     }
     if n_findings > 0 {
         mark(THEME.finding_fg, format!("◆ {n_findings}"), &mut marks);
     }
+
+    let mut idle_marks: Vec<(ratatui::style::Color, String)> = Vec::new();
+    if let Some(id) = &group_id {
+        idle_marks.push((fg, id.clone()));
+        if !marks.is_empty() {
+            idle_marks.push((fg, " ".to_string()));
+        }
+    }
+    idle_marks.extend(marks.iter().cloned());
 
     let mut parts = vec![(THEME.add_fg, format!("+{}", hunk.new_count))];
     if hunk.old_count > 0 {
@@ -1003,10 +1014,10 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
         parts.push((fg, "  ".to_string()));
         parts.extend(marks.iter().cloned());
     }
-    let idle = if marks.is_empty() {
+    let idle = if idle_marks.is_empty() {
         Vec::new()
     } else {
-        pill(marks, bg)
+        pill(idle_marks, bg)
     };
     rows.push(
         Row::banner(

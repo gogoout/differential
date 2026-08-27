@@ -1800,6 +1800,70 @@ fn a_foreign_hunk_is_dashed_and_names_its_group() {
     );
 }
 
+/// The active pill already names the owning group, right after the class. The
+/// marks appended after it must not name it a second time: `· C31 · g1  g1`
+/// reads as two facts about the hunk rather than one said twice.
+#[test]
+fn an_active_foreign_header_names_its_group_once() {
+    let (_r, mut app) = app_with_two_groups_in_one_file();
+    for _ in 0..6 {
+        if shows_a_foreign_hunk(&app) {
+            break;
+        }
+        press_z_on_down_boundary(&mut app);
+    }
+
+    // Put the cursor IN the foreign hunk: the pill only appears on the hunk
+    // the cursor is in, and the duplication was in that pill alone.
+    let pos = app
+        .rows
+        .iter()
+        .position(|r| {
+            r.border.is_some_and(|b| b.box_style == BoxStyle::Foreign)
+                && matches!(r.kind, RowKind::Diff(_))
+        })
+        .expect("a foreign hunk row");
+    app.cursor = pos;
+    app.focus = Focus::Detail;
+    app.set_viewport(Viewport {
+        detail_rows: 38,
+        plan_rows: 38,
+    });
+
+    let foreign = app
+        .rows
+        .iter()
+        .find_map(|r| match r.kind {
+            RowKind::HunkHeader {
+                hunk,
+                foreign: true,
+            } => Some(hunk),
+            _ => None,
+        })
+        .expect("a foreign hunk");
+    let id = app
+        .session
+        .plan()
+        .group_of_hunk(differential_engine::plan::HunkId::from_index(foreign))
+        .expect("the foreign hunk belongs to a group")
+        .id
+        .clone();
+
+    let header = drawn_rows(&mut app)
+        .into_iter()
+        .find(|r| r.contains(&format!("\u{b7} {id}")))
+        .expect("the active foreign header's row");
+    // Word boundaries matter: `g1` is a prefix of `g11`, so count tokens.
+    let times = header
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| *t == id)
+        .count();
+    assert_eq!(
+        times, 1,
+        "the active foreign header should name its group once, not {times} times: {header:?}"
+    );
+}
+
 /// A box borrows the pane's border columns rather than spending content ones,
 /// so a line number inside a box sits where a line number outside one sits.
 #[test]
