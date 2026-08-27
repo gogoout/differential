@@ -64,7 +64,8 @@ The terminal reviewer:
 | [`two-face`](https://crates.io/crates/two-face) | Extra syntaxes and themes for syntect. |
 | [`similar`](https://crates.io/crates/similar) | Line and word diffing inside a hunk. |
 | [`tui-textarea-2`](https://crates.io/crates/tui-textarea-2) | The finding composer's text box. |
-| [`arboard`](https://crates.io/crates/arboard) | Copying the findings summary to the clipboard. |
+| [`arboard`](https://crates.io/crates/arboard) | Copying the findings summary to a local clipboard. |
+| [`base64`](https://crates.io/crates/base64) | The OSC 52 payload, for a clipboard that is not local. |
 | [`unicode-width`](https://crates.io/crates/unicode-width) | Correct column widths for wide characters. |
 
 The engine and the application:

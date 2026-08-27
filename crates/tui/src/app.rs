@@ -37,12 +37,19 @@ const RULE_ARM: usize = 10;
 
 /// Presentation settings the application layer reads from config and hands to
 /// the renderer. Not review state: nothing here is persisted in the sidecar.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ReviewOptions {
     /// Context lines either side of a hunk before any expansion.
     pub context: usize,
     /// Lines one `z` on a context boundary row pulls in.
     pub context_step: usize,
+    /// The range the reader typed, if they typed one — so the footer can name
+    /// `dfr findings <range> --summary` when the clipboard is out of reach.
+    ///
+    /// Presentation, which is why it comes from the application layer rather
+    /// than from the pipeline's result: the review's IDENTITY is a resolved
+    /// sha plus a spec, and neither is what the reader would type back.
+    pub range: Option<String>,
 }
 
 impl Default for ReviewOptions {
@@ -50,6 +57,7 @@ impl Default for ReviewOptions {
         ReviewOptions {
             context: 3,
             context_step: 10,
+            range: None,
         }
     }
 }
@@ -1774,27 +1782,10 @@ impl App {
 
     /// Markdown summary of open findings, for pasting into an agent or PR.
     pub fn findings_summary(&self) -> String {
-        let mut out = String::new();
-        for f in self
-            .session
-            .findings()
-            .iter()
-            .filter(|f| f.status == FindingStatus::Open)
-        {
-            // The file and the lines, and the note. Not the group's label: a
-            // group is how this reviewer chose to READ the branch, and the
-            // summary is pasted somewhere that has no idea what g7 was.
-            out.push_str(&format!(
-                "- {}:{}: {}\n",
-                f.anchor.file,
-                f.anchor.line_span(),
-                f.body
-            ));
-        }
-        if out.is_empty() {
-            out.push_str("(no open findings)\n");
-        }
-        out
+        // The engine's, not this crate's: `dfr findings --summary` prints the
+        // same text, and a projection owned by a renderer is a projection the
+        // other consumer will reimplement slightly differently.
+        self.session.findings_summary()
     }
 
     // ------------------------------------------------------------- drawing

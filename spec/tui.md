@@ -311,10 +311,30 @@ list belongs; the footer's job is to point at it.
 | `v` | start a line selection at the cursor · `j`/`k` extend it · `v` or `esc` drops it · `c` writes a finding over it |
 | `c` | write a finding — on the line under the cursor, on the lines `v` selected, or on the whole hunk from a row that is not a line; on a line that already carries one, rewrite that one |
 | `dd` | delete the finding under the cursor |
-| `y` | copy the open-findings summary to the clipboard — a markdown list of `file:lines: note`, and nothing about groups: a group is how this reviewer chose to READ the branch, and the summary is pasted somewhere that has no idea what `g7` was |
+| `y` | copy the open-findings summary — a markdown list of `file:lines: note`, and nothing about groups: a group is how this reviewer chose to READ the branch, and the summary is pasted somewhere that has no idea what `g7` was. `dfr findings <range> --summary` prints the same text |
 | `F` | every finding in one list — `enter` jumps to one, `dd` deletes it, `D` clears them all, `esc` closes |
 | `?` | help — the keys, as one uninterrupted table |
 | `q` | quit — state is saved on every change, quitting never loses anything |
+
+**`y` must never trap the text.** The clipboard `arboard` reaches is the one on the
+machine the process runs on, and a remote session has none — so over SSH `y` reported
+`clipboard unavailable` and the summary was unreachable from inside the reviewer. Two
+routes now, and a command that always works:
+
+1. **`arboard`**, when a local display exists. The footer says the summary was copied.
+2. **OSC 52** otherwise — an escape sequence the remote host does not interpret and the
+   reader's own terminal does, because that terminal owns the real clipboard. It is
+   wrapped for tmux and screen when either is detected, and **refused rather than
+   truncated** when the encoded payload passes 8 KB, which is where several terminals
+   stop.
+
+OSC 52 has no reply to read, so a terminal that ignored the sequence looks exactly like
+one that took it — which means the footer must never claim the copy landed. It names
+`dfr findings <range> --summary` instead, with the range the reader typed filled in:
+`sent via the terminal · dfr findings main..feature --summary`. That command prints the
+same text, from the same store, through the same projection — `ReviewSession::
+findings_summary`, which is why the two can never drift. The picker leaves no range to
+name, so the reader is told the flag and supplies the rest.
 
 ## No range: the picker
 
