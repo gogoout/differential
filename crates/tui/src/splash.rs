@@ -40,8 +40,8 @@ const LOGO: [&str; 5] = [
 /// Characters, not bytes. They coincide while the art is ASCII, and the art is
 /// ASCII deliberately: the connected box-drawing diagonals (`╱`, `╲`) are East
 /// Asian Ambiguous, which a terminal pins to one cell but a browser does not —
-/// so the same wordmark sheared apart in the README. One version, correct in
-/// both, beats two that drift.
+/// so the same wordmark sheared apart in the README's code block. One version,
+/// correct in both, beats two that drift.
 const LOGO_WIDTH: usize = 54;
 
 /// Columns a stage row spends before its description: two of margin, the
