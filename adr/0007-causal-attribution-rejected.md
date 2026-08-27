@@ -15,7 +15,7 @@ Root/derived attribution is not a collapse mechanism and must not be rebuilt as 
 It IS the right idea for **ordering**: symbol-definition → symbol-use is a good partial
 order between groups, and ordering tolerates the ~30% precision that killed attribution
 (a wrong edge reorders; it never hides content). The ordering stage builds a group-level
-DAG on this signal and topologically sorts foundation-first.
+graph on this signal and topologically sorts foundation-first.
 
 ## Consequences
 

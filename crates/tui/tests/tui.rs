@@ -619,7 +619,7 @@ fn app_with_dependency_edge() -> (TestRepo, App) {
     );
     r.commit_all("head");
 
-    // One focus group per class, so each stays its own node in the DAG.
+    // One focus group per class, so each stays its own node in the dependency graph.
     let backend = FakeBackend::new("fake", |ids| {
         let groups: Vec<String> = ids
             .iter()

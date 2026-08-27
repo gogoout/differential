@@ -80,7 +80,9 @@ deletion-only hunks are never pure.
   (generated content, folded entirely — no exemplars).
 - `role`: `foundation | consumer | mechanical | noise` — filled by the ordering stage
   ([ordering.md](ordering.md)); isolated focus groups and the back-fill stay `null`.
-  `depends_on` edges form the group DAG; `rank` is the final reading-order position.
+  `depends_on` edges form the group dependency graph, which may contain cycles — a
+  consumer walking them must not assume otherwise; `rank` is the final reading-order
+  position, and it is always a total order.
 - `reading_plan` actions: `read`, `exemplars`, `skip`, `fold`.
 - Any class the model omitted lands in a trailing back-filled group with `effort: focus`.
   Nothing is ever dropped. Full stage semantics: [grouping.md](grouping.md).

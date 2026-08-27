@@ -9,13 +9,7 @@ Everything is saved as it happens.
 
 Project home: <https://github.com/gogoout/differential>
 
-![The dfr review reviewer: the reading plan on the left with tier glyphs and role pills; a side-by-side diff on the right with word-level emphasis; a file-list float over the foot of the plan pane; a hunk pill reading +8 · C179 · ◆ 1; and a two-line finding drawn under the code it annotates](https://raw.githubusercontent.com/gogoout/differential/main/assets/screenshot.png)
-
-*Everything named below is in that shot. On the left, the plan: a tier glyph and label per
-group, counts, and a role pill against the right edge. On the right, the split diff, with a
-hunk pill on the hunk the cursor is in and a two-line finding under the lines it annotates.
-The float over the foot of the plan lists the files in view. The footer carries the two
-pills: classes reviewed, and findings filed.*
+![The dfr review reviewer, mid-review](https://raw.githubusercontent.com/gogoout/differential/main/assets/screenshot.png)
 
 ## The three screens
 

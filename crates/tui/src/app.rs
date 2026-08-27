@@ -194,7 +194,8 @@ pub enum Effect {
 }
 
 /// A plan row's relation to the selected group — what the gutter connector
-/// draws. The plan is a DAG (a group can follow several others), not a tree.
+/// draws. The plan is a graph (a group can follow several others), not a tree, and not
+/// acyclic either.
 ///
 /// One direction only: what the selected group *follows*. The reverse edge was
 /// drawn too, in a second colour of the same glyph, which meant the gutter said
