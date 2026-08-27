@@ -15,6 +15,8 @@ parses arguments and dispatches. All the work happens in
 
 Project home: <https://github.com/gogoout/differential>
 
+![The dfr review reviewer: the reading plan on the left, the diff on the right](https://raw.githubusercontent.com/gogoout/differential/main/assets/screenshot.png)
+
 ## Install
 
 ```sh
