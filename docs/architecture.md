@@ -20,12 +20,61 @@ Coverage is structural. Judgement is delegated.
 
 ### 1. Mechanical partition
 
-Every hunk gets a **shape class**. That is a hash of its diff text with identifiers and
-literals normalised away, on both the removed and the added side. Two hunks in one class
-are the same edit wearing different names.
+Every hunk gets a **shape class**. Two hunks in one class are the same edit wearing
+different names.
 
-Coverage is 100% by construction. No model is involved. No semantic parser is involved. No
-file is ever excluded.
+A shape class is **literally just normalised text, then a hash of it**. There is no parser,
+no AST, no index and no model. It is four regex substitutions over the raw bytes of the
+diff.
+
+The generic normaliser is
+[`crates/engine/src/lang/generic.rs`](../crates/engine/src/lang/generic.rs), in
+`normalize_line`. It does exactly this, in this order:
+
+| step | rule |
+|---|---|
+| 1 | Strings become `"S"`. |
+| 2 | Numbers become `N`. |
+| 3 | Identifiers of four characters or more become `I`. |
+| 4 | Runs of whitespace collapse to one space, then the line is trimmed. |
+
+So this hunk:
+
+```diff
+-    let timeout = Duration::from_secs(30);
++    let timeout = Duration::from_secs(config.timeout);
+```
+
+normalises to:
+
+```
+- let I = I::I(N);
++ let I = I::I(I.I);
+```
+
+`let` survives because it is three characters, below the identifier threshold. Any other
+hunk that reduces to those same two lines is the same shape.
+
+The framing around the normaliser is
+[`crates/engine/src/shape.rs`](../crates/engine/src/shape.rs), in `shape_hash`. It prefixes
+each removed line with `-` and each added line with `+`, **sorts each side**, joins them
+with newlines, appends the file's disposition letter, takes a sha1, and keeps the first 12
+hex characters. That string is the class key.
+
+Two details in there carry weight. Both sides are hashed, not just the added side — hashing
+added lines alone collapses every deletion-only hunk into one class, which turns "same
+shapes, skippable" into a lie (ADR 0004). And the disposition is part of the key, so a
+whole-file addition and a modification with identical text are different shapes.
+
+Sorting each side means a hunk whose lines were reordered still hashes the same. That is
+deliberate: reordering is the shape staying put.
+
+`normalize_line` is pluggable per language ([ADR 0015](../adr/0015-language-abstraction.md)).
+The framing is not. The generic normaliser is frozen against the validated prototype so
+class populations stay comparable with its recorded outputs; improvements land as language
+plugins with their own ids.
+
+Coverage is 100% by construction. No model is involved. No file is ever excluded.
 
 ### 2. An LLM merges and labels class ids, never hunks
 

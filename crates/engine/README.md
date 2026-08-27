@@ -32,11 +32,32 @@ Four stages. The document records which ones ran, in `generator.stages`.
 
 ### Shape classes
 
-A shape class is a hash of a hunk's diff text after identifiers become `I`, strings become
-`"S"` and numbers become `N`. Both the removed and the added side are hashed, plus the
-file's disposition. Classes are named `C0`, `C1`, and so on, largest first.
+A shape class is **normalised text, then a hash of it**. No parser, no AST, no model. Four
+regex substitutions over the raw bytes.
 
-So a whole-file addition and a modification with identical text are different shapes.
+`lang::generic::normalize_line` does the substitutions: strings become `"S"`, numbers become
+`N`, identifiers of four characters or more become `I`, then whitespace collapses and the
+line is trimmed. So both of these lines
+
+```
+    let timeout = Duration::from_secs(30);
+    let timeout = Duration::from_secs(config.timeout);
+```
+
+normalise to `let I = I::I(N);` and `let I = I::I(I.I);`.
+
+`shape::shape_hash` does the framing: prefix removed lines with `-` and added lines with
+`+`, sort each side, join with newlines, append the file's disposition letter, sha1, keep
+12 hex characters.
+
+Both sides are hashed, not just the added side. Hashing added lines alone would collapse
+every deletion-only hunk into one class. The disposition is in the key too, so a whole-file
+addition and a modification with identical text are different shapes.
+
+Classes are named `C0`, `C1`, and so on, largest first.
+
+`normalize_line` is pluggable per language. The framing is not, and the generic normaliser
+is frozen against the validated prototype for hash parity.
 
 `pure_substitution` is true when the removed and added lines match after that erasure. It
 is **computed, never claimed by a model**.
