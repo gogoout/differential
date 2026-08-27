@@ -77,13 +77,7 @@ Only `skipped_hunks` is the genuine saving.
 cargo install differential
 ```
 
-To build from a clone instead:
-
-```sh
-cargo install --path crates/cli
-```
-
-Both install two binaries: `dfr` and `differential`. They are the same program.
+That installs two binaries, `dfr` and `differential`. They are the same program.
 
 ## Quick start
 
@@ -239,6 +233,14 @@ request.
 - [`CREDITS.md`](CREDITS.md) — the projects and crates this one stands on.
 
 ## Development
+
+Install the binaries from your working tree:
+
+```sh
+cargo install --path crates/cli
+```
+
+Then:
 
 ```sh
 cargo test                                # unit tests and hermetic repo tests
