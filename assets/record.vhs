@@ -49,7 +49,6 @@ Screenshot screenshot.png
 Sleep 1.2s
 
 
-
 Tab
 Sleep 400ms
 Type " "
@@ -87,26 +86,6 @@ Sleep 600ms
 
 Type "vim"
 Enter
-
-# ── Terminal-capability handshake ───────────────────────────────────────────
-# Plumbing. The viewer must never wait on it, so type it at 1ms.
-Type "F"
-Sleep 1s
-Type "D"
-Sleep 900ms
-Type "y"
-Tab
-Sleep 500ms
-Type " "
-Up@200ms 2
-Sleep 1s
-Type "q"
-Sleep 600ms
-
-Type "vim"
-Enter
-
-Set TypingSpeed 50ms
 
 Sleep 700ms
 Escape
