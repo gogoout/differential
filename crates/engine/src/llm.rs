@@ -5,9 +5,11 @@
 //!
 //! The grouping stage needs exactly one capability from a model: one-shot text
 //! completion — prompt in, raw text out. The contract is deliberately that
-//! narrow: no tools, no streaming, no chat state. Every observed hard failure
-//! of the evaluated grouping tools was a model CLI stopping to call a tool
-//! (ADR 0010); a backend that cannot express tools cannot fail that way.
+//! narrow: no streaming, no chat state, no conversation to manage.
+//!
+//! It stays that narrow now that the model reads for itself (ADR 0022). Tools
+//! run inside the CLI this spawns, so what crosses this seam is still a prompt
+//! and a string. What changed is a flag in the argv below, not the trait.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -95,20 +97,34 @@ impl CommandBackend {
             .is_some_and(|c| c.load(Ordering::Relaxed))
     }
 
-    /// The validated default (ADR 0010): headless, text output, tools denied.
-    pub fn claude_cli() -> Self {
+    /// The default: headless, text output, and read-only tools (ADR 0022).
+    ///
+    /// ADR 0010 denied tools outright, because the evaluated grouping tool kept
+    /// exiting 1 on `stop_reason: "tool_use"`. Denying them cured it by sending
+    /// no tool definitions at all, so the model could not ask. An allowlist is
+    /// the other cure: it can ask, and the answer is yes.
+    ///
+    /// `fetch` is the executable the prompt tells the model to run — normally
+    /// this process. The allowlist is derived from it, so the two cannot
+    /// disagree about what the model is allowed to invoke.
+    ///
+    /// Nothing here can write. The fetch command reads the document the engine
+    /// just wrote; the rest read the repository. `git log` and `git show` are
+    /// what reach the *reason* a change was made, which no prompt can carry.
+    ///
+    /// The allowlist is this function's business, not the user's. A configured
+    /// `[grouping].command` replaces this whole argv, and whoever writes one
+    /// owns what their agent may do.
+    pub fn claude_cli(fetch: &str) -> Self {
         Self::new(
-            [
-                "claude",
-                "-p",
-                "--output-format",
-                "text",
-                "--allowed-tools",
-                "",
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect(),
+            vec![
+                "claude".to_string(),
+                "-p".to_string(),
+                "--output-format".to_string(),
+                "text".to_string(),
+                "--allowed-tools".to_string(),
+                format!("Bash({fetch} agent:*),Read,Grep,Glob,Bash(git log:*),Bash(git show:*)"),
+            ],
             Duration::from_secs(1200),
         )
     }
@@ -297,8 +313,23 @@ mod tests {
     }
 
     #[test]
-    fn claude_cli_default_denies_tools() {
-        let b = CommandBackend::claude_cli();
-        assert!(b.name().contains("--allowed-tools"));
+    fn claude_cli_default_allows_reading_and_nothing_else() {
+        let b = CommandBackend::claude_cli("/opt/bin/dfr");
+        let argv = b.name();
+        assert!(
+            argv.contains("Bash(/opt/bin/dfr agent:*)"),
+            "the allowlist names the same executable the prompt does"
+        );
+        // The allowlist is the security boundary, so the test states what must
+        // stay OUT of it, not merely what is in it.
+        for forbidden in [
+            "Write",
+            "Edit",
+            "Bash(git commit",
+            "Bash(git push",
+            "WebFetch",
+        ] {
+            assert!(!argv.contains(forbidden), "{forbidden} must not be allowed");
+        }
     }
 }

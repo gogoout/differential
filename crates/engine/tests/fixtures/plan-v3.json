@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "generator": {
     "tool": "differential",
     "version": "0.1.0",
@@ -219,13 +219,22 @@
       "id": "C0",
       "hunk_ids": ["h0", "h1"],
       "exemplar": "h0",
-      "pure_substitution": false
+      "pure_substitution": false,
+      "defines": ["WidgetCore"],
+      "depends_on": []
     },
-    { "id": "C1", "hunk_ids": ["h2"], "exemplar": "h2", "pure_substitution": false },
-    { "id": "C2", "hunk_ids": ["h3"], "exemplar": "h3", "pure_substitution": false },
-    { "id": "C3", "hunk_ids": ["h4"], "exemplar": "h4", "pure_substitution": false },
-    { "id": "C4", "hunk_ids": ["h5"], "exemplar": "h5", "pure_substitution": false },
-    { "id": "C5", "hunk_ids": ["h6"], "exemplar": "h6", "pure_substitution": true }
+    {
+      "id": "C1",
+      "hunk_ids": ["h2"],
+      "exemplar": "h2",
+      "pure_substitution": false,
+      "defines": [],
+      "depends_on": [{ "on": "C0", "via": ["WidgetCore"] }]
+    },
+    { "id": "C2", "hunk_ids": ["h3"], "exemplar": "h3", "pure_substitution": false, "defines": [], "depends_on": [] },
+    { "id": "C3", "hunk_ids": ["h4"], "exemplar": "h4", "pure_substitution": false, "defines": [], "depends_on": [] },
+    { "id": "C4", "hunk_ids": ["h5"], "exemplar": "h5", "pure_substitution": false, "defines": [], "depends_on": [] },
+    { "id": "C5", "hunk_ids": ["h6"], "exemplar": "h6", "pure_substitution": true, "defines": [], "depends_on": [] }
   ],
   "groups": null,
   "reading_plan": null,

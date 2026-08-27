@@ -24,6 +24,12 @@ pub struct Dependency {
     /// sort had to break the cycle. The plan says so rather than quietly
     /// presenting an order it could not honour.
     pub unsatisfied: bool,
+    /// The symbols that produced the edge — why the dependency exists.
+    pub via: Vec<String>,
+    /// Why the sort could not honour it, when it could not. `unsatisfied` says
+    /// that it happened; this says whether the cycle is in the change or only
+    /// in the grouping.
+    pub cycle: Option<schema::Cycle>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,13 +141,15 @@ impl ReviewView {
                     depends_on: g
                         .depends_on
                         .iter()
-                        .map(|id| Dependency {
+                        .map(|e| Dependency {
                             label: label_of
-                                .get(id.as_str())
+                                .get(e.on.as_str())
                                 .map(|l| (*l).to_string())
-                                .unwrap_or_else(|| id.clone()),
-                            unsatisfied: rank_of.get(id.as_str()).copied().unwrap_or(0) > rank,
-                            id: id.clone(),
+                                .unwrap_or_else(|| e.on.clone()),
+                            unsatisfied: rank_of.get(e.on.as_str()).copied().unwrap_or(0) > rank,
+                            id: e.on.clone(),
+                            via: e.via.clone(),
+                            cycle: e.cycle,
                         })
                         .collect(),
                     unclassified: backfilled && rank + 1 == groups.len(),
@@ -295,13 +303,20 @@ mod tests {
     fn a_dependency_listed_later_is_flagged_unsatisfied() {
         let mut doc = two_group_doc();
         // g0 (rank 0) depends on g1 (rank 1): the order could not honour it.
-        doc.groups.as_mut().unwrap()[0].depends_on = vec!["g1".into()];
-        doc.groups.as_mut().unwrap()[1].depends_on = vec!["g0".into()];
+        let edge = |on: &str| schema::Edge {
+            on: on.to_string(),
+            via: vec!["Config".to_string()],
+            cycle: Some(schema::Cycle::Artefact),
+        };
+        doc.groups.as_mut().unwrap()[0].depends_on = vec![edge("g1")];
+        doc.groups.as_mut().unwrap()[1].depends_on = vec![edge("g0")];
         let view = ReviewView::project(&doc).unwrap();
 
         assert_eq!(
             view.groups[0].depends_on,
             [Dependency {
+                via: vec!["Config".to_string()],
+                cycle: Some(schema::Cycle::Artefact),
                 id: "g1".into(),
                 label: "g1 label".into(),
                 unsatisfied: true

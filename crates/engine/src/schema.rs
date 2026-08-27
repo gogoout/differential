@@ -7,8 +7,9 @@
 //! review now that the crate boundary is gone.
 //!
 //! Contract rules:
-//! - `schema_version` is 2 (v2 renamed the `close` effort tier to `focus`,
-//!   ADR 0019). Readers must reject versions they do not know.
+//! - `schema_version` is 3 (v3 gave every dependency edge its cause and moved
+//!   the graph onto `classes`, ADR 0022). Readers must reject versions they do
+//!   not know.
 //! - Deserialisation tolerates unknown fields, so additive changes are non-breaking.
 //! - `groups`/`reading_plan` are `null` when the grouping stage has not run. That is
 //!   distinct from `[]`, which would mean "grouping ran and produced nothing" and is
@@ -17,7 +18,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// The one JSON document: a grouped, ordered reading plan for a diff.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -184,6 +185,24 @@ pub struct ClassEntry {
     /// True iff, after erasing identifiers and literals, the removed and added
     /// lines match — a structure-free substitution. Computed, never claimed.
     pub pure_substitution: bool,
+    /// Symbols this class introduces, from `Language::symbol_definitions`.
+    /// Sorted and deduplicated.
+    pub defines: Vec<String>,
+    /// Classes this class consumes: it references a symbol they define. Sorted
+    /// by `on`. The graph is a fact about the diff, computed before grouping,
+    /// so it never depends on how the model merged classes.
+    pub depends_on: Vec<ClassEdge>,
+}
+
+/// One class-level dependency edge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClassEdge {
+    /// The class this one consumes.
+    pub on: String,
+    /// The symbols that produced the edge — why the dependency exists. Sorted
+    /// and deduplicated. Extraction is heuristic (ADR 0015), so a consumer may
+    /// judge an edge by its cause rather than take it on trust.
+    pub via: Vec<String>,
 }
 
 /// A merged, labelled group of shape classes. Produced by the grouping stage.
@@ -196,11 +215,47 @@ pub struct Group {
     pub effort: Effort,
     /// `None` until the ordering stage runs — role is an ordering-stage output.
     pub role: Option<Role>,
+    /// Member classes, ordered foundation-first by the ordering stage.
     pub class_ids: Vec<String>,
-    /// Group ids this group depends on (it consumes what they define).
-    pub depends_on: Vec<String>,
+    /// Groups this group depends on: it consumes what they define. The
+    /// contraction of the class graph onto groups.
+    pub depends_on: Vec<Edge>,
     /// Position in the foundation-first ordering.
     pub rank: u32,
+    /// How many leading `class_ids` depend on nothing ranked later — the index
+    /// at which this group stops being a foundation and starts being a
+    /// consumer.
+    ///
+    /// `None` unless the ordering had to break a cycle on this group. Nothing
+    /// splits the group: the number says where the group cannot be read as one
+    /// thing, and leaves what to do about it to the reader.
+    pub pivot: Option<u32>,
+}
+
+/// One group-level dependency edge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Edge {
+    /// The group this one depends on.
+    pub on: String,
+    /// The symbols that produced the edge — why the dependency exists.
+    pub via: Vec<String>,
+    /// `None` unless the ordering could not honour this edge.
+    ///
+    /// Whether it could is derivable from `rank`, so it is not repeated here.
+    /// Why it could not is NOT derivable, which is what this records.
+    pub cycle: Option<Cycle>,
+}
+
+/// Why a dependency edge could not be honoured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Cycle {
+    /// The class graph is acyclic here. The cycle exists only because groups
+    /// contract classes: one group both defines and consumes, against the same
+    /// other group, so no reading order can satisfy both.
+    Artefact,
+    /// The class graph is cyclic too. The mutual dependency is in the change.
+    Mutual,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

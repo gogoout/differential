@@ -9,8 +9,8 @@ use differential_engine::review_state::{
     Anchor, Finding, FindingStatus, class_content_key, reanchor, review_id,
 };
 use differential_engine::schema::SourceKind;
-use differential_engine::store::FsGroupingCache;
 use differential_engine::store::FsReviewStore;
+use differential_engine::store::{FsArtefactStore, FsGroupingCache};
 use differential_engine::{FsReviewSession, ReviewSession};
 /// Findings hash their creation time into their id; pinning it keeps these
 /// assertions about anchoring rather than about the clock.
@@ -112,6 +112,8 @@ fn doc_and_view(
         &differential_engine::grouping::GroupingOptions {
             backend: &focus_all_backend(),
             cache: &FsGroupingCache::disabled(),
+            artefacts: &FsArtefactStore::disabled(),
+            fetch: "dfr",
             progress: None,
         },
     )
@@ -309,6 +311,8 @@ fn findings_reanchor_across_regeneration() {
         &differential_engine::grouping::GroupingOptions {
             backend: &focus_all_backend(),
             cache: &FsGroupingCache::disabled(),
+            artefacts: &FsArtefactStore::disabled(),
+            fetch: "dfr",
             progress: None,
         },
     )
@@ -346,6 +350,8 @@ fn findings_reanchor_across_regeneration() {
         &differential_engine::grouping::GroupingOptions {
             backend: &focus_all_backend(),
             cache: &FsGroupingCache::disabled(),
+            artefacts: &FsArtefactStore::disabled(),
+            fetch: "dfr",
             progress: None,
         },
     )
@@ -381,6 +387,8 @@ fn session_persists_every_mutation() {
         &differential_engine::grouping::GroupingOptions {
             backend: &focus_all_backend(),
             cache: &FsGroupingCache::disabled(),
+            artefacts: &FsArtefactStore::disabled(),
+            fetch: "dfr",
             progress: None,
         },
     )

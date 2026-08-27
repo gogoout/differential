@@ -404,12 +404,12 @@ pub struct StackOutput {
 
 /// Full production path for the shadow-branch renderer: grouped pipeline
 /// (core -> group -> order, in the engine) -> commit stack.
-pub fn run_stack_pipeline<G, C>(
+pub fn run_stack_pipeline<G, C, A>(
     git: &G,
     source: &plan::ReviewSource,
     config: &differential_engine::config::Config,
     langs: &differential_engine::lang::LanguageRegistry,
-    grouping: &differential_engine::grouping::GroupingOptions<C>,
+    grouping: &differential_engine::grouping::GroupingOptions<C, A>,
     stack: &StackOptions,
 ) -> Result<StackOutput, EngineError>
 where
@@ -424,6 +424,7 @@ where
         + DiffSource
         + AttributeSource,
     C: differential_engine::ports::GroupingCache,
+    A: differential_engine::ports::ArtefactStore,
 {
     let out = differential_engine::run_grouped_pipeline(
         git,

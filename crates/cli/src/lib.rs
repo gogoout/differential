@@ -2,6 +2,8 @@
 //! surfaces over the engine's document, per ADR 0014. The engine stays the
 //! single producer; this crate is argument parsing and presentation only.
 
+mod agent;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -17,7 +19,7 @@ use differential_engine::lang::LanguageRegistry;
 use differential_engine::llm::CommandBackend;
 use differential_engine::pipeline::resolve_picked;
 use differential_engine::plan;
-use differential_engine::store::{FsGroupingCache, FsReviewStore, OsConfigSource};
+use differential_engine::store::{FsArtefactStore, FsGroupingCache, FsReviewStore, OsConfigSource};
 use differential_engine::{resolve_range, run_pipeline};
 use differential_stack::{StackOptions, run_stack_pipeline};
 
@@ -66,15 +68,31 @@ enum Command {
         #[arg(long)]
         no_cache: bool,
     },
+    /// Answer one question about a pre-group document (ADR 0022).
+    ///
+    /// The grouping model's read path. It takes no range and calls no model:
+    /// the document names the range it came from, and this only reads.
+    Agent {
+        /// The document the grouping stage wrote.
+        #[arg(long)]
+        doc: PathBuf,
+        /// Repository to read diffs from (defaults to the one containing the cwd).
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        #[command(subcommand)]
+        query: agent::Query,
+    },
 }
 
 impl Command {
-    fn common(&self) -> &Common {
+    /// `None` for `agent`, which works from a document rather than a range.
+    fn common(&self) -> Option<&Common> {
         match self {
             Command::Stack { common, .. }
             | Command::Check { common, .. }
             | Command::Review { common, .. }
-            | Command::Findings { common, .. } => common,
+            | Command::Findings { common, .. } => Some(common),
+            Command::Agent { .. } => None,
         }
     }
 }
@@ -109,7 +127,17 @@ pub fn main_impl() -> ExitCode {
 }
 
 fn run(cli: Cli) -> anyhow::Result<ExitCode> {
-    let common = cli.command.common();
+    // `agent` opens no pipeline and resolves no range, so it answers before
+    // any of that is set up.
+    if let Command::Agent { doc, repo, query } = &cli.command {
+        let dir = repo
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().expect("cwd"));
+        print!("{}", agent::run(doc, &dir, query)?);
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let common = cli.command.common().expect("agent handled above");
 
     let dir = common
         .repo
@@ -146,6 +174,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let langs = LanguageRegistry::builtin();
 
     match cli.command {
+        Command::Agent { .. } => unreachable!("handled before the pipeline is built"),
         Command::Stack {
             ref_name, no_cache, ..
         } => {
@@ -159,6 +188,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 &GroupingOptions {
                     backend: &backend,
                     cache: &grouping_cache(&repo, no_cache)?,
+                    artefacts: &artefact_store(&repo, no_cache)?,
+                    fetch: &fetch_command(),
                     progress: None,
                 },
                 &StackOptions {
@@ -201,6 +232,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             // identity per the wiring table in adr/0017.
             let pick = resolved.is_none();
             let cache = grouping_cache(&repo, no_cache)?;
+            let artefacts = artefact_store(&repo, no_cache)?;
+            let fetch = fetch_command();
             let worker_repo = repo.clone();
             // Read before `config` moves into the pipeline closure: how much
             // context to show is presentation, so it goes to the renderer
@@ -232,6 +265,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                         // needs killing is the subprocess.
                         backend: &backend_from(&config.grouping, Some(cancel)),
                         cache: &cache,
+                        artefacts: &artefacts,
+                        fetch: &fetch,
                         progress: Some(&report),
                     },
                 )
@@ -310,6 +345,35 @@ fn grouping_cache(repo: &Repo, no_cache: bool) -> anyhow::Result<FsGroupingCache
     })
 }
 
+/// Where the model reads the pre-group document from.
+///
+/// `--no-cache` moves it to a temporary file rather than skipping it: the model
+/// needs a path on every run, and only whether that path survives is what the
+/// cache decides.
+fn artefact_store(repo: &Repo, no_cache: bool) -> anyhow::Result<FsArtefactStore> {
+    Ok(if no_cache {
+        FsArtefactStore::disabled()
+    } else {
+        FsArtefactStore::for_repo(repo)?
+    })
+}
+
+/// The executable the grouping model is told to fetch with (ADR 0022).
+///
+/// This process, so `cargo run`, an installed `dfr` and an installed
+/// `differential` each name themselves. `dfr` is the fallback for the rare
+/// platform where the current executable cannot be resolved; on that path the
+/// model's fetches fail and it groups from the class ids alone.
+///
+/// The default backend's tool allowlist is derived from this same string, so
+/// the prompt can never name a command the model is not allowed to run.
+fn fetch_command() -> String {
+    std::env::current_exe()
+        .ok()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "dfr".to_string())
+}
+
 /// Turn `[grouping]` config into a backend.
 ///
 /// Composition, so it belongs to the application layer rather than the engine
@@ -323,7 +387,7 @@ fn backend_from(
         Some(argv) if !argv.is_empty() => {
             CommandBackend::new(argv.clone(), Duration::from_secs(DEFAULT_TIMEOUT_SECS))
         }
-        _ => CommandBackend::claude_cli(),
+        _ => CommandBackend::claude_cli(&fetch_command()),
     };
     let backend = match cfg.timeout_secs {
         Some(s) => backend.with_timeout(Duration::from_secs(s)),
@@ -357,6 +421,8 @@ fn grouped(
         &GroupingOptions {
             backend: &backend,
             cache: &grouping_cache(repo, no_cache)?,
+            artefacts: &artefact_store(repo, no_cache)?,
+            fetch: &fetch_command(),
             progress: None,
         },
     )

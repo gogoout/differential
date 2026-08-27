@@ -1,0 +1,107 @@
+# 0022 — The model fetches its own context
+
+Status: accepted. Supersedes [0010](0010-llm-invocation-tools-denied.md).
+
+## Context
+
+The grouping stage handed the model one fixed string. Per shape class it carried a header,
+up to four removed and four added lines from the **exemplar hunk only**, and up to six
+basenames — the whole payload capped at 90,000 characters.
+
+Three things followed from that, and the first is a correctness problem.
+
+1. **The model could not check the claim it makes.** Rating a class `skim` asserts that
+   every hunk in it is the same edit, and "read one exemplar, trust the rest" is the whole
+   saving (ADR 0006). It had seen one hunk of nine. Nothing else checks within-class
+   equivalence either: invariants 1–4 guarantee coverage, not equivalence
+   (`spec/invariants.md`).
+2. **It merged blind to structure.** The payload carried no dependency information, so it
+   could not know that putting a class which defines a trait in the same group as a class
+   which consumes another group leaves no valid reading order.
+3. **It truncated.** At roughly 400 to 900 characters per class, a change with two hundred
+   classes straddles the cap. Classes past it became audit-missing and were back-filled
+   into a must-read group — safe, but the opposite of the tool's purpose.
+
+The dependency graph had a second, separate problem. `ordering.rs` built it from **groups**,
+unioning every symbol in a group before computing one edge. So a symbol two classes defined
+produced an edge only when the model happened to merge those two classes, and contracting
+the finer graph onto groups manufactured cycles the change did not contain.
+
+## Decision
+
+**The engine writes what it knows; the model reads what it needs.**
+
+- The pre-group document — `PlanDocument` with `groups: null` — is written to
+  `<git-common-dir>/differential/cache/document/<key>.json`, under the grouping cache's own
+  key. One grouping, one document.
+- The prompt carries instructions, that path, the `dfr agent` commands, and the class id
+  list. Nothing else. The 90,000-character cap is gone, and with it the truncation
+  back-fill.
+- `dfr agent` answers five questions against the document: `classes`, `class <id>`,
+  `diff <id>`, `file <path>`, `defines <symbol>`. `diff` is the one that matters: it is the
+  first time the model can look at a non-exemplar member before rating a class.
+- **The dependency graph moves to `artefact::graph`, built from classes before the model
+  runs.** It lands on `ClassEntry.defines` and `ClassEntry.depends_on`; the ordering stage
+  contracts it onto groups. Every edge carries the symbols that produced it.
+- The default backend gains a read-only allowlist:
+  `Bash(dfr agent:*),Read,Grep,Glob,Bash(git log:*),Bash(git show:*)`.
+- **`schema_version` is 3.** `Group.depends_on` becomes a list of `Edge { on, via, cycle }`,
+  and `Group` gains `pivot`.
+
+The model's job is unchanged. It merges class ids, labels and rates, and it never touches
+hunks (ADR 0001). Only its context changed.
+
+## Why ADR 0010 is superseded, not contradicted
+
+ADR 0010 denied tools because every observed hard failure was the model CLI exiting 1 with
+`stop_reason: "tool_use"`. `--allowed-tools ""` sends **no tool definitions**, so the model
+cannot emit a tool-use block and cannot fail that way. That was a cure, not a diagnosis: the
+failure is a model asking for a tool the harness will not run. A correct allowlist is the
+other cure — it asks, and the answer is yes.
+
+`LlmBackend` does not change. It is still `complete(prompt) -> String`; tools run inside the
+CLI this spawns. Two failure modes replace the old one, and both are the caller's to see:
+the 1200-second deadline, and prose instead of JSON after a long agentic run.
+
+## The mechanism computes dependencies; the model never states them
+
+The model can resolve a symbol better than a regex. It is still not asked to.
+
+Dependency is computable, so it is deterministic, exhaustive over the whole change, and
+free. A model asked for edges on top of an already large task would sample rather than
+cover, and nothing could check what it returned. The graph is a fact about the diff; the
+grouping is a judgement about the diff. Keeping them apart is what lets a cached grouping be
+re-ordered on every load without another model call.
+
+## Consequences
+
+- **`depends_on` loses the edges grouping used to create.** A symbol two classes define now
+  has no unique definer and produces no edge, where before an edge survived if the model
+  merged both defining classes. That is the right loss: what depends on what cannot turn on
+  how a label was drawn. A precise `Language` (ADR 0015) would resolve the ambiguity rather
+  than drop it.
+- **Classes inside a group are now ordered.** The old `def_gi != gi` guard discarded every
+  intra-group edge; those edges are the only thing that can order a group's members, so
+  `class_ids` is sorted foundation-first.
+- **A cycle now says why it exists.** `Edge.cycle` is `artefact` when the class graph is
+  acyclic — the deadlock came from contracting classes into groups — and `mutual` when the
+  classes deadlock too. On an artefact cycle the class order decides which group is emitted,
+  instead of group size.
+- **Nothing splits a group.** `pivot` records where a group stops being a foundation and
+  starts being a consumer, and stops there. The merge is the model's judgement (ADR 0001),
+  the graph that would undo it is heuristic (ADR 0015), and ADR 0007's tolerance — a wrong
+  edge only misorders — does not extend to a wrong cut, which would break a coherent group
+  and mislabel both halves. The impossibility is information the reviewer wants, not a
+  problem to hide behind two rows.
+- **`PROMPT_VERSION` is 3 and the backend argv changed**, so every cached grouping in every
+  checkout is invalidated once. Both feed the cache key, so this is automatic, not a
+  migration.
+- **A hole the cache key cannot close.** The key covers the prompt version, the backend
+  name, the language fingerprint and the class content digests (ADR 0009). A model reading
+  `git log` reads history no key can capture, so two clones with different history can group
+  differently under one key. That is the price of reaching the *reason* a change was made,
+  and no key design fixes it.
+- **`dfr agent` never runs the pipeline and never calls a model.** It reads the document and
+  re-enumerates the range the document names, so a grouping run cannot recurse into itself.
+- An unknown id prints a plain sentence and exits 0. To an agent a non-zero exit reads as
+  "the tool is broken" and stops it asking, which is worse than a clear "no".

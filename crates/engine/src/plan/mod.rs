@@ -15,7 +15,9 @@ mod view;
 
 pub use counts::LineCounts;
 pub use enumerate::{Enumeration, attr_marks_generated, build_view, classify};
-pub use identity::{class_content_key, grouping_cache_dir, plan_hash, review_dir, review_id};
+pub use identity::{
+    artefact_dir, class_content_key, grouping_cache_dir, plan_hash, review_dir, review_id,
+};
 pub use ids::{HunkId, PlanIndex};
 pub use source::{RangeSpec, ReviewSource, parse_range};
 pub use staging::{Staged, cumulative_state, final_state};
@@ -116,6 +118,8 @@ pub(crate) mod test_support {
                     hunk_ids: ids.iter().map(|s| (*s).into()).collect(),
                     exemplar: (*exemplar).into(),
                     pure_substitution: false,
+                    defines: vec![],
+                    depends_on: vec![],
                 })
                 .collect(),
             groups: None,
@@ -135,6 +139,7 @@ pub(crate) mod test_support {
             class_ids: class_ids.iter().map(|s| (*s).into()).collect(),
             depends_on: vec![],
             rank: 0,
+            pivot: None,
         }
     }
 

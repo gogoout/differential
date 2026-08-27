@@ -486,6 +486,7 @@ dependencies = [
  "clap",
  "differential-engine",
  "differential-stack",
+ "differential-testutil",
  "differential-tui",
  "serde_json",
  "tempfile",

@@ -11,7 +11,7 @@ use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::run_grouped_pipeline;
 use differential_engine::ports::ReviewStore;
 use differential_engine::schema::SourceKind;
-use differential_engine::store::{FsGroupingCache, FsReviewStore};
+use differential_engine::store::{FsArtefactStore, FsGroupingCache, FsReviewStore};
 use differential_testutil::{FakeBackend, TestRepo, json_group};
 use differential_tui::app::{App, Effect, Focus, Mode, ReviewOptions, ViewMode, Viewport};
 use differential_tui::rows::{BoxStyle, RowFactory, RowKind};
@@ -48,6 +48,8 @@ fn open_app_with(r: &TestRepo, backend: &FakeBackend, store: &str) -> App {
         &differential_engine::grouping::GroupingOptions {
             backend,
             cache: &FsGroupingCache::disabled(),
+            artefacts: &FsArtefactStore::disabled(),
+            fetch: "dfr",
             progress: None,
         },
     )
@@ -79,6 +81,8 @@ fn open_app(r: &TestRepo) -> App {
         &differential_engine::grouping::GroupingOptions {
             backend: &backend,
             cache: &FsGroupingCache::disabled(),
+            artefacts: &FsArtefactStore::disabled(),
+            fetch: "dfr",
             progress: None,
         },
     )
@@ -1217,6 +1221,8 @@ fn highlighting_is_windowed_not_whole_file() {
         &differential_engine::grouping::GroupingOptions {
             backend: &backend,
             cache: &FsGroupingCache::disabled(),
+            artefacts: &FsArtefactStore::disabled(),
+            fetch: "dfr",
             progress: None,
         },
     )

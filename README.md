@@ -204,8 +204,11 @@ agent to run is your choice, not the repo's. So is how much of a file the review
 
 ```toml
 [grouping]
-# Any command: prompt on stdin, text on stdout. The default is shown.
-command = ["claude", "-p", "--output-format", "text", "--allowed-tools", ""]
+# Any command: prompt on stdin, text on stdout. The default runs Claude Code
+# headless, and lets it read the change and the repository — nothing else.
+# Set this only to run a different agent; then its capabilities are yours to
+# choose. The command is part of the cache key, so agents do not share entries.
+# command = ["my-agent", "--quiet"]
 timeout_secs = 1200
 
 [review]

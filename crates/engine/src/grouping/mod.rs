@@ -17,15 +17,14 @@ mod payload;
 use std::collections::{HashMap, HashSet};
 
 use crate::llm::LlmBackend;
-use crate::ports::GroupingCache;
+use crate::ports::{ArtefactStore, GroupingCache};
 use crate::schema;
 
 use crate::EngineError;
-use crate::model::DiffView;
 
 pub use payload::PROMPT_VERSION;
 
-pub struct GroupingOptions<'a, C: GroupingCache> {
+pub struct GroupingOptions<'a, C: GroupingCache, A: ArtefactStore> {
     /// The backend, always injected. `dyn` because config picks which command
     /// to run — the one runtime-open seam in this stage (ADR 0016, 0020).
     ///
@@ -36,6 +35,15 @@ pub struct GroupingOptions<'a, C: GroupingCache> {
     /// Where groupings are pinned. Disabling is a state of the cache
     /// (`FsGroupingCache::disabled()`), not an `Option` here.
     pub cache: &'a C,
+    /// Where the pre-group document is left for the model to read (ADR 0022).
+    pub artefacts: &'a A,
+    /// The executable the model runs to fetch from that document — normally
+    /// this process, so composition supplies it.
+    ///
+    /// The backend's tool allowlist MUST be built from the same string
+    /// (`CommandBackend::claude_cli`), or the prompt names a command the model
+    /// is not permitted to run.
+    pub fetch: &'a str,
     /// Stage notifications for renderers that show progress while the
     /// pipeline runs (the TUI's splash screen). `None` reports nothing.
     pub progress: Option<&'a (dyn Fn(Progress) + Send + Sync)>,
@@ -58,17 +66,13 @@ pub enum Progress {
 pub(crate) struct ClassInfo {
     pub id: String,
     pub n_hunks: usize,
-    /// Sorted unique file paths touched by members.
-    pub files: Vec<String>,
-    pub kind: char,
-    /// Exemplar hunk index into `view.hunks`.
+    /// Exemplar hunk index into the canonical hunk list. Orders the class id
+    /// list in the prompt; the model reaches the hunk itself by fetching.
     pub exemplar: usize,
     /// Every member hunk lives in a generated file → noise tier.
     pub all_generated: bool,
     /// Some member touches a rename below the relocation threshold.
     pub rename_gated: bool,
-    /// "renamed from <old>, <sim>% similar" annotation for the payload.
-    pub rename_note: Option<String>,
     /// Sorted member digests, for the cache key.
     pub digests: Vec<String>,
 }
@@ -88,11 +92,12 @@ const RELOCATION_THRESHOLD: u8 = 95;
 /// Run the grouping stage over a core-only document. Returns the same document
 /// with `groups`, `reading_plan` and the grouping audit fields filled, and
 /// `"group"` appended to `generator.stages`.
-pub fn run<C: GroupingCache>(
+pub fn run<C: GroupingCache, A: ArtefactStore>(
     doc: &schema::PlanDocument,
-    view: &DiffView,
     backend: &dyn LlmBackend,
     cache: &C,
+    artefacts: &A,
+    fetch: &str,
     lang_fingerprint: &str,
     progress: Option<&(dyn Fn(Progress) + Send + Sync)>,
 ) -> Result<schema::PlanDocument, EngineError> {
@@ -110,15 +115,12 @@ pub fn run<C: GroupingCache>(
             coverage: 1.0,
         }
     } else {
-        let prompt = payload::build_prompt(&offered, view);
-        let response = fetch_response(
-            &prompt,
-            &offered,
-            backend,
-            cache,
-            lang_fingerprint,
-            progress,
-        )?;
+        // The key names the artefact as well as the cache entry: one grouping,
+        // one document, and a cache hit finds the same file the miss wrote.
+        let key = key::cache_key(&offered, backend.name(), lang_fingerprint);
+        let path = artefacts.make_readable(&key, &doc.to_json_pretty()?)?;
+        let prompt = payload::build_prompt(&offered, fetch, &path.to_string_lossy());
+        let response = fetch_response(&prompt, &key, backend, cache, progress)?;
         let raw = parse::parse_response(&response)?;
         audit(raw, &offered)
     };
@@ -287,19 +289,7 @@ fn class_infos(doc: &schema::PlanDocument) -> Vec<ClassInfo> {
                 f.rename_similarity
                     .is_some_and(|s| s < RELOCATION_THRESHOLD)
             });
-            let rename_note = entries.iter().find_map(|f| {
-                let sim = f.rename_similarity?;
-                let old = f.old_path.as_deref()?;
-                Some(format!("renamed from {old}, {sim}% similar"))
-            });
-
-            let exemplar_id = c.exemplar.as_str();
-            let (exemplar_idx, exemplar_hunk) = hunk_by_id[exemplar_id];
-            let kind = match file_by_path[exemplar_hunk.file.as_str()].disposition {
-                schema::Disposition::A => 'A',
-                schema::Disposition::D => 'D',
-                schema::Disposition::M => 'M',
-            };
+            let (exemplar_idx, _) = hunk_by_id[c.exemplar.as_str()];
 
             let mut digests: Vec<String> = members.iter().map(|(_, h)| h.digest.clone()).collect();
             digests.sort_unstable();
@@ -307,12 +297,9 @@ fn class_infos(doc: &schema::PlanDocument) -> Vec<ClassInfo> {
             ClassInfo {
                 id: c.id.clone(),
                 n_hunks: members.len(),
-                files,
-                kind,
                 exemplar: exemplar_idx,
                 all_generated,
                 rename_gated,
-                rename_note,
                 digests,
             }
         })
@@ -323,13 +310,11 @@ fn class_infos(doc: &schema::PlanDocument) -> Vec<ClassInfo> {
 /// assembly stay pure functions replayed on every load.
 fn fetch_response<C: GroupingCache>(
     prompt: &str,
-    offered: &[&ClassInfo],
+    key: &str,
     backend: &dyn LlmBackend,
     cache: &C,
-    lang_fingerprint: &str,
     progress: Option<&(dyn Fn(Progress) + Send + Sync)>,
 ) -> Result<String, EngineError> {
-    let key = key::cache_key(offered, backend.name(), lang_fingerprint);
     let report = |cached: bool| {
         if let Some(f) = progress {
             f(Progress::Grouping {
@@ -338,12 +323,12 @@ fn fetch_response<C: GroupingCache>(
             });
         }
     };
-    if let Some(hit) = cache.get(&key)? {
+    if let Some(hit) = cache.get(key)? {
         report(true);
         return Ok(hit);
     }
     report(false);
     let response = backend.complete(prompt)?;
-    cache.put(&key, &response)?;
+    cache.put(key, &response)?;
     Ok(response)
 }

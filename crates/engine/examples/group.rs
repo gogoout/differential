@@ -15,7 +15,7 @@ use differential_engine::gitio::Repo;
 use differential_engine::grouping::GroupingOptions;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::schema::Effort;
-use differential_engine::store::{FsGroupingCache, OsConfigSource};
+use differential_engine::store::{FsArtefactStore, FsGroupingCache, OsConfigSource};
 use differential_engine::{resolve_range, run_grouped_pipeline};
 
 fn main() -> ExitCode {
@@ -65,9 +65,20 @@ fn main() -> ExitCode {
     } else {
         FsGroupingCache::disabled()
     };
+    let artefacts = if use_cache {
+        match FsArtefactStore::for_repo(&repo) {
+            Ok(a) => a,
+            Err(e) => return usage_error(&e.to_string()),
+        }
+    } else {
+        FsArtefactStore::disabled()
+    };
     // Composition is the application layer's job, so the example builds its
     // own backend rather than the pipeline reaching into config for one.
-    let backend = differential_engine::llm::CommandBackend::claude_cli();
+    let fetch = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "dfr".to_string());
+    let backend = differential_engine::llm::CommandBackend::claude_cli(&fetch);
 
     let out = match run_grouped_pipeline(
         &repo,
@@ -79,6 +90,8 @@ fn main() -> ExitCode {
         &GroupingOptions {
             backend: &backend,
             cache: &cache,
+            artefacts: &artefacts,
+            fetch: &fetch,
             progress: None,
         },
     ) {

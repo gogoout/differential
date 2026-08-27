@@ -1,4 +1,4 @@
-# The JSON contract (schema v2)
+# The JSON contract (schema v3)
 
 The document the engine produces. Types live in `engine::schema`
 (`crates/engine/src/schema.rs`); this file is the prose
@@ -69,6 +69,13 @@ Canonical enumeration from `git diff -U0 --no-renames`, every file, no exclusion
 The mechanical partition. Every hunk appears in exactly one class; ids `C0…Cn` numbered by
 descending member count.
 
+`defines` and `depends_on` are the class dependency graph (ADR 0022), computed from classes
+before the grouping stage runs — so it is a fact about the diff and never changes with how
+the model grouped. `defines` lists the symbols the class introduces. Each `depends_on` entry
+is `{on, via}`: the class consumed, and the symbols that produced the edge. Only a symbol
+defined by exactly one class creates an edge. Extraction is heuristic and its precision is
+low (ADR 0015), which is why `via` exists — an edge can be judged by its cause.
+
 `pure_substitution` is **computed, never claimed**: after erasing identifiers and literals
 from both sides, the removed and added lines match. A group that is not mostly
 pure-substitution must not promise "read one exemplar, trust the rest". Insertion-only and
@@ -80,9 +87,18 @@ deletion-only hunks are never pure.
   (generated content, folded entirely — no exemplars).
 - `role`: `foundation | consumer | mechanical | noise` — filled by the ordering stage
   ([ordering.md](ordering.md)); isolated focus groups and the back-fill stay `null`.
-  `depends_on` edges form the group dependency graph, which may contain cycles — a
-  consumer walking them must not assume otherwise; `rank` is the final reading-order
-  position, and it is always a total order.
+- `class_ids` is ordered foundation-first within the group, by the same stage.
+- `depends_on` is the class graph contracted onto groups, which may contain cycles — a
+  consumer walking them must not assume otherwise. Each entry is `{on, via, cycle}`.
+  `cycle` is `null` except on an edge the sort could not honour: `artefact` when the class
+  graph is acyclic and the cycle came from contracting classes into groups, `mutual` when
+  the classes deadlock too. *Whether* an edge was honoured is derivable from `rank`, so it
+  is not recorded twice.
+- `pivot` counts the leading `class_ids` that depend on nothing ranked later — where the
+  group stops being a foundation and starts being a consumer. `null` unless the sort broke
+  a cycle on this group. Nothing splits the group; the number says where it cannot be read
+  as one thing.
+- `rank` is the final reading-order position, and it is always a total order.
 - `reading_plan` actions: `read`, `exemplars`, `skip`, `fold`.
 - Any class the model omitted lands in a trailing back-filled group with `effort: focus`.
   Nothing is ever dropped. Full stage semantics: [grouping.md](grouping.md).

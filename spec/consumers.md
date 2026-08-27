@@ -14,16 +14,25 @@ dfr review [--repo <path>] [--config <path>] [--no-cache] <range>
 dfr stack [--repo <path>] [--config <path>] [--ref <name>] [--no-cache] <range>
 dfr findings [--repo <path>] [--config <path>] [--no-cache] <range>
 dfr check [--repo <path>] [--config <path>] [--json] <range>
+dfr agent --doc <path> [--repo <path>] <classes|class|diff|file|defines> [arg]
 ```
 
 - `review` opens the terminal reviewer ([tui.md](tui.md)); `findings` prints the review's
   findings as re-anchored JSON.
 - `stack` builds and lands the review commit stack ([stack.md](stack.md)), printing the
   commit list and the `git log` line to review with. The grouping backend comes from
-  `[grouping].command` (default: the tools-denied claude invocation); the pinning cache
-  lives under `<git-common-dir>/differential/cache/grouping` unless `--no-cache`.
+  `[grouping].command` (default: a claude invocation with read-only tools); the pinning cache
+  lives under `<git-common-dir>/differential/cache/grouping` unless `--no-cache`. The
+  document the model reads sits beside it, under `…/cache/document`.
 - `check` runs the core pipeline and reports invariants 1–4 — the self-test and CI entry
   point.
+- `agent` is the grouping model's read path (ADR 0022), not a human one. The prompt names
+  the running executable, and the default backend's allowlist is derived from the same
+  string, so the two cannot disagree about what the model may invoke. It answers one
+  question about the pre-group document the grouping stage wrote: `classes`, `class <id>`,
+  `diff <id>`, `file <path>`, `defines <symbol>`. It never runs the pipeline and never calls
+  a model, so a grouping run cannot recurse into itself. An unknown id prints a plain
+  sentence and exits 0 — to an agent a non-zero exit reads as "the tool is broken".
 - Exit codes: 0 success/all pass, 1 invariant or pipeline failure, 2 usage/config error.
 
 ## Library surface
@@ -49,8 +58,10 @@ let out = run_pipeline(&repo, &src.base, &src.head, src.kind, &config,
   same type from the picker's answer.
 - `run_pipeline` runs all invariants before emitting anything; on a violation there is no
   document, only the report saying what failed.
-- `run_grouped_pipeline(…, &GroupingOptions { backend, cache, progress })` additionally
-  runs the grouping stage ([grouping.md](grouping.md)). Both are **injected**: the engine
+- `run_grouped_pipeline(…, &GroupingOptions { backend, cache, artefacts, progress })`
+  additionally runs the grouping stage ([grouping.md](grouping.md)). `artefacts` is where
+  the pre-group document is left for the model to read (`store::FsArtefactStore`); like the
+  cache, disabling it is a state of the store, not an `Option`. All are **injected**: the engine
   no longer builds a backend from `[grouping].command` — composition is the application
   layer's job (ADR 0020) — and disabling the cache is
   `store::FsGroupingCache::disabled()` rather than an absent one, so the stage never grows
@@ -91,9 +102,13 @@ A `[grouping]` table in the REPO file is a hard error with a migration hint.
 
 ```toml
 [grouping]
-# Backend argv: prompt on stdin, completion on stdout. Default: the validated
-# tools-denied claude invocation. Timeout default: 1200s.
-command = ["claude", "-p", "--output-format", "text", "--allowed-tools", ""]
+# Backend argv: prompt on stdin, completion on stdout. Timeout default: 1200s.
+# Absent means the default backend, which is a headless Claude Code invocation
+# allowed to read the change and the repository and nothing else. That argv,
+# including the tool allowlist, is `CommandBackend::claude_cli`'s business, not
+# something to restate here: setting `command` replaces it whole, and then the
+# agent's capabilities are the author's choice.
+# command = ["my-agent", "--quiet"]
 timeout_secs = 1200
 ```
 

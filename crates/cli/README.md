@@ -190,7 +190,9 @@ attributes = ["linguist-generated"]
 
 ```toml
 [grouping]
-command = ["claude", "-p", "--output-format", "text", "--allowed-tools", ""]
+# Only to run a different agent. The default is Claude Code, headless, allowed
+# to read the change and the repository and nothing else.
+# command = ["my-agent", "--quiet"]
 timeout_secs = 1200
 
 [review]
