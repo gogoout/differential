@@ -17,6 +17,12 @@ careful reading. Then it gives you a reading plan in the order you should read i
 Every hunk is accounted for. Nothing is filtered out, ever. So skipping what the plan
 says to skip is safe.
 
+https://github.com/user-attachments/assets/0d8dccb7-ddb7-4c71-b6a5-582e9e2a00a7
+
+*`dfr review` on a 278-class branch: the reading plan on the left, the diff on the right.
+Marking a shape class read, writing a finding over a range of lines, and copying every
+finding out as markdown.*
+
 ## Why the name
 
 > A differential is a gear system in vehicles that lets driven wheels rotate at different
