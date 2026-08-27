@@ -75,9 +75,18 @@ fn main() -> ExitCode {
     };
     // Composition is the application layer's job, so the example builds its
     // own backend rather than the pipeline reaching into config for one.
-    let fetch = std::env::current_exe()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "dfr".to_string());
+    // The fetch command must be a binary that HAS `agent`, and this example is
+    // not one — `dfr` is its sibling in the same target directory. Pointing it
+    // at the current executable was a real bug: every fetch failed, and the
+    // model spent minutes discovering that before falling back to the ids.
+    let fetch = match sibling_dfr() {
+        Some(p) => p,
+        None => {
+            return usage_error(
+                "cannot find the `dfr` binary next to this example; run `cargo build --bin dfr`",
+            );
+        }
+    };
     let backend = differential_engine::llm::CommandBackend::claude_cli(&fetch);
 
     let out = match run_grouped_pipeline(
@@ -159,4 +168,11 @@ fn main() -> ExitCode {
 fn usage_error(msg: &str) -> ExitCode {
     eprintln!("error: {msg}");
     ExitCode::from(2)
+}
+
+/// `target/<profile>/dfr`, given `target/<profile>/examples/group`.
+fn sibling_dfr() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let path = exe.parent()?.parent()?.join("dfr");
+    path.exists().then(|| path.display().to_string())
 }

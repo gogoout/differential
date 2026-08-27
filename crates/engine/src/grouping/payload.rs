@@ -70,8 +70,15 @@ Nothing about the classes is in this prompt. Read what you need instead:
 
 const PROMPT_TAIL: &str = r#"
 
+EVERY command takes many arguments at once, and `diff C7 C8 C9` costs what `diff C7`
+costs. One id per call turns a two-hundred-class change into two hundred round trips,
+which is the slowest thing you can do here. Batch.
+
 Rating a class "skim" is a claim that every one of its hunks is the same edit. `diff`
-on the class id shows you all of them, so check before you claim it on a large class.
+on the class id shows you all of them. But only a class with MORE THAN ONE HUNK can be
+wrong about that -- for a `1h` class the exemplar is the whole class, and fetching its
+diff tells you nothing. `classes` prints the hunk count, so read that first and check
+only the classes it is worth checking.
 
 `uses:` on a class is a definition-to-use edge the mechanical pass found, with the
 symbol that produced it. Merging a class that defines something with a class that
@@ -104,11 +111,11 @@ fn commands(fetch: &str, artefact: &str) -> String {
     let dfr = format!("{fetch} agent --doc {artefact}");
     [
         format!("  {dfr} classes            every class: size, files, kind, defines, uses"),
-        format!("  {dfr} class C7           one class in full, with every member hunk"),
-        format!("  {dfr} diff C7            the diff of every hunk in a class"),
-        format!("  {dfr} diff h12           the diff of one hunk"),
-        format!("  {dfr} file <path>        the classes touching a file"),
-        format!("  {dfr} defines <symbol>   the class that introduces a symbol"),
+        format!("  {dfr} class C7 C8        those classes in full, with every member hunk"),
+        format!("  {dfr} diff C7 C8         the diff of every hunk in those classes"),
+        format!("  {dfr} diff h12 h13       the diff of those hunks"),
+        format!("  {dfr} file <path>…      the classes touching those files"),
+        format!("  {dfr} defines <symbol>… the classes introducing those symbols"),
     ]
     .join("\n")
 }

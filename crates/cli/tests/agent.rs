@@ -107,6 +107,25 @@ fn file_and_defines_find_the_same_class_from_two_directions() {
 }
 
 #[test]
+fn several_ids_come_back_in_one_call() {
+    let (r, _dir, doc) = document();
+    // The whole point: one round trip instead of one per class. The batch
+    // enumerates the range once, however many ids it carries.
+    let batched = agent(&r, &doc, &["diff", "C0", "C1"]);
+    let one_by_one = format!(
+        "{}{}",
+        agent(&r, &doc, &["diff", "C0"]),
+        agent(&r, &doc, &["diff", "C1"])
+    );
+    assert_eq!(batched, one_by_one);
+    assert_eq!(batched.matches("--- h").count(), 2);
+
+    let classes = agent(&r, &doc, &["class", "C0", "C1"]);
+    assert!(classes.contains("C0"), "{classes}");
+    assert!(classes.contains("C1"), "{classes}");
+}
+
+#[test]
 fn an_unknown_id_says_so_and_still_exits_zero() {
     let (r, _dir, doc) = document();
     // Exit 0 with a plain sentence: an agent treats a non-zero exit as a

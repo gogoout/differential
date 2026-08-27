@@ -37,9 +37,14 @@ the finer graph onto groups manufactured cycles the change did not contain.
 - The prompt carries instructions, that path, the `dfr agent` commands, and the class id
   list. Nothing else. The 90,000-character cap is gone, and with it the truncation
   back-fill.
-- `dfr agent` answers five questions against the document: `classes`, `class <id>`,
-  `diff <id>`, `file <path>`, `defines <symbol>`. `diff` is the one that matters: it is the
+- `dfr agent` answers five questions against the document: `classes`, `class <id>…`,
+  `diff <id>…`, `file <path>`, `defines <symbol>`. `diff` is the one that matters: it is the
   first time the model can look at a non-exemplar member before rating a class.
+- **Every command takes several arguments.** A call is a round trip through a model turn,
+  and that is the whole cost: `dfr agent` answers in under a tenth of a second even on a
+  283-hunk range in a debug build, and a `diff` batch re-enumerates the range once however
+  many ids it carries. Measured on a 196-class change: one id per call made 176 fetches;
+  batching brought the same work down to 28.
 - **The dependency graph moves to `artefact::graph`, built from classes before the model
   runs.** It lands on `ClassEntry.defines` and `ClassEntry.depends_on`; the ordering stage
   contracts it onto groups. Every edge carries the symbols that produced it.
@@ -105,3 +110,15 @@ re-ordered on every load without another model call.
   re-enumerates the range the document names, so a grouping run cannot recurse into itself.
 - An unknown id prints a plain sentence and exits 0. To an agent a non-zero exit reads as
   "the tool is broken" and stops it asking, which is worse than a clear "no".
+- **The artefact-against-mutual verdict did not discriminate on the validation corpus.**
+  Every one of 45 broken edges came back `mutual`: the class graph was cyclic wherever the
+  group graph was. On 196 classes and 290 edges at roughly 30% precision, spurious edges
+  make a tangle at every granularity, so the finer graph has nothing cleaner to say. The
+  distinction is honest and cheap to compute, and it should start firing when extraction
+  gets better — that is what makes precision worth raising, not a reason to drop it.
+- **A fetch command that does not work is expensive, and silently so.** The model does not
+  give up on a failing tool; it retries and works around it, and only then falls back to the
+  class ids. So the executable the prompt names must be one that has `agent`.
+  `std::env::current_exe()` is right for the shipped binary and wrong for anything else —
+  the dev example resolves its sibling `dfr` and refuses to run without it. The tool
+  allowlist is derived from the same string, so the two cannot disagree about it.

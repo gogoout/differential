@@ -19,18 +19,36 @@ use differential_engine::model::DiffView;
 use differential_engine::plan;
 use differential_engine::schema::PlanDocument;
 
+/// Several ids per call, deliberately.
+///
+/// The reader is an agent, and every call is a round trip through a model turn.
+/// Asked one id at a time, it walked a two-hundred-class change one class per
+/// turn; the work each call does is under a tenth of a second either way, so
+/// the batch is the whole saving.
 #[derive(Subcommand)]
 pub enum Query {
     /// Every class: size, files, kind, what it defines and what it uses.
     Classes,
-    /// One class in full, with every member hunk and every file.
-    Class { id: String },
-    /// The diff text of one hunk (`h12`) or of every hunk in a class (`C7`).
-    Diff { id: String },
-    /// The classes touching a path.
-    File { path: String },
-    /// The classes that introduce a symbol.
-    Defines { symbol: String },
+    /// One or more classes in full, with every member hunk and every file.
+    Class {
+        #[arg(num_args = 1.., required = true)]
+        ids: Vec<String>,
+    },
+    /// The diff text of hunks (`h12`) or of every hunk in a class (`C7`).
+    Diff {
+        #[arg(num_args = 1.., required = true)]
+        ids: Vec<String>,
+    },
+    /// The classes touching paths.
+    File {
+        #[arg(num_args = 1.., required = true)]
+        paths: Vec<String>,
+    },
+    /// The classes that introduce symbols.
+    Defines {
+        #[arg(num_args = 1.., required = true)]
+        symbols: Vec<String>,
+    },
 }
 
 pub fn run(doc_path: &Path, repo_dir: &Path, query: &Query) -> anyhow::Result<String> {
@@ -41,26 +59,34 @@ pub fn run(doc_path: &Path, repo_dir: &Path, query: &Query) -> anyhow::Result<St
 
     Ok(match query {
         Query::Classes => list(&doc, artefact::index(&doc), "no classes"),
-        Query::Class { id } => match artefact::class(&doc, id) {
-            Some(v) => detail(&doc, &v),
-            None => format!("no class {id}\n"),
-        },
-        Query::File { path } => list(
-            &doc,
-            artefact::in_file(&doc, path),
-            &format!("no class touches {path}"),
-        ),
-        Query::Defines { symbol } => list(
-            &doc,
-            artefact::definers(&doc, symbol),
-            &format!("no class defines {symbol}"),
-        ),
-        Query::Diff { id } => {
-            let Some(hunks) = artefact::resolve(&doc, id) else {
-                return Ok(format!("no hunk or class {id}\n"));
-            };
-            diff(&doc, repo_dir, &hunks)?
-        }
+        Query::Class { ids } => ids
+            .iter()
+            .map(|id| match artefact::class(&doc, id) {
+                Some(v) => detail(&doc, &v),
+                None => format!("no class {id}\n"),
+            })
+            .collect(),
+        Query::File { paths } => paths
+            .iter()
+            .map(|path| {
+                list(
+                    &doc,
+                    artefact::in_file(&doc, path),
+                    &format!("no class touches {path}"),
+                )
+            })
+            .collect(),
+        Query::Defines { symbols } => symbols
+            .iter()
+            .map(|symbol| {
+                list(
+                    &doc,
+                    artefact::definers(&doc, symbol),
+                    &format!("no class defines {symbol}"),
+                )
+            })
+            .collect(),
+        Query::Diff { ids } => diff(&doc, repo_dir, ids)?,
     })
 }
 
@@ -169,23 +195,38 @@ fn relations(doc: &PlanDocument, v: &ClassView<'_>) -> Vec<String> {
 
 // --------------------------------------------------------------------- diff
 
-/// Diff text for a set of hunks.
+/// Diff text for every hunk the given ids name.
 ///
 /// The document records where a hunk is, never what it says, so the text comes
 /// from re-enumerating the range the document names. Hunk ids are positional in
 /// that enumeration, and the same range enumerates the same way every time —
 /// which is what makes the lookup exact rather than approximate.
-fn diff(
-    doc: &PlanDocument,
-    repo_dir: &Path,
-    hunks: &[&differential_engine::schema::HunkEntry],
-) -> anyhow::Result<String> {
+///
+/// The enumeration happens once for the whole batch. It is three git calls and
+/// a parse, so a batch of twenty costs what one used to.
+fn diff(doc: &PlanDocument, repo_dir: &Path, ids: &[String]) -> anyhow::Result<String> {
+    let mut hunks: Vec<&differential_engine::schema::HunkEntry> = Vec::new();
+    let mut unknown = String::new();
+    for id in ids {
+        match artefact::resolve(doc, id) {
+            Some(found) => hunks.extend(found),
+            None => unknown.push_str(&format!("no hunk or class {id}\n")),
+        }
+    }
+    if hunks.is_empty() {
+        return Ok(if unknown.is_empty() {
+            String::new()
+        } else {
+            unknown
+        });
+    }
+
     let repo = Repo::open(repo_dir)
         .with_context(|| format!("cannot open a repository at {}", repo_dir.display()))?;
     let view = enumerate(&repo, &doc.source.base, &doc.source.head)?;
 
-    let mut out = String::new();
-    for h in hunks {
+    let mut out = unknown;
+    for h in &hunks {
         let index = plan::HunkId::parse(&h.id)
             .ok()
             .map(|p| p.index())

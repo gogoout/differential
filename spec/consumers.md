@@ -14,7 +14,7 @@ dfr review [--repo <path>] [--config <path>] [--no-cache] <range>
 dfr stack [--repo <path>] [--config <path>] [--ref <name>] [--no-cache] <range>
 dfr findings [--repo <path>] [--config <path>] [--no-cache] <range>
 dfr check [--repo <path>] [--config <path>] [--json] <range>
-dfr agent --doc <path> [--repo <path>] <classes|class|diff|file|defines> [arg]
+dfr agent --doc <path> [--repo <path>] <classes|class|diff|file|defines> [args…]
 ```
 
 - `review` opens the terminal reviewer ([tui.md](tui.md)); `findings` prints the review's
@@ -29,8 +29,10 @@ dfr agent --doc <path> [--repo <path>] <classes|class|diff|file|defines> [arg]
 - `agent` is the grouping model's read path (ADR 0022), not a human one. The prompt names
   the running executable, and the default backend's allowlist is derived from the same
   string, so the two cannot disagree about what the model may invoke. It answers one
-  question about the pre-group document the grouping stage wrote: `classes`, `class <id>`,
-  `diff <id>`, `file <path>`, `defines <symbol>`. It never runs the pipeline and never calls
+  question about the pre-group document the grouping stage wrote: `classes`,
+  `class <id>…`, `diff <id>…`, `file <path>`, `defines <symbol>`. `class` and `diff` take
+  several ids, because each call is a round trip through a model turn and the work behind
+  one is negligible beside it. It never runs the pipeline and never calls
   a model, so a grouping run cannot recurse into itself. An unknown id prints a plain
   sentence and exits 0 — to an agent a non-zero exit reads as "the tool is broken".
 - Exit codes: 0 success/all pass, 1 invariant or pipeline failure, 2 usage/config error.

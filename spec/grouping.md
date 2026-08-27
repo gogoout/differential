@@ -35,14 +35,21 @@ Five queries, all against the document (`spec/consumers.md`):
 | `dfr agent --doc <path> …` | returns |
 |---|---|
 | `classes` | one line per class: size, files, kind, exemplar location, `defines`, `uses` |
-| `class <id>` | one class in full — every member hunk, every file, rename notes |
-| `diff <id>` | diff text for a hunk id or every member of a class id |
+| `class <id>…` | those classes in full — every member hunk, every file, rename notes |
+| `diff <id>…` | diff text for hunk ids, or every member of class ids |
 | `file <path>` | the classes touching a path |
 | `defines <symbol>` | the classes that introduce a symbol |
 
 `diff` is the one that changes what the model can claim. Rating a class `skim` asserts
 that every member is the same edit; before this the model had seen one member of any
 size of class.
+
+**`class` and `diff` take several ids on purpose.** Each call is a round trip through a
+model turn, and the work behind one is under a tenth of a second — a `diff` batch
+re-enumerates the range once however many ids it carries. Measured before batching: on a
+196-class change the model made one call per class. The prompt also says which classes are
+worth checking at all — only a class with more than one hunk can be wrong about
+equivalence, and on that change 162 of the 196 had exactly one.
 
 The backend runs with a read-only allowlist —
 `Bash(dfr agent:*),Read,Grep,Glob,Bash(git log:*),Bash(git show:*)` — which supersedes
