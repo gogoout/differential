@@ -4,7 +4,7 @@ The core library behind [`differential`](https://crates.io/crates/differential).
 a git revision range into one JSON document: every hunk, every shape class, the labelled
 groups, and the order to read them in.
 
-The engine is a library first. Renderers link it and receive the document in-process. The
+The engine is a library. Renderers link it and receive the document in-process. The
 JSON form is for export and for storage on disk, not for talking between processes.
 
 Project home: <https://github.com/gogoout/differential>
@@ -97,7 +97,7 @@ there so they cannot disagree.
 
 `audit.read_hunks` counts focus hunks plus one exemplar per skim class.
 `audit.skipped_hunks` counts skim remainders plus folded noise. **Only the second number
-is the genuine saving.** Consumers must never present a skim total as time saved.
+is the saving.** Consumers must never present a skim total as time saved.
 
 ## The invariants
 
@@ -197,8 +197,8 @@ git, a filesystem or a clock, it declares a port next to the logic, and an adapt
 implements that port. This is enforced by a test, not merely stated.
 
 Ports are named for what the caller needs (`ObjectReader`, `CommitWriter`, `ReviewStore`),
-never for the tool that implements them. A function's bound list is an honest statement of
-how much git it can touch. There is no `trait Git: A + B + …` supertrait, on purpose.
+never for the tool that implements them. A function's bound list is an accurate statement
+of how much git it can touch. There is no `trait Git: A + B + …` supertrait, on purpose.
 
 **`gitio::Repo` is the only implementation of the git ports.** A fake git for tests is
 forbidden. Invariants 1 to 4 compare the engine against git's own answer, so a fake would
