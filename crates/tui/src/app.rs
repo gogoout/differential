@@ -1997,14 +1997,7 @@ impl App {
                 // silently dropped off the bottom of the box.
                 let inner_h = file_list_rows(entries.len(), body_rows);
 
-                // The counts column is as wide as the widest pair, so the
-                // paths start in one column however many digits a file has.
-                let counts = |e: &FileListEntry| format!("+{:<4}−{:<4} ", e.adds, e.dels);
-                let lead = 2 + entries
-                    .iter()
-                    .map(|e| UnicodeWidthStr::width(counts(e).as_str()))
-                    .max()
-                    .unwrap_or(0);
+                let (add_w, del_w, lead) = counts_columns(entries);
                 let widest = entries
                     .iter()
                     .map(|e| UnicodeWidthStr::width(e.path.as_str()))
@@ -2042,8 +2035,8 @@ impl App {
                         };
                         Line::from(vec![
                             Span::styled(format!("{mark} "), style),
-                            Span::styled(format!("+{:<4}", e.adds), on(THEME.add_fg)),
-                            Span::styled(format!("−{:<4} ", e.dels), on(THEME.del_fg)),
+                            Span::styled(format!("+{:<add_w$}", e.adds), on(THEME.add_fg)),
+                            Span::styled(format!("−{:<del_w$} ", e.dels), on(THEME.del_fg)),
                             // Whole when it fits, and cut at its HEAD when it
                             // does not, so the name survives whatever the
                             // directories above it cost.
@@ -3202,9 +3195,27 @@ fn pane(title: String, focused: bool) -> Block<'static> {
         ))
 }
 
-/// Extend `line` with blank, styled cells so a selection background covers
-/// the full row width. Trailing padding only — the leading connector column
-/// keeps its own styling.
+/// The two count columns, and the width every path therefore starts after.
+///
+/// Each column is as wide as the widest number IN IT, so the paths line up
+/// down the list. Four digits is the floor, which is where both used to be
+/// fixed — one file over 9999 lines then pushed its OWN path right while every
+/// other row's stayed put, and the column the eye scans stopped being one.
+fn counts_columns(entries: &[FileListEntry]) -> (usize, usize, usize) {
+    let widest = |f: fn(&FileListEntry) -> usize| {
+        entries
+            .iter()
+            .map(|e| f(e).to_string().len())
+            .max()
+            .unwrap_or(0)
+            .max(4)
+    };
+    let add_w = widest(|e| e.adds);
+    let del_w = widest(|e| e.dels);
+    // The mark and its space, then `+adds`, then `−dels` and one space.
+    (add_w, del_w, 2 + (1 + add_w) + (1 + del_w + 1))
+}
+
 /// Cut a location down to `max` columns from its HEAD, not its tail.
 ///
 /// `a/b/c/deeply/nested/module.rs:13` becomes `…/module.rs:13`. The file name
@@ -3272,6 +3283,9 @@ fn truncate_width(s: &str, max: usize) -> String {
     out
 }
 
+/// Extend `line` with blank, styled cells so a selection background covers
+/// the full row width. Trailing padding only — the leading connector column
+/// keeps its own styling.
 fn pad_to_width(line: &mut Line<'static>, width: usize, bg: ratatui::style::Color) {
     let used: usize = line
         .spans
@@ -3411,6 +3425,34 @@ mod tests {
         // Degenerate budgets never panic.
         assert_eq!(elide_head("src/a.rs", 1), "…");
         assert_eq!(elide_head("src/a.rs", 0), "");
+    }
+
+    /// One file over 9999 lines must widen the column for EVERY row, or the
+    /// paths stop lining up and the list stops being scannable.
+    #[test]
+    fn a_wide_count_widens_the_column_for_every_row() {
+        let entry = |adds, dels| FileListEntry {
+            path: "src/f.rs".into(),
+            row_idx: 0,
+            adds,
+            dels,
+            reviewed: false,
+        };
+        // Small counts still get the four-digit floor, so the common case is
+        // unchanged.
+        let (a, d, lead) = counts_columns(&[entry(3, 1), entry(12, 40)]);
+        assert_eq!((a, d), (4, 4));
+        assert_eq!(lead, 2 + 5 + 6);
+
+        // A five-digit file widens the ADD column only, and for every row.
+        let (a, d, lead) = counts_columns(&[entry(12_000, 1), entry(3, 2)]);
+        assert_eq!((a, d), (5, 4));
+        assert_eq!(lead, 2 + 6 + 6);
+
+        // An empty list still yields a usable lead rather than zero.
+        let (a, d, lead) = counts_columns(&[]);
+        assert_eq!((a, d), (4, 4));
+        assert_eq!(lead, 2 + 5 + 6);
     }
 
     #[test]
