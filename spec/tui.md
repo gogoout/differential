@@ -277,6 +277,18 @@ review, the same as a group's role and a hunk's class, and they wore a run of gr
 that read as chrome. Each takes its own colour once it has something to say: green when
 every class is read, magenta when anything is filed. A transient message follows them.
 
+**A selection gets a pill too**, ahead of the tallies: ` selecting 3 lines `, present for
+exactly as long as the mode is. Being mid-selection is a fact about the thing in front of
+the reader, which is what a pill says here — and the count is the point, because a
+selection stops at a context boundary and is not always the distance the cursor
+travelled. It replaced a passing message, which put a MODE in the same grey slot that
+`finding saved` uses for something already over.
+
+**The message is transient because the next keypress clears it.** A status line answers
+"what did that key just do", so the next key is exactly when the answer stops being
+wanted. The clear happens once, on the way into key handling — not at the thirty-five
+places that write one.
+
 Against the right edge sit `? help` and `q quit`, and nothing else. The footer named ten
 keys, in a different order and a different wording from the modal that also named them —
 a wall the reader stops seeing, and two lists to keep in step. `?` is the one place a full

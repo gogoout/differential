@@ -823,6 +823,7 @@ fn scrolling_back_up_reveals_the_group_header() {
     app.set_viewport(Viewport {
         detail_rows: 8,
         plan_rows: 8,
+        body_rows: 8 + 2,
     });
 
     // The header block above the first selectable row carries the label,
@@ -949,6 +950,7 @@ fn shrinking_the_viewport_re_clamps_scroll_without_a_draw() {
     app.set_viewport(Viewport {
         detail_rows: tall,
         plan_rows: tall,
+        body_rows: tall + 2,
     });
     app.handle_key(key('G'));
     assert_eq!(app.scroll(), 0, "everything fits, so nothing scrolled");
@@ -958,6 +960,7 @@ fn shrinking_the_viewport_re_clamps_scroll_without_a_draw() {
     app.set_viewport(Viewport {
         detail_rows: SHORT,
         plan_rows: SHORT,
+        body_rows: SHORT + 2,
     });
     assert!(
         app.scroll() > 0,
@@ -1753,6 +1756,7 @@ fn a_foreign_hunk_is_dashed_and_names_its_group() {
     app.set_viewport(Viewport {
         detail_rows: 38,
         plan_rows: 38,
+        body_rows: 38 + 2,
     });
     let buf = buffer_of(&app);
     let dashed: Vec<u16> = (1..39u16)
@@ -1828,6 +1832,7 @@ fn an_active_foreign_header_names_its_group_once() {
     app.set_viewport(Viewport {
         detail_rows: 38,
         plan_rows: 38,
+        body_rows: 38 + 2,
     });
 
     let foreign = app
@@ -1977,6 +1982,7 @@ fn cursor_into_first_box(app: &mut App) {
     app.set_viewport(Viewport {
         detail_rows: 38,
         plan_rows: 38,
+        body_rows: 38 + 2,
     });
 }
 
@@ -2362,6 +2368,7 @@ fn focus_never_changes_a_pane_height() {
     app.set_viewport(Viewport {
         detail_rows: 30,
         plan_rows: 30,
+        body_rows: 30 + 2,
     });
     let before = app.viewport();
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
@@ -2381,6 +2388,7 @@ fn a_file_header_sticks_while_scrolled_past_it() {
     app.set_viewport(Viewport {
         detail_rows: 10,
         plan_rows: 10,
+        body_rows: 10 + 2,
     });
 
     let header = app
@@ -2393,6 +2401,7 @@ fn a_file_header_sticks_while_scrolled_past_it() {
     app.set_viewport(Viewport {
         detail_rows: 10,
         plan_rows: 10,
+        body_rows: 10 + 2,
     });
     assert!(
         app.scroll() > header,
@@ -2412,6 +2421,7 @@ fn a_file_header_sticks_while_scrolled_past_it() {
     app.set_viewport(Viewport {
         detail_rows: 10,
         plan_rows: 10,
+        body_rows: 10 + 2,
     });
     assert_eq!(app.scroll(), 0);
     let buf = buffer_of(&app);
@@ -3747,6 +3757,7 @@ fn the_list_scrolls_to_keep_the_selection_on_screen() {
     app.set_viewport(Viewport {
         detail_rows: 4,
         plan_rows: 4,
+        body_rows: 4 + 2,
     });
     let lines: Vec<usize> = app
         .rows
@@ -4362,4 +4373,240 @@ fn a_note_survives_the_diff_layout_it_was_written_in() {
     );
     app.handle_key(key('s'));
     assert!(sits_on_its_line(&app), "and back again");
+}
+
+// ---------------------------------------------------------------- chrome
+
+/// A message answers "what did that key just do". The next key is when the
+/// answer stops being wanted — and 35 places wrote one while a single place
+/// cleared it, so every one-off message was the footer's content for good.
+#[test]
+fn a_message_lasts_exactly_one_keypress() {
+    let (_r, mut app) = make_app();
+    app.focus = Focus::Detail;
+
+    // `v` on a row that is not a line refuses, and says so.
+    let not_a_line = app
+        .rows
+        .iter()
+        .position(|r| r.line.is_none() && r.kind.selectable())
+        .expect("a selectable row that is not a line");
+    app.cursor = not_a_line;
+    app.handle_key(key('v'));
+    assert_eq!(app.status, "move onto a line first");
+
+    // Any next key clears it, including one that does nothing at all.
+    app.handle_key(key('!'));
+    assert!(
+        app.status.is_empty(),
+        "the message should be gone: {:?}",
+        app.status
+    );
+}
+
+/// The file list had no scroll at all: the surplus files were built, dropped
+/// off the bottom of the box, and the cursor walked into rows that were not on
+/// screen.
+#[test]
+fn the_file_list_scrolls_to_keep_the_selection_on_screen() {
+    use differential_tui::app::Mode;
+    let (_r, mut app) = app_with_many_files();
+    app.focus = Focus::Detail;
+    // Small enough that the list cannot fit — the box is the entry count plus
+    // a border pair, capped by the body.
+    app.set_viewport(Viewport {
+        detail_rows: 2,
+        plan_rows: 2,
+        body_rows: 4,
+    });
+    app.handle_key(key('f'));
+
+    let n = match &app.mode {
+        Mode::FileList { entries, .. } => entries.len(),
+        _ => panic!("f should open the file list"),
+    };
+    assert!(n > 2, "this fixture needs more files than the box is tall");
+
+    for _ in 0..n {
+        app.handle_key(key('j'));
+    }
+    match &app.mode {
+        Mode::FileList {
+            selected, scroll, ..
+        } => {
+            assert_eq!(*selected, n - 1, "j should reach the last file");
+            assert!(*scroll > 0, "the window has to have moved");
+            assert!(
+                *selected >= *scroll && *selected - *scroll < 2,
+                "the selection must be inside the drawn window: \
+                 selected {selected}, scroll {scroll}"
+            );
+        }
+        _ => panic!("the file list should still be open"),
+    }
+}
+
+/// A repo with more changed files than a short modal can show at once, all in
+/// one group, so `f` lists them all.
+fn app_with_many_files() -> (TestRepo, App) {
+    let r = TestRepo::new();
+    let names: Vec<String> = (0..8).map(|i| format!("src/file{i}.rs")).collect();
+    for n in &names {
+        r.write(n, b"fn go() { old() }\n");
+    }
+    r.commit_all("base");
+    for n in &names {
+        r.write(n, b"fn go() { new() }\n");
+    }
+    r.commit_all("head");
+    let backend = FakeBackend::new("fake", |ids| {
+        let all: Vec<&str> = ids.iter().map(String::as_str).collect();
+        format!(
+            r#"{{"groups": [{}]}}"#,
+            json_group("Everything", "focus", &all)
+        )
+    });
+    let app = open_app_with(&r, &backend, ".dfr-many-store");
+    (r, app)
+}
+
+/// A repo whose one changed file sits under a long run of directories.
+fn app_with_a_deep_path() -> (TestRepo, App) {
+    let deep = "src/one/two/three/four/five/six/seven/module.rs";
+    let r = TestRepo::new();
+    r.write(deep, b"fn a() { old() }\nfn b() { same() }\n");
+    r.commit_all("base");
+    r.write(deep, b"fn a() { new() }\nfn b() { same() }\n");
+    r.commit_all("head");
+    let backend = FakeBackend::new("fake", |ids| {
+        let all: Vec<&str> = ids.iter().map(String::as_str).collect();
+        format!(
+            r#"{{"groups": [{}]}}"#,
+            json_group("Everything", "focus", &all)
+        )
+    });
+    let app = open_app_with(&r, &backend, ".dfr-deep-store");
+    (r, app)
+}
+
+/// `{:<width$}` pads and never truncates, so a long path used to overflow its
+/// column and leave the note three or four words. The name and the line number
+/// identify a finding; the leading directories do not.
+#[test]
+fn the_findings_list_cuts_the_path_at_its_head_not_the_note() {
+    let (_r, mut app) = app_with_a_deep_path();
+    note_on(
+        &mut app,
+        |r| r.line.is_some(),
+        "this note has to survive a very deep path",
+    );
+    app.handle_key(key('F'));
+
+    // The pane behind the modal draws the note too, so pick the modal's row:
+    // the one that carries a location beside the note.
+    let row = drawn_rows(&mut app)
+        .into_iter()
+        .find(|l| l.contains("this note has to survive") && l.contains("module.rs:"))
+        .expect("the list should show the note beside its location");
+    assert!(row.contains("…/"), "the head of the path goes: {row:?}");
+    assert!(
+        !row.contains("src/one/two"),
+        "the leading directories are what gets cut: {row:?}"
+    );
+}
+
+/// `v` used to write a passing message into the same grey slot that
+/// "finding saved" uses. One describes a MODE the reader is in; the other
+/// describes something already over.
+#[test]
+fn a_selection_wears_a_pill_for_as_long_as_it_lasts() {
+    let (_r, mut app) = app_with_a_long_file();
+    let start = app
+        .rows
+        .windows(2)
+        .position(|w| {
+            w.iter()
+                .all(|r| r.line.as_ref().is_some_and(|l| l.side == "new"))
+        })
+        .expect("two new-side rows in a row");
+    app.cursor = start;
+    app.focus = Focus::Detail;
+
+    let footer = |app: &mut App| drawn_rows(app).last().expect("no footer").clone();
+    assert!(
+        !footer(&mut app).contains("selecting"),
+        "no pill before a selection"
+    );
+
+    app.handle_key(key('v'));
+    assert!(
+        footer(&mut app).contains("selecting 1 line"),
+        "the pill counts the lines: {:?}",
+        footer(&mut app)
+    );
+    app.handle_key(key('j'));
+    assert!(
+        footer(&mut app).contains("selecting 2 lines"),
+        "the count follows the run: {:?}",
+        footer(&mut app)
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        !footer(&mut app).contains("selecting"),
+        "the pill goes when the mode does"
+    );
+}
+
+/// Not an assertion — the three chrome changes, side by side, so they can be
+/// eyeballed with
+/// `cargo test -p differential-tui --test tui -- --ignored --nocapture render_dump_chrome`.
+#[test]
+#[ignore = "prints the panes for a human to look at"]
+fn render_dump_chrome() {
+    // 1. A selection pill in the footer, with its count.
+    let (_r, mut app) = app_with_a_long_file();
+    app.focus = Focus::Detail;
+    let start = app
+        .rows
+        .windows(3)
+        .position(|w| {
+            w.iter()
+                .all(|r| r.line.as_ref().is_some_and(|l| l.side == "new"))
+        })
+        .expect("three new-side rows in a row");
+    app.cursor = start;
+    app.handle_key(key('v'));
+    println!("\n=== footer: one line selected ===");
+    println!("{}", ansi_dump(&mut app, 120, 16));
+    app.handle_key(key('j'));
+    app.handle_key(key('j'));
+    println!("\n=== footer: three lines selected ===");
+    println!("{}", ansi_dump(&mut app, 120, 16));
+
+    // 2. The findings list, with a path deep enough to need cutting.
+    let (_r2, mut deep) = app_with_a_deep_path();
+    note_on(
+        &mut deep,
+        |r| r.line.is_some(),
+        "the note keeps its room now that the path cannot take the row",
+    );
+    deep.handle_key(key('F'));
+    println!("\n=== findings modal: a deep path ===");
+    println!("{}", ansi_dump(&mut deep, 120, 16));
+
+    // 3. The file list, scrolled past its first entry.
+    let (_r3, mut many) = app_with_many_files();
+    many.focus = Focus::Detail;
+    many.set_viewport(Viewport {
+        detail_rows: 4,
+        plan_rows: 4,
+        body_rows: 6,
+    });
+    many.handle_key(key('f'));
+    for _ in 0..7 {
+        many.handle_key(key('j'));
+    }
+    println!("\n=== file list: scrolled to the last file ===");
+    println!("{}", ansi_dump(&mut many, 120, 8));
 }
