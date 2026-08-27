@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
-keywords = ["diff", "git", "code-review", "llm", "cli"]
+keywords = ["diff", "git", "code-review", "llm", "tui"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
