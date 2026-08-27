@@ -1,13 +1,11 @@
 # differential (`dfr`)
 
-**Read a large diff as an ordered plan, not as a wall of files.**
+`differential` groups the hunks of a large diff by textual shape, labels the groups with
+an LLM, and orders them so that definitions precede their references. It renders the
+result as a terminal reviewer or as a stack of synthetic git commits.
 
-`differential` takes a big merge request and sorts it. It finds the changes that are the
-same edit repeated. It finds the generated noise. It finds the few changes that need
-careful reading. Then it gives you a reading plan in the order you should read it.
-
-Every hunk is accounted for. Nothing is filtered out, ever. So skipping what the plan says
-to skip is safe.
+Enumeration is total: every hunk in the range is assigned to exactly one group, and the
+partition is checked by four structural invariants before any output is produced.
 
 This crate is the application layer. It owns the `dfr` and `differential` binaries. It
 parses arguments and dispatches. All the work happens in
@@ -48,8 +46,8 @@ synthetic commits:
 dfr stack main..feature
 ```
 
-The first run on a range calls the LLM once. The result is cached, so later runs are
-instant and stable.
+The first run on a range calls the LLM once. The result is cached, so a later run on the
+same range does not call it again.
 
 ## The four commands
 

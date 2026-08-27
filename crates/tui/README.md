@@ -3,9 +3,9 @@
 The terminal reviewer behind `dfr review`, part of
 [`differential`](https://crates.io/crates/differential).
 
-It is a dedicated reviewer over a grouped, ordered reading plan. Two panes: the plan on the
-left, the diff on the right. You mark hunks reviewed and write findings against lines.
-Everything is saved as it happens.
+Two panes over the grouped, ordered reading plan: the plan on the left, the diff on the
+right. Hunks are marked reviewed and findings are written against lines. Every change is
+written to disk as it happens.
 
 Project home: <https://github.com/gogoout/differential>
 

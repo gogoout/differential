@@ -4,7 +4,7 @@ The shadow-branch renderer for [`differential`](https://crates.io/crates/differe
 rewrites a grouped diff as a **synthetic commit stack**, so you can read the plan in your
 IDE, in `tig`, or with plain `git log`.
 
-`git log --oneline` over the stack **is** the reading plan. Focus groups come first, in
+`git log --oneline` over the stack is the reading plan. Focus groups come first, in
 foundation-first order. Skim exemplars are split from their skippable remainders. Generated
 noise is folded into one commit. The audit back-fill trails at the end.
 
