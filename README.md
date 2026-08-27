@@ -1,29 +1,89 @@
 # differential
 
-**Review large diffs as an ordered, honest reading plan.**
+**Read a large diff as an ordered plan, not as a wall of files.**
 
-`differential` looks at a big merge request, works out which changes are the same edit
-repeated (a rename sweeping through imports, a signature change echoing through call
-sites), which are generated noise, and which few genuinely need focus (line-by-line) reading — then
-renders the result as a **review commit stack** you read natively in your IDE, `tig`, or
-plain `git log`. Coverage is guaranteed structurally: every hunk is accounted for, audited,
-and byte-exactly reconstructible, so skipping what it says to skip is safe.
+`differential` takes a big merge request and sorts it. It finds the changes that are the
+same edit repeated. It finds the generated noise. It finds the few changes that need
+careful reading. Then it gives you a reading plan in the order you should read it.
+
+Every hunk is accounted for. Nothing is filtered out, ever. So skipping what the plan
+says to skip is safe.
+
+## Why the name
+
+> A differential is a gear system in vehicles that lets driven wheels rotate at different
+> speeds while still receiving power from the engine.
+
+That is the idea, and the word already contains "diff". Each group of changes turns at
+its own reading speed. Every hunk still gets power.
+
+## The problem
+
+A 100-file merge request is not 100 files of work. Most of it is one decision echoing
+through the codebase. A signature change cascades through call sites. A rename sweeps
+across imports. A lockfile regenerates itself. Your real job is to find the few changes
+that deserve attention, and to skip the rest safely.
+
+## How it works
+
+The pipeline has four stages.
+
+1. **Enumerate.** Read every hunk from `git diff -U0 --no-renames`. No file is skipped.
+   No extension is filtered. Config cannot change this.
+2. **Classify.** Give each hunk a **shape class**. A shape class is a hash of the hunk's
+   diff text after identifiers and literals are normalised away, on both the removed and
+   the added side. Two hunks in one class are the same edit wearing different names.
+   Classes are named `C0`, `C1`, and so on, largest first.
+3. **Group.** An LLM merges and labels **class ids**. It never sees or names a hunk. So
+   it cannot drop one. If it omits a class id, an audit catches that and back-fills the
+   class into a must-read group.
+4. **Order.** Build a dependency graph from symbol definitions to symbol uses. Sort the
+   focus groups foundation-first. You meet an abstraction before you meet its callers.
+
+### The three tiers
+
+Every group gets one tier.
+
+| tier | what you do |
+|---|---|
+| `focus` | Read every hunk, line by line. |
+| `skim` | Read one example per shape class. Trust the rest. |
+| `noise` | Generated content. Fold it. Read nothing. |
+
+A fourth label appears in the output: `unclassified`. That is the back-fill group. The
+model never named those classes, so nothing judged them. You must read them.
+
+### The saving is reported honestly
+
+Skim exemplars still get read. So a skim total is not time saved. Every document reports
+two numbers separately:
+
+- `read_hunks` — focus hunks, plus one exemplar per skim class.
+- `skipped_hunks` — skim remainders, plus folded noise.
+
+Only `skipped_hunks` is the genuine saving.
 
 ## Requirements
 
-- `git` on PATH (all repository access shells out to real git)
-- Rust (stable, pinned in `rust-toolchain.toml`) to build
-- an LLM CLI for the grouping step — by default [`claude`](https://claude.com/claude-code),
-  invoked headless with tools denied; any prompt-in/text-out command works (see
-  Configuration)
+- `git` on your PATH. All repository access shells out to real git.
+- An LLM CLI for the grouping stage. The default is
+  [`claude`](https://claude.com/claude-code), run headless with tools denied. Any command
+  that takes a prompt on stdin and writes text on stdout works. See [Config](#config).
+- Rust stable to build from source. The version is pinned in `rust-toolchain.toml`.
 
 ## Install
+
+```sh
+cargo install differential
+```
+
+To build from a clone instead:
 
 ```sh
 cargo install --path crates/cli
 ```
 
-This installs `dfr` (and `differential`, the long name).
+Both install two binaries: `dfr` and `differential`. They are the same program.
 
 ## Quick start
 
@@ -32,8 +92,8 @@ cd your-repo
 dfr stack main..feature
 ```
 
-First run on a range calls the LLM once (a minute or two on a big MR); the grouping is then
-cached, so re-runs are instant and stable. Output:
+The first run on a range calls the LLM once. On a big merge request that takes a minute
+or two. The result is then cached, so later runs are instant and stable.
 
 ```
 refs/review/1a2b3c4-5d6e7f8/stack  (14 commits, 187 hunks, recount 187)
@@ -41,7 +101,7 @@ refs/review/1a2b3c4-5d6e7f8/stack  (14 commits, 187 hunks, recount 187)
 review with: git log --oneline 1a2b3c4d5e6f..refs/review/1a2b3c4-5d6e7f8/stack
 ```
 
-Then review the stack like any branch:
+Now read the stack like any branch:
 
 ```
 $ git log --oneline 1a2b3c4d5e6f..refs/review/1a2b3c4-5d6e7f8/stack
@@ -53,73 +113,33 @@ add1c7e  [focus] Rework retry handling in the client
 decade0  [focus] Introduce the storage backend trait and its implementations
 ```
 
-Read bottom-up: `[focus]` commits first (ordered so definitions precede their consumers),
-then one exemplar per shape in `[skim 1/2]`, and skip `[skim 2/2]` and `[noise]` on their
-subject lines alone — every hunk in them is a repeat of a shape you already verified.
+Read from the bottom up. Read the `[focus]` commits first. Definitions come before their
+callers. Then read one exemplar per shape in `[skim 1/2]`. Then skip `[skim 2/2]` and
+`[noise]` on their subject lines alone. Every hunk in them repeats a shape you already
+checked.
 
-### Commands
+The stack never touches your worktree, your index, or your branches. It is built with git
+plumbing and lands one ref.
 
-```sh
-dfr review [--no-cache] [<range>]               # terminal reviewer (no range: opens a picker)
-dfr stack [--ref <name>] [--no-cache] <range>   # build + land the review stack
-dfr check [--json] <range>                      # run the structural invariants (CI-friendly)
-dfr findings [--no-cache] <range>               # print the review's findings as JSON
-```
+## Commands
 
-- `<range>`: `base..head`, `a...b` (base = merge-base, i.e. what an MR/PR diff is), or two
-  revs.
-- `dfr review` with no range opens a picker: tick "include uncommitted changes" and pick
-  the base commit (branch and tag names are shown, and a bar marks what's in range) —
-  so "everything since `main`, including my uncommitted work" is one choice. Progress
-  marks and findings persist across new commits, and across edits for worktree reviews.
-- `--repo <path>` / `--config <path>` work on every command; the repo defaults to the one
-  containing your cwd.
-- `dfr stack --ref refs/review/my-review/stack` picks the ref; default is
-  `refs/review/<base7>-<head7>/stack`. Re-running moves the ref.
-- `--no-cache` forces a fresh LLM grouping.
-- Exit codes: 0 success, 1 invariant/pipeline failure, 2 usage or config error.
+| command | what it does |
+|---|---|
+| `dfr review [<range>]` | Open the terminal reviewer. With no range it opens a picker. |
+| `dfr stack <range>` | Build the review commit stack and land it on a ref. |
+| `dfr check <range>` | Run the structural invariants. Use this in CI. |
+| `dfr findings <range>` | Print the review's findings as JSON. |
 
-The stack never touches your worktree, index, or branches — it is built entirely with git
-plumbing and only lands a ref.
+Every command takes `--repo`, `--config` and `--user-config`. Exit codes: `0` success,
+`1` invariant or pipeline failure, `2` usage or config error.
 
-## Configuration (optional)
-
-Repo-level: drop a `.differential.toml` at the repo root (classification hints, shared
-by everyone reviewing the repo):
-
-```toml
-[classify]
-# Extra globs to mark as generated (folded as noise in the reading plan).
-generated = ["**/__snapshots__/**", "migrations/**"]
-# Never mark these generated, even if a builtin rule says so.
-not_generated = ["important.lock"]
-# gitattributes names honoured as "generated" declarations.
-attributes = ["linguist-generated"]
-```
-
-User-level: which agent to run, and how much of a file the reviewer shows, are your
-choices rather than the repo's — put them in `~/.config/differential/config.toml`:
-
-```toml
-[grouping]
-# Any prompt-on-stdin / text-on-stdout command. Default shown.
-command = ["claude", "-p", "--output-format", "text", "--allowed-tools", ""]
-timeout_secs = 1200
-
-[review]
-# Context lines either side of a hunk in `dfr review`. Defaults shown.
-context = 3
-# Lines one `z` on a context boundary row pulls in.
-context_step = 10
-```
-
-Config can tune classification, the backend and the reviewer's presentation — it can never
-exclude files from analysis.
+Full reference, including every flag and every key in the reviewer:
+[`crates/cli/README.md`](crates/cli/README.md).
 
 ## Using it as a library
 
-The engine is a library first; the JSON plan document it produces is the contract every
-renderer consumes:
+The engine is a library first. The JSON plan document it produces is the contract that
+every renderer reads.
 
 ```rust
 use differential_engine::{gitio::Repo, config::Config, lang::LanguageRegistry,
@@ -130,35 +150,111 @@ let config = Config::load(&OsConfigSource, repo.root(), None, None)?;
 let src = resolve_range(&repo, &["main..feature"])?;   // a ReviewSource
 let out = run_pipeline(&repo, &src.base, &src.head, src.kind, &config,
                        &LanguageRegistry::builtin())?;
+// out.report   — the invariant report, always present
+// out.document — Some(PlanDocument), or None if an invariant failed
 ```
 
-Full surface: [`spec/consumers.md`](spec/consumers.md).
+Full surface: [`crates/engine/README.md`](crates/engine/README.md) and
+[`spec/consumers.md`](spec/consumers.md).
+
+## Config
+
+Config is optional. Two files exist, split by who owns the setting.
+
+**Repo file** — `.differential.toml` at the repository root. Classification hints only.
+Everyone reviewing the repo shares them.
+
+```toml
+[classify]
+# Extra globs to mark as generated. Generated files fold as noise.
+generated = ["**/__snapshots__/**", "migrations/**"]
+# Never mark these generated. This wins over everything else.
+not_generated = ["important.lock"]
+# gitattributes names honoured as a "generated" declaration.
+attributes = ["linguist-generated"]
+```
+
+| key | default | meaning |
+|---|---|---|
+| `classify.generated` | `[]` | Globs that mark a file as generated. |
+| `classify.not_generated` | `[]` | Globs that never mark a file as generated. |
+| `classify.attributes` | `["linguist-generated"]` | gitattributes names read as "generated". |
+
+**User file** — `~/.config/differential/config.toml`. It honours `XDG_CONFIG_HOME`. Which
+agent to run is your choice, not the repo's. So is how much of a file the reviewer shows.
+
+```toml
+[grouping]
+# Any command: prompt on stdin, text on stdout. The default is shown.
+command = ["claude", "-p", "--output-format", "text", "--allowed-tools", ""]
+timeout_secs = 1200
+
+[review]
+# Context lines shown either side of a hunk in `dfr review`.
+context = 3
+# Lines that one `z` pulls in at a context boundary.
+context_step = 10
+```
+
+| key | default | meaning |
+|---|---|---|
+| `grouping.command` | the `claude` line above | The grouping backend, as an argv list. |
+| `grouping.timeout_secs` | `1200` | How long to wait for the backend. |
+| `review.context` | `3` | Context lines around a hunk before any expansion. |
+| `review.context_step` | `10` | Lines one `z` pulls in at a boundary row. |
+
+A missing file means defaults. A malformed file is a hard error. An unknown key is a hard
+error too.
+
+**The one rule config can never break: config never removes a file or a hunk from
+analysis.** It tunes classification hints and tool behaviour only. Every invariant depends
+on that.
+
+## The crates
+
+| crate | what it is |
+|---|---|
+| [`differential`](crates/cli/README.md) | The application. It owns the `dfr` and `differential` binaries. |
+| [`differential-engine`](crates/engine/README.md) | The core library: git io, diff parsing, shape classes, grouping, ordering, invariants. |
+| [`differential-stack`](crates/stack/README.md) | The shadow-branch renderer. The diff as a synthetic commit stack. |
+| [`differential-tui`](crates/tui/README.md) | The terminal reviewer behind `dfr review`. |
+
+Dependency direction is strict: `cli → {tui, stack} → engine`.
 
 ## Status
 
-Shipped: the full pipeline (enumeration → shape classes → LLM grouping → foundation-first
-ordering), the shadow-branch renderer (`dfr stack`), and the review TUI (`dfr review`)
-with persistent, regeneration-surviving findings. Planned: posting grouped review
-comments to GitLab/GitHub.
+Shipped: the full pipeline, the shadow-branch renderer (`dfr stack`), and the review TUI
+(`dfr review`) with findings that survive regeneration.
+
+Planned: posting grouped review comments to a GitLab merge request or a GitHub pull
+request.
 
 ## Learn more
 
-- [`docs/architecture.md`](docs/architecture.md) — how it works and why it's built this way
-- [`spec/`](spec/) — normative behaviour (JSON contract, invariants, each pipeline stage)
-- [`adr/`](adr/) — decision records with the measurements behind them
+- [`docs/architecture.md`](docs/architecture.md) — how it works, and why it is built this
+  way.
+- [`spec/`](spec/) — the normative behaviour: the JSON contract, the invariants, each
+  pipeline stage.
+- [`adr/`](adr/) — decision records, with the measurements behind them.
+- [`CREDITS.md`](CREDITS.md) — the projects and crates this one stands on.
 
 ## Development
 
 ```sh
-cargo test                                # unit + hermetic synthetic-repo tests
+cargo test                                # unit tests and hermetic repo tests
 cargo clippy --all-targets && cargo fmt
 ```
 
-Changes land via pull request; CI runs format, clippy, tests and a release build on every
-PR, and main is protected. Releases are tag-driven: bump the workspace version in a PR,
-merge, then push a `vX.Y.Z` tag — the Release workflow generates the changelog into a
-GitHub Release and runs `cargo publish --workspace`.
+Changes land by pull request. CI runs format, clippy, tests and a release build on every
+pull request. `main` is protected.
 
-See [`AGENTS.md`](AGENTS.md) for working rules and
-[`docs/architecture.md`](docs/architecture.md) for the testing philosophy. Before touching
-`engine::schema` or the invariants, read the ADRs — every invariant caught a real bug.
+Releases are tag-driven. Bump the workspace version in a pull request, merge it, then push
+a `vX.Y.Z` tag. The Release workflow writes the changelog into a GitHub Release and runs
+`cargo publish --workspace`.
+
+See [`AGENTS.md`](AGENTS.md) for the working rules.
+
+## Licence
+
+MIT or Apache-2.0, at your option. See [`LICENSE-MIT`](LICENSE-MIT) and
+[`LICENSE-APACHE`](LICENSE-APACHE).

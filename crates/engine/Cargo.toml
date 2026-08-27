@@ -5,6 +5,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["diff", "git", "code-review", "llm"]
+categories = ["development-tools"]
 
 [dependencies]
 serde = { workspace = true }
