@@ -1992,11 +1992,33 @@ impl App {
             } => {
                 let body_rows = panes.body.height as usize;
                 let height = (entries.len() + 2).min(body_rows) as u16;
-                let area = centered_rect(panes.body, 70, height);
                 // Window before building, and by the same number `j`/`k`
                 // scroll against: the surplus lines used to be built and then
                 // silently dropped off the bottom of the box.
                 let inner_h = file_list_rows(entries.len(), body_rows);
+
+                // The counts column is as wide as the widest pair, so the
+                // paths start in one column however many digits a file has.
+                let counts = |e: &FileListEntry| format!("+{:<4}−{:<4} ", e.adds, e.dels);
+                let lead = 2 + entries
+                    .iter()
+                    .map(|e| UnicodeWidthStr::width(counts(e).as_str()))
+                    .max()
+                    .unwrap_or(0);
+                let widest = entries
+                    .iter()
+                    .map(|e| UnicodeWidthStr::width(e.path.as_str()))
+                    .max()
+                    .unwrap_or(0);
+                // The box fits its content, exactly as its height already
+                // does — 70 columns is a floor, not the size. A fixed width
+                // cut deep paths against the border and took the file NAME
+                // with them, which is the one part of a path worth reading.
+                let width = (lead + widest + 2).max(70).min(panes.body.width as usize) as u16;
+                let area = centered_rect(panes.body, width, height);
+                let inner_w = area.width.saturating_sub(2) as usize;
+                let path_col = inner_w.saturating_sub(lead);
+
                 let lines: Vec<Line> = entries
                     .iter()
                     .enumerate()
@@ -2022,7 +2044,10 @@ impl App {
                             Span::styled(format!("{mark} "), style),
                             Span::styled(format!("+{:<4}", e.adds), on(THEME.add_fg)),
                             Span::styled(format!("−{:<4} ", e.dels), on(THEME.del_fg)),
-                            Span::styled(e.path.clone(), style),
+                            // Whole when it fits, and cut at its HEAD when it
+                            // does not, so the name survives whatever the
+                            // directories above it cost.
+                            Span::styled(elide_head(&e.path, path_col), style),
                         ])
                     })
                     .collect();
@@ -3367,8 +3392,21 @@ mod tests {
         // A wider budget buys another whole segment, never half of one.
         assert_eq!(elide_head(deep, 25), "…/three/four/module.rs:13");
 
-        // No separator in reach: cut where the budget runs out.
+        // No separator in reach: cut where the budget runs out. The END of
+        // the name is what survives, which is the guarantee a file list needs
+        // — a path is identified by its tail, never by its head.
         assert_eq!(elide_head("averylongsinglename.rs", 8), "…name.rs");
+        for max in 2..40 {
+            let out = elide_head("a/b/c/verylongmodulename.rs", max);
+            assert!(
+                "a/b/c/verylongmodulename.rs".ends_with(out.trim_start_matches(['…', '/'])),
+                "at {max} columns the result must be a suffix: {out:?}"
+            );
+            assert!(
+                UnicodeWidthStr::width(out.as_str()) <= max,
+                "over budget at {max}"
+            );
+        }
 
         // Degenerate budgets never panic.
         assert_eq!(elide_head("src/a.rs", 1), "…");

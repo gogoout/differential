@@ -4489,6 +4489,58 @@ fn app_with_a_deep_path() -> (TestRepo, App) {
     (r, app)
 }
 
+/// The file list drew paths whole against a fixed box, so a deep one ran off
+/// the border and took the file NAME with it — the one part worth reading.
+#[test]
+fn the_file_list_keeps_the_name_however_deep_the_path() {
+    use differential_tui::app::Mode;
+    // Deeper than any box the pane can hold at 100 columns.
+    let deep = "src/alpha/bravo/charlie/delta/echo/foxtrot/golf/hotel/india/juliet/\
+kilo/lima/mike/november/oscar/papa/quebec/distinctive_name.rs";
+    let shallow = "src/near.rs";
+    let r = TestRepo::new();
+    for f in [deep, shallow] {
+        r.write(f, b"fn go() { old() }\n");
+    }
+    r.commit_all("base");
+    for f in [deep, shallow] {
+        r.write(f, b"fn go() { new() }\n");
+    }
+    r.commit_all("head");
+    let backend = FakeBackend::new("fake", |ids| {
+        let all: Vec<&str> = ids.iter().map(String::as_str).collect();
+        format!(
+            r#"{{"groups": [{}]}}"#,
+            json_group("Everything", "focus", &all)
+        )
+    });
+    let mut app = open_app_with(&r, &backend, ".dfr-deepfile-store");
+    app.focus = Focus::Detail;
+    app.handle_key(key('f'));
+    assert!(matches!(app.mode, Mode::FileList { .. }));
+
+    let rows = drawn_rows(&mut app);
+    assert!(
+        rows.iter().any(|l| l.contains("distinctive_name.rs")),
+        "the name has to survive the directories above it"
+    );
+    // A path that fits is shown whole — the cut is a last resort, not a style.
+    assert!(
+        rows.iter().any(|l| l.contains(shallow)),
+        "a path with room to spare keeps every segment"
+    );
+    // And the deep one says it was cut rather than pretending to be complete.
+    let cut = rows
+        .iter()
+        .find(|l| l.contains("distinctive_name.rs"))
+        .unwrap();
+    assert!(cut.contains('…'), "the cut has to be visible: {cut:?}");
+    assert!(
+        !cut.contains("src/alpha"),
+        "the leading directories are what goes: {cut:?}"
+    );
+}
+
 /// `{:<width$}` pads and never truncates, so a long path used to overflow its
 /// column and leave the note three or four words. The name and the line number
 /// identify a finding; the leading directories do not.
@@ -4609,4 +4661,32 @@ fn render_dump_chrome() {
     }
     println!("\n=== file list: scrolled to the last file ===");
     println!("{}", ansi_dump(&mut many, 120, 8));
+
+    // 4. The file list holding one path that fits and one that cannot, at two
+    //    widths — the box grows to its content, then the path gives way.
+    let deep = "src/alpha/bravo/charlie/delta/echo/foxtrot/golf/hotel/india/juliet/\
+kilo/lima/mike/november/oscar/papa/quebec/distinctive_name.rs";
+    let r = TestRepo::new();
+    for f in [deep, "src/near.rs"] {
+        r.write(f, b"fn go() { old() }\n");
+    }
+    r.commit_all("base");
+    for f in [deep, "src/near.rs"] {
+        r.write(f, b"fn go() { new() }\n");
+    }
+    r.commit_all("head");
+    let backend = FakeBackend::new("fake", |ids| {
+        let all: Vec<&str> = ids.iter().map(String::as_str).collect();
+        format!(
+            r#"{{"groups": [{}]}}"#,
+            json_group("Everything", "focus", &all)
+        )
+    });
+    let mut deep_app = open_app_with(&r, &backend, ".dfr-dump-deep-store");
+    deep_app.focus = Focus::Detail;
+    deep_app.handle_key(key('f'));
+    for w in [160u16, 100, 80] {
+        println!("\n=== file list at {w} columns: a path that cannot fit ===");
+        println!("{}", ansi_dump(&mut deep_app, w, 8));
+    }
 }
