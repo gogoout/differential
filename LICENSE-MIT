@@ -1,6 +1,12 @@
 MIT License
 
 Copyright (c) 2026 gogoout
+Copyright (c) 2025 tuicr contributors  (portions in crates/tui/src/vendor/,
+                                        adapted from agavra/tuicr)
+Copyright (c) 2024 Sahaj Jain          (portions in crates/tui/src/vendor/,
+                                        adapted from jnsahaj/lumen)
+
+See CREDITS.md for exactly which files came from where.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

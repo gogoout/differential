@@ -1,5 +1,5 @@
 //! Code adapted from other MIT-licensed projects, with attribution headers in
-//! each file (see LICENSE-MIT and the README credits).
+//! each file (see LICENSE-MIT and CREDITS.md).
 //!
 //! Trimmed to what this crate actually calls: the module is private, so the
 //! compiler can see what is reachable, and everything it reported unreachable

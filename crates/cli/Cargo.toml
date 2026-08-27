@@ -1,10 +1,14 @@
 [package]
 name = "differential"
-description = "Renderer binary for differential reading plans (dfr)"
+description = "Read a large diff as an ordered plan: the dfr command-line tool"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["diff", "git", "code-review", "llm", "tui"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 differential-engine = { workspace = true }
