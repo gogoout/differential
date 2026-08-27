@@ -1,7 +1,7 @@
 # Agent instructions for `differential`
 
 Read [`README.md`](README.md) for what this is. `spec/` is normative (what the program does);
-`adr/` records why (0001–0020). When your change contradicts a spec or ADR, the docs and the
+`adr/` records why (0001–0021). When your change contradicts a spec or ADR, the docs and the
 code must change together — or the change is wrong.
 
 ## Working rules
@@ -20,7 +20,19 @@ code must change together — or the change is wrong.
    struct forming, stop. A `Context` bundling a git provider with a `Config` is the
    specific one to refuse: it re-opens the exclusion hole ADR 0012 closed.
 
-3. **Business logic owns the trait; the adapter implements it** (ADR 0020).
+3. **Information is the most valuable thing analysis produces. Do not discard it to
+   keep a diff small.**
+   Rule 2 forbids inventing structure. It is not licence to take the cheap answer.
+   Before choosing an approach, work out what the mechanism can determine *without* the
+   model: what the data already supports, what a finer granularity would reveal, what
+   the current code computes and then throws away. Then choose. An approach that answers
+   less than the mechanism can answer needs a stated reason, exactly as a new abstraction
+   does.
+
+   The tell: you recommended the option with the smallest diff, and the diff was your
+   reason. State what each option can determine and let the author weigh it.
+
+4. **Business logic owns the trait; the adapter implements it** (ADR 0020).
 
    **The domain must never depend on an adapter. The adapter depends on the domain.**
    That arrow is one-way and has no exceptions. Concretely: a domain module may not
@@ -65,14 +77,14 @@ code must change together — or the change is wrong.
    or `crates/stack`, it belongs one layer down — that duplication is what let the two
    renderers disagree about the same document.
 
-4. **Don't hand-roll utilities — find an established open-source crate.**
+5. **Don't hand-roll utilities — find an established open-source crate.**
    Before writing a parser, encoder, globber, retry loop, or similar plumbing, look for the
    boring, widely-used crate (as `globset`, `tempfile`, `regex` already are here). A
    hand-rolled utility is only acceptable when the crate genuinely doesn't fit, and then say
    so in a comment. Exception: the deliberately dumb recount in `invariants.rs` must stay
    independent of everything — that separation is its whole point (invariant 4).
 
-5. **Don't artificially minimise blast radius.** If a feature genuinely touches a wide
+6. **Don't artificially minimise blast radius.** If a feature genuinely touches a wide
    area, refactor properly rather than patching around the edges to keep the diff small.
    A narrow patch that leaves the design wrong is more expensive than the wide diff that
    fixes it. (This tool exists precisely because wide, honest diffs are reviewable.)
