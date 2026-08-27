@@ -531,6 +531,7 @@ version = "0.5.1"
 dependencies = [
  "anyhow",
  "arboard",
+ "base64",
  "crossterm",
  "differential-engine",
  "differential-testutil",

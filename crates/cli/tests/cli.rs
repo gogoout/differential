@@ -33,3 +33,18 @@ fn non_review_commands_require_a_range() {
         );
     }
 }
+
+/// `--summary` is a projection of the same store, not a second command. It has
+/// to reach the CLI's argument surface, or the reviewer's footer names a flag
+/// that does not exist.
+#[test]
+fn findings_offers_a_markdown_summary() {
+    let out = Command::new(env!("CARGO_BIN_EXE_dfr"))
+        .args(["findings", "--help"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let help = String::from_utf8_lossy(&out.stdout);
+    assert!(help.contains("--summary"), "{help}");
+    assert!(help.contains("markdown"), "{help}");
+}

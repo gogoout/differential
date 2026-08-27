@@ -62,6 +62,10 @@ enum Command {
     Findings {
         #[command(flatten)]
         common: Common,
+        /// Print the open findings as markdown instead — the same text the
+        /// reviewer's `y` copies, for pasting into an agent or a PR.
+        #[arg(long)]
+        summary: bool,
         /// Bypass the grouping cache (forces a fresh LLM call).
         #[arg(long)]
         no_cache: bool,
@@ -208,6 +212,9 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             let opts = differential_tui::ReviewOptions {
                 context: config.review.context,
                 context_step: config.review.context_step,
+                // As TYPED, so the footer can hand it straight back. Empty
+                // when the picker chose the source, which has no spelling.
+                range: (!common.range.is_empty()).then(|| common.range.join(" ")),
             };
             differential_tui::review(&repo, pick, opts, move |picked, tx, cancel| {
                 // Which resolver runs is dispatch; what each one decides is
@@ -245,7 +252,9 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             })?;
             Ok(ExitCode::SUCCESS)
         }
-        Command::Findings { no_cache, .. } => {
+        Command::Findings {
+            summary, no_cache, ..
+        } => {
             let source = resolved.expect("range checked above");
             let out = grouped(&repo, &source, &config, &langs, no_cache)?;
             let doc = out
@@ -253,7 +262,14 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 .context("invariants failed; no plan available")?;
             let store = FsReviewStore::for_review(&repo, &out.base, &source.head_spec)?;
             let session = differential_engine::ReviewSession::open(store, doc, out.view)?;
-            println!("{}", serde_json::to_string_pretty(session.findings())?);
+            // Two projections of one store, both the engine's: JSON for a
+            // consumer, markdown for a person. The reviewer's `y` copies the
+            // second one, so the two cannot drift.
+            if summary {
+                print!("{}", session.findings_summary());
+            } else {
+                println!("{}", serde_json::to_string_pretty(session.findings())?);
+            }
             Ok(ExitCode::SUCCESS)
         }
         Command::Check { json, .. } => {

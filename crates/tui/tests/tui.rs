@@ -4690,3 +4690,55 @@ kilo/lima/mike/november/oscar/papa/quebec/distinctive_name.rs";
         println!("{}", ansi_dump(&mut deep_app, w, 8));
     }
 }
+
+/// `y` hands the loop the text and nothing else. The projection itself is the
+/// ENGINE's, so `dfr findings --summary` prints exactly what `y` copies.
+#[test]
+fn y_carries_the_same_summary_the_cli_prints() {
+    let (r, mut app) = make_app();
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(key('c'));
+    app.handle_paste("off by one");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let effects = app.handle_key(key('y'));
+    match effects.first() {
+        Some(Effect::CopySummary(text)) => {
+            assert!(text.contains("off by one"));
+            // One projection, one owner: the session's.
+            assert_eq!(*text, app.session.findings_summary());
+        }
+        other => panic!("expected a copied summary, got {other:?}"),
+    }
+    assert!(
+        !r.root.join(".dfr-test-store/summary.md").exists(),
+        "`y` writes no file — the summary is a command away, not a path"
+    );
+}
+
+/// Not an assertion — the footer carrying each of the three messages at three
+/// widths, so the squeeze against the tallies and the two right-hand keys can
+/// be seen:
+/// `cargo test -p differential-tui --test tui -- --ignored --nocapture render_dump_summary_footer`
+#[test]
+#[ignore = "prints the footer for a human to look at"]
+fn render_dump_summary_footer() {
+    let (_r, mut app) = make_app();
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(key('c'));
+    app.handle_paste("off by one");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let cmd = "dfr findings main..feature --summary";
+    for status in [
+        "findings summary copied to clipboard".to_string(),
+        format!("sent via the terminal · {cmd}"),
+        format!("clipboard unavailable · {cmd}"),
+    ] {
+        app.status = status.clone();
+        for w in [140u16, 110, 90] {
+            println!("\n=== {w} columns: {status} ===");
+            println!("{}", ansi_dump(&mut app, w, 6));
+        }
+    }
+}
