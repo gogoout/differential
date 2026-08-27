@@ -33,6 +33,16 @@ You also need:
 
 ```sh
 cd your-repo
+dfr review main..feature
+```
+
+That opens the terminal reviewer. Run `dfr review` with no range and it opens a picker
+instead.
+
+To read the same plan in your IDE, in `tig`, or in plain `git log`, render it as a stack of
+synthetic commits:
+
+```sh
 dfr stack main..feature
 ```
 

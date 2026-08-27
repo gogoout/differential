@@ -83,11 +83,41 @@ That installs two binaries, `dfr` and `differential`. They are the same program.
 
 ```sh
 cd your-repo
-dfr stack main..feature
+dfr review main..feature
 ```
 
-The first run on a range calls the LLM once. On a big merge request that takes a minute
-or two. The result is then cached, so later runs are instant and stable.
+That opens the terminal reviewer. Two panes: the reading plan on the left, the diff on the
+right.
+
+The first run on a range calls the LLM once. On a big merge request that takes a minute or
+two. A splash screen shows the stages while you wait. The result is then cached, so later
+runs are instant and stable.
+
+Work down the plan from the top. `tab` switches panes. `j` and `k` move. `space` marks a
+hunk's shape class reviewed, so one exemplar clears the whole class. `c` writes a finding
+against the line under the cursor, and `F` lists every finding you have written. `y` copies
+them all to the clipboard as markdown. `?` shows every key. `q` quits, and nothing is lost —
+state is saved as you go.
+
+Run it with no range at all:
+
+```sh
+dfr review
+```
+
+That opens a picker. Choose the base commit, and tick the box to include your uncommitted
+work. So "everything since `main`, including what I have not committed" is one choice.
+
+Full detail, and every key: [`crates/tui/README.md`](crates/tui/README.md).
+
+### Or read it as a commit stack
+
+If you would rather stay in your IDE, in `tig`, or in plain `git log`, render the same plan
+as a stack of synthetic commits:
+
+```sh
+dfr stack main..feature
+```
 
 ```
 refs/review/1a2b3c4-5d6e7f8/stack  (14 commits, 187 hunks, recount 187)
@@ -114,6 +144,8 @@ checked.
 
 The stack never touches your worktree, your index, or your branches. It is built with git
 plumbing and lands one ref.
+
+Full detail: [`crates/stack/README.md`](crates/stack/README.md).
 
 ## Commands
 
@@ -217,8 +249,8 @@ Dependency direction is strict: `cli → {tui, stack} → engine`.
 
 ## Status
 
-Shipped: the full pipeline, the shadow-branch renderer (`dfr stack`), and the review TUI
-(`dfr review`) with findings that survive regeneration.
+Shipped: the full pipeline, the review TUI (`dfr review`) with findings that survive
+regeneration, and the shadow-branch renderer (`dfr stack`).
 
 Planned: posting grouped review comments to a GitLab merge request or a GitHub pull
 request.
