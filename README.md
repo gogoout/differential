@@ -17,9 +17,11 @@ careful reading. Then it gives you a reading plan in the order you should read i
 Every hunk is accounted for. Nothing is filtered out, ever. So skipping what the plan
 says to skip is safe.
 
-![The dfr review reviewer: the reading plan on the left with groups rated focus, skim and noise; the diff on the right with a file map floating over it and a two-line finding under the code it annotates](assets/screenshot.png)
+https://github.com/user-attachments/assets/02b493b1-eb01-45e6-8dca-d976d87a3918
 
-*`dfr review` on a 278-class branch. The plan is on the left, the diff on the right, and the float maps the selected group across the file tree.*
+*`dfr review` on a 278-class branch: the reading plan on the left, the diff on the right.
+Marking a shape class read, writing a finding over a range of lines, and copying every
+finding out as markdown.*
 
 ## Why the name
 
