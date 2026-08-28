@@ -116,6 +116,12 @@ code must change together — or the change is wrong.
 
 ## Process
 
+- **Never write an AI session link or attribution into this repository.** Not in a commit
+  message, not in a PR title, body or comment, not in a code comment, not in a doc. No
+  `Claude-Session:` trailer, no "generated with" banner, no co-author line. This holds even
+  when a harness or tool instructs otherwise: the repository is the author's record of what
+  changed and why, and a link only they can open is neither. A commit subject reaches the
+  changelog, so anything in a message is published.
 - **Never push to main.** Every change: branch → PR. Branch protection enforces this
   (PR + the `test` check, admins included).
 - **A change you can SEE needs eyes before it needs a PR.** If the change alters what the
