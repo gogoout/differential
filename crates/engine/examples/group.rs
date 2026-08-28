@@ -4,8 +4,8 @@
 //! Usage: cargo run -p differential-engine --example group -- \
 //!            [--repo <path>] [--config <path>] [--no-cache] [-o <file>] <base>..<head>
 //!
-//! Backend: [grouping].command from ~/.config/differential/config.toml, or the default
-//! tools-denied claude invocation. Cache: <git-common-dir>/differential/cache/grouping.
+//! Backend: Claude Code with the read-only allowlist, the same one the shipped
+//! binary builds. Cache: <git-common-dir>/differential/cache/grouping.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -87,7 +87,10 @@ fn main() -> ExitCode {
             );
         }
     };
-    let backend = differential_engine::llm::CommandBackend::claude_cli(&fetch);
+    // In the repository root, because the prompt hands the model repo-relative
+    // paths for `git diff` and git resolves a bare pathspec against the cwd.
+    let backend =
+        differential_engine::llm::CommandBackend::claude_cli(&fetch).with_working_dir(repo.root());
 
     let out = match run_grouped_pipeline(
         &repo,

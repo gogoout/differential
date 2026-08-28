@@ -374,8 +374,11 @@ review is still on disk under its own id — but its marks are not the ones you 
 
 The reviewer opens immediately and shows a splash until the document is ready:
 enumerate → classify → group → order, the active stage spinning, with an elapsed timer.
-The grouping line names the agent it is waiting on, or says the cache spared the call —
-that stage shells out to an LLM on a cache miss and dominates the wait. `q` cancels, and
+The grouping line names the agent it is waiting on ("asking Claude Code"), or says the
+cache spared the call — that stage shells out to an LLM on a cache miss and dominates the
+wait. It is the agent's **name**, not its command line: the argv is four times the width
+of the line and answers a different question, so it lives where it is the answer, in the
+text of a spawn failure (`LlmBackend::name`). `q` cancels, and
 cancelling kills the agent subprocess rather than merely stopping the screen from
 watching it: raw mode has already disabled `Ctrl-C`, so nothing else would reap it.
 

@@ -190,26 +190,29 @@ Everyone reviewing the repo shares them.
 generated = ["**/__snapshots__/**", "migrations/**"]
 # Never mark these generated. This wins over everything else.
 not_generated = ["important.lock"]
-# gitattributes names honoured as a "generated" declaration.
-attributes = ["linguist-generated"]
+# gitattributes names honoured as a "generated" declaration. This is the
+# default: GitHub's convention and GitLab's, because a repo does not choose its
+# forge to suit us. Setting the key REPLACES the list, it does not extend it.
+attributes = ["linguist-generated", "gitlab-generated"]
 ```
 
 | key | default | meaning |
 |---|---|---|
 | `classify.generated` | `[]` | Globs that mark a file as generated. |
 | `classify.not_generated` | `[]` | Globs that never mark a file as generated. |
-| `classify.attributes` | `["linguist-generated"]` | gitattributes names read as "generated". |
+| `classify.attributes` | `["linguist-generated", "gitlab-generated"]` | gitattributes names read as "generated". Setting it **replaces** the list. |
 
 **User file** — `~/.config/differential/config.toml`. It honours `XDG_CONFIG_HOME`. Which
 agent to run is your choice, not the repo's. So is how much of a file the reviewer shows.
 
-This whole file is optional. The default backend runs Claude Code headless, and lets it
-read the change and the repository — nothing else. Set `command` only to run a different
-agent, and then its capabilities are yours to choose, not ours.
+This whole file is optional. The default agent is Claude Code, headless, allowed to read
+the change and the repository — nothing else. `agent` picks between the agents we support
+by name; it is not a command line, because the grouping call hands its agent a tool
+allowlist and a prompt written for what that agent can do.
 
 ```toml
 [grouping]
-# command = ["my-agent", "--quiet"]   # prompt on stdin, text on stdout
+agent = "claude-code"   # the only one so far, and the default
 timeout_secs = 1200
 
 [review]
@@ -221,7 +224,7 @@ context_step = 10
 
 | key | default | meaning |
 |---|---|---|
-| `grouping.command` | headless `claude`, read-only tools | The grouping backend, as an argv list. |
+| `grouping.agent` | `claude-code` | Which agent runs the grouping call, by name. |
 | `grouping.timeout_secs` | `1200` | How long to wait for the backend. |
 | `review.context` | `3` | Context lines around a hunk before any expansion. |
 | `review.context_step` | `10` | Lines one `z` pulls in at a boundary row. |

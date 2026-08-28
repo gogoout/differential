@@ -202,11 +202,21 @@ fn generated_classes_never_reach_the_model_and_fold_as_noise() {
     assert_eq!(d.audit.coverage, Some(1.0)); // offered classes fully assigned
 }
 
+/// A generated file and a source file never share a class, however alike their
+/// text.
+///
+/// They used to. The class key was the normalised text plus the disposition, so
+/// one shaped edit made in both places was one class — neither generated nor
+/// not. `class_is_generated` could only ask "is every member generated?", which
+/// such a class answers no, so it was offered, and its lockfile hunk went
+/// wherever the model put the class. A generated hunk in a focus group was the
+/// symptom.
+///
+/// `generated` is in the class key now, so the split happens before anything
+/// has to route it.
 #[test]
-fn mixed_generated_class_stays_with_the_model() {
+fn a_generated_file_never_shares_a_class_with_a_source_file() {
     let r = TestRepo::new();
-    // The same shaped edit in a generated and a source file: one class,
-    // not all-generated, so it must be offered.
     r.write("Cargo.lock", b"shared_edit_line = old_value\n");
     r.write("src/x.txt", b"shared_edit_line = old_value\n");
     let base = r.commit_all("base");
@@ -221,15 +231,31 @@ fn mixed_generated_class_stays_with_the_model() {
         )
     });
     let d = grouped(&r, &base, &head, &backend);
-    assert_eq!(d.classes.len(), 1);
-    assert_eq!(ids_in_prompt(&backend.last_prompt()).len(), 1);
-    assert!(
-        d.groups
-            .as_ref()
-            .unwrap()
+
+    // One shape, two files, two classes.
+    assert_eq!(d.classes.len(), 2, "identical text, but not one class");
+
+    // Exactly one of them is offered, and it is the source one. The model is
+    // never handed a class id the audit would reject.
+    let offered = ids_in_prompt(&backend.last_prompt());
+    assert_eq!(offered.len(), 1, "{offered:?}");
+    let hunks_of = |cid: &str| -> Vec<&str> {
+        let c = d.classes.iter().find(|c| c.id == cid).unwrap();
+        c.hunk_ids
             .iter()
-            .all(|g| g.effort != Effort::Noise)
-    );
+            .map(|h| d.hunks[h[1..].parse::<usize>().unwrap()].file.as_str())
+            .collect()
+    };
+    assert_eq!(hunks_of(&offered[0]), ["src/x.txt"]);
+
+    // And the lockfile half is folded, which is the whole point.
+    let groups = d.groups.as_ref().unwrap();
+    let noise = groups
+        .iter()
+        .find(|g| g.effort == Effort::Noise)
+        .expect("the generated half must be folded");
+    assert_eq!(noise.class_ids.len(), 1);
+    assert_eq!(hunks_of(&noise.class_ids[0]), ["Cargo.lock"]);
 }
 
 #[test]

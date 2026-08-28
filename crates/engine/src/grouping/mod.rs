@@ -119,7 +119,13 @@ pub fn run<C: GroupingCache, A: ArtefactStore>(
         // one document, and a cache hit finds the same file the miss wrote.
         let key = key::cache_key(&offered, backend.identity(), lang_fingerprint);
         let path = artefacts.make_readable(&key, &doc.to_json_pretty()?)?;
-        let prompt = payload::build_prompt(&offered, fetch, &path.to_string_lossy());
+        let prompt = payload::build_prompt(
+            &offered,
+            fetch,
+            &path.to_string_lossy(),
+            &doc.source.base,
+            &doc.source.head,
+        );
         let response = fetch_response(&prompt, &key, backend, cache, progress)?;
         let raw = parse::parse_response(&response)?;
         audit(raw, &offered)

@@ -1,4 +1,4 @@
-//! What the model is given, and how it asks for more (ADR 0022).
+//! What the model is given (ADR 0022).
 //!
 //! The grouping stage used to hand the model a fixed string: one block per
 //! shape class, eight lines of diff from the exemplar, six basenames. So a
@@ -7,23 +7,24 @@
 //! truncated large changes.
 //!
 //! Now the engine writes the pre-group document to a file and the model
-//! **fetches** what it needs. Its job is unchanged: it merges class ids, labels
-//! and rates, never touching hunks (ADR 0001). What changed is the context it
-//! has to do that job with.
+//! **fetches** the whole class table from it in one call. Its job is unchanged:
+//! it merges class ids, labels and rates, never touching hunks (ADR 0001). What
+//! changed is the context it has to do that job with.
+//!
+//! Every answer here comes from the document. A hunk entry records where a hunk
+//! is, never what it says, and the text is `git diff`'s job — so nothing in
+//! this module reaches a repository.
 //!
 //! This module owns all of it — building the class graph ([`graph`]), and
-//! answering the queries behind `dfr agent`. It returns data; rendering it as
-//! text is `crates/cli`'s job, the same as for every other consumer.
+//! answering the one question behind `dfr agent`. It returns data; rendering it
+//! as text is `crates/cli`'s job, the same as for every other consumer.
 
 pub mod graph;
 
 use crate::plan::HunkId;
 use crate::schema;
 
-/// One class, resolved: everything a caller needs to describe or drill into it.
-///
-/// One type for both the index and the detail view, because the index is the
-/// same facts with fewer of them printed.
+/// One class, resolved: everything a caller needs to describe it.
 pub struct ClassView<'d> {
     pub class: &'d schema::ClassEntry,
     /// Member hunks, in class order.
@@ -46,14 +47,22 @@ impl ClassView<'_> {
 /// Every class the model is asked to group, largest first — the order the class
 /// ids already carry.
 ///
+/// **This is the whole read path.** There were four more — one class by id, the
+/// classes touching a path, the classes defining a symbol, and every class
+/// generated included. Each was a lookup into this list, at a model turn per
+/// call, and the list is 72KB for a 196-class change. So the list goes out
+/// whole and the lookups go.
+///
 /// **Generated content is left out**, exactly as the grouping stage leaves it
 /// out of the prompt (`plan::class_is_generated`, ADR 0006). Listing a class the
 /// model may not name would invite it to name one, and the audit would throw
 /// that whole group away as a hallucination.
 ///
-/// That is the rule across this module: **asking without naming anything gets
-/// the offered set; naming something reaches everything.** The noise tier folds
-/// content, it never hides it.
+/// **Nothing printed here touches a generated file at all.** `generated` is part
+/// of the shape-class key (`shape::shape_hash`), so a class is wholly generated
+/// or wholly not, and this filter therefore removes every generated hunk rather
+/// than every class that happens to be entirely generated. The noise tier still
+/// folds rather than hides: `git diff` reaches any path at all.
 pub fn index(doc: &schema::PlanDocument) -> Vec<ClassView<'_>> {
     all(doc)
         .into_iter()
@@ -61,49 +70,8 @@ pub fn index(doc: &schema::PlanDocument) -> Vec<ClassView<'_>> {
         .collect()
 }
 
-/// Every class, generated included. The starting point for a named lookup.
-pub fn all(doc: &schema::PlanDocument) -> Vec<ClassView<'_>> {
+fn all(doc: &schema::PlanDocument) -> Vec<ClassView<'_>> {
     doc.classes.iter().filter_map(|c| view(doc, c)).collect()
-}
-
-/// One class by id, generated or not: an explicit id is an explicit request.
-pub fn class<'d>(doc: &'d schema::PlanDocument, id: &str) -> Option<ClassView<'d>> {
-    view(doc, doc.classes.iter().find(|c| c.id == id)?)
-}
-
-/// The classes touching `path`, largest first. A named path reaches generated
-/// content too — a reviewer asking about a lockfile means the lockfile.
-pub fn in_file<'d>(doc: &'d schema::PlanDocument, path: &str) -> Vec<ClassView<'d>> {
-    all(doc)
-        .into_iter()
-        .filter(|v| v.files.contains(&path))
-        .collect()
-}
-
-/// The classes that define `symbol`.
-///
-/// Answers from the graph the mechanism already computed. It does not resolve
-/// symbols on demand: a caller asking twice must get the same answer as the
-/// ordering stage acted on.
-pub fn definers<'d>(doc: &'d schema::PlanDocument, symbol: &str) -> Vec<ClassView<'d>> {
-    all(doc)
-        .into_iter()
-        .filter(|v| v.class.defines.iter().any(|d| d == symbol))
-        .collect()
-}
-
-/// The hunks a `hN` or `Cn` id names, in canonical order.
-///
-/// The one query that reaches past the document: a hunk entry records where a
-/// hunk is, never what it says. The caller re-enumerates the recorded range to
-/// get the text, which is why hunk ids being positional is safe here — the
-/// same range enumerates to the same order every time.
-pub fn resolve<'d>(doc: &'d schema::PlanDocument, id: &str) -> Option<Vec<&'d schema::HunkEntry>> {
-    if let Ok(h) = HunkId::parse(id) {
-        return doc.hunks.get(h.index()).map(|entry| vec![entry]);
-    }
-    let c = doc.classes.iter().find(|c| c.id == id)?;
-    Some(hunks_of(doc, &c.hunk_ids))
 }
 
 fn view<'d>(doc: &'d schema::PlanDocument, class: &'d schema::ClassEntry) -> Option<ClassView<'d>> {

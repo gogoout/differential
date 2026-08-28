@@ -35,6 +35,17 @@ struct Expect {
     classes: u32,
     applier: String,
     recount: u32,
+    /// Dependency edges across the whole class graph — `depends_on` summed over
+    /// every class.
+    ///
+    /// Optional, and the only optional one, because it pins a **heuristic**
+    /// rather than a fact. Files, hunks and classes are what git and the
+    /// normaliser must agree on; this number moves whenever symbol extraction
+    /// changes, and it is meant to. It is here so that movement is deliberate
+    /// and visible instead of being rediscovered from a bad reading order —
+    /// which is how the false edges on the second corpus range were found.
+    #[serde(default)]
+    edges: Option<u32>,
 }
 
 #[test]
@@ -83,8 +94,18 @@ fn real_corpus_parity() {
         );
         assert_eq!(doc.audit.recount, fx.expect.recount, "fixture {i}: recount");
         assert_eq!(doc.audit.tree_assertion, "pass", "fixture {i}: tree");
+
+        // The graph is built by `run_pipeline` already (`artefact::graph`), so
+        // this costs nothing and calls no model.
+        let edges: usize = doc.classes.iter().map(|c| c.depends_on.len()).sum();
+        if let Some(expected) = fx.expect.edges {
+            assert_eq!(
+                edges as u32, expected,
+                "fixture {i}: class dependency edges — symbol extraction changed"
+            );
+        }
         eprintln!(
-            "fixture {i}: ok — {} files, {} hunks, {} classes",
+            "fixture {i}: ok — {} files, {} hunks, {} classes, {edges} edges",
             doc.stats.files, doc.stats.hunks, doc.stats.classes
         );
     }

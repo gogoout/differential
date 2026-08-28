@@ -155,7 +155,7 @@ cargo clippy --all-targets && cargo fmt     # keep both clean
 cargo run -q --bin dfr -- check <base>..<head>    # invariant runner
 cargo run -q --bin dfr -- stack <base>..<head>    # review stack (needs an LLM CLI on a cache miss)
 cargo run -q --bin dfr -- review <base>..<head>   # terminal reviewer (same cache rule)
-cargo run -q --bin dfr -- agent --doc <path> classes   # what the grouping model sees
+cargo run -q --bin dfr -- agent --doc <path>          # what the grouping model sees
 cargo run -p differential-engine --example group -- <base>..<head>   # grouped document JSON (dev)
 DIFFERENTIAL_FIXTURE_CONFIG=$PWD/fixtures.local.toml cargo test -- --ignored  # parity (local)
 ```

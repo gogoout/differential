@@ -44,8 +44,12 @@ pub enum Deferral {
 /// reads a class it is then not allowed to name, and the audit throws its
 /// answer away as a hallucination.
 ///
-/// A class touching both generated and normal files is NOT generated. The
-/// mixed case is the reviewer's to judge, so it stays with the model.
+/// **There is no mixed case any more.** `generated` is part of the shape-class
+/// key (`shape::shape_hash`), so a class is wholly generated or wholly not and
+/// this test cannot come back half true. It used to: one shaped edit made in
+/// both a lockfile and a source file was one class, which answered "no" here
+/// and went to the model, taking its lockfile hunk into whatever group the
+/// model chose.
 pub fn class_is_generated(doc: &schema::PlanDocument, class: &schema::ClassEntry) -> bool {
     class
         .hunk_ids
@@ -53,11 +57,6 @@ pub fn class_is_generated(doc: &schema::PlanDocument, class: &schema::ClassEntry
         .filter_map(|hid| HunkId::parse(hid).ok())
         .filter_map(|h| doc.hunks.get(h.index()))
         .all(|h| file_is_generated(doc, &h.file))
-}
-
-/// Whether one hunk's file is generated. The per-hunk half of the same rule.
-pub fn hunk_is_generated(doc: &schema::PlanDocument, hunk: &schema::HunkEntry) -> bool {
-    file_is_generated(doc, &hunk.file)
 }
 
 fn file_is_generated(doc: &schema::PlanDocument, path: &str) -> bool {
