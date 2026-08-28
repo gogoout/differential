@@ -14,7 +14,7 @@ use crate::EngineError;
 use crate::model::DiffView;
 use crate::plan;
 use crate::ports::ReviewStore;
-use crate::review_state::{Anchor, Finding, Lines, ReviewState, reanchor};
+use crate::review_state::{Anchor, Finding, FindingStatus, Lines, ReviewState, reanchor};
 
 pub struct ReviewSession<S: ReviewStore> {
     store: S,
@@ -124,6 +124,35 @@ impl<S: ReviewStore> ReviewSession<S> {
 
     pub fn file_view(&self) -> bool {
         self.state.file_view
+    }
+
+    /// The open findings as markdown: one `- file:lines: note` per line.
+    ///
+    /// The human-readable projection of `findings()`, and domain policy rather
+    /// than a renderer's formatting — the reviewer's `y` and `dfr findings
+    /// --summary` are the same text, so one cannot drift from the other.
+    ///
+    /// Deliberately says nothing about groups. A group is how THIS reviewer
+    /// chose to read the branch, and the summary is pasted somewhere that has
+    /// no idea what `g7` was.
+    pub fn findings_summary(&self) -> String {
+        let mut out = String::new();
+        for f in self
+            .findings
+            .iter()
+            .filter(|f| f.status == FindingStatus::Open)
+        {
+            out.push_str(&format!(
+                "- {}:{}: {}\n",
+                f.anchor.file,
+                f.anchor.line_span(),
+                f.body
+            ));
+        }
+        if out.is_empty() {
+            out.push_str("(no open findings)\n");
+        }
+        out
     }
 
     // ---------------------------- mutations (each persists before returning)

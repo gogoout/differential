@@ -16,7 +16,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use tui_textarea::TextArea;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::rows::{
     Border, DiffMode, Fill, GroupContext, Half, LineRef, Row, RowContent, RowFactory, RowKind,
@@ -37,12 +37,19 @@ const RULE_ARM: usize = 10;
 
 /// Presentation settings the application layer reads from config and hands to
 /// the renderer. Not review state: nothing here is persisted in the sidecar.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ReviewOptions {
     /// Context lines either side of a hunk before any expansion.
     pub context: usize,
     /// Lines one `z` on a context boundary row pulls in.
     pub context_step: usize,
+    /// The range the reader typed, if they typed one — so the footer can name
+    /// `dfr findings <range> --summary` when the clipboard is out of reach.
+    ///
+    /// Presentation, which is why it comes from the application layer rather
+    /// than from the pipeline's result: the review's IDENTITY is a resolved
+    /// sha plus a spec, and neither is what the reader would type back.
+    pub range: Option<String>,
 }
 
 impl Default for ReviewOptions {
@@ -50,6 +57,7 @@ impl Default for ReviewOptions {
         ReviewOptions {
             context: 3,
             context_step: 10,
+            range: None,
         }
     }
 }
@@ -103,6 +111,10 @@ pub fn layout(area: Rect) -> Panes {
 pub struct Viewport {
     pub detail_rows: usize,
     pub plan_rows: usize,
+    /// The body's FULL height, borders included — a modal floats over the
+    /// body and draws its own box, so it needs the raw number the two panes
+    /// have already subtracted their borders from.
+    pub body_rows: usize,
 }
 
 impl Viewport {
@@ -112,6 +124,7 @@ impl Viewport {
             // Every pane is bordered.
             detail_rows: panes.detail.height.saturating_sub(2) as usize,
             plan_rows: panes.plan.height.saturating_sub(2) as usize,
+            body_rows: panes.body.height as usize,
         }
     }
 }
@@ -122,6 +135,7 @@ impl Default for Viewport {
         Viewport {
             detail_rows: 24,
             plan_rows: 24,
+            body_rows: 26,
         }
     }
 }
@@ -150,6 +164,10 @@ pub enum Mode {
     FileList {
         entries: Vec<FileListEntry>,
         selected: usize,
+        /// First visible entry. It had none, and clipped instead: a document
+        /// with more files than the pane is tall simply never drew the rest,
+        /// and the cursor walked off into rows that were not on screen.
+        scroll: usize,
     },
     /// Every finding in the review, in one list.
     ///
@@ -795,6 +813,7 @@ impl App {
         self.mode = Mode::FileList {
             entries,
             selected: 0,
+            scroll: 0,
         };
     }
 
@@ -997,10 +1016,6 @@ impl App {
             self.cursor = pos;
             self.follow_cursor();
         }
-        // No status line: the pane in front of the reader IS the answer, and a
-        // message saying what they can see costs the footer its one slot for
-        // things they cannot.
-        self.status.clear();
     }
 
     /// Text pasted into the terminal.
@@ -1056,18 +1071,30 @@ impl App {
         // inside the normal-mode block, which a modal's early return never
         // reaches — so `dd` could only ever mean one thing in one place.
         let pending_d = std::mem::take(&mut self.pending_d);
+        // The footer's message answers "what did that key just do", so the
+        // next key is exactly when the answer stops being wanted. Cleared
+        // HERE, before any handler runs: 35 places write this field and one
+        // used to clear it, which made every one-off message permanent.
+        self.status.clear();
         match &mut self.mode {
             Mode::Help => {
                 self.mode = Mode::Normal;
                 return Vec::new();
             }
-            Mode::FileList { entries, selected } => {
+            Mode::FileList {
+                entries,
+                selected,
+                scroll,
+            } => {
+                let rows = file_list_rows(entries.len(), self.viewport.body_rows);
                 match key.code {
                     KeyCode::Char('j') | KeyCode::Down => {
                         *selected = (*selected + 1).min(entries.len().saturating_sub(1));
+                        *scroll = follow(*selected, *scroll, rows);
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
                         *selected = selected.saturating_sub(1);
+                        *scroll = follow(*selected, *scroll, rows);
                     }
                     KeyCode::Enter => {
                         let row = entries[*selected].row_idx;
@@ -1105,14 +1132,16 @@ impl App {
                     }
                     return Vec::new();
                 }
+                let ruled = entries.iter().any(|e| e.orphaned);
+                let rows = findings_rows(entries.len(), ruled, self.viewport.body_rows);
                 match (key.code, key.modifiers) {
                     (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
                         *selected = (*selected + 1).min(entries.len().saturating_sub(1));
-                        *scroll = follow(*selected, *scroll, self.viewport.detail_rows);
+                        *scroll = follow(*selected, *scroll, rows);
                     }
                     (KeyCode::Char('k'), _) | (KeyCode::Up, _) => {
                         *selected = selected.saturating_sub(1);
-                        *scroll = follow(*selected, *scroll, self.viewport.detail_rows);
+                        *scroll = follow(*selected, *scroll, rows);
                     }
                     (KeyCode::Char('D'), _) => *confirming = true,
                     (KeyCode::Char('d'), KeyModifiers::NONE) => {
@@ -1310,21 +1339,24 @@ impl App {
             // A toggle. `v` is how a reader gets into a selection, so it is
             // the key their hand is on to get out of one — `esc` works too,
             // and so does `c`, which leaves by using it.
+            // Neither end writes a message. The footer's pill IS the state:
+            // it appears while a selection is open and goes when it closes,
+            // where a passing message described a MODE in the same grey slot
+            // that "finding saved" uses for something already over.
             (KeyCode::Char('v'), KeyModifiers::NONE) if self.visual.is_some() => {
                 self.visual = None;
-                self.status = "selection dropped".into();
             }
             (KeyCode::Char('v'), KeyModifiers::NONE) => {
                 if self.rows.get(self.cursor).is_some_and(|r| r.line.is_some()) {
                     self.visual = Some(self.cursor);
-                    self.status = "select lines · c to write · v or esc to drop".into();
                 } else {
+                    // A refusal, not a mode: nothing happened, so nothing on
+                    // screen says why unless the footer does.
                     self.status = "move onto a line first".into();
                 }
             }
             (KeyCode::Esc, _) if self.visual.is_some() => {
                 self.visual = None;
-                self.status = "selection dropped".into();
             }
             (KeyCode::Char('c'), KeyModifiers::NONE) => {
                 if let Some(h) = self.current_hunk() {
@@ -1750,27 +1782,10 @@ impl App {
 
     /// Markdown summary of open findings, for pasting into an agent or PR.
     pub fn findings_summary(&self) -> String {
-        let mut out = String::new();
-        for f in self
-            .session
-            .findings()
-            .iter()
-            .filter(|f| f.status == FindingStatus::Open)
-        {
-            // The file and the lines, and the note. Not the group's label: a
-            // group is how this reviewer chose to READ the branch, and the
-            // summary is pasted somewhere that has no idea what g7 was.
-            out.push_str(&format!(
-                "- {}:{}: {}\n",
-                f.anchor.file,
-                f.anchor.line_span(),
-                f.body
-            ));
-        }
-        if out.is_empty() {
-            out.push_str("(no open findings)\n");
-        }
-        out
+        // The engine's, not this crate's: `dfr findings --summary` prints the
+        // same text, and a projection owned by a renderer is a projection the
+        // other consumer will reimplement slightly differently.
+        self.session.findings_summary()
     }
 
     // ------------------------------------------------------------- drawing
@@ -1846,22 +1861,26 @@ impl App {
                 // costs a row on screen and nothing in the model.
                 let rule_at = (orphans > 0).then(|| entries.len() - orphans);
                 let extra = usize::from(rule_at.is_some());
-                let height = (entries.len() + extra + 4).min(panes.body.height as usize) as u16;
+                let body_rows = panes.body.height as usize;
+                let height = (entries.len() + extra + 4).min(body_rows) as u16;
                 let area = centered_rect(panes.body, 74, height);
                 let inner_w = area.width.saturating_sub(2) as usize;
-                let inner_h = area.height.saturating_sub(3) as usize;
+                // The same number `j`/`k` scroll against, from the same
+                // function, so the window a list moves in is the window it is
+                // drawn in.
+                let inner_h = findings_rows(entries.len(), rule_at.is_some(), body_rows);
 
                 let dim = Style::default().fg(THEME.gutter_fg);
-                // The location column is as wide as the longest location, so
-                // the notes line up and a long path still gets its gap. Capped
-                // at half the box, past which a path would push every note off
-                // the right-hand side.
+                // A BUDGET, not a measurement. `{:<width$}` pads and never
+                // truncates, so a path longer than the column used to overflow
+                // it and starve every note in the list of its row. A third of
+                // the box leaves the notes readable.
                 let at_col = entries
                     .iter()
                     .map(|e| UnicodeWidthStr::width(e.at.as_str()))
                     .max()
                     .unwrap_or(0)
-                    .min(inner_w / 2);
+                    .min(inner_w / 3);
                 let mut lines: Vec<Line> = Vec::new();
                 for (i, e) in entries.iter().enumerate() {
                     if rule_at == Some(i) {
@@ -1885,20 +1904,21 @@ impl App {
                         if on { st.bg(THEME.selected_bg) } else { st }
                     };
                     let moved = if e.moved { " (moved)" } else { "" };
-                    let at = format!("  {:<at_col$}  ", e.at);
+                    let at_text = elide_head(&e.at, at_col);
+                    // Padded by DISPLAY width, not by `{:<width$}`, which
+                    // counts chars — one wide character in a path and the
+                    // column stopped lining up.
+                    let pad = at_col.saturating_sub(UnicodeWidthStr::width(at_text.as_str()));
+                    let at = format!("  {at_text}{}  ", " ".repeat(pad));
                     // Cut the note, not the box: a body that reached the border
-                    // was chopped mid-word against it and read as broken.
-                    let room = inner_w
-                        .saturating_sub(UnicodeWidthStr::width(at.as_str()) + moved.len() + 1);
-                    let body: String = if e.body.chars().count() > room {
-                        e.body
-                            .chars()
-                            .take(room.saturating_sub(1))
-                            .chain(['…'])
-                            .collect()
-                    } else {
-                        e.body.clone()
-                    };
+                    // was chopped mid-word against it and read as broken. Every
+                    // one of the three widths here is a DISPLAY width — they
+                    // were a display width, a byte count and a char count, and
+                    // any wide character made the row's arithmetic wrong.
+                    let room = inner_w.saturating_sub(
+                        UnicodeWidthStr::width(at.as_str()) + UnicodeWidthStr::width(moved) + 1,
+                    );
+                    let body = truncate_width(&e.body, room);
                     let mut line = Line::from(vec![
                         Span::styled(at, bg(dim)),
                         Span::styled(body, style),
@@ -1956,12 +1976,38 @@ impl App {
                     },
                 );
             }
-            Mode::FileList { entries, selected } => {
-                let height = (entries.len() as u16 + 2).min(panes.body.height);
-                let area = centered_rect(panes.body, 70, height);
+            Mode::FileList {
+                entries,
+                selected,
+                scroll,
+            } => {
+                let body_rows = panes.body.height as usize;
+                let height = (entries.len() + 2).min(body_rows) as u16;
+                // Window before building, and by the same number `j`/`k`
+                // scroll against: the surplus lines used to be built and then
+                // silently dropped off the bottom of the box.
+                let inner_h = file_list_rows(entries.len(), body_rows);
+
+                let (add_w, del_w, lead) = counts_columns(entries);
+                let widest = entries
+                    .iter()
+                    .map(|e| UnicodeWidthStr::width(e.path.as_str()))
+                    .max()
+                    .unwrap_or(0);
+                // The box fits its content, exactly as its height already
+                // does — 70 columns is a floor, not the size. A fixed width
+                // cut deep paths against the border and took the file NAME
+                // with them, which is the one part of a path worth reading.
+                let width = (lead + widest + 2).max(70).min(panes.body.width as usize) as u16;
+                let area = centered_rect(panes.body, width, height);
+                let inner_w = area.width.saturating_sub(2) as usize;
+                let path_col = inner_w.saturating_sub(lead);
+
                 let lines: Vec<Line> = entries
                     .iter()
                     .enumerate()
+                    .skip(*scroll)
+                    .take(inner_h)
                     .map(|(i, e)| {
                         let mark = if e.reviewed { "✓" } else { " " };
                         let mut style = Style::default().fg(THEME.context_fg);
@@ -1980,9 +2026,12 @@ impl App {
                         };
                         Line::from(vec![
                             Span::styled(format!("{mark} "), style),
-                            Span::styled(format!("+{:<4}", e.adds), on(THEME.add_fg)),
-                            Span::styled(format!("−{:<4} ", e.dels), on(THEME.del_fg)),
-                            Span::styled(e.path.clone(), style),
+                            Span::styled(format!("+{:<add_w$}", e.adds), on(THEME.add_fg)),
+                            Span::styled(format!("−{:<del_w$} ", e.dels), on(THEME.del_fg)),
+                            // Whole when it fits, and cut at its HEAD when it
+                            // does not, so the name survives whatever the
+                            // directories above it cost.
+                            Span::styled(elide_head(&e.path, path_col), style),
                         ])
                     })
                     .collect();
@@ -2812,6 +2861,26 @@ impl App {
                 .map(|(st, t)| Span::styled(t, st))
         };
         let mut left = vec![Span::styled(" ", bar)];
+        // Being mid-selection is a FACT about the thing in front of the
+        // reader, which is exactly what a pill says here — as a group's role
+        // and a hunk's class do. It leads the footer, and the count is the
+        // point: a selection stops at a context boundary, so it is not always
+        // the distance the cursor travelled.
+        if self.visual.is_some() {
+            let n = self.selected_run().len();
+            left.extend(
+                pill(
+                    vec![(
+                        THEME.header_fg,
+                        format!("selecting {n} line{}", if n == 1 { "" } else { "s" }),
+                    )],
+                    fill,
+                )
+                .into_iter()
+                .map(|(st, t)| Span::styled(t, st)),
+            );
+            left.push(Span::styled(" ", bar));
+        }
         left.extend(tally(
             total > 0 && done == total,
             THEME.reviewed_fg,
@@ -3117,6 +3186,94 @@ fn pane(title: String, focused: bool) -> Block<'static> {
         ))
 }
 
+/// The two count columns, and the width every path therefore starts after.
+///
+/// Each column is as wide as the widest number IN IT, so the paths line up
+/// down the list. Four digits is the floor, which is where both used to be
+/// fixed — one file over 9999 lines then pushed its OWN path right while every
+/// other row's stayed put, and the column the eye scans stopped being one.
+fn counts_columns(entries: &[FileListEntry]) -> (usize, usize, usize) {
+    let widest = |f: fn(&FileListEntry) -> usize| {
+        entries
+            .iter()
+            .map(|e| f(e).to_string().len())
+            .max()
+            .unwrap_or(0)
+            .max(4)
+    };
+    let add_w = widest(|e| e.adds);
+    let del_w = widest(|e| e.dels);
+    // The mark and its space, then `+adds`, then `−dels` and one space.
+    (add_w, del_w, 2 + (1 + add_w) + (1 + del_w + 1))
+}
+
+/// Cut a location down to `max` columns from its HEAD, not its tail.
+///
+/// `a/b/c/deeply/nested/module.rs:13` becomes `…/module.rs:13`. The file name
+/// and the line number are what identify a finding; the leading directories are
+/// not, and cutting the tail throws away the only part worth reading.
+///
+/// Hand-written rather than reached for. The vendored `truncate_or_pad_spans`
+/// next door cuts the tail, and WHICH END to keep is a policy no crate can hold
+/// for us.
+fn elide_head(s: &str, max: usize) -> String {
+    if UnicodeWidthStr::width(s) <= max {
+        return s.to_string();
+    }
+    if max <= 1 {
+        return "…".repeat(max);
+    }
+    // Prefer a cut at a separator: the widest run of WHOLE segments that fits
+    // behind `…/`. Separators come left to right, so the first suffix that fits
+    // is the widest one. A cut inside a directory name reads as a typo.
+    for (i, _) in s.match_indices('/') {
+        let seg = &s[i + 1..];
+        if UnicodeWidthStr::width(seg) + 2 <= max {
+            return format!("…/{seg}");
+        }
+    }
+    // Not even the last segment fits, so cut the name itself. One column goes
+    // to the ellipsis; the rest buys tail characters.
+    let mut kept: Vec<char> = Vec::new();
+    let mut used = 0;
+    for c in s.chars().rev() {
+        let w = UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + w > max - 1 {
+            break;
+        }
+        used += w;
+        kept.push(c);
+    }
+    let tail: String = kept.into_iter().rev().collect();
+    format!("…{tail}")
+}
+
+/// Cut a note down to `max` columns from its tail, with an ellipsis.
+///
+/// The pair to `elide_head`, and by display width for the same reason: the note
+/// used to be cut by char count while the column beside it was measured by
+/// width, so one wide character put the row over the border.
+fn truncate_width(s: &str, max: usize) -> String {
+    if UnicodeWidthStr::width(s) <= max {
+        return s.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for c in s.chars() {
+        let w = UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + w > max - 1 {
+            break;
+        }
+        used += w;
+        out.push(c);
+    }
+    out.push('…');
+    out
+}
+
 /// Extend `line` with blank, styled cells so a selection background covers
 /// the full row width. Trailing padding only — the leading connector column
 /// keeps its own styling.
@@ -3132,6 +3289,28 @@ fn pad_to_width(line: &mut Line<'static>, width: usize, bg: ratatui::style::Colo
             Style::default().bg(bg),
         ));
     }
+}
+
+/// How many rows a modal list actually shows, from its content and the body's
+/// height.
+///
+/// One function per modal, called by BOTH the key handler and the render, so
+/// the height a list scrolls against is the height it is drawn at. They used to
+/// be two different numbers — `viewport.detail_rows` for the scroll, the box's
+/// own inner height for the draw — and a long findings list scrolled against a
+/// window it was never drawn in.
+fn findings_rows(entries: usize, ruled: bool, body_rows: usize) -> usize {
+    // The box is the list plus the orphan rule, a border pair, a title row and
+    // the key footer; the paragraph then gets everything but the border pair
+    // and that footer.
+    (entries + usize::from(ruled) + 4)
+        .min(body_rows)
+        .saturating_sub(3)
+}
+
+/// The same, for the file list — a plain bordered box with no footer row.
+fn file_list_rows(entries: usize, body_rows: usize) -> usize {
+    (entries + 2).min(body_rows).saturating_sub(2)
 }
 
 /// Keep `selected` inside a window `height` tall, moving `scroll` as little as
@@ -3197,4 +3376,98 @@ fn help_paragraph() -> Paragraph<'static> {
     ];
     lines.insert(0, Line::from(""));
     Paragraph::new(lines).block(pane(" help ".to_string(), true))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_location_is_cut_at_its_head_and_snaps_to_a_separator() {
+        // Fits: untouched.
+        assert_eq!(elide_head("src/a.rs:13", 20), "src/a.rs:13");
+        assert_eq!(elide_head("src/a.rs:13", 11), "src/a.rs:13");
+
+        // Too long: the name and the number survive, the directories go, and
+        // the cut lands between segments rather than inside one.
+        let deep = "src/one/two/three/four/module.rs:13";
+        let out = elide_head(deep, 24);
+        assert_eq!(out, "…/four/module.rs:13");
+        assert!(UnicodeWidthStr::width(out.as_str()) <= 24);
+        // A wider budget buys another whole segment, never half of one.
+        assert_eq!(elide_head(deep, 25), "…/three/four/module.rs:13");
+
+        // No separator in reach: cut where the budget runs out. The END of
+        // the name is what survives, which is the guarantee a file list needs
+        // — a path is identified by its tail, never by its head.
+        assert_eq!(elide_head("averylongsinglename.rs", 8), "…name.rs");
+        for max in 2..40 {
+            let out = elide_head("a/b/c/verylongmodulename.rs", max);
+            assert!(
+                "a/b/c/verylongmodulename.rs".ends_with(out.trim_start_matches(['…', '/'])),
+                "at {max} columns the result must be a suffix: {out:?}"
+            );
+            assert!(
+                UnicodeWidthStr::width(out.as_str()) <= max,
+                "over budget at {max}"
+            );
+        }
+
+        // Degenerate budgets never panic.
+        assert_eq!(elide_head("src/a.rs", 1), "…");
+        assert_eq!(elide_head("src/a.rs", 0), "");
+    }
+
+    /// One file over 9999 lines must widen the column for EVERY row, or the
+    /// paths stop lining up and the list stops being scannable.
+    #[test]
+    fn a_wide_count_widens_the_column_for_every_row() {
+        let entry = |adds, dels| FileListEntry {
+            path: "src/f.rs".into(),
+            row_idx: 0,
+            adds,
+            dels,
+            reviewed: false,
+        };
+        // Small counts still get the four-digit floor, so the common case is
+        // unchanged.
+        let (a, d, lead) = counts_columns(&[entry(3, 1), entry(12, 40)]);
+        assert_eq!((a, d), (4, 4));
+        assert_eq!(lead, 2 + 5 + 6);
+
+        // A five-digit file widens the ADD column only, and for every row.
+        let (a, d, lead) = counts_columns(&[entry(12_000, 1), entry(3, 2)]);
+        assert_eq!((a, d), (5, 4));
+        assert_eq!(lead, 2 + 6 + 6);
+
+        // An empty list still yields a usable lead rather than zero.
+        let (a, d, lead) = counts_columns(&[]);
+        assert_eq!((a, d), (4, 4));
+        assert_eq!(lead, 2 + 5 + 6);
+    }
+
+    #[test]
+    fn a_note_is_cut_by_display_width_not_by_characters() {
+        assert_eq!(truncate_width("short", 10), "short");
+        assert_eq!(truncate_width("abcdefgh", 4), "abc…");
+        // Two columns each: three of them fit a five-column budget, not four.
+        assert_eq!(truncate_width("ありがとう", 5), "あり…");
+        assert_eq!(truncate_width("abc", 0), "");
+    }
+
+    /// The height a modal list scrolls against has to be the height it is
+    /// drawn at. They were two different numbers.
+    #[test]
+    fn a_modal_scrolls_against_the_window_it_is_drawn_in() {
+        // Room to spare: every entry shows, so nothing scrolls.
+        assert_eq!(findings_rows(3, false, 40), 4);
+        assert_eq!(file_list_rows(3, 40), 3);
+        // Capped by the body: the box stops growing and the window is what is
+        // left inside its chrome.
+        assert_eq!(findings_rows(100, false, 20), 17);
+        assert_eq!(file_list_rows(100, 20), 18);
+        // A body too short for any chrome must not underflow.
+        assert_eq!(findings_rows(100, true, 2), 0);
+        assert_eq!(file_list_rows(100, 1), 0);
+    }
 }

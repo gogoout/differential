@@ -277,6 +277,18 @@ review, the same as a group's role and a hunk's class, and they wore a run of gr
 that read as chrome. Each takes its own colour once it has something to say: green when
 every class is read, magenta when anything is filed. A transient message follows them.
 
+**A selection gets a pill too**, ahead of the tallies: ` selecting 3 lines `, present for
+exactly as long as the mode is. Being mid-selection is a fact about the thing in front of
+the reader, which is what a pill says here — and the count is the point, because a
+selection stops at a context boundary and is not always the distance the cursor
+travelled. It replaced a passing message, which put a MODE in the same grey slot that
+`finding saved` uses for something already over.
+
+**The message is transient because the next keypress clears it.** A status line answers
+"what did that key just do", so the next key is exactly when the answer stops being
+wanted. The clear happens once, on the way into key handling — not at the thirty-five
+places that write one.
+
 Against the right edge sit `? help` and `q quit`, and nothing else. The footer named ten
 keys, in a different order and a different wording from the modal that also named them —
 a wall the reader stops seeing, and two lists to keep in step. `?` is the one place a full
@@ -299,10 +311,30 @@ list belongs; the footer's job is to point at it.
 | `v` | start a line selection at the cursor · `j`/`k` extend it · `v` or `esc` drops it · `c` writes a finding over it |
 | `c` | write a finding — on the line under the cursor, on the lines `v` selected, or on the whole hunk from a row that is not a line; on a line that already carries one, rewrite that one |
 | `dd` | delete the finding under the cursor |
-| `y` | copy the open-findings summary to the clipboard — a markdown list of `file:lines: note`, and nothing about groups: a group is how this reviewer chose to READ the branch, and the summary is pasted somewhere that has no idea what `g7` was |
+| `y` | copy the open-findings summary — a markdown list of `file:lines: note`, and nothing about groups: a group is how this reviewer chose to READ the branch, and the summary is pasted somewhere that has no idea what `g7` was. `dfr findings <range> --summary` prints the same text |
 | `F` | every finding in one list — `enter` jumps to one, `dd` deletes it, `D` clears them all, `esc` closes |
 | `?` | help — the keys, as one uninterrupted table |
 | `q` | quit — state is saved on every change, quitting never loses anything |
+
+**`y` must never trap the text.** The clipboard `arboard` reaches is the one on the
+machine the process runs on, and a remote session has none — so over SSH `y` reported
+`clipboard unavailable` and the summary was unreachable from inside the reviewer. Two
+routes now, and a command that always works:
+
+1. **`arboard`**, when a local display exists. The footer says the summary was copied.
+2. **OSC 52** otherwise — an escape sequence the remote host does not interpret and the
+   reader's own terminal does, because that terminal owns the real clipboard. It is
+   wrapped for tmux and screen when either is detected, and **refused rather than
+   truncated** when the encoded payload passes 8 KB, which is where several terminals
+   stop.
+
+OSC 52 has no reply to read, so a terminal that ignored the sequence looks exactly like
+one that took it — which means the footer must never claim the copy landed. It names
+`dfr findings <range> --summary` instead, with the range the reader typed filled in:
+`sent via the terminal · dfr findings main..feature --summary`. That command prints the
+same text, from the same store, through the same projection — `ReviewSession::
+findings_summary`, which is why the two can never drift. The picker leaves no range to
+name, so the reader is told the flag and supplies the rest.
 
 ## No range: the picker
 

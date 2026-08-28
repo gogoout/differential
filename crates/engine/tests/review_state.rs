@@ -639,3 +639,48 @@ fn a_content_match_on_the_other_side_moves_the_anchor_to_it() {
         "the note must land on the line its text is actually on"
     );
 }
+
+/// The markdown projection has ONE owner, so the reviewer's `y` and
+/// `dfr findings --summary` are the same text by construction rather than by
+/// two crates agreeing to format alike.
+#[test]
+fn the_summary_lists_open_findings_and_says_so_when_there_are_none() {
+    let r = TestRepo::new();
+    r.write("src/f.rs", b"alpha_value = 1\n");
+    let base = r.commit_all("base");
+    r.write("src/f.rs", b"alpha_value = 2\n");
+    let head = r.commit_all("head");
+
+    let store = FsReviewStore::at(r.root.join(".dfr-summary")).unwrap();
+    let (doc, view) = doc_and_view(&r, &base, &head);
+    let mut session = ReviewSession::open(store, doc, view).unwrap();
+
+    // Nothing filed: the projection says so rather than answering empty, so a
+    // paste into an agent is never a silent no-op.
+    assert_eq!(session.findings_summary(), "(no open findings)\n");
+
+    session.add_finding(0, None, "off by one".into()).unwrap();
+    let out = session.findings_summary();
+    assert!(out.starts_with("- src/f.rs:"), "{out:?}");
+    assert!(out.trim_end().ends_with(": off by one"), "{out:?}");
+    // One line per finding, and its whole shape is `- file:lines: note`.
+    // Nothing about groups: a group is how THIS reviewer chose to read the
+    // branch, and the summary is pasted where that means nothing.
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 1, "{out:?}");
+    let group = session
+        .plan()
+        .group_of_hunk(differential_engine::plan::HunkId::from_index(0))
+        .expect("the fixture's hunk belongs to a group");
+    assert!(
+        !out.contains(&group.id) && !out.contains(&group.label),
+        "{out:?} names the group {} / {}",
+        group.id,
+        group.label
+    );
+
+    // A resolved finding is not an open one.
+    let id = session.findings()[0].id.clone();
+    session.delete_finding(&id).unwrap();
+    assert_eq!(session.findings_summary(), "(no open findings)\n");
+}

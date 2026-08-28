@@ -7,6 +7,7 @@
 //! screen.
 
 pub mod app;
+pub mod osc52;
 pub mod picker;
 pub mod rows;
 pub mod splash;
@@ -17,7 +18,7 @@ pub mod theme;
 mod vendor;
 pub mod window;
 
-use std::io::Stdout;
+use std::io::{Stdout, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -141,7 +142,8 @@ where
         prepared.out.base.clone(),
         prepared.out.head.clone(),
     );
-    run_app(terminal, App::new(session, factory, opts))
+    let range = opts.range.clone();
+    run_app(terminal, App::new(session, factory, opts), range.as_deref())
 }
 
 /// The terminal's current size, as the model wants it.
@@ -155,8 +157,10 @@ fn measure() -> anyhow::Result<Viewport> {
 /// Geometry is measured and pushed into the model BEFORE any key reaches it,
 /// so scroll state is decided in update and `draw` is a pure function of the
 /// model.
-fn run_app(terminal: &mut Session, mut app: App) -> anyhow::Result<()> {
+fn run_app(terminal: &mut Session, mut app: App, range: Option<&str>) -> anyhow::Result<()> {
     let mut clipboard: Option<arboard::Clipboard> = arboard::Clipboard::new().ok();
+    // Read once: the multiplexer a session is inside cannot change under it.
+    let wrap = osc52::Wrap::detect();
     app.set_viewport(measure()?);
     let mut dirty = true;
     loop {
@@ -203,14 +207,14 @@ fn run_app(terminal: &mut Session, mut app: App) -> anyhow::Result<()> {
             match e {
                 Effect::Quit => quit = true,
                 Effect::CopySummary(text) => {
-                    let ok = clipboard
+                    let copied = clipboard
                         .as_mut()
                         .and_then(|c| c.set_text(text.clone()).ok())
                         .is_some();
-                    app.status = if ok {
+                    app.status = if copied {
                         "findings summary copied to clipboard".into()
                     } else {
-                        "clipboard unavailable".into()
+                        summary_fallback(&text, wrap, range)
                     };
                 }
             }
@@ -218,5 +222,59 @@ fn run_app(terminal: &mut Session, mut app: App) -> anyhow::Result<()> {
         if quit {
             return Ok(());
         }
+    }
+}
+
+/// No local clipboard: offer the text to the terminal, and name the command
+/// that prints it either way.
+///
+/// Both, always. `arboard` needs a display server that a remote session does
+/// not have, and OSC 52 reaches the reader's own terminal instead — but it is
+/// unacknowledged, so a terminal that ignored the sequence looks exactly like
+/// one that took it. Naming the command is what makes the feature honest:
+/// whatever the terminal did or did not do, the summary is one command away.
+fn summary_fallback(text: &str, wrap: osc52::Wrap, range: Option<&str>) -> String {
+    let sent = osc52::sequence(text, wrap).is_some_and(|seq| {
+        let mut out = std::io::stdout();
+        out.write_all(seq.as_bytes())
+            .and_then(|()| out.flush())
+            .is_ok()
+    });
+    format!(
+        "{} · {}",
+        if sent {
+            "sent via the terminal"
+        } else {
+            "clipboard unavailable"
+        },
+        summary_command(range)
+    )
+}
+
+/// The command that prints the same text, with the range filled in when the
+/// reader typed one.
+///
+/// The picker leaves no range to name — its worktree source has no spelling
+/// `dfr findings` accepts — so the reader is told the flag and supplies the
+/// rest, which is still better than being told nothing.
+fn summary_command(range: Option<&str>) -> String {
+    match range {
+        Some(r) => format!("dfr findings {r} --summary"),
+        None => "dfr findings <range> --summary".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_footer_names_a_command_the_reader_can_run() {
+        assert_eq!(
+            summary_command(Some("main..feature")),
+            "dfr findings main..feature --summary"
+        );
+        // No typed range (the picker): the flag still tells them where to look.
+        assert_eq!(summary_command(None), "dfr findings <range> --summary");
     }
 }

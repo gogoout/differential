@@ -50,7 +50,8 @@ on the same range does not call the LLM again.
 Work down the plan from the top. `tab` switches panes. `j` and `k` move. `space` marks a
 hunk's shape class reviewed, so one exemplar clears the whole class. `c` writes a finding
 against the line under the cursor, and `F` lists every finding you have written. `y` copies
-them all to the clipboard as markdown. `?` shows every key. `q` quits; state is written on
+them all to the clipboard as markdown; over SSH it sends them to your own terminal instead,
+and names the command that prints them. `?` shows every key. `q` quits; state is written on
 every change.
 
 Run it with no range at all:
