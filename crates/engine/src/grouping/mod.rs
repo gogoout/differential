@@ -284,7 +284,10 @@ fn class_infos(doc: &schema::PlanDocument) -> Vec<ClassInfo> {
 
             let entries: Vec<&schema::FileEntry> =
                 files.iter().map(|p| file_by_path[p.as_str()]).collect();
-            let all_generated = entries.iter().all(|f| f.generated);
+            // The one definition of the noise tier, shared with what the model
+            // is served when it asks without naming ids. Two copies of this
+            // rule would be two rules, and they would drift.
+            let all_generated = crate::plan::class_is_generated(doc, c);
             let rename_gated = entries.iter().any(|f| {
                 f.rename_similarity
                     .is_some_and(|s| s < RELOCATION_THRESHOLD)

@@ -43,19 +43,38 @@ impl ClassView<'_> {
     }
 }
 
-/// Every class, largest first — the order the class ids already carry.
+/// Every class the model is asked to group, largest first — the order the class
+/// ids already carry.
+///
+/// **Generated content is left out**, exactly as the grouping stage leaves it
+/// out of the prompt (`plan::class_is_generated`, ADR 0006). Listing a class the
+/// model may not name would invite it to name one, and the audit would throw
+/// that whole group away as a hallucination.
+///
+/// That is the rule across this module: **asking without naming anything gets
+/// the offered set; naming something reaches everything.** The noise tier folds
+/// content, it never hides it.
 pub fn index(doc: &schema::PlanDocument) -> Vec<ClassView<'_>> {
+    all(doc)
+        .into_iter()
+        .filter(|v| !crate::plan::class_is_generated(doc, v.class))
+        .collect()
+}
+
+/// Every class, generated included. The starting point for a named lookup.
+pub fn all(doc: &schema::PlanDocument) -> Vec<ClassView<'_>> {
     doc.classes.iter().filter_map(|c| view(doc, c)).collect()
 }
 
-/// One class by id.
+/// One class by id, generated or not: an explicit id is an explicit request.
 pub fn class<'d>(doc: &'d schema::PlanDocument, id: &str) -> Option<ClassView<'d>> {
     view(doc, doc.classes.iter().find(|c| c.id == id)?)
 }
 
-/// The classes touching `path`, largest first.
+/// The classes touching `path`, largest first. A named path reaches generated
+/// content too — a reviewer asking about a lockfile means the lockfile.
 pub fn in_file<'d>(doc: &'d schema::PlanDocument, path: &str) -> Vec<ClassView<'d>> {
-    index(doc)
+    all(doc)
         .into_iter()
         .filter(|v| v.files.contains(&path))
         .collect()
@@ -67,7 +86,7 @@ pub fn in_file<'d>(doc: &'d schema::PlanDocument, path: &str) -> Vec<ClassView<'
 /// symbols on demand: a caller asking twice must get the same answer as the
 /// ordering stage acted on.
 pub fn definers<'d>(doc: &'d schema::PlanDocument, symbol: &str) -> Vec<ClassView<'d>> {
-    index(doc)
+    all(doc)
         .into_iter()
         .filter(|v| v.class.defines.iter().any(|d| d == symbol))
         .collect()

@@ -19,34 +19,42 @@ use differential_engine::model::DiffView;
 use differential_engine::plan;
 use differential_engine::schema::PlanDocument;
 
-/// Several ids per call, deliberately.
+/// Any number of arguments per call, including none.
 ///
 /// The reader is an agent, and every call is a round trip through a model turn.
-/// Asked one id at a time, it walked a two-hundred-class change one class per
-/// turn; the work each call does is under a tenth of a second either way, so
-/// the batch is the whole saving.
+/// Asked one id at a time it walked a two-hundred-class change one class per
+/// turn, while the work behind each call stayed under a tenth of a second — so
+/// the batch is the whole saving, and **no ids at all means the lot**. The
+/// engine already holds every hunk; making a model reassemble that over a
+/// one-turn-per-call channel would be round trips for nothing.
 #[derive(Subcommand)]
 pub enum Query {
     /// Every class: size, files, kind, what it defines and what it uses.
     Classes,
-    /// One or more classes in full, with every member hunk and every file.
+    /// Classes in full, with every member hunk and every file. No ids: all of
+    /// them.
     Class {
-        #[arg(num_args = 1.., required = true)]
+        #[arg(num_args = 0..)]
         ids: Vec<String>,
     },
-    /// The diff text of hunks (`h12`) or of every hunk in a class (`C7`).
+    /// The diff text of hunks (`h12`) or of every hunk in a class (`C7`). No
+    /// ids: the whole change.
     Diff {
-        #[arg(num_args = 1.., required = true)]
+        #[arg(num_args = 0..)]
         ids: Vec<String>,
+        /// Resume after this hunk id. A reply too large to send whole ends with
+        /// the exact command that continues it.
+        #[arg(long)]
+        after: Option<String>,
     },
-    /// The classes touching paths.
+    /// The classes touching paths. No paths: every file.
     File {
-        #[arg(num_args = 1.., required = true)]
+        #[arg(num_args = 0..)]
         paths: Vec<String>,
     },
-    /// The classes that introduce symbols.
+    /// The classes that introduce symbols. No symbols: every definition.
     Defines {
-        #[arg(num_args = 1.., required = true)]
+        #[arg(num_args = 0..)]
         symbols: Vec<String>,
     },
 }
@@ -59,6 +67,10 @@ pub fn run(doc_path: &Path, repo_dir: &Path, query: &Query) -> anyhow::Result<St
 
     Ok(match query {
         Query::Classes => list(&doc, artefact::index(&doc), "no classes"),
+        Query::Class { ids } if ids.is_empty() => artefact::index(&doc)
+            .iter()
+            .map(|v| detail(&doc, v))
+            .collect(),
         Query::Class { ids } => ids
             .iter()
             .map(|id| match artefact::class(&doc, id) {
@@ -66,6 +78,23 @@ pub fn run(doc_path: &Path, repo_dir: &Path, query: &Query) -> anyhow::Result<St
                 None => format!("no class {id}\n"),
             })
             .collect(),
+        // No paths means every file the offered classes touch — not every file
+        // in the change, which would sweep the generated ones back in.
+        Query::File { paths } if paths.is_empty() => {
+            let offered = artefact::index(&doc);
+            let mut seen: Vec<&str> = offered.iter().flat_map(|v| v.files.clone()).collect();
+            seen.sort_unstable();
+            seen.dedup();
+            seen.iter()
+                .map(|path| {
+                    list(
+                        &doc,
+                        artefact::in_file(&doc, path),
+                        &format!("no class touches {path}"),
+                    )
+                })
+                .collect()
+        }
         Query::File { paths } => paths
             .iter()
             .map(|path| {
@@ -76,6 +105,24 @@ pub fn run(doc_path: &Path, repo_dir: &Path, query: &Query) -> anyhow::Result<St
                 )
             })
             .collect(),
+        Query::Defines { symbols } if symbols.is_empty() => {
+            let offered = artefact::index(&doc);
+            let mut all: Vec<&str> = offered
+                .iter()
+                .flat_map(|v| v.class.defines.iter().map(String::as_str))
+                .collect();
+            all.sort_unstable();
+            all.dedup();
+            all.iter()
+                .map(|sym| {
+                    list(
+                        &doc,
+                        artefact::definers(&doc, sym),
+                        &format!("no class defines {sym}"),
+                    )
+                })
+                .collect()
+        }
         Query::Defines { symbols } => symbols
             .iter()
             .map(|symbol| {
@@ -86,7 +133,7 @@ pub fn run(doc_path: &Path, repo_dir: &Path, query: &Query) -> anyhow::Result<St
                 )
             })
             .collect(),
-        Query::Diff { ids } => diff(&doc, repo_dir, ids)?,
+        Query::Diff { ids, after } => diff(&doc, repo_dir, ids, after.as_deref(), doc_path)?,
     })
 }
 
@@ -204,29 +251,88 @@ fn relations(doc: &PlanDocument, v: &ClassView<'_>) -> Vec<String> {
 ///
 /// The enumeration happens once for the whole batch. It is three git calls and
 /// a parse, so a batch of twenty costs what one used to.
-fn diff(doc: &PlanDocument, repo_dir: &Path, ids: &[String]) -> anyhow::Result<String> {
+fn diff(
+    doc: &PlanDocument,
+    repo_dir: &Path,
+    ids: &[String],
+    after: Option<&str>,
+    doc_path: &Path,
+) -> anyhow::Result<String> {
     let mut hunks: Vec<&differential_engine::schema::HunkEntry> = Vec::new();
     let mut unknown = String::new();
-    for id in ids {
-        match artefact::resolve(doc, id) {
-            Some(found) => hunks.extend(found),
-            None => unknown.push_str(&format!("no hunk or class {id}\n")),
+    if ids.is_empty() {
+        // No ids means the whole change, minus generated content — the same
+        // set the grouping stage offers, because a reply that hands the model
+        // a lockfile it may not name is bytes it must read and cannot use
+        // (`plan::hunk_is_generated`, ADR 0006). Naming one still serves it.
+        hunks.extend(
+            doc.hunks
+                .iter()
+                .filter(|h| !differential_engine::plan::hunk_is_generated(doc, h)),
+        );
+    } else {
+        for id in ids {
+            match artefact::resolve(doc, id) {
+                Some(found) => hunks.extend(found),
+                None => unknown.push_str(&format!("no hunk or class {id}\n")),
+            }
+        }
+    }
+
+    // A cursor resumes the same list, so it needs no encoding: a hunk id
+    // already names a position in it.
+    if let Some(mark) = after {
+        match hunks.iter().position(|h| h.id == mark) {
+            Some(i) => {
+                hunks.drain(..=i);
+            }
+            None => return Ok(format!("{unknown}{mark} is not in this list\n")),
         }
     }
     if hunks.is_empty() {
-        return Ok(if unknown.is_empty() {
-            String::new()
-        } else {
-            unknown
-        });
+        // An empty reply to a legitimate "continue" reads as a failure, so a
+        // finished cursor says it is finished.
+        if after.is_some() {
+            unknown.push_str("no more hunks: that was the end of the list\n");
+        }
+        return Ok(unknown);
     }
 
+    render_diff(doc, repo_dir, &hunks, unknown, ids, doc_path)
+}
+
+/// One reply carries at most this much diff text.
+///
+/// The cap bounds a reply, never the change: what does not fit comes back with
+/// the command that continues it, so nothing is dropped for length. That was
+/// the failure of the old 90,000-character prompt cap, which silently pushed
+/// whole classes into the back-fill.
+///
+/// Roughly 64k tokens — about a third of a large context window, so a reply is
+/// substantial without being all the reader can hold.
+const MAX_REPLY_BYTES: usize = 256 * 1024;
+
+fn render_diff(
+    doc: &PlanDocument,
+    repo_dir: &Path,
+    hunks: &[&differential_engine::schema::HunkEntry],
+    unknown: String,
+    ids: &[String],
+    doc_path: &Path,
+) -> anyhow::Result<String> {
     let repo = Repo::open(repo_dir)
         .with_context(|| format!("cannot open a repository at {}", repo_dir.display()))?;
     let view = enumerate(&repo, &doc.source.base, &doc.source.head)?;
 
     let mut out = unknown;
-    for h in &hunks {
+    for (i, h) in hunks.iter().enumerate() {
+        // Checked before writing, not after, so a reply never exceeds the cap
+        // by most of a hunk. The first hunk always goes out, however big it is:
+        // a cursor that cannot advance is worse than an oversized reply.
+        if i > 0 && out.len() >= MAX_REPLY_BYTES {
+            out.push_str(&resume_line(hunks[i - 1].id.as_str(), ids, doc_path));
+            return Ok(out);
+        }
         let index = plan::HunkId::parse(&h.id)
             .ok()
             .map(|p| p.index())
@@ -247,6 +353,23 @@ fn diff(doc: &PlanDocument, repo_dir: &Path, ids: &[String]) -> anyhow::Result<S
         }
     }
     Ok(out)
+}
+
+/// The exact command that continues a reply the cap cut short.
+///
+/// Spelled out in full rather than described. The reader is an agent with a
+/// terminal, and a command it can run beats an instruction it has to assemble.
+fn resume_line(last: &str, ids: &[String], doc_path: &Path) -> String {
+    let exe = std::env::args().next().unwrap_or_else(|| "dfr".to_string());
+    let named = if ids.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", ids.join(" "))
+    };
+    format!(
+        "\n[reply full. continue with]\n  {exe} agent --doc {} diff{named} --after {last}\n",
+        doc_path.display()
+    )
 }
 
 fn enumerate(repo: &Repo, base: &str, head: &str) -> anyhow::Result<DiffView> {

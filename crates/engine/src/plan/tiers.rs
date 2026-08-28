@@ -34,6 +34,39 @@ pub enum Deferral {
     FoldedNoise,
 }
 
+/// Whether a class is generated content: every member hunk lives in a file the
+/// classification pass marked generated.
+///
+/// This is the noise tier's whole definition (ADR 0006), and it decides two
+/// separate things that must agree. The grouping stage uses it to choose what
+/// never reaches the model. `dfr agent` uses it to choose what the model is not
+/// shown when it asks without naming ids (ADR 0022). If those drift, the model
+/// reads a class it is then not allowed to name, and the audit throws its
+/// answer away as a hallucination.
+///
+/// A class touching both generated and normal files is NOT generated. The
+/// mixed case is the reviewer's to judge, so it stays with the model.
+pub fn class_is_generated(doc: &schema::PlanDocument, class: &schema::ClassEntry) -> bool {
+    class
+        .hunk_ids
+        .iter()
+        .filter_map(|hid| HunkId::parse(hid).ok())
+        .filter_map(|h| doc.hunks.get(h.index()))
+        .all(|h| file_is_generated(doc, &h.file))
+}
+
+/// Whether one hunk's file is generated. The per-hunk half of the same rule.
+pub fn hunk_is_generated(doc: &schema::PlanDocument, hunk: &schema::HunkEntry) -> bool {
+    file_is_generated(doc, &hunk.file)
+}
+
+fn file_is_generated(doc: &schema::PlanDocument, path: &str) -> bool {
+    doc.files
+        .iter()
+        .find(|f| f.path == path)
+        .is_some_and(|f| f.generated)
+}
+
 /// One group split into what to read and what to defer.
 ///
 /// Both halves are in class order (`class_ids` order, then `hunk_ids` order

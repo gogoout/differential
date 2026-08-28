@@ -30,11 +30,15 @@ dfr agent --doc <path> [--repo <path>] <classes|class|diff|file|defines> [args�
   the running executable, and the default backend's allowlist is derived from the same
   string, so the two cannot disagree about what the model may invoke. It answers one
   question about the pre-group document the grouping stage wrote: `classes`,
-  `class <id>…`, `diff <id>…`, `file <path>`, `defines <symbol>`. `class` and `diff` take
-  several ids, because each call is a round trip through a model turn and the work behind
-  one is negligible beside it. It never runs the pipeline and never calls
-  a model, so a grouping run cannot recurse into itself. An unknown id prints a plain
-  sentence and exits 0 — to an agent a non-zero exit reads as "the tool is broken".
+  `class`, `diff`, `file`, `defines`. Every one takes any number of arguments and **none
+  means all of them**, because each call is a round trip through a model turn and the work
+  behind one is negligible beside it. Asking without naming anything gets the set the model
+  is offered — generated content left out, as the prompt leaves it out; naming something
+  reaches everything. A `diff` reply larger than 256KB ends with the exact
+  `diff --after <hunk-id>` that continues it, so nothing is dropped for length. It never
+  runs the pipeline and never calls a model, so a grouping run cannot recurse into itself.
+  An unknown id prints a plain sentence and exits 0 — to an agent a non-zero exit reads as
+  "the tool is broken".
 - Exit codes: 0 success/all pass, 1 invariant or pipeline failure, 2 usage/config error.
 
 ## Library surface

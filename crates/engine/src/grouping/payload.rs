@@ -70,15 +70,24 @@ Nothing about the classes is in this prompt. Read what you need instead:
 
 const PROMPT_TAIL: &str = r#"
 
-EVERY command takes many arguments at once, and `diff C7 C8 C9` costs what `diff C7`
-costs. One id per call turns a two-hundred-class change into two hundred round trips,
-which is the slowest thing you can do here. Batch.
+TWO CALLS ARE USUALLY ENOUGH. `classes` for the shape of it, then `diff` with no ids
+for the entire change. Every command takes as many arguments as you like and none means
+all of them, so `diff C7 C8 C9` costs what `diff C7` costs. Asking one id at a time
+turns a two-hundred-class change into two hundred round trips, and each one is a whole
+turn -- it is by far the slowest thing you can do here.
 
-Rating a class "skim" is a claim that every one of its hunks is the same edit. `diff`
-on the class id shows you all of them. But only a class with MORE THAN ONE HUNK can be
-wrong about that -- for a `1h` class the exemplar is the whole class, and fetching its
-diff tells you nothing. `classes` prints the hunk count, so read that first and check
-only the classes it is worth checking.
+A change too large for one reply comes back cut, ending with the exact command that
+continues it. Run that command. Nothing is ever dropped for length, but you have not
+seen the whole change until a reply comes back without one.
+
+Generated files -- lockfiles, snapshots, build artefacts -- are folded away before you
+see them, which is why these replies are smaller than `git show` on the same range.
+Their classes are not in the id list and are not yours to group. Name one and you will
+still be shown it.
+
+Rating a class "skim" is a claim that every one of its hunks is the same edit, and the
+diff is how you check it. Only a class with MORE THAN ONE HUNK can be wrong about that:
+for a `1h` class the exemplar is the whole class. `classes` prints the hunk count.
 
 `uses:` on a class is a definition-to-use edge the mechanical pass found, with the
 symbol that produced it. Merging a class that defines something with a class that
@@ -111,9 +120,11 @@ fn commands(fetch: &str, artefact: &str) -> String {
     let dfr = format!("{fetch} agent --doc {artefact}");
     [
         format!("  {dfr} classes            every class: size, files, kind, defines, uses"),
-        format!("  {dfr} class C7 C8        those classes in full, with every member hunk"),
-        format!("  {dfr} diff C7 C8         the diff of every hunk in those classes"),
-        format!("  {dfr} diff h12 h13       the diff of those hunks"),
+        format!("  {dfr} diff               the diff of the WHOLE change, every hunk"),
+        format!("  {dfr} diff C7 C8         only those classes"),
+        format!("  {dfr} diff h12 h13       only those hunks"),
+        format!("  {dfr} diff --after h137  the rest, when a reply came back cut"),
+        format!("  {dfr} class C7 C8        those classes in full (no ids: all of them)"),
         format!("  {dfr} file <path>…      the classes touching those files"),
         format!("  {dfr} defines <symbol>… the classes introducing those symbols"),
     ]

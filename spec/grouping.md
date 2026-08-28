@@ -36,7 +36,7 @@ Five queries, all against the document (`spec/consumers.md`):
 |---|---|
 | `classes` | one line per class: size, files, kind, exemplar location, `defines`, `uses` |
 | `class <id>…` | those classes in full — every member hunk, every file, rename notes |
-| `diff <id>…` | diff text for hunk ids, or every member of class ids |
+| `diff [id…] [--after <hunk>]` | diff text for hunk ids, or every member of class ids; **no ids means the whole change** |
 | `file <path>` | the classes touching a path |
 | `defines <symbol>` | the classes that introduce a symbol |
 
@@ -44,12 +44,32 @@ Five queries, all against the document (`spec/consumers.md`):
 that every member is the same edit; before this the model had seen one member of any
 size of class.
 
-**`class` and `diff` take several ids on purpose.** Each call is a round trip through a
-model turn, and the work behind one is under a tenth of a second — a `diff` batch
-re-enumerates the range once however many ids it carries. Measured before batching: on a
-196-class change the model made one call per class. The prompt also says which classes are
-worth checking at all — only a class with more than one hunk can be wrong about
-equivalence, and on that change 162 of the 196 had exactly one.
+**Every command takes any number of arguments, and none means all of them.** A call is a
+round trip through a model turn, and the work behind one is under a tenth of a second — a
+`diff` batch re-enumerates the range once however many ids it carries. Measured on a
+196-class change: one id per call made 176 fetches, batching brought it to 28, and a bare
+`diff` for the whole change brought it to 15.
+
+Round trips were never most of the time, and the measurement says so: 15 calls at about
+0.9s is 13 seconds of a 391-second run. The rest is the model reading the change and
+reasoning about it. Batching removes waste; it does not move that floor.
+
+**A reply carries at most 256KB of diff text, and says how to get the rest.** Past the cap
+it ends with the exact `diff --after <hunk-id>` that continues it. The cursor is a hunk id
+because a hunk id already names a position in the list, so nothing has to be encoded.
+Nothing is ever dropped for length — that was the failure of the 90,000-character prompt
+cap this replaced.
+
+The prompt also says which classes are worth checking at all: only a class with more than
+one hunk can be wrong about equivalence, and on that change 162 of the 196 had exactly one.
+
+**Asking without naming anything gets the offered set; naming something reaches
+everything.** So `classes` and a bare `diff` leave out generated content, exactly as the
+prompt's id list does — handing the model a lockfile would be bytes it must read and a
+class id it would be penalised for naming. `class C7`, `file <path>` and `defines <symbol>`
+answer for generated content too: the noise tier folds, it never hides. One definition
+serves both sides (`plan::class_is_generated`), because two copies of that rule would be
+two rules.
 
 The backend runs with a read-only allowlist —
 `Bash(dfr agent:*),Read,Grep,Glob,Bash(git log:*),Bash(git show:*)` — which supersedes

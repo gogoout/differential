@@ -37,14 +37,26 @@ the finer graph onto groups manufactured cycles the change did not contain.
 - The prompt carries instructions, that path, the `dfr agent` commands, and the class id
   list. Nothing else. The 90,000-character cap is gone, and with it the truncation
   back-fill.
-- `dfr agent` answers five questions against the document: `classes`, `class <id>…`,
-  `diff <id>…`, `file <path>`, `defines <symbol>`. `diff` is the one that matters: it is the
-  first time the model can look at a non-exemplar member before rating a class.
-- **Every command takes several arguments.** A call is a round trip through a model turn,
-  and that is the whole cost: `dfr agent` answers in under a tenth of a second even on a
-  283-hunk range in a debug build, and a `diff` batch re-enumerates the range once however
-  many ids it carries. Measured on a 196-class change: one id per call made 176 fetches;
-  batching brought the same work down to 28.
+- `dfr agent` answers five questions against the document: `classes`, `class`, `diff`,
+  `file`, `defines`. `diff` is the one that matters: it is the first time the model can look
+  at a non-exemplar member before rating a class.
+- **Every command takes any number of arguments, and none means all of them.** A call is a
+  round trip through a model turn, and the work behind one is negligible beside it: `dfr
+  agent` answers in under a tenth of a second even on a 283-hunk range in a debug build,
+  and a `diff` batch re-enumerates the range once however many ids it carries. Measured on
+  a 196-class change: one id per call made 176 fetches, batching brought it to 28, and a
+  bare `diff` for the whole change brought it to 15.
+- **Asking without naming anything gets the offered set; naming something reaches
+  everything.** `classes` and a bare `diff` leave out generated content, matching what the
+  prompt's id list offers (ADR 0006). Handing the model a lockfile would be bytes it must
+  read and a class id the audit would then reject as a hallucination. `class`, `file` and
+  `defines` answer for generated content when asked by name — the noise tier folds, it
+  never hides. `plan::class_is_generated` is the single definition both sides use.
+- **A `diff` reply carries at most 256KB, and says how to continue.** Past the cap it ends
+  with the exact `diff --after <hunk-id>` to run next. The cursor is a hunk id because a
+  hunk id already names a position in the list — nothing has to be encoded, and the reader
+  gets a command rather than an instruction to assemble one. **Nothing is ever dropped for
+  length**, which is the whole difference from the cap this replaced.
 - **The dependency graph moves to `artefact::graph`, built from classes before the model
   runs.** It lands on `ClassEntry.defines` and `ClassEntry.depends_on`; the ordering stage
   contracts it onto groups. Every edge carries the symbols that produced it.
@@ -110,6 +122,12 @@ re-ordered on every load without another model call.
   re-enumerates the range the document names, so a grouping run cannot recurse into itself.
 - An unknown id prints a plain sentence and exits 0. To an agent a non-zero exit reads as
   "the tool is broken" and stops it asking, which is worse than a clear "no".
+- **Grouping is now minutes, not seconds, and round trips are not why.** The validation
+  corpus took 391 seconds at 15 calls. At roughly 0.9s a call that is 13 seconds; the rest
+  is the model reading 322KB of diff and reasoning about 196 classes. Batching and the
+  cursor remove waste and remove the size cliff — neither moves that floor. The only lever
+  on it is asking the model to read less, and what it does not read is what it cannot
+  label from. The grouping cache means the cost is once per change, not once per run.
 - **The artefact-against-mutual verdict did not discriminate on the validation corpus.**
   Every one of 45 broken edges came back `mutual`: the class graph was cyclic wherever the
   group graph was. On 196 classes and 290 edges at roughly 30% precision, spurious edges

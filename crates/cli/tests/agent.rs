@@ -54,6 +54,50 @@ fn agent(r: &TestRepo, doc: &std::path::Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+/// A change with a lockfile in it: generated content the noise tier folds and
+/// the model is never asked to group.
+fn document_with_generated() -> (TestRepo, TempDir, std::path::PathBuf) {
+    let r = TestRepo::new();
+    r.write("src/a.txt", b"placeholder\n");
+    r.write("Cargo.lock", b"placeholder\n");
+    let base = r.commit_all("base");
+    r.write("src/a.txt", b"placeholder\npub struct WidgetCore;\n");
+    r.write("Cargo.lock", b"placeholder\nchecksum = \"beefcafe\"\n");
+    let head = r.commit_all("head");
+
+    let doc = r.pipeline(&base, &head).document.expect("document");
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("doc.json");
+    std::fs::write(&path, doc.to_json_pretty().unwrap()).unwrap();
+    (r, dir, path)
+}
+
+#[test]
+fn generated_content_is_not_offered_but_is_still_reachable() {
+    let (r, _dir, doc) = document_with_generated();
+
+    // Asked without ids, the model gets exactly what it is allowed to group.
+    // Handing it a lockfile would be bytes it must read and cannot use, and a
+    // class id it would be penalised for naming.
+    let index = agent(&r, &doc, &["classes"]);
+    assert!(index.contains("src/a.txt"), "{index}");
+    assert!(
+        !index.contains("Cargo.lock"),
+        "generated, so not offered\n{index}"
+    );
+
+    let whole = agent(&r, &doc, &["diff"]);
+    assert!(whole.contains("+pub struct WidgetCore;"), "{whole}");
+    assert!(
+        !whole.contains("beefcafe"),
+        "generated, so not served\n{whole}"
+    );
+
+    // The noise tier folds; it never hides. An explicit id still answers.
+    let named = agent(&r, &doc, &["file", "Cargo.lock"]);
+    assert!(named.contains("Cargo.lock"), "{named}");
+}
+
 #[test]
 fn classes_lists_every_class_with_its_graph() {
     let (r, _dir, doc) = document();
@@ -123,6 +167,116 @@ fn several_ids_come_back_in_one_call() {
     let classes = agent(&r, &doc, &["class", "C0", "C1"]);
     assert!(classes.contains("C0"), "{classes}");
     assert!(classes.contains("C1"), "{classes}");
+}
+
+#[test]
+fn no_ids_means_everything() {
+    let (r, _dir, doc) = document();
+    // Two calls should be enough for any change: the shape, then the lot. The
+    // engine holds every hunk already, so making a model rebuild that one id at
+    // a time is round trips for nothing.
+    let all = agent(&r, &doc, &["diff"]);
+    let named = agent(&r, &doc, &["diff", "C0", "C1"]);
+    assert_eq!(all, named, "no ids is every hunk, in canonical order");
+
+    let classes = agent(&r, &doc, &["class"]);
+    assert!(
+        classes.contains("C0") && classes.contains("C1"),
+        "{classes}"
+    );
+}
+
+#[test]
+fn a_cursor_resumes_exactly_where_it_stopped() {
+    let (r, _dir, doc) = document();
+    let whole = agent(&r, &doc, &["diff"]);
+
+    // `--after` is exclusive: the named hunk is what you already have.
+    let rest = agent(&r, &doc, &["diff", "--after", "h0"]);
+    assert!(!rest.contains("--- h0"), "{rest}");
+    assert!(rest.contains("--- h1"), "{rest}");
+    assert_eq!(
+        format!("{}{rest}", &whole[..whole.find("--- h1").unwrap()]),
+        whole,
+        "the two halves rejoin into exactly the whole"
+    );
+
+    // A cursor on the last hunk is finished, not broken. An empty reply to a
+    // legitimate continue reads as a failure.
+    assert_eq!(
+        agent(&r, &doc, &["diff", "--after", "h1"]),
+        "no more hunks: that was the end of the list\n"
+    );
+    assert_eq!(
+        agent(&r, &doc, &["diff", "--after", "h9"]),
+        "h9 is not in this list\n"
+    );
+
+    // The cursor walks the list the ids named, not the whole change.
+    let named = agent(&r, &doc, &["diff", "C0", "C1", "--after", "h0"]);
+    assert_eq!(named, rest);
+}
+
+/// Enough diff text to pass the reply cap: 40 files of roughly 10KB each.
+fn big_document() -> (TestRepo, TempDir, std::path::PathBuf) {
+    let r = TestRepo::new();
+    for i in 0..40 {
+        r.write(&format!("src/f{i}.txt"), b"placeholder\n");
+    }
+    let base = r.commit_all("base");
+    for i in 0..40 {
+        let mut body = b"placeholder\n".to_vec();
+        for line in 0..120 {
+            body.extend_from_slice(
+                format!("let value_{i}_{line} = compute({});\n", "x".repeat(60)).as_bytes(),
+            );
+        }
+        r.write(&format!("src/f{i}.txt"), &body);
+    }
+    let head = r.commit_all("head");
+
+    let doc = r.pipeline(&base, &head).document.expect("document");
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("doc.json");
+    std::fs::write(&path, doc.to_json_pretty().unwrap()).unwrap();
+    (r, dir, path)
+}
+
+#[test]
+fn a_reply_too_large_ends_with_the_command_that_continues_it() {
+    let (r, _dir, doc) = big_document();
+
+    let mut seen = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut replies = 0;
+    loop {
+        let mut args = vec!["diff".to_string()];
+        if let Some(c) = &cursor {
+            args.push("--after".to_string());
+            args.push(c.clone());
+        }
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = agent(&r, &doc, &refs);
+        replies += 1;
+        assert!(replies < 20, "the cursor must terminate");
+
+        for line in out.lines().filter(|l| l.starts_with("--- h")) {
+            seen.push(line.split_whitespace().nth(1).unwrap().to_string());
+        }
+        match out.lines().find(|l| l.contains("diff --after ")) {
+            Some(line) => cursor = Some(line.rsplit(' ').next().unwrap().to_string()),
+            None => break,
+        }
+    }
+
+    assert!(replies > 1, "the fixture must actually exceed the cap");
+    // Nothing dropped, nothing repeated: the cap bounds a reply, never the
+    // change. That is the failure the old prompt cap had.
+    assert_eq!(seen.len(), 40, "every hunk arrived exactly once");
+    let mut sorted = seen.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), seen.len(), "no hunk arrived twice");
 }
 
 #[test]

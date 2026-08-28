@@ -21,7 +21,9 @@ pub use identity::{
 pub use ids::{HunkId, PlanIndex};
 pub use source::{RangeSpec, ReviewSource, parse_range};
 pub use staging::{Staged, cumulative_state, final_state};
-pub use tiers::{Deferral, Fold, ReadingSplit, reading_split};
+pub use tiers::{
+    Deferral, Fold, ReadingSplit, class_is_generated, hunk_is_generated, reading_split,
+};
 pub use view::{Dependency, FileView, GroupView, ReviewView};
 
 use crate::schema;
