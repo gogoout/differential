@@ -301,6 +301,18 @@ pub trait GroupingCache {
     fn put(&self, key: &str, response: &str) -> Result<(), EngineError>;
 }
 
+/// Somewhere the model can read the pre-group document from (ADR 0022).
+///
+/// The grouping stage hands the model a path, not a payload, so the need is
+/// "make this readable and tell me where" — one call, because a path the
+/// caller composed itself would be a path the adapter never agreed to.
+///
+/// Keys are the grouping cache's keys. An implementation MUST treat them as
+/// opaque, exactly as `GroupingCache` must.
+pub trait ArtefactStore {
+    fn make_readable(&self, key: &str, json: &str) -> Result<PathBuf, EngineError>;
+}
+
 /// One review's sidecar (ADR 0013).
 ///
 /// Every read is total: a store that has never been written yields defaults,

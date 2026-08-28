@@ -7,6 +7,7 @@
 //! anything from enumeration (ADR 0012).
 
 pub mod apply;
+pub mod artefact;
 pub mod config;
 pub mod document;
 pub mod gitio;

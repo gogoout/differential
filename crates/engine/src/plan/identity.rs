@@ -62,6 +62,19 @@ pub fn grouping_cache_dir(common_dir: &Path) -> PathBuf {
         .join("grouping")
 }
 
+/// Where the pre-group document is left for the model to read, given the git
+/// common dir.
+///
+/// A sibling of the grouping cache and for the same reasons: shared across
+/// worktrees, and outside the tracked tree because it describes one local run
+/// (ADR 0009, ADR 0022).
+pub fn artefact_dir(common_dir: &Path) -> PathBuf {
+    common_dir
+        .join("differential")
+        .join("cache")
+        .join("document")
+}
+
 /// One review's sidecar directory, given the git common dir.
 pub fn review_dir(common_dir: &Path, review_id: &str) -> PathBuf {
     common_dir

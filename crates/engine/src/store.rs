@@ -92,6 +92,44 @@ impl ports::GroupingCache for FsGroupingCache {
     }
 }
 
+// ---------------------------------------------------------------- artefact
+
+/// Where the pre-group document is left for the model to read (ADR 0022).
+///
+/// Disabling mirrors `FsGroupingCache`: `--no-cache` must not put a branch back
+/// into the grouping stage. With no directory the document goes to a temporary
+/// file instead of being skipped — the model needs a path either way, and only
+/// the survival of that path across runs is what caching buys.
+pub struct FsArtefactStore {
+    dir: Option<PathBuf>,
+}
+
+impl FsArtefactStore {
+    pub fn for_repo<L: ports::RepoLayout>(layout: &L) -> Result<Self, EngineError> {
+        Ok(FsArtefactStore {
+            dir: Some(plan::artefact_dir(&layout.common_dir()?)),
+        })
+    }
+
+    /// `--no-cache`: written under the temporary directory, not kept.
+    pub fn disabled() -> Self {
+        FsArtefactStore { dir: None }
+    }
+}
+
+impl ports::ArtefactStore for FsArtefactStore {
+    fn make_readable(&self, key: &str, json: &str) -> Result<PathBuf, EngineError> {
+        let dir = self
+            .dir
+            .clone()
+            .unwrap_or_else(|| std::env::temp_dir().join("differential"));
+        std::fs::create_dir_all(&dir).map_err(|e| io_err(&dir, e))?;
+        let path = dir.join(format!("{key}.json"));
+        std::fs::write(&path, json).map_err(|e| io_err(&path, e))?;
+        Ok(path)
+    }
+}
+
 // ------------------------------------------------------------- review store
 
 /// One review's sidecar directory (ADR 0013).

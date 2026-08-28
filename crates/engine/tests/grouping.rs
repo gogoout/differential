@@ -432,8 +432,28 @@ fn foundation_is_ordered_before_its_consumer() {
         groups[1].role,
         Some(differential_engine::schema::Role::Consumer)
     );
-    assert_eq!(groups[1].depends_on, vec![groups[0].id.clone()]);
+    // The edge names its cause: the symbol the consumer referenced.
+    assert_eq!(groups[1].depends_on.len(), 1);
+    assert_eq!(groups[1].depends_on[0].on, groups[0].id);
+    assert_eq!(groups[1].depends_on[0].via, vec!["WidgetCore".to_string()]);
+    assert!(
+        groups[1].depends_on[0].cycle.is_none(),
+        "the sort honoured this edge, so there is no cycle to report"
+    );
     assert!(groups[0].depends_on.is_empty());
+    assert!(groups.iter().all(|g| g.pivot.is_none()), "no cycle here");
+
+    // The graph is on the classes, and it says the same thing one level down.
+    let consumer = d
+        .classes
+        .iter()
+        .find(|c| !c.depends_on.is_empty())
+        .expect("the consumer class");
+    assert_eq!(consumer.depends_on[0].via, vec!["WidgetCore".to_string()]);
+    assert!(
+        d.classes.iter().any(|c| c.defines == ["WidgetCore"]),
+        "the definition is recorded on the class that introduces it"
+    );
 
     // The reading plan follows the new order.
     let plan = d.reading_plan.as_ref().unwrap();
@@ -443,6 +463,90 @@ fn foundation_is_ordered_before_its_consumer() {
     // Round-trips with ordering fields filled.
     let re = PlanDocument::from_json(&d.to_json_pretty().unwrap()).unwrap();
     assert_eq!(re, d);
+}
+
+/// Group A defines a trait in one class and consumes group B in another, and B
+/// uses the trait. No group order satisfies both, but the classes are acyclic:
+/// `h_def -> B -> h_use`. That is a cycle the grouping made, not the change.
+fn contraction_cycle_repo() -> (TestRepo, String, String) {
+    let r = TestRepo::new();
+    for f in ["src/a_def.txt", "src/a_use.txt", "src/b.txt"] {
+        r.write(f, b"placeholder\n");
+    }
+    let base = r.commit_all("base");
+    // Distinct shapes, so each file is its own class.
+    r.write(
+        "src/a_def.txt",
+        b"placeholder\npub trait WidgetPort { fn go(); }\n",
+    );
+    r.write(
+        "src/a_use.txt",
+        b"placeholder\nlet made = BuilderKind::new();\n",
+    );
+    // `impl WidgetPort` would DEFINE the trait as well, giving the symbol two
+    // definers and dropping the edge. b must only reference it.
+    r.write(
+        "src/b.txt",
+        b"placeholder\nstruct BuilderKind;\nfn drive(p: &dyn WidgetPort) {}\n",
+    );
+    let head = r.commit_all("head");
+    (r, base, head)
+}
+
+#[test]
+fn a_cycle_the_grouping_made_is_named_and_ordered_by_the_classes() {
+    let (r, base, head) = contraction_cycle_repo();
+    // The model merges the definition class with the consumer class, which is
+    // what creates the deadlock. It is allowed to; the engine must cope.
+    let backend = FakeBackend::new("fake", |ids| {
+        let a_def = ids
+            .iter()
+            .find(|i| *i == "C0")
+            .cloned()
+            .unwrap_or_else(|| ids[0].clone());
+        let rest: Vec<String> = ids.iter().filter(|i| **i != a_def).cloned().collect();
+        let a: Vec<&str> = vec![a_def.as_str(), rest[0].as_str()];
+        format!(
+            r#"{{"groups": [{}, {}]}}"#,
+            json_group("Port and its caller", "focus", &a),
+            json_group("The implementation", "focus", &[rest[1].as_str()])
+        )
+    });
+    let d = grouped(&r, &base, &head, &backend);
+    let groups = d.groups.as_ref().unwrap();
+
+    let broken: Vec<&differential_engine::schema::Edge> = groups
+        .iter()
+        .flat_map(|g| g.depends_on.iter())
+        .filter(|e| e.cycle.is_some())
+        .collect();
+    assert!(!broken.is_empty(), "the sort had to break an edge");
+    assert!(
+        broken
+            .iter()
+            .all(|e| e.cycle == Some(differential_engine::schema::Cycle::Artefact)),
+        "the classes are acyclic, so this cycle came from contracting them"
+    );
+
+    // The group that could not be read as one thing says where it divides.
+    let pivoted = groups
+        .iter()
+        .find(|g| g.pivot.is_some())
+        .expect("a group was emitted out of the cycle");
+    let n = pivoted.pivot.unwrap() as usize;
+    assert!(
+        n <= pivoted.class_ids.len(),
+        "the pivot is an index into this group's classes"
+    );
+
+    // Nothing is split, and nothing is lost.
+    let assigned: usize = groups.iter().map(|g| g.class_ids.len()).sum();
+    assert_eq!(
+        assigned,
+        d.classes.len(),
+        "every class in exactly one group"
+    );
+    assert_eq!(groups.len(), 2, "the groups the model asked for");
 }
 
 #[test]
@@ -519,6 +623,8 @@ fn progress_reports_stages_and_cache_state() {
             &differential_engine::grouping::GroupingOptions {
                 backend: &backend,
                 cache: &cache,
+                artefacts: &differential_engine::store::FsArtefactStore::disabled(),
+                fetch: "dfr",
                 progress: Some(&cb),
             },
         )

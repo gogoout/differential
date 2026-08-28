@@ -110,7 +110,7 @@ use differential_engine::grouping::GroupingOptions;
 use differential_engine::llm::{LlmBackend, LlmError};
 use differential_engine::pipeline::run_grouped_pipeline;
 use differential_engine::schema::PlanDocument;
-use differential_engine::store::FsGroupingCache;
+use differential_engine::store::{FsArtefactStore, FsGroupingCache};
 
 pub type Responder = Box<dyn Fn(&[String]) -> String + Send + Sync>;
 
@@ -159,17 +159,23 @@ impl LlmBackend for FakeBackend {
     }
 }
 
-/// Class ids as they appear in payload blocks: lines starting `[Cn]`.
+/// The class ids the prompt offers, from its trailing id list.
+///
+/// The prompt no longer describes the classes at all — it names them and says
+/// where to read about them (ADR 0022) — so this reads the last line, which is
+/// the id list, in prompt order.
 pub fn ids_in_prompt(prompt: &str) -> Vec<String> {
     prompt
         .lines()
-        .filter_map(|l| {
-            let rest = l.strip_prefix('[')?;
-            let end = rest.find(']')?;
-            let id = &rest[..end];
-            id.starts_with('C').then(|| id.to_string())
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .map(|l| {
+            l.split_whitespace()
+                .filter(|w| w.starts_with('C') && w[1..].chars().all(|c| c.is_ascii_digit()))
+                .map(str::to_string)
+                .collect()
         })
-        .collect()
+        .unwrap_or_default()
 }
 
 pub fn json_group(label: &str, effort: &str, classes: &[&str]) -> String {
@@ -198,6 +204,9 @@ pub fn grouped_with_cache(
         Some(dir) => FsGroupingCache::at(dir.to_path_buf()),
         None => FsGroupingCache::disabled(),
     };
+    // Never inside `cache_dir`: the golden test counts what the grouping cache
+    // wrote, and an artefact sitting next to it would be counted too.
+    let artefacts = FsArtefactStore::disabled();
     let out = run_grouped_pipeline(
         &r.repo(),
         base,
@@ -208,6 +217,8 @@ pub fn grouped_with_cache(
         &GroupingOptions {
             backend,
             cache: &cache,
+            artefacts: &artefacts,
+            fetch: "dfr",
             progress: None,
         },
     )

@@ -1,6 +1,6 @@
 use differential_engine::schema::{PlanDocument, SchemaError};
 
-const FIXTURE: &str = include_str!("fixtures/plan-v2.json");
+const FIXTURE: &str = include_str!("fixtures/plan-v3.json");
 
 #[test]
 fn fixture_roundtrips() {
@@ -73,7 +73,7 @@ fn core_only_documents_have_null_groups_not_empty() {
 
 #[test]
 fn unknown_schema_version_is_rejected() {
-    let bumped = FIXTURE.replacen("\"schema_version\": 2", "\"schema_version\": 999", 1);
+    let bumped = FIXTURE.replacen("\"schema_version\": 3", "\"schema_version\": 999", 1);
     match PlanDocument::from_json(&bumped) {
         Err(SchemaError::UnsupportedVersion { found: 999 }) => {}
         other => panic!("expected UnsupportedVersion, got {other:?}"),
@@ -84,8 +84,8 @@ fn unknown_schema_version_is_rejected() {
 fn unknown_fields_are_tolerated() {
     // Additive schema changes must not break older readers.
     let with_extra = FIXTURE.replacen(
-        "\"schema_version\": 2,",
-        "\"schema_version\": 2, \"some_future_field\": {\"x\": 1},",
+        "\"schema_version\": 3,",
+        "\"schema_version\": 3, \"some_future_field\": {\"x\": 1},",
         1,
     );
     PlanDocument::from_json(&with_extra).expect("unknown fields must be ignored");

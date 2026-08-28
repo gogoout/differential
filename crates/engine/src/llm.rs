@@ -5,9 +5,11 @@
 //!
 //! The grouping stage needs exactly one capability from a model: one-shot text
 //! completion — prompt in, raw text out. The contract is deliberately that
-//! narrow: no tools, no streaming, no chat state. Every observed hard failure
-//! of the evaluated grouping tools was a model CLI stopping to call a tool
-//! (ADR 0010); a backend that cannot express tools cannot fail that way.
+//! narrow: no streaming, no chat state, no conversation to manage.
+//!
+//! It stays that narrow now that the model reads for itself (ADR 0022). Tools
+//! run inside the CLI this spawns, so what crosses this seam is still a prompt
+//! and a string. What changed is a flag in the argv below, not the trait.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -52,6 +54,25 @@ pub enum LlmError {
 pub trait LlmBackend: Send + Sync {
     /// Human-readable backend name, for logs and audit output.
     fn name(&self) -> &str;
+
+    /// Everything about this backend that could change the grouping, and
+    /// nothing that could not. The grouping cache key hashes this (ADR 0009).
+    ///
+    /// Separate from `name` because the two answer different questions. `name`
+    /// is what to show a reviewer waiting on a subprocess, so it is the command
+    /// as it will actually run. This is what determines the answer — and where
+    /// a binary happens to live does not. Hashing the display name put the
+    /// absolute path of `dfr` into the key, so a debug build, a release build
+    /// and two checkouts of one commit each re-ran a four-hundred-second call
+    /// for an identical class partition, and the worktree-shared cache
+    /// `plan::grouping_cache_dir` promises was defeated.
+    ///
+    /// Defaults to `name`, which is right for any backend whose identity has no
+    /// environment in it.
+    fn identity(&self) -> &str {
+        self.name()
+    }
+
     fn complete(&self, prompt: &str) -> Result<String, LlmError>;
 }
 
@@ -60,6 +81,10 @@ pub struct CommandBackend {
     argv: Vec<String>,
     timeout: Duration,
     name: String,
+    /// See [`LlmBackend::identity`]. Equal to `name` unless the argv carries a
+    /// path that says where this machine keeps things rather than what the
+    /// model will do.
+    identity: String,
     /// Set from another thread to kill an in-flight child (a reviewer
     /// abandoning the wait). Without this the subprocess would outlive the
     /// process that asked for it, up to the whole timeout.
@@ -73,6 +98,7 @@ impl CommandBackend {
         CommandBackend {
             argv,
             timeout,
+            identity: name.clone(),
             name,
             cancel: None,
         }
@@ -95,28 +121,62 @@ impl CommandBackend {
             .is_some_and(|c| c.load(Ordering::Relaxed))
     }
 
-    /// The validated default (ADR 0010): headless, text output, tools denied.
-    pub fn claude_cli() -> Self {
-        Self::new(
-            [
-                "claude",
-                "-p",
-                "--output-format",
-                "text",
-                "--allowed-tools",
-                "",
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect(),
-            Duration::from_secs(1200),
-        )
+    /// The default: headless, text output, and read-only tools (ADR 0022).
+    ///
+    /// ADR 0010 denied tools outright, because the evaluated grouping tool kept
+    /// exiting 1 on `stop_reason: "tool_use"`. Denying them cured it by sending
+    /// no tool definitions at all, so the model could not ask. An allowlist is
+    /// the other cure: it can ask, and the answer is yes.
+    ///
+    /// `fetch` is the executable the prompt tells the model to run — normally
+    /// this process. The allowlist is derived from it, so the two cannot
+    /// disagree about what the model is allowed to invoke.
+    ///
+    /// Nothing here can write. The fetch command reads the document the engine
+    /// just wrote; the rest read the repository. `git log` and `git show` are
+    /// what reach the *reason* a change was made, which no prompt can carry.
+    ///
+    /// **Available, not advertised.** The prompt names the fetch command and
+    /// nothing else. A model that needs the code around a hunk can go and read
+    /// it, but it is not sent looking: naming these in the prompt would invite
+    /// a whole-repository read where a class table and a diff were the answer,
+    /// and would offer a way around the generated content the grouping stage
+    /// deliberately folds away. If you add a tool here, do not add a line about
+    /// it to the prompt.
+    ///
+    /// The allowlist is this function's business, not the user's. A configured
+    /// `[grouping].command` replaces this whole argv, and whoever writes one
+    /// owns what their agent may do.
+    ///
+    /// `fetch` is where a binary lives, so it is the one part of this argv that
+    /// says nothing about what the model will do. The cache identity stands a
+    /// placeholder in its place: change the allowlist and every cached grouping
+    /// is rightly invalidated, move the binary and none of them are.
+    pub fn claude_cli(fetch: &str) -> Self {
+        let mut b = Self::new(Self::claude_argv(fetch), Duration::from_secs(1200));
+        b.identity = Self::claude_argv("<fetch>").join(" ");
+        b
+    }
+
+    fn claude_argv(fetch: &str) -> Vec<String> {
+        vec![
+            "claude".to_string(),
+            "-p".to_string(),
+            "--output-format".to_string(),
+            "text".to_string(),
+            "--allowed-tools".to_string(),
+            format!("Bash({fetch} agent:*),Read,Grep,Glob,Bash(git log:*),Bash(git show:*)"),
+        ]
     }
 }
 
 impl LlmBackend for CommandBackend {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn identity(&self) -> &str {
+        &self.identity
     }
 
     fn complete(&self, prompt: &str) -> Result<String, LlmError> {
@@ -297,8 +357,52 @@ mod tests {
     }
 
     #[test]
-    fn claude_cli_default_denies_tools() {
-        let b = CommandBackend::claude_cli();
-        assert!(b.name().contains("--allowed-tools"));
+    fn where_the_binary_lives_is_not_part_of_the_cache_identity() {
+        // The grouping cache key hashes `identity`. If it hashed `name` the
+        // absolute path would be in the key, and a debug build, a release build
+        // and a second checkout of the same commit would each re-run a
+        // four-hundred-second call over an identical class partition.
+        let a = CommandBackend::claude_cli("/Users/someone/.cargo/bin/dfr");
+        let b = CommandBackend::claude_cli("/srv/ci/target/release/dfr");
+        assert_eq!(a.identity(), b.identity());
+        assert_ne!(a.name(), b.name(), "the display name is the real command");
+
+        // A configured command has no path this crate invented, so it is its
+        // own identity — and two different agents must never share a cache
+        // entry.
+        let one = CommandBackend::new(vec!["agent-one".into()], Duration::from_secs(1));
+        let two = CommandBackend::new(vec!["agent-two".into()], Duration::from_secs(1));
+        assert_eq!(one.identity(), one.name());
+        assert_ne!(one.identity(), two.identity());
+    }
+
+    #[test]
+    fn changing_the_allowlist_does_change_the_cache_identity() {
+        // The other half of the rule: the allowlist shapes what the model can
+        // see, so it must stay in the key even though the path does not.
+        let b = CommandBackend::claude_cli("/opt/bin/dfr");
+        assert!(b.identity().contains("Read,Grep,Glob"), "{}", b.identity());
+        assert!(!b.identity().contains("/opt/bin"), "{}", b.identity());
+    }
+
+    #[test]
+    fn claude_cli_default_allows_reading_and_nothing_else() {
+        let b = CommandBackend::claude_cli("/opt/bin/dfr");
+        let argv = b.name();
+        assert!(
+            argv.contains("Bash(/opt/bin/dfr agent:*)"),
+            "the allowlist names the same executable the prompt does"
+        );
+        // The allowlist is the security boundary, so the test states what must
+        // stay OUT of it, not merely what is in it.
+        for forbidden in [
+            "Write",
+            "Edit",
+            "Bash(git commit",
+            "Bash(git push",
+            "WebFetch",
+        ] {
+            assert!(!argv.contains(forbidden), "{forbidden} must not be allowed");
+        }
     }
 }

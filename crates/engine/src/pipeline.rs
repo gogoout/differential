@@ -111,20 +111,22 @@ where
 /// Core pipeline + the grouping stage (stages: enumerate, classify, group).
 ///
 /// The engine is the single producer of the final document renderers consume;
-/// grouping runs in-process with internal access to the diff view. On any
-/// invariant failure the grouping stage is skipped and `document` is `None`,
-/// exactly like the core pipeline.
-pub fn run_grouped_pipeline<G, C>(
+/// grouping runs in-process over the document the core stages produced — it
+/// takes no diff view, because everything it needs is in the document and the
+/// model fetches the rest (ADR 0022). On any invariant failure the grouping
+/// stage is skipped and `document` is `None`, exactly like the core pipeline.
+pub fn run_grouped_pipeline<G, C, A>(
     git: &G,
     base_rev: &str,
     head_rev: &str,
     kind: schema::SourceKind,
     config: &Config,
     langs: &LanguageRegistry,
-    grouping: &crate::grouping::GroupingOptions<C>,
+    grouping: &crate::grouping::GroupingOptions<C, A>,
 ) -> Result<PipelineOutput, EngineError>
 where
     C: crate::ports::GroupingCache,
+    A: crate::ports::ArtefactStore,
     G: RangeResolver
         + DiffSource
         + AttributeSource
@@ -147,9 +149,10 @@ where
     if let Some(core_doc) = &out.document {
         let mut grouped = crate::grouping::run(
             core_doc,
-            &out.view,
             grouping.backend,
             grouping.cache,
+            grouping.artefacts,
+            grouping.fetch,
             &langs.fingerprint(),
             grouping.progress,
         )?;
@@ -157,7 +160,7 @@ where
         if let Some(f) = grouping.progress {
             f(crate::grouping::Progress::Ordering);
         }
-        crate::ordering::apply(&mut grouped, &out.view, langs);
+        crate::ordering::apply(&mut grouped);
         out.document = Some(grouped);
     }
     if let Some(f) = grouping.progress {
@@ -234,6 +237,11 @@ where
         f(crate::grouping::Progress::Classifying);
     }
     let part = plan::classify(&mut view, config, &attr_marked, langs);
+    // The dependency graph is classification too, and it is built from classes
+    // rather than from groups: what depends on what is a fact about the diff,
+    // so the model reads it before it groups and cannot change it by grouping
+    // (ADR 0022).
+    let graph = crate::artefact::graph::build(&view, &part, langs);
 
     // Invariants 1–4; no document on violation.
     let report = check_all(git, &base, &head, &view)?;
@@ -241,6 +249,7 @@ where
         Some(assemble(
             &view,
             &part,
+            graph,
             &SourceInfo {
                 kind,
                 base: base.clone(),

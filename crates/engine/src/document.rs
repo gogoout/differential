@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use crate::schema;
 
 use crate::EngineError;
+use crate::artefact::graph::ClassGraph;
 use crate::config::Config;
 use crate::invariants::InvariantReport;
 use crate::model::{DiffView, Disposition, GeneratedBy};
@@ -65,6 +66,7 @@ pub struct SourceInfo {
 pub fn assemble(
     view: &DiffView,
     partition: &Partition,
+    graph: ClassGraph,
     source: &SourceInfo,
     report: &InvariantReport,
 ) -> Result<schema::PlanDocument, EngineError> {
@@ -127,6 +129,9 @@ pub fn assemble(
         })
         .collect::<Result<Vec<_>, EngineError>>()?;
 
+    // The graph arrives owned: its two vectors are moved into the classes
+    // rather than cloned, and a class is the only place either belongs.
+    let mut graph = graph;
     let classes = partition
         .classes
         .iter()
@@ -136,6 +141,8 @@ pub fn assemble(
             hunk_ids: members.iter().map(|i| format!("h{i}")).collect(),
             exemplar: format!("h{}", members[0]),
             pure_substitution: partition.pure[ci],
+            defines: std::mem::take(&mut graph.defines[ci]),
+            depends_on: std::mem::take(&mut graph.depends_on[ci]),
         })
         .collect::<Vec<_>>();
 

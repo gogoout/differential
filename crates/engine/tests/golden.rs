@@ -27,7 +27,7 @@ use differential_engine::grouping::GroupingOptions;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::run_grouped_pipeline;
 use differential_engine::schema::SourceKind;
-use differential_engine::store::{FsGroupingCache, FsReviewStore};
+use differential_engine::store::{FsArtefactStore, FsGroupingCache, FsReviewStore};
 use differential_engine::{ReviewSession, review_state};
 use differential_testutil::{FakeBackend, TestRepo, grouped_with_cache, json_group};
 
@@ -65,9 +65,12 @@ fn one_group_backend(name: &str) -> FakeBackend {
     })
 }
 
-/// The exact bytes sent to the model. Regenerating this constant to match new
-/// output is only correct alongside a `PROMPT_VERSION` bump — otherwise cached
-/// groupings from the old prompt keep being served as if they were current.
+/// The exact bytes sent to the model, with the artefact path standing in as
+/// `<DOC>` — it is a temporary directory and differs per run.
+///
+/// Regenerating this constant to match new output is only correct alongside a
+/// `PROMPT_VERSION` bump — otherwise cached groupings from the old prompt keep
+/// being served as if they were current.
 const EXPECTED_PROMPT: &str = r#"You are helping a reviewer read a large merge request faster.
 
 A mechanical pass has already split every changed hunk into SHAPE CLASSES: hunks whose
@@ -101,22 +104,49 @@ Rules:
   bumps and refixtured snapshots are "skim".
 - "focus" means the group changes behaviour, error handling, control flow, a public
   contract, or a security or correctness boundary. When in doubt use "focus".
-- A block noting "renamed from ... N% similar" with N below 95 was REWRITTEN during the
-  move, not relocated verbatim: it must be "focus".
+- `class C7` notes "renamed from ... N% similar" where git detected a move. Below 95 the
+  file was REWRITTEN during the move, not relocated verbatim: that class must be "focus".
 - Order groups so "focus" groups come first: the reviewer should meet real work before
   mechanical work.
 - Labels describe the PURPOSE, not the mechanism.
 
-SHAPE CLASSES:
-[C0] count=3 files=3 kind=M e.g. src/a.txt:1
-    -use old_helper_name;
-    +use new_helper_name;
-    (in: a.txt, b.txt, c.txt)
+HOW TO SEE THE CHANGE
 
-[C1] count=1 files=1 kind=M e.g. src/main.txt:1
-    -fn main() { run_slowly() }
-    +fn main() { run_with_retries(3) }
+Nothing about the classes is in this prompt. Read what you need instead:
 
+  dfr agent --doc <DOC> classes            every class: size, files, kind, defines, uses
+  dfr agent --doc <DOC> diff               the diff of the WHOLE change, every hunk
+  dfr agent --doc <DOC> diff C7 C8         only those classes
+  dfr agent --doc <DOC> diff h12 h13       only those hunks
+  dfr agent --doc <DOC> diff --after h137  the rest, when a reply came back cut
+  dfr agent --doc <DOC> class C7 C8        those classes in full (no ids: all of them)
+  dfr agent --doc <DOC> file <path>…      the classes touching those files
+  dfr agent --doc <DOC> defines <symbol>… the classes introducing those symbols
+
+TWO CALLS ARE USUALLY ENOUGH. `classes` for the shape of it, then `diff` with no ids
+for the entire change. Every command takes as many arguments as you like and none means
+all of them, so `diff C7 C8 C9` costs what `diff C7` costs. Asking one id at a time
+turns a two-hundred-class change into two hundred round trips, and each one is a whole
+turn -- it is by far the slowest thing you can do here.
+
+A change too large for one reply comes back cut, ending with the exact command that
+continues it. Run that command. Nothing is ever dropped for length, but you have not
+seen the whole change until a reply comes back without one.
+
+Generated files -- lockfiles, snapshots, build artefacts -- are folded away before you
+see them, so these replies are smaller than the raw change. Their classes are not in the
+id list and are not yours to group. Name one and you will still be shown it.
+
+Rating a class "skim" is a claim that every one of its hunks is the same edit, and the
+diff is how you check it. Only a class with MORE THAN ONE HUNK can be wrong about that:
+for a `1h` class the exemplar is the whole class. `classes` prints the hunk count.
+
+`uses:` on a class is a definition-to-use edge the mechanical pass found, with the
+symbol that produced it. Merging a class that defines something with a class that
+consumes a different group leaves no valid reading order, so prefer not to.
+
+CLASS IDS (every one must appear in exactly one group):
+C0 C1
 "#;
 
 /// Largest class first, both diff sides, the multi-file annotation, and the
@@ -127,9 +157,14 @@ fn grouping_prompt_bytes_are_frozen() {
     let backend = one_group_backend("golden-backend");
     let _ = grouped_with_cache(&r, &base, &head, &backend, None);
 
+    // The path is the one thing in the prompt that cannot be frozen, so it is
+    // the one thing normalised away.
+    let prompt = regex::Regex::new(r"--doc \S+")
+        .unwrap()
+        .replace_all(&backend.last_prompt(), "--doc <DOC>")
+        .into_owned();
     assert_eq!(
-        backend.last_prompt(),
-        EXPECTED_PROMPT,
+        prompt, EXPECTED_PROMPT,
         "the grouping prompt changed; if this is intended, bump PROMPT_VERSION \
          so cached groupings from the old prompt are not served as current"
     );
@@ -153,7 +188,7 @@ fn grouping_cache_key_and_entry_shape_are_frozen() {
 
     assert_eq!(
         entries[0].file_name().to_string_lossy(),
-        "63efbf14c84f6bea77e13b14db12cc8322c229aa.json",
+        "8d472c182ac1950b6d020ab1843f9ebb51579857.json",
         "the grouping cache key changed; every existing cache entry in every \
          checkout just became unreachable, and the only symptom is a silent \
          re-run of the model"
@@ -208,6 +243,8 @@ fn review_sidecar_layout_is_frozen() {
         &GroupingOptions {
             backend: &backend,
             cache: &FsGroupingCache::disabled(),
+            artefacts: &FsArtefactStore::disabled(),
+            fetch: "dfr",
             progress: None,
         },
     )

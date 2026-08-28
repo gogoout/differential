@@ -1,7 +1,7 @@
 # Agent instructions for `differential`
 
 Read [`README.md`](README.md) for what this is. `spec/` is normative (what the program does);
-`adr/` records why (0001–0021). When your change contradicts a spec or ADR, the docs and the
+`adr/` records why (0001–0022). When your change contradicts a spec or ADR, the docs and the
 code must change together — or the change is wrong.
 
 ## Working rules
@@ -100,7 +100,8 @@ code must change together — or the change is wrong.
 - **The invariants stay.** Every one caught a real bug (`spec/invariants.md`). Never weaken,
   skip, or tautologise them; the recount must never share code with the parser.
 - **The schema is frozen.** Additive changes only; anything breaking bumps
-  `schema_version`. Consumer conveniences must not leak into `engine::schema` (ADR 0008, 0018).
+  `schema_version` (it is 3, ADR 0022). Consumer conveniences must not leak into
+  `engine::schema` (ADR 0008, 0018).
 - **The generic normaliser is frozen.** `lang/generic.rs` is pinned to the validated
   prototype for hash parity; improvements land as language plugins with their own ids
   (ADR 0015). The real-corpus parity test's exact class count is the guard.
@@ -154,6 +155,7 @@ cargo clippy --all-targets && cargo fmt     # keep both clean
 cargo run -q --bin dfr -- check <base>..<head>    # invariant runner
 cargo run -q --bin dfr -- stack <base>..<head>    # review stack (needs an LLM CLI on a cache miss)
 cargo run -q --bin dfr -- review <base>..<head>   # terminal reviewer (same cache rule)
+cargo run -q --bin dfr -- agent --doc <path> classes   # what the grouping model sees
 cargo run -p differential-engine --example group -- <base>..<head>   # grouped document JSON (dev)
 DIFFERENTIAL_FIXTURE_CONFIG=$PWD/fixtures.local.toml cargo test -- --ignored  # parity (local)
 ```

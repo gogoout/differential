@@ -19,6 +19,7 @@ clap = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+differential-testutil = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

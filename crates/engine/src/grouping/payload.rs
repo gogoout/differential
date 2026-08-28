@@ -1,20 +1,27 @@
-//! Prompt and payload construction, ported from the validated prototype: one
-//! compact block per shape class, largest first, both diff sides shown (a
-//! deletion-only hunk is otherwise invisible to the model), plus rename
-//! annotations so a heavily-edited move can never masquerade as a plain add.
-
-use crate::model::DiffView;
+//! The prompt: instructions, a path, and the class ids.
+//!
+//! It used to be the whole context. One block per shape class — a header, four
+//! removed and four added lines from the **exemplar hunk only**, six basenames
+//! — capped at 90,000 characters, with anything past the cap silently dropped
+//! into the back-fill. So a class of nine hunks got rated "read one, trust the
+//! rest" on the evidence of one hunk, and a large change lost classes to a
+//! character count.
+//!
+//! Now the model fetches (ADR 0022). The engine writes the pre-group document
+//! and the prompt says where it is and how to ask it questions. Nothing is
+//! truncated, because nothing is sent.
+//!
+//! The class id list stays in the prompt: it is about a kilobyte for two
+//! hundred classes, and it means a model whose fetches all fail still knows the
+//! exact id set. A weak grouping is recoverable; a hallucinated one wastes the
+//! audit's time telling us so.
 
 use super::ClassInfo;
 
-/// Feeds the cache key: bump on ANY change to the prompt text or payload
-/// format, or cached groupings would silently mix prompt generations.
-pub const PROMPT_VERSION: u32 = 2;
-
-const MAX_SIDE_LINES: usize = 4;
-const MAX_LINE_CHARS: usize = 150;
-const MAX_FILES_SHOWN: usize = 6;
-const MAX_PAYLOAD_CHARS: usize = 90_000;
+/// Feeds the cache key: bump on ANY change to the prompt text or the shape of
+/// what the model can fetch, or cached groupings would silently mix prompt
+/// generations.
+pub const PROMPT_VERSION: u32 = 3;
 
 const PROMPT_HEAD: &str = r#"You are helping a reviewer read a large merge request faster.
 
@@ -49,91 +56,76 @@ Rules:
   bumps and refixtured snapshots are "skim".
 - "focus" means the group changes behaviour, error handling, control flow, a public
   contract, or a security or correctness boundary. When in doubt use "focus".
-- A block noting "renamed from ... N% similar" with N below 95 was REWRITTEN during the
-  move, not relocated verbatim: it must be "focus".
+- `class C7` notes "renamed from ... N% similar" where git detected a move. Below 95 the
+  file was REWRITTEN during the move, not relocated verbatim: that class must be "focus".
 - Order groups so "focus" groups come first: the reviewer should meet real work before
   mechanical work.
 - Labels describe the PURPOSE, not the mechanism.
 
-SHAPE CLASSES:
+HOW TO SEE THE CHANGE
+
+Nothing about the classes is in this prompt. Read what you need instead:
+
 "#;
 
-pub fn build_prompt(offered: &[&ClassInfo], view: &DiffView) -> String {
-    let mut blocks: Vec<String> = Vec::with_capacity(offered.len());
+const PROMPT_TAIL: &str = r#"
+
+TWO CALLS ARE USUALLY ENOUGH. `classes` for the shape of it, then `diff` with no ids
+for the entire change. Every command takes as many arguments as you like and none means
+all of them, so `diff C7 C8 C9` costs what `diff C7` costs. Asking one id at a time
+turns a two-hundred-class change into two hundred round trips, and each one is a whole
+turn -- it is by far the slowest thing you can do here.
+
+A change too large for one reply comes back cut, ending with the exact command that
+continues it. Run that command. Nothing is ever dropped for length, but you have not
+seen the whole change until a reply comes back without one.
+
+Generated files -- lockfiles, snapshots, build artefacts -- are folded away before you
+see them, so these replies are smaller than the raw change. Their classes are not in the
+id list and are not yours to group. Name one and you will still be shown it.
+
+Rating a class "skim" is a claim that every one of its hunks is the same edit, and the
+diff is how you check it. Only a class with MORE THAN ONE HUNK can be wrong about that:
+for a `1h` class the exemplar is the whole class. `classes` prints the hunk count.
+
+`uses:` on a class is a definition-to-use edge the mechanical pass found, with the
+symbol that produced it. Merging a class that defines something with a class that
+consumes a different group leaves no valid reading order, so prefer not to.
+
+CLASS IDS (every one must appear in exactly one group):
+"#;
+
+/// Instructions, the fetch commands, and the class id list.
+///
+/// Takes the executable and the artefact path rather than the document: which
+/// binary the model can run, and where it should read, are both the caller's
+/// decisions. This function only writes them down — and the backend's tool
+/// allowlist must be built from the same `fetch`, or the model is told to run
+/// a command it is not permitted to run.
+pub fn build_prompt(offered: &[&ClassInfo], fetch: &str, artefact: &str) -> String {
     let mut order: Vec<&&ClassInfo> = offered.iter().collect();
     order.sort_by_key(|c| (usize::MAX - c.n_hunks, c.exemplar));
+    let ids: Vec<&str> = order.iter().map(|c| c.id.as_str()).collect();
 
-    for c in order {
-        blocks.push(class_block(c, view));
-    }
-
-    let mut payload = String::with_capacity(MAX_PAYLOAD_CHARS.min(blocks.len() * 200));
-    for b in blocks {
-        if payload.len() + b.len() > MAX_PAYLOAD_CHARS {
-            // Classes cut here become audit-missing and are back-filled into a
-            // must-read group — truncation can never lose a hunk.
-            payload.push_str("\n[remaining classes omitted for length]");
-            break;
-        }
-        payload.push_str(&b);
-        payload.push_str("\n\n");
-    }
-
-    format!("{PROMPT_HEAD}{payload}")
+    format!(
+        "{PROMPT_HEAD}{}{PROMPT_TAIL}{}\n",
+        commands(fetch, artefact),
+        ids.join(" ")
+    )
 }
 
-fn class_block(c: &ClassInfo, view: &DiffView) -> String {
-    let ex = &view.hunks[c.exemplar];
-    let loc = format!("{}:{}", c.files[0], ex.new_start.max(1));
-    let rename = c
-        .rename_note
-        .as_deref()
-        .map(|n| format!(" ({n})"))
-        .unwrap_or_default();
-
-    let mut out = format!(
-        "[{}] count={} files={} kind={} e.g. {}{}",
-        c.id,
-        c.n_hunks,
-        c.files.len(),
-        c.kind,
-        loc,
-        rename
-    );
-
-    // Both sides: a deletion-only hunk is otherwise invisible.
-    let mut shown = 0usize;
-    for (sigil, side) in [("-", &ex.removed), ("+", &ex.added)] {
-        for line in side
-            .iter()
-            .filter(|l| !l.iter().all(u8::is_ascii_whitespace))
-            .take(MAX_SIDE_LINES)
-        {
-            let text = String::from_utf8_lossy(line);
-            let clipped: String = text.chars().take(MAX_LINE_CHARS).collect();
-            out.push_str("\n    ");
-            out.push_str(sigil);
-            out.push_str(&clipped);
-            shown += 1;
-        }
-    }
-    if shown == 0 && c.kind == 'D' {
-        out.push_str("\n    (whole file deleted)");
-    }
-
-    if c.files.len() > 1 {
-        let names: Vec<&str> = c
-            .files
-            .iter()
-            .take(MAX_FILES_SHOWN)
-            .map(|p| p.rsplit('/').next().unwrap_or(p))
-            .collect();
-        let more = if c.files.len() > MAX_FILES_SHOWN {
-            format!(" +{} more", c.files.len() - MAX_FILES_SHOWN)
-        } else {
-            String::new()
-        };
-        out.push_str(&format!("\n    (in: {}{more})", names.join(", ")));
-    }
-    out
+/// The five queries, spelled out as the exact commands to run.
+fn commands(fetch: &str, artefact: &str) -> String {
+    let dfr = format!("{fetch} agent --doc {artefact}");
+    [
+        format!("  {dfr} classes            every class: size, files, kind, defines, uses"),
+        format!("  {dfr} diff               the diff of the WHOLE change, every hunk"),
+        format!("  {dfr} diff C7 C8         only those classes"),
+        format!("  {dfr} diff h12 h13       only those hunks"),
+        format!("  {dfr} diff --after h137  the rest, when a reply came back cut"),
+        format!("  {dfr} class C7 C8        those classes in full (no ids: all of them)"),
+        format!("  {dfr} file <path>…      the classes touching those files"),
+        format!("  {dfr} defines <symbol>… the classes introducing those symbols"),
+    ]
+    .join("\n")
 }

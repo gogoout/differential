@@ -150,20 +150,26 @@ same type from the picker's answer.
 ```rust
 use differential_engine::{GroupingOptions, run_grouped_pipeline};
 use differential_engine::llm::CommandBackend;
-use differential_engine::store::FsGroupingCache;
+use differential_engine::store::{FsArtefactStore, FsGroupingCache};
 
 let backend = CommandBackend::claude_cli();
-let cache = FsGroupingCache::for_repo(&repo)?;   // or FsGroupingCache::disabled()
-let opts = GroupingOptions { backend: &backend, cache: &cache, progress: None };
+let cache = FsGroupingCache::for_repo(&repo)?;       // or FsGroupingCache::disabled()
+let artefacts = FsArtefactStore::for_repo(&repo)?;   // where the model reads from
+let opts = GroupingOptions { backend: &backend, cache: &cache,
+                             artefacts: &artefacts, progress: None };
 
 let out = run_grouped_pipeline(&repo, &src.base, &src.head, src.kind, &config,
                                &LanguageRegistry::builtin(), &opts)?;
 ```
 
-Both the backend and the cache are **injected**. The engine does not build a backend from
-config: composing one is the application's job. Disabling the cache is a constructor,
-`FsGroupingCache::disabled()`, not an absent one — so the stage never grows a branch for a
-`--no-cache` flag.
+The backend, the cache and the artefact store are all **injected**. The engine does not
+build a backend from config: composing one is the application's job. Disabling either store
+is a constructor — `FsGroupingCache::disabled()`, `FsArtefactStore::disabled()` — not an
+absent one, so the stage never grows a branch for a `--no-cache` flag.
+
+The artefact store is where the pre-group document is left for the model to read (ADR 0022).
+The prompt names that path instead of describing the classes, and the model fetches what it
+needs with `dfr agent`.
 
 Cancellation belongs to the backend, through `CommandBackend::with_cancel`. The thing that
 needs killing is a subprocess.
@@ -182,7 +188,8 @@ needs killing is a subprocess.
 | `llm` | `LlmBackend` and `CommandBackend`. Prompt in, text out. |
 | `lang` | The `Language` trait and `LanguageRegistry`. |
 | `pipeline` | `run_pipeline`, `run_grouped_pipeline`, `resolve_range`, `resolve_picked`. |
-| `grouping` | The grouping stage: payload, parse, audit, gate, assembly, cache. |
+| `grouping` | The grouping stage: prompt, parse, audit, gate, assembly, cache. |
+| `artefact` | The class dependency graph, the document the model reads, and the queries behind `dfr agent`. |
 | `ordering` | The dependency graph and the foundation-first sort. |
 | `invariants` | All five checks. |
 | `review_session` | `ReviewSession` — the facade over review state on disk. |
@@ -242,7 +249,8 @@ so a key survives an id shift across regenerations.
 
 The **raw model response** is what gets cached. Parsing, the audit, the relocation gate and
 assembly are pure functions replayed on every load. So a fix to any of them applies to
-cached runs too. A change to the prompt or the payload must bump the prompt version.
+cached runs too. A change to the prompt, or to what the model can fetch, must bump the
+prompt version.
 
 ## Config
 

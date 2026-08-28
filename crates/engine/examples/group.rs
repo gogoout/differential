@@ -15,7 +15,7 @@ use differential_engine::gitio::Repo;
 use differential_engine::grouping::GroupingOptions;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::schema::Effort;
-use differential_engine::store::{FsGroupingCache, OsConfigSource};
+use differential_engine::store::{FsArtefactStore, FsGroupingCache, OsConfigSource};
 use differential_engine::{resolve_range, run_grouped_pipeline};
 
 fn main() -> ExitCode {
@@ -65,9 +65,29 @@ fn main() -> ExitCode {
     } else {
         FsGroupingCache::disabled()
     };
+    let artefacts = if use_cache {
+        match FsArtefactStore::for_repo(&repo) {
+            Ok(a) => a,
+            Err(e) => return usage_error(&e.to_string()),
+        }
+    } else {
+        FsArtefactStore::disabled()
+    };
     // Composition is the application layer's job, so the example builds its
     // own backend rather than the pipeline reaching into config for one.
-    let backend = differential_engine::llm::CommandBackend::claude_cli();
+    // The fetch command must be a binary that HAS `agent`, and this example is
+    // not one — `dfr` is its sibling in the same target directory. Pointing it
+    // at the current executable was a real bug: every fetch failed, and the
+    // model spent minutes discovering that before falling back to the ids.
+    let fetch = match sibling_dfr() {
+        Some(p) => p,
+        None => {
+            return usage_error(
+                "cannot find the `dfr` binary next to this example; run `cargo build --bin dfr`",
+            );
+        }
+    };
+    let backend = differential_engine::llm::CommandBackend::claude_cli(&fetch);
 
     let out = match run_grouped_pipeline(
         &repo,
@@ -79,6 +99,8 @@ fn main() -> ExitCode {
         &GroupingOptions {
             backend: &backend,
             cache: &cache,
+            artefacts: &artefacts,
+            fetch: &fetch,
             progress: None,
         },
     ) {
@@ -146,4 +168,11 @@ fn main() -> ExitCode {
 fn usage_error(msg: &str) -> ExitCode {
     eprintln!("error: {msg}");
     ExitCode::from(2)
+}
+
+/// `target/<profile>/dfr`, given `target/<profile>/examples/group`.
+fn sibling_dfr() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let path = exe.parent()?.parent()?.join("dfr");
+    path.exists().then(|| path.display().to_string())
 }

@@ -87,11 +87,19 @@ The model contributes what hashing cannot: merging twenty textually different sh
 into one "path and import swaps" group. See
 [ADR 0001](../adr/0001-llm-merges-class-ids-never-hunks.md).
 
+The model is not handed a description of the change. The engine writes the pre-group
+document and the prompt says where it is; the model then fetches what it needs with
+`dfr agent`. So it can read every member of a class before claiming they are the same edit,
+and nothing is dropped to fit a prompt. See
+[ADR 0022](../adr/0022-the-model-fetches-its-own-context.md).
+
 ### 3. Deterministic ordering
 
-Edges run from a symbol's definition to its uses. Those edges build a dependency graph
-between groups. The focus section is sorted foundation-first, so a definition is ordered
-before its references. See [spec/ordering.md](../spec/ordering.md).
+Edges run from a symbol's definition to its uses, between **classes**, computed before the
+model runs. The focus section is sorted foundation-first by contracting those edges onto
+groups, so a definition is ordered before its references. Every edge names the symbol that
+produced it, and a cycle says whether it is in the change or only in the grouping. See
+[spec/ordering.md](../spec/ordering.md).
 
 ### 4. Structural audits
 

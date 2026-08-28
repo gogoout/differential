@@ -78,6 +78,7 @@ pub fn assemble(
             },
             class_ids: g.class_ids.clone(),
             depends_on: Vec::new(),
+            pivot: None,
             rank: groups.len() as u32,
         });
     };
