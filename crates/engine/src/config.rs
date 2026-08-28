@@ -142,6 +142,8 @@ pub struct Config {
     /// Overrides: never mark these generated. Wins over everything.
     pub not_generated: GlobSet,
     /// gitattributes attribute names honoured as "generated" declarations.
+    /// Defaults to [`DEFAULT_ATTRIBUTES`]; setting the key **replaces** the
+    /// list rather than adding to it.
     pub attributes: Vec<String>,
     /// From the USER config, never the repo (agents differ per user).
     pub grouping: GroupingConfig,
@@ -149,12 +151,33 @@ pub struct Config {
     pub review: ReviewConfig,
 }
 
+/// gitattributes names honoured as a "generated" declaration when
+/// `[classify].attributes` is absent.
+///
+/// Two, because the convention is per-forge and a repository does not choose
+/// its forge to suit this tool. `linguist-generated` is GitHub's, via Linguist;
+/// `gitlab-generated` is GitLab's, and GitLab already honours it to collapse a
+/// file in an MR diff — so a GitLab repository has usually declared its
+/// generated files years before it meets this tool, and should not have to
+/// declare them again.
+///
+/// The cost of an extra name is small and one-directional: a file has to carry
+/// the attribute to match, and a repository that does not use a forge's
+/// convention has nothing to match. A missed declaration is the expensive
+/// direction — the file is offered to the model, grouped as real work, and read
+/// by the reviewer.
+pub const DEFAULT_ATTRIBUTES: &[&str] = &["linguist-generated", "gitlab-generated"];
+
+fn default_attributes() -> Vec<String> {
+    DEFAULT_ATTRIBUTES.iter().map(|s| s.to_string()).collect()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
             generated: GlobSet::empty(),
             not_generated: GlobSet::empty(),
-            attributes: vec!["linguist-generated".to_string()],
+            attributes: default_attributes(),
             grouping: GroupingConfig::default(),
             review: ReviewConfig::default(),
         }
@@ -222,10 +245,7 @@ impl Config {
         Ok(Config {
             generated: build_globs(&raw.classify.generated, origin)?,
             not_generated: build_globs(&raw.classify.not_generated, origin)?,
-            attributes: raw
-                .classify
-                .attributes
-                .unwrap_or_else(|| vec!["linguist-generated".to_string()]),
+            attributes: raw.classify.attributes.unwrap_or_else(default_attributes),
             grouping: GroupingConfig::default(),
             review: ReviewConfig::default(),
         })
@@ -292,7 +312,12 @@ mod tests {
     #[test]
     fn defaults_when_empty() {
         let c = Config::parse("", "test").unwrap();
-        assert_eq!(c.attributes, vec!["linguist-generated"]);
+        assert_eq!(c.attributes, ["linguist-generated", "gitlab-generated"]);
+        // Both forge conventions out of the box: a repository does not choose
+        // its forge to suit this tool, and a missed declaration is the
+        // expensive direction — the file is offered to the model, grouped as
+        // real work, and read.
+        assert_eq!(c.attributes, DEFAULT_ATTRIBUTES);
         assert!(!c.generated.is_match("anything"));
     }
 
@@ -312,7 +337,13 @@ attributes = ["linguist-generated", "custom-generated"]
         assert!(c.generated.is_match("migrations/0001_init.sql"));
         assert!(!c.generated.is_match("src/main.rs"));
         assert!(c.not_generated.is_match("important.lock"));
-        assert_eq!(c.attributes.len(), 2);
+        // Setting the key REPLACES the default list; it does not extend it.
+        // A repo naming only its own convention loses the forge ones, which is
+        // the behaviour to know about rather than to discover.
+        assert_eq!(c.attributes, ["linguist-generated", "custom-generated"]);
+        let only_own =
+            Config::parse("[classify]\nattributes = [\"custom-generated\"]", "test").unwrap();
+        assert_eq!(only_own.attributes, ["custom-generated"]);
     }
 
     #[test]

@@ -190,15 +190,17 @@ Everyone reviewing the repo shares them.
 generated = ["**/__snapshots__/**", "migrations/**"]
 # Never mark these generated. This wins over everything else.
 not_generated = ["important.lock"]
-# gitattributes names honoured as a "generated" declaration.
-attributes = ["linguist-generated"]
+# gitattributes names honoured as a "generated" declaration. This is the
+# default: GitHub's convention and GitLab's, because a repo does not choose its
+# forge to suit us. Setting the key REPLACES the list, it does not extend it.
+attributes = ["linguist-generated", "gitlab-generated"]
 ```
 
 | key | default | meaning |
 |---|---|---|
 | `classify.generated` | `[]` | Globs that mark a file as generated. |
 | `classify.not_generated` | `[]` | Globs that never mark a file as generated. |
-| `classify.attributes` | `["linguist-generated"]` | gitattributes names read as "generated". |
+| `classify.attributes` | `["linguist-generated", "gitlab-generated"]` | gitattributes names read as "generated". Setting it **replaces** the list. |
 
 **User file** — `~/.config/differential/config.toml`. It honours `XDG_CONFIG_HOME`. Which
 agent to run is your choice, not the repo's. So is how much of a file the reviewer shows.

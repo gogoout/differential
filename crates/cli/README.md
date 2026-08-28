@@ -174,14 +174,15 @@ Everyone reviewing the repo shares them.
 [classify]
 generated = ["**/__snapshots__/**", "migrations/**"]
 not_generated = ["important.lock"]
-attributes = ["linguist-generated"]
+# GitHub's convention and GitLab's, the default. Setting it REPLACES the list.
+attributes = ["linguist-generated", "gitlab-generated"]
 ```
 
 | key | default | meaning |
 |---|---|---|
 | `classify.generated` | `[]` | Globs that mark a file as generated. Generated files fold as noise. |
 | `classify.not_generated` | `[]` | Globs that never mark a file as generated. This wins over everything. |
-| `classify.attributes` | `["linguist-generated"]` | gitattributes names read as a "generated" declaration. |
+| `classify.attributes` | `["linguist-generated", "gitlab-generated"]` | gitattributes names read as a "generated" declaration. Setting it **replaces** the list. |
 
 `[ordering]` and `[stack]` are reserved for later work. They are accepted and ignored. A
 `[grouping]` table here is a hard error, with a hint telling you to move it.

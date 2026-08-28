@@ -18,3 +18,8 @@ hunks = 0          # canonical -U0 hunks
 classes = 0        # shape classes
 applier = "0/0"    # byte-exact reconstructions, "ok/total"
 recount = 0        # independent @@ recount
+# edges = 0        # OPTIONAL: class dependency edges (`depends_on` summed over
+                   # every class). Omit it and nothing is asserted. Unlike the
+                   # numbers above it pins a heuristic, not a fact — set it when
+                   # you want a change in symbol extraction to fail a test
+                   # rather than surface as a puzzling reading order.

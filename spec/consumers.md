@@ -99,8 +99,10 @@ only: shared by everyone reviewing the repo. Resolution: `--config` path >
 generated = ["**/__snapshots__/**", "migrations/**"]
 # Overrides: never mark these generated, wins over builtins/attributes/globs.
 not_generated = ["important.lock"]
-# gitattributes attribute names honoured as "generated" declarations.
-attributes = ["linguist-generated"]
+# gitattributes attribute names honoured as "generated" declarations. Shown at
+# their default: GitHub's convention and GitLab's, because a repository does not
+# choose its forge to suit this tool. Setting the key REPLACES the list.
+attributes = ["linguist-generated", "gitlab-generated"]
 ```
 
 **User-level** — `~/.config/differential/config.toml` (honours `XDG_CONFIG_HOME`).
