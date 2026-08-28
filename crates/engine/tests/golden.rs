@@ -73,7 +73,7 @@ fn one_group_backend(name: &str) -> FakeBackend {
 /// file would move both sides together and catch nothing.
 ///
 /// The version in the name is the link to `PROMPT_VERSION`. A new prompt means
-/// a new `prompt-v6.txt` and a new `include_str!` line — which is an act, not
+/// a new `prompt-v7.txt` and a new `include_str!` line — which is an act, not
 /// an accident. Regenerating this file to match new output without bumping
 /// `PROMPT_VERSION` serves cached groupings from the old prompt as if they were
 /// current.
@@ -81,7 +81,7 @@ fn one_group_backend(name: &str) -> FakeBackend {
 /// Two things in a real prompt cannot be frozen and are normalised away: the
 /// artefact path, which is a temporary directory, and the base and head
 /// revisions, which differ per range.
-const EXPECTED_PROMPT: &str = include_str!("fixtures/prompt-v5.txt");
+const EXPECTED_PROMPT: &str = include_str!("fixtures/prompt-v6.txt");
 
 /// Largest class first, both diff sides, the multi-file annotation, and the
 /// trailing blank line after every block.
@@ -126,7 +126,7 @@ fn grouping_cache_key_and_entry_shape_are_frozen() {
 
     assert_eq!(
         entries[0].file_name().to_string_lossy(),
-        "e597276e3f253ed8ac945ebca4bee25528b959df.json",
+        "26a785d7351509d31282cb091c51bf2141acba8a.json",
         "the grouping cache key changed; every existing cache entry in every \
          checkout just became unreachable, and the only symptom is a silent \
          re-run of the model"

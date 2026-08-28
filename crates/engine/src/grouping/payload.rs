@@ -28,7 +28,7 @@ use super::ClassInfo;
 /// Feeds the cache key: bump on ANY change to the prompt text or the shape of
 /// what the model can fetch, or cached groupings would silently mix prompt
 /// generations.
-pub const PROMPT_VERSION: u32 = 5;
+pub const PROMPT_VERSION: u32 = 6;
 
 /// The prompt, with `{{…}}` placeholders for the five run-specific values.
 const PROMPT: &str = include_str!("prompt.txt");

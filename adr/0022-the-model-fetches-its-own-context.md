@@ -39,8 +39,7 @@ the finer graph onto groups manufactured cycles the change did not contain.
   back-fill.
 - **`dfr agent` is one command with one answer**: every class the model may group, in full —
   id, hunk count, file count, disposition, exemplar location, then every member hunk with its
-  file and line range, then every file, with `defines:`, `uses:`, `used by:` and `generated:`
-  lines. So the model can look at a non-exemplar member before rating a class, which is the
+  file and line range, then every file, with `defines:`, `uses:` and `used by:` lines. So the model can look at a non-exemplar member before rating a class, which is the
   thing the old fixed payload could not do.
 - **Diff text comes from `git diff`, not from the engine.** `dfr agent` says where every hunk
   is; `git diff <base> <head> -- <path>` says what it holds. The prompt spells that command
@@ -63,10 +62,10 @@ the finer graph onto groups manufactured cycles the change did not contain.
   then reject as a hallucination. `plan::class_is_generated` is the single definition both
   sides use. The noise tier still folds rather than hides: `git diff` reaches any path at
   all, which is what removed the need for a by-name query here.
-- **A generated path is marked, because `git diff` honours no tier.** A class's file list
-  carries a `generated:` line naming the files the classification pass marked. Without it the
-  fold would be silent in the direction that costs: the model reading a lockfile it cannot
-  use, or naming a class the audit then rejects.
+- **No generated path reaches the model at all.** `generated` joins the shape-class key, so
+  a class is wholly generated or wholly not and none of the offered ones contains a lockfile
+  hunk. `git diff` honours no tier and will show one to anyone who asks, so the prompt says
+  not to ask.
 - **The dependency graph moves to `artefact::graph`, built from classes before the model
   runs.** It lands on `ClassEntry.defines` and `ClassEntry.depends_on`; the ordering stage
   contracts it onto groups. Every edge carries the symbols that produced it.
@@ -76,7 +75,8 @@ the finer graph onto groups manufactured cycles the change did not contain.
   it is the only way to see what a hunk says, and a tool the model must use and is not told
   about is a tool it will not use. It costs an invitation to read the whole repository and a
   route around the folded generated content; the prompt's instruction to read selectively
-  and the `generated:` marker are what pay for it. `Read`, `Grep`, `Glob`, `git log` and
+  and the class key that keeps generated hunks out of every offered class are what pay for
+  it. `Read`, `Grep`, `Glob`, `git log` and
   `git show` stay unadvertised: a model that needs the code around a hunk can go and read it,
   but it is not sent looking.
 - **`schema_version` is 3.** `Group.depends_on` becomes a list of `Edge { on, via, cycle }`,
@@ -142,7 +142,7 @@ re-ordered on every load without another model call.
   edge only misorders — does not extend to a wrong cut, which would break a coherent group
   and mislabel both halves. The impossibility is information the reviewer wants, not a
   problem to hide behind two rows.
-- **`PROMPT_VERSION` is 5 and the backend's identity changed**, so every cached grouping in
+- **`PROMPT_VERSION` is 6 and the backend's identity changed**, so every cached grouping in
   every checkout is invalidated once. Both feed the cache key, so this is automatic, not a
   migration.
 - **The cache key hashes the backend's identity, never its display name.** The default

@@ -32,7 +32,7 @@ dfr agent --doc <path>
   whole of that path: one command, one answer, no sub-questions. It prints every class the
   model may group, in full — id, hunk count, file count, disposition, exemplar location,
   then every member hunk with its file and line range, then every file, with `defines:`,
-  `uses:`, `used by:` and `generated:` lines. That is 72KB for a 196-class change, beside
+  `uses:` and `used by:` lines. That is 72KB for a 196-class change, beside
   the 322KB of diff the model reads anyway, so slicing it into four queries bought three
   extra model turns and nothing else. The prompt names the running executable, and the
   default backend's allowlist is derived from the same string, so the two cannot disagree

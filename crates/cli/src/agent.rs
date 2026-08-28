@@ -33,8 +33,9 @@ use differential_engine::schema::PlanDocument;
 /// Generated content is left out, exactly as the prompt's id list leaves it out
 /// (`plan::class_is_generated`, ADR 0006). Handing the model a lockfile would be
 /// bytes it must read and a class id the audit would reject as a hallucination.
-/// The noise tier still never hides: `git diff` reaches any path at all, and a
-/// class's own generated files are named on its `generated:` line.
+/// No class printed here touches a generated file at all: `generated` is part of
+/// the shape-class key, so a class is wholly one or the other. The noise tier
+/// still never hides — `git diff` reaches any path.
 pub fn run(doc_path: &Path) -> anyhow::Result<String> {
     let text = std::fs::read_to_string(doc_path)
         .with_context(|| format!("cannot read {}", doc_path.display()))?;
@@ -105,18 +106,11 @@ fn header(v: &ClassView<'_>) -> String {
     )
 }
 
-/// What the class introduces, what it consumes, who consumes it, and which of
-/// its files are generated.
+/// What the class introduces, what it consumes, and who consumes it.
 ///
 /// The reverse edges are printed too. They cost a scan of a list the caller
 /// already has, and "who needs this" is the half of a dependency a reader
 /// cannot work out from their own entry.
-///
-/// The generated line exists because the model reads diff text with `git diff`,
-/// which honours no tier. The stage folds generated files away on purpose
-/// (ADR 0006); saying which paths those are is what keeps the fold visible
-/// instead of silent. A class living entirely in generated files is not printed
-/// at all — this marks the mixed class, which stays with the model by design.
 fn relations(doc: &PlanDocument, v: &ClassView<'_>) -> Vec<String> {
     let mut out = Vec::new();
     if !v.class.defines.is_empty() {
@@ -139,9 +133,6 @@ fn relations(doc: &PlanDocument, v: &ClassView<'_>) -> Vec<String> {
         .collect();
     if !used_by.is_empty() {
         out.push(format!("used by: {}", used_by.join(", ")));
-    }
-    if !v.generated.is_empty() {
-        out.push(format!("generated: {}", v.generated.join(", ")));
     }
     out
 }

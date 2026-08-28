@@ -34,10 +34,36 @@ pub fn norm_lines(lines: &[Vec<u8>], sigil: u8, lang: &dyn Language) -> Vec<Vec<
     out
 }
 
-/// Shape key: normalised removed + added lines, plus the file disposition — a
-/// whole-file-add hunk and a modification with identical text are different
-/// shapes. Returns the 12-hex sha1 used as the class key.
-pub fn shape_hash(hunk: &Hunk, disposition_letter: u8, lang: &dyn Language) -> String {
+/// Shape key: normalised removed + added lines, the file disposition, and
+/// whether the file is generated. Returns the 12-hex sha1 used as the class
+/// key.
+///
+/// The disposition is in the key because a whole-file-add hunk and a
+/// modification with identical text are different shapes.
+///
+/// **`generated` is in the key because a class is a unit of routing, not only a
+/// unit of text.** A lockfile line and a source line can normalise to the same
+/// shape, and without this they became one class — a *mixed* class, neither
+/// generated nor not. The noise tier could then only ask "is every member
+/// generated?", which such a class answers no, so it went to the model and its
+/// lockfile hunks went wherever the model put the class. That was how a
+/// generated hunk reached a focus group.
+///
+/// With the flag in the key, every class is wholly generated or wholly not.
+/// `plan::class_is_generated` becomes exact rather than a membership test that
+/// fails on the one case that matters.
+///
+/// The cost is stated plainly: `generated` is a *hint* (built-in list,
+/// gitattributes, repo config), so a `[classify]` glob now moves a class
+/// boundary rather than only a routing decision. That is config tuning
+/// classification, which is what config is for (ADR 0012); it still cannot add
+/// or remove a hunk. The gain is that the routing decision is exact.
+pub fn shape_hash(
+    hunk: &Hunk,
+    disposition_letter: u8,
+    generated: bool,
+    lang: &dyn Language,
+) -> String {
     let mut parts = norm_lines(&hunk.removed, b'-', lang);
     parts.extend(norm_lines(&hunk.added, b'+', lang));
     let mut hasher = Sha1::new();
@@ -49,6 +75,8 @@ pub fn shape_hash(hunk: &Hunk, disposition_letter: u8, lang: &dyn Language) -> S
     }
     hasher.update(b"|");
     hasher.update([disposition_letter]);
+    hasher.update(b"|");
+    hasher.update([if generated { b'g' } else { b'.' }]);
     hex::encode(hasher.finalize())[..12].to_string()
 }
 
@@ -102,7 +130,7 @@ pub fn partition(view: &DiffView, langs: &LanguageRegistry) -> Partition {
     for (i, h) in view.hunks.iter().enumerate() {
         let file = view.file_of(h);
         let lang = langs.detect(&file.path);
-        let key = shape_hash(h, file.disposition.letter(), lang);
+        let key = shape_hash(h, file.disposition.letter(), file.generated.is_some(), lang);
         first_seen.entry(key.clone()).or_insert(i);
         by_hash.entry(key).or_default().push(i);
     }
@@ -162,7 +190,10 @@ mod tests {
             &[b"  let grand_total = derive_total(rows);"],
             &[b"  let grand_total = derive_result(rows);"],
         );
-        assert_eq!(shape_hash(&a, b'M', G), shape_hash(&b, b'M', G));
+        assert_eq!(
+            shape_hash(&a, b'M', false, G),
+            shape_hash(&b, b'M', false, G)
+        );
     }
 
     #[test]
@@ -172,7 +203,10 @@ mod tests {
             &[br#"    retry(9, "linear")"#],
         );
         let b = hunk(&[br#"  retry(12, "other")"#], &[br#"  retry(3, "words")"#]);
-        assert_eq!(shape_hash(&a, b'M', G), shape_hash(&b, b'M', G));
+        assert_eq!(
+            shape_hash(&a, b'M', false, G),
+            shape_hash(&b, b'M', false, G)
+        );
     }
 
     #[test]
@@ -180,20 +214,41 @@ mod tests {
         // ADR 0004: both sides contribute; different deletions are not one shape.
         let a = hunk(&[b"fn compute_interest(rate: f64) -> f64 {"], &[]);
         let b = hunk(&[b"const RETRY_LIMIT: usize = 5;"], &[]);
-        assert_ne!(shape_hash(&a, b'M', G), shape_hash(&b, b'M', G));
+        assert_ne!(
+            shape_hash(&a, b'M', false, G),
+            shape_hash(&b, b'M', false, G)
+        );
     }
 
     #[test]
     fn disposition_is_part_of_the_key() {
         let a = hunk(&[], &[b"content line here"]);
-        assert_ne!(shape_hash(&a, b'A', G), shape_hash(&a, b'M', G));
+        assert_ne!(
+            shape_hash(&a, b'A', false, G),
+            shape_hash(&a, b'M', false, G)
+        );
+    }
+
+    #[test]
+    fn a_generated_file_never_shares_a_class_with_a_source_file() {
+        // The one case this component exists for: identical text, one side
+        // generated. Sharing a class made it neither generated nor not, and the
+        // noise tier could only route a class that was wholly one.
+        let a = hunk(&[b"old = 1"], &[b"new = 2"]);
+        assert_ne!(
+            shape_hash(&a, b'M', true, G),
+            shape_hash(&a, b'M', false, G)
+        );
     }
 
     #[test]
     fn crlf_agnostic_normalisation() {
         let unix = hunk(&[b"old_value_name = 1"], &[b"new_value_name = 1"]);
         let dos = hunk(&[b"old_value_name = 1\r"], &[b"new_value_name = 1\r"]);
-        assert_eq!(shape_hash(&unix, b'M', G), shape_hash(&dos, b'M', G));
+        assert_eq!(
+            shape_hash(&unix, b'M', false, G),
+            shape_hash(&dos, b'M', false, G)
+        );
     }
 
     #[test]
@@ -201,7 +256,10 @@ mod tests {
         // The identifier regex needs length >= 4; `x` and `y` stay distinct.
         let a = hunk(&[b"x = 1"], &[b"y = 1"]);
         let b = hunk(&[b"y = 1"], &[b"x = 1"]);
-        assert_ne!(shape_hash(&a, b'M', G), shape_hash(&b, b'M', G));
+        assert_ne!(
+            shape_hash(&a, b'M', false, G),
+            shape_hash(&b, b'M', false, G)
+        );
     }
 
     #[test]
@@ -233,7 +291,10 @@ mod tests {
         let a = hunk(&[b"alpha_name = 1"], &[b"beta_name = 1"]);
         let b = hunk(&[b"gamma_name = 1"], &[b"delta_name = 1"]);
         // Same shape, different digests.
-        assert_eq!(shape_hash(&a, b'M', G), shape_hash(&b, b'M', G));
+        assert_eq!(
+            shape_hash(&a, b'M', false, G),
+            shape_hash(&b, b'M', false, G)
+        );
         assert_ne!(hunk_digest(&a), hunk_digest(&b));
     }
 
@@ -263,10 +324,13 @@ mod tests {
         let a = hunk(&[b"completely unlike"], &[b"anything else at all"]);
         let b = hunk(&[b"nothing shared here"], &[b"with the other hunk"]);
         // Generic: different shapes. Flattener: same shape. Digests: unmoved.
-        assert_ne!(shape_hash(&a, b'M', G), shape_hash(&b, b'M', G));
+        assert_ne!(
+            shape_hash(&a, b'M', false, G),
+            shape_hash(&b, b'M', false, G)
+        );
         assert_eq!(
-            shape_hash(&a, b'M', &Flattener),
-            shape_hash(&b, b'M', &Flattener)
+            shape_hash(&a, b'M', false, &Flattener),
+            shape_hash(&b, b'M', false, &Flattener)
         );
         assert_ne!(hunk_digest(&a), hunk_digest(&b));
     }

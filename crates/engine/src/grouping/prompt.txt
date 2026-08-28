@@ -68,9 +68,9 @@ same as reading one. The path tells you which it is, so spend your reading on th
 that can change behaviour, and label the rest from their class entry.
 
 Generated files - lockfiles, snapshots, build artefacts - are folded away before you see
-them. Their class ids are not in the list and are not yours to group. A class that has
-one among its own files says so on a `generated:` line; `git diff` says nothing, so do
-not spend a read on one.
+them. No class you are given contains one, and their own class ids are not in the list.
+`git diff` does not know that and will show you one if you ask, so do not ask: a path that
+looks generated is generated, and reading it buys you nothing you can use.
 
 Merging a class that defines something with a class that consumes a different group
 leaves no valid reading order, so prefer not to. That is what `uses:` is for.

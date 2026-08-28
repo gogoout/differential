@@ -55,6 +55,13 @@ pub fn build_view(e: &Enumeration<'_>) -> Result<DiffView, EngineError> {
 ///
 /// The only place config and languages enter the pipeline. Both tune how hunks
 /// are *described*, never which ones exist (ADR 0012, ADR 0015).
+///
+/// **The order of these two lines is load-bearing.** `partition` reads
+/// `file.generated` as part of the class key, so the hints must be applied
+/// first. Getting it backwards would not fail: every file would read as not
+/// generated, and generated hunks would quietly rejoin source classes — the
+/// exact bug the key component was added to remove. The two calls are adjacent
+/// and this is their only caller, which is the guard.
 pub fn classify(
     view: &mut DiffView,
     config: &Config,

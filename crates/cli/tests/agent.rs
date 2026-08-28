@@ -110,7 +110,7 @@ fn every_member_gets_a_location_not_just_the_exemplar() {
 }
 
 #[test]
-fn generated_content_is_not_offered_but_a_mixed_class_says_so() {
+fn no_generated_path_reaches_the_model_at_all() {
     let (_r, _dir, doc) = document_with_generated();
     let text = agent(&doc);
 
@@ -120,11 +120,8 @@ fn generated_content_is_not_offered_but_a_mixed_class_says_so() {
     assert!(text.contains("src/a.txt"), "{text}");
     assert!(
         !text.contains("Cargo.lock"),
-        "wholly generated, so not offered\n{text}"
+        "generated, so not offered\n{text}"
     );
-    // And nothing offered here has a generated file in it, so no class claims
-    // one — the marker would mean nothing if it appeared unearned.
-    assert!(!text.contains("generated:"), "{text}");
 }
 
 #[test]

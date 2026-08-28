@@ -15,9 +15,17 @@ and none of the rest.
 
 ## What the model never sees or cannot override
 
-- **Noise is mechanical** (ADR 0006). A class whose hunks all live in `generated` files is
-  pre-assigned to one folded noise group and is never offered. A class spanning generated
-  and non-generated files stays with the model.
+- **Noise is mechanical** (ADR 0006). A class whose hunks live in `generated` files is
+  pre-assigned to one folded noise group and is never offered. **`generated` is part of the
+  shape-class key** (`shape::shape_hash`), so no class spans both kinds: one shaped edit made
+  in a lockfile and in a source file is two classes, folded and offered respectively.
+
+  It used to be one class, and that was a hole. `class_is_generated` could only ask "is every
+  member generated?", which such a class answers no, so it went to the model and its lockfile
+  hunk went into whatever group the model chose — a generated hunk in a focus group. The
+  price of closing it is that a `[classify]` glob now moves a class boundary rather than only
+  a routing decision. That is config tuning classification, which is what config is for
+  (ADR 0012); it still cannot add or remove a hunk.
 - **The relocation gate** (ADR 0003). A class touching a file whose `rename_similarity` is
   below 95 is a modification, not a relocation. `dfr agent` reports the rename
   ("renamed from …, N% similar") so the model can judge correctly — and a deterministic
@@ -39,7 +47,7 @@ nothing about the classes is sent.
 **One command, one answer.** `dfr agent --doc <path>` prints every class the model may
 group, in full (`spec/consumers.md`): id, hunk count, file count, disposition, exemplar
 location, then every member hunk with its file and line range, then every file it touches,
-with `defines:`, `uses:`, `used by:` and `generated:` lines.
+with `defines:`, `uses:` and `used by:` lines.
 
 There were five queries — `classes`, `class`, `diff`, `file`, `defines`. Two measurements
 collapsed them. `diff` re-enumerated the range to print hunk text, which `git diff` does;
@@ -68,13 +76,13 @@ class rather than walking every class in turn.
 **Generated content is left out, exactly as the prompt's id list leaves it out** — handing
 the model a lockfile would be bytes it must read and a class id it would be penalised for
 naming. One definition serves both sides (`plan::class_is_generated`), because two copies
-of that rule would be two rules.
+of that rule would be two rules — and with `generated` in the class key, that definition
+cannot come back half true.
 
-**A generated path is marked, because `git diff` honours no tier.** A class that has one
-among its own files carries a `generated:` line naming it (`plan::file_is_generated`). A
-class living entirely in generated files is not printed at all; the marker is for the mixed
-class, which stays with the model by design. The noise tier folds and never hides: `git
-diff` reaches any path at all.
+**No generated path reaches the model at all**, because there is no mixed class to leak
+one. The prompt says so, and says not to `git diff` a path that looks generated — `git diff`
+honours no tier and will show a lockfile to anyone who asks. The noise tier folds and never
+hides: `git diff` reaches any path at all, for a reviewer who wants it.
 
 The backend runs with a read-only allowlist —
 `Bash(dfr agent:*),Bash(git diff:*),Read,Grep,Glob,Bash(git log:*),Bash(git show:*)` —
@@ -86,7 +94,8 @@ text out, with the tools running inside the CLI it spawns.
 model must use and is not told about is a tool it will not use. It costs what advertising
 always cost — an invitation to read the whole repository, and a route around the generated
 content this stage folds away. Two things pay for it, and both are above: the prompt's
-instruction to read selectively, and the `generated:` marker. `Read`, `Grep`, `Glob`,
+instruction to read selectively, and the class key that keeps generated hunks out of every
+offered class. `Read`, `Grep`, `Glob`,
 `git log` and `git show` stay unadvertised: a model that needs the code around a hunk can go
 and read it; it is not sent looking.
 

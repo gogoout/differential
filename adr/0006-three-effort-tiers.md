@@ -20,6 +20,8 @@ remainder, so the genuine saving was 28%, not the ~73% a skim total suggests. Se
 ## Consequences
 
 - The tool's claimed value matches what a reviewer actually experiences.
+- Noise assignment is whole-class, and the class key carries `generated` so that it can be
+  (ADR 0004): no class mixes generated and source hunks, so none has to be split or judged.
 - Noise assignment is driven by computed `generated` hints (builtin list, gitattributes,
   repo config), not model judgement alone.
 

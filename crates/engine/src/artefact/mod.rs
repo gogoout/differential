@@ -33,15 +33,6 @@ pub struct ClassView<'d> {
     pub exemplar: &'d schema::HunkEntry,
     /// Distinct paths the class touches, in first-seen order.
     pub files: Vec<&'d str>,
-    /// The subset of `files` the classification pass marked generated.
-    ///
-    /// A class whose files are ALL generated never reaches [`index`] at all.
-    /// This is the mixed class — some generated files, some not — which stays
-    /// with the model by design (ADR 0006). The model reads diff text with
-    /// `git diff` now, and `git diff` honours no tier, so which paths the stage
-    /// folds away is something it has to be told rather than something it can
-    /// infer from what it was shown.
-    pub generated: Vec<&'d str>,
     /// Disposition of the exemplar's file.
     pub kind: schema::Disposition,
 }
@@ -65,9 +56,13 @@ impl ClassView<'_> {
 /// **Generated content is left out**, exactly as the grouping stage leaves it
 /// out of the prompt (`plan::class_is_generated`, ADR 0006). Listing a class the
 /// model may not name would invite it to name one, and the audit would throw
-/// that whole group away as a hallucination. The noise tier still folds rather
-/// than hides: `git diff` reaches any path at all, and a class that has a
-/// generated file among its own says so in [`ClassView::generated`].
+/// that whole group away as a hallucination.
+///
+/// **Nothing printed here touches a generated file at all.** `generated` is part
+/// of the shape-class key (`shape::shape_hash`), so a class is wholly generated
+/// or wholly not, and this filter therefore removes every generated hunk rather
+/// than every class that happens to be entirely generated. The noise tier still
+/// folds rather than hides: `git diff` reaches any path at all.
 pub fn index(doc: &schema::PlanDocument) -> Vec<ClassView<'_>> {
     all(doc)
         .into_iter()
@@ -90,11 +85,6 @@ fn view<'d>(doc: &'d schema::PlanDocument, class: &'d schema::ClassEntry) -> Opt
             files.push(&m.file);
         }
     }
-    let generated: Vec<&str> = files
-        .iter()
-        .copied()
-        .filter(|path| crate::plan::file_is_generated(doc, path))
-        .collect();
     Some(ClassView {
         kind: doc
             .files
@@ -105,7 +95,6 @@ fn view<'d>(doc: &'d schema::PlanDocument, class: &'d schema::ClassEntry) -> Opt
         members,
         exemplar,
         files,
-        generated,
     })
 }
 
