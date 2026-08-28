@@ -65,89 +65,23 @@ fn one_group_backend(name: &str) -> FakeBackend {
     })
 }
 
-/// The exact bytes sent to the model, with the artefact path standing in as
-/// `<DOC>` — it is a temporary directory and differs per run.
+/// The exact bytes sent to the model, held as a **second, separate copy** of
+/// the prompt.
 ///
-/// Regenerating this constant to match new output is only correct alongside a
-/// `PROMPT_VERSION` bump — otherwise cached groupings from the old prompt keep
-/// being served as if they were current.
-const EXPECTED_PROMPT: &str = r#"You are helping a reviewer read a large merge request faster.
-
-A mechanical pass has already split every changed hunk into SHAPE CLASSES: hunks whose
-diff text is identical after normalising away identifier names, string and numeric
-literals. So a class with count 9 is nine hunks performing the same textual edit.
-
-Your job is NOT to assign hunks - that is already done and must not change. Your job is
-to make the result readable:
-
-1. MERGE classes that are the same change in intent even though their text differs.
-   This is the part hashing cannot do: `foo(a)` becoming `bar(a)` and `foo(x, y)`
-   becoming `bar(x, y)` are one intent in two classes.
-2. LABEL each merged group with what a reviewer needs to know.
-3. RATE the reading effort each group deserves.
-
-Return ONLY valid JSON, no prose and no code fence.
-
-Schema:
-{"groups": [{"label": "short name",
-             "description": "one sentence: what changed and why it is safe or not",
-             "classes": ["C3", "C17"],
-             "effort": "skim" | "focus",
-             "reason": "why this effort level"}]}
-
-Rules:
-- Every class id must appear in exactly one group. Do not invent class ids.
-- Use as many groups as the change genuinely has. Do not force it into a small number;
-  a 90-file refactor legitimately has more than five distinct concerns.
-- "skim" means a reviewer can verify the whole group by reading one exemplar and
-  trusting the rest are the same edit. Mechanical renames, import swaps, dependency
-  bumps and refixtured snapshots are "skim".
-- "focus" means the group changes behaviour, error handling, control flow, a public
-  contract, or a security or correctness boundary. When in doubt use "focus".
-- `class C7` notes "renamed from ... N% similar" where git detected a move. Below 95 the
-  file was REWRITTEN during the move, not relocated verbatim: that class must be "focus".
-- Order groups so "focus" groups come first: the reviewer should meet real work before
-  mechanical work.
-- Labels describe the PURPOSE, not the mechanism.
-
-HOW TO SEE THE CHANGE
-
-Nothing about the classes is in this prompt. Read what you need instead:
-
-  dfr agent --doc <DOC> classes            every class: size, files, kind, defines, uses
-  dfr agent --doc <DOC> diff               the diff of the WHOLE change, every hunk
-  dfr agent --doc <DOC> diff C7 C8         only those classes
-  dfr agent --doc <DOC> diff h12 h13       only those hunks
-  dfr agent --doc <DOC> diff --after h137  the rest, when a reply came back cut
-  dfr agent --doc <DOC> class C7 C8        those classes in full (no ids: all of them)
-  dfr agent --doc <DOC> file <path>…      the classes touching those files
-  dfr agent --doc <DOC> defines <symbol>… the classes introducing those symbols
-
-TWO CALLS ARE USUALLY ENOUGH. `classes` for the shape of it, then `diff` with no ids
-for the entire change. Every command takes as many arguments as you like and none means
-all of them, so `diff C7 C8 C9` costs what `diff C7` costs. Asking one id at a time
-turns a two-hundred-class change into two hundred round trips, and each one is a whole
-turn -- it is by far the slowest thing you can do here.
-
-A change too large for one reply comes back cut, ending with the exact command that
-continues it. Run that command. Nothing is ever dropped for length, but you have not
-seen the whole change until a reply comes back without one.
-
-Generated files -- lockfiles, snapshots, build artefacts -- are folded away before you
-see them, so these replies are smaller than the raw change. Their classes are not in the
-id list and are not yours to group. Name one and you will still be shown it.
-
-Rating a class "skim" is a claim that every one of its hunks is the same edit, and the
-diff is how you check it. Only a class with MORE THAN ONE HUNK can be wrong about that:
-for a `1h` class the exemplar is the whole class. `classes` prints the hunk count.
-
-`uses:` on a class is a definition-to-use edge the mechanical pass found, with the
-symbol that produced it. Merging a class that defines something with a class that
-consumes a different group leaves no valid reading order, so prefer not to.
-
-CLASS IDS (every one must appear in exactly one group):
-C0 C1
-"#;
+/// It must never be the file `payload.rs` includes. The whole value of this
+/// golden is that a prompt edit has to be made twice, deliberately; one shared
+/// file would move both sides together and catch nothing.
+///
+/// The version in the name is the link to `PROMPT_VERSION`. A new prompt means
+/// a new `prompt-v6.txt` and a new `include_str!` line — which is an act, not
+/// an accident. Regenerating this file to match new output without bumping
+/// `PROMPT_VERSION` serves cached groupings from the old prompt as if they were
+/// current.
+///
+/// Two things in a real prompt cannot be frozen and are normalised away: the
+/// artefact path, which is a temporary directory, and the base and head
+/// revisions, which differ per range.
+const EXPECTED_PROMPT: &str = include_str!("fixtures/prompt-v5.txt");
 
 /// Largest class first, both diff sides, the multi-file annotation, and the
 /// trailing blank line after every block.
@@ -157,11 +91,15 @@ fn grouping_prompt_bytes_are_frozen() {
     let backend = one_group_backend("golden-backend");
     let _ = grouped_with_cache(&r, &base, &head, &backend, None);
 
-    // The path is the one thing in the prompt that cannot be frozen, so it is
-    // the one thing normalised away.
+    // The artefact path and the range are the parts of a real prompt that
+    // cannot be frozen, so they are the parts normalised away.
     let prompt = regex::Regex::new(r"--doc \S+")
         .unwrap()
         .replace_all(&backend.last_prompt(), "--doc <DOC>")
+        .into_owned();
+    let prompt = regex::Regex::new(r"git diff [0-9a-f]{40} [0-9a-f]{40}")
+        .unwrap()
+        .replace_all(&prompt, "git diff <BASE> <HEAD>")
         .into_owned();
     assert_eq!(
         prompt, EXPECTED_PROMPT,
@@ -188,7 +126,7 @@ fn grouping_cache_key_and_entry_shape_are_frozen() {
 
     assert_eq!(
         entries[0].file_name().to_string_lossy(),
-        "8d472c182ac1950b6d020ab1843f9ebb51579857.json",
+        "e597276e3f253ed8ac945ebca4bee25528b959df.json",
         "the grouping cache key changed; every existing cache entry in every \
          checkout just became unreachable, and the only symptom is a silent \
          re-run of the model"

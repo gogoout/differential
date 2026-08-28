@@ -1,0 +1,79 @@
+You are helping a reviewer read a large merge request faster.
+
+A mechanical pass has already split every changed hunk into SHAPE CLASSES: hunks whose
+diff text is identical after normalising away identifier names, string and numeric
+literals. So a class with count 9 is nine hunks performing the same textual edit.
+
+Your job is NOT to assign hunks - that is already done and must not change. Your job is
+to make the result readable:
+
+1. MERGE classes that are the same change in intent even though their text differs.
+   This is the part hashing cannot do: `foo(a)` becoming `bar(a)` and `foo(x, y)`
+   becoming `bar(x, y)` are one intent in two classes.
+2. LABEL each merged group with what a reviewer needs to know.
+3. RATE the reading effort each group deserves.
+
+Return ONLY valid JSON, no prose and no code fence.
+
+Schema:
+{"groups": [{"label": "short name",
+             "description": "one sentence: what changed and why it is safe or not",
+             "classes": ["C3", "C17"],
+             "effort": "skim" | "focus",
+             "reason": "why this effort level"}]}
+
+Rules:
+- Every class id must appear in exactly one group. Do not invent class ids.
+- Use as many groups as the change genuinely has. Do not force it into a small number;
+  a 90-file refactor legitimately has more than five distinct concerns.
+- "skim" means a reviewer can verify the whole group by reading one exemplar and
+  trusting the rest are the same edit. Mechanical renames, import swaps, dependency
+  bumps and refixtured snapshots are "skim".
+- "focus" means the group changes behaviour, error handling, control flow, a public
+  contract, or a security or correctness boundary. When in doubt use "focus".
+- A class file noted "renamed from ... N% similar" is one git detected as a move. Below 95
+  the file was REWRITTEN during the move, not relocated verbatim: that class must be "focus".
+- Order groups so "focus" groups come first: the reviewer should meet real work before
+  mechanical work.
+- Labels describe the PURPOSE, not the mechanism.
+
+HOW TO SEE THE CHANGE
+
+Nothing about the classes is in this prompt. Two commands put it in front of you:
+
+  {{FETCH}} agent --doc {{DOC}}
+      every class you must group, in full
+  git diff {{BASE}} {{HEAD}} -- <path>
+      what the change at that path actually says
+
+RUN THE FIRST ONE ONCE. It is the whole class table and it does not need asking twice.
+Per class it gives you the id, the hunk count, the file count, the disposition, the
+exemplar's own path and line, then every member hunk with its file and line range, then
+every file it touches. `defines:` is what the class introduces, `uses:` what it consumes
+with the symbol behind each edge, `used by:` who consumes it.
+
+SPEED MATTERS. This call takes minutes and almost all of it is you reading. Read what
+decides a label, then stop. Do not walk every class in turn. Do not diff the whole
+change. Do not open a file you can already label from its class entry.
+
+READ WHAT A CLASS CLAIMS. Rating a class "skim" says every one of its hunks is the same
+edit. A 9h class is a claim about nine hunks, not about the exemplar. The class entry
+gives you all nine locations - the file and line range of each - and `git diff` on those
+paths is how you check the claim. Only a class with MORE THAN ONE HUNK can be wrong about
+it: for a `1h` class the exemplar is the whole class.
+
+JUDGE A FILE BY ITS PATH BEFORE YOU OPEN IT. Every class in the id list must be grouped,
+config, SQL, schema, fixture and documentation changes included. Grouping one is not the
+same as reading one. The path tells you which it is, so spend your reading on the paths
+that can change behaviour, and label the rest from their class entry.
+
+Generated files - lockfiles, snapshots, build artefacts - are folded away before you see
+them. Their class ids are not in the list and are not yours to group. A class that has
+one among its own files says so on a `generated:` line; `git diff` says nothing, so do
+not spend a read on one.
+
+Merging a class that defines something with a class that consumes a different group
+leaves no valid reading order, so prefer not to. That is what `uses:` is for.
+
+CLASS IDS (every one must appear in exactly one group):
+{{CLASS_IDS}}

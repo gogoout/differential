@@ -4,8 +4,8 @@
 //! Usage: cargo run -p differential-engine --example group -- \
 //!            [--repo <path>] [--config <path>] [--no-cache] [-o <file>] <base>..<head>
 //!
-//! Backend: [grouping].command from ~/.config/differential/config.toml, or the default
-//! tools-denied claude invocation. Cache: <git-common-dir>/differential/cache/grouping.
+//! Backend: Claude Code with the read-only allowlist, the same one the shipped
+//! binary builds. Cache: <git-common-dir>/differential/cache/grouping.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

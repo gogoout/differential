@@ -56,14 +56,37 @@ pub struct UserConfig {
     pub review: ReviewConfig,
 }
 
-/// `[grouping]` — pure data; the pipeline turns it into an LLM backend.
+/// Which agent to run, by name.
+///
+/// It used to be a free argv, and that was the wrong shape. The grouping stage
+/// does not merely spawn a process: it hands the agent a tool allowlist, a
+/// fetch command and a prompt written for what that agent can do (ADR 0022).
+/// An arbitrary argv gets the prompt and none of the rest, so it was a knob
+/// that looked like it worked. A name selects an invocation this crate builds
+/// whole, and adding an agent is adding a variant here.
+///
+/// The name also answers what a reviewer is shown while they wait — the argv
+/// never could, at four times the width of the line it had.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Agent {
+    /// Headless `claude`, read-only tools (ADR 0022).
+    #[default]
+    ClaudeCode,
+}
+
+/// `[grouping]` — pure data; the application layer turns it into an LLM
+/// backend (ADR 0018, 0020).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GroupingConfig {
-    /// Backend argv (prompt on stdin, completion on stdout). Default: the
-    /// validated tools-denied claude invocation.
+    /// Which agent runs the grouping call. Default: `claude-code`.
     #[serde(default)]
-    pub command: Option<Vec<String>>,
+    pub agent: Option<Agent>,
+    /// How long to wait for it. Default: 1200 seconds.
+    ///
+    /// This one stays a number because it tunes the agent rather than replacing
+    /// it: a slow machine or a large change may genuinely need longer.
     #[serde(default)]
     pub timeout_secs: Option<u64>,
 }
@@ -305,21 +328,18 @@ attributes = ["linguist-generated", "custom-generated"]
 
     #[test]
     fn grouping_in_repo_config_errors_with_migration_hint() {
-        let err = Config::parse("[grouping]\ncommand = [\"x\"]", "test").unwrap_err();
+        let err = Config::parse("[grouping]\nagent = \"claude-code\"", "test").unwrap_err();
         assert!(err.to_string().contains("user config"), "{err}");
     }
 
     #[test]
     fn user_config_parses_grouping_and_review() {
         let u = Config::parse_user(
-            "[grouping]\ncommand = [\"my-llm\", \"--flag\"]\ntimeout_secs = 60",
+            "[grouping]\nagent = \"claude-code\"\ntimeout_secs = 60",
             "test",
         )
         .unwrap();
-        assert_eq!(
-            u.grouping.command.as_deref(),
-            Some(&["my-llm".to_string(), "--flag".to_string()][..])
-        );
+        assert_eq!(u.grouping.agent, Some(Agent::ClaudeCode));
         assert_eq!(u.grouping.timeout_secs, Some(60));
         // An absent [review] means the defaults, not zero context.
         assert_eq!(u.review.context, 3);
@@ -331,6 +351,16 @@ attributes = ["linguist-generated", "custom-generated"]
 
         // Unknown keys and unknown sections stay hard errors.
         assert!(Config::parse_user("[grouping]\nmodel = \"x\"", "test").is_err());
+
+        // An agent nobody implements is a hard error that says which ones
+        // exist. A silent fall back to the default would run a different agent
+        // than the one asked for, and the cache key would agree with neither.
+        let err = Config::parse_user("[grouping]\nagent = \"gpt\"", "test").unwrap_err();
+        assert!(err.to_string().contains("claude-code"), "{err}");
+
+        // And the argv this key used to take is now one of those errors, not a
+        // command that gets spawned without its allowlist.
+        assert!(Config::parse_user("[grouping]\nagent = [\"my-llm\"]", "test").is_err());
         assert!(Config::parse_user("[review]\nlines = 5", "test").is_err());
         assert!(Config::parse_user("[classify]\ngenerated = []", "test").is_err());
     }
@@ -343,7 +373,7 @@ attributes = ["linguist-generated", "custom-generated"]
         std::fs::write(&repo_file, "[classify]\ngenerated = [\"gen/**\"]").unwrap();
         std::fs::write(
             &user_file,
-            "[grouping]\ncommand = [\"agent\"]\n[review]\ncontext = 8",
+            "[grouping]\nagent = \"claude-code\"\n[review]\ncontext = 8",
         )
         .unwrap();
         let c = Config::load(
@@ -354,10 +384,7 @@ attributes = ["linguist-generated", "custom-generated"]
         )
         .unwrap();
         assert!(c.generated.is_match("gen/x"));
-        assert_eq!(
-            c.grouping.command.as_deref(),
-            Some(&["agent".to_string()][..])
-        );
+        assert_eq!(c.grouping.agent, Some(Agent::ClaudeCode));
         assert_eq!(c.review.context, 8);
 
         // Explicit-but-missing paths are hard errors; absent defaults are not.

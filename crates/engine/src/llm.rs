@@ -52,19 +52,29 @@ pub enum LlmError {
 
 /// One-shot completion: prompt in, raw text out.
 pub trait LlmBackend: Send + Sync {
-    /// Human-readable backend name, for logs and audit output.
+    /// What to call this agent on screen, for a reviewer waiting on it.
+    ///
+    /// A product name, not a command line: "Claude Code", not `claude -p
+    /// --output-format text --allowed-tools Bash(...),...`. The reviewer is
+    /// waiting to learn *which agent* is thinking, and the argv answers a
+    /// different question at four times the width — it overran the splash line
+    /// the moment the allowlist grew.
+    ///
+    /// The command as it will actually run is still reported where it is the
+    /// answer: `LlmError` carries it, because a spawn failure is debugged with
+    /// the whole argv and nothing less.
     fn name(&self) -> &str;
 
     /// Everything about this backend that could change the grouping, and
     /// nothing that could not. The grouping cache key hashes this (ADR 0009).
     ///
     /// Separate from `name` because the two answer different questions. `name`
-    /// is what to show a reviewer waiting on a subprocess, so it is the command
-    /// as it will actually run. This is what determines the answer — and where
-    /// a binary happens to live does not. Hashing the display name put the
-    /// absolute path of `dfr` into the key, so a debug build, a release build
-    /// and two checkouts of one commit each re-ran a four-hundred-second call
-    /// for an identical class partition, and the worktree-shared cache
+    /// is what to show a reviewer, so it is a product name. This is what
+    /// determines the answer, so it is the argv — minus the parts that say
+    /// where this machine keeps things. Hashing a path put the absolute
+    /// location of `dfr` into the key, so a debug build, a release build and
+    /// two checkouts of one commit each re-ran a four-hundred-second call for
+    /// an identical class partition, and the worktree-shared cache
     /// `plan::grouping_cache_dir` promises was defeated.
     ///
     /// Defaults to `name`, which is right for any backend whose identity has no
@@ -80,10 +90,14 @@ pub trait LlmBackend: Send + Sync {
 pub struct CommandBackend {
     argv: Vec<String>,
     timeout: Duration,
+    /// What a reviewer is shown: see [`LlmBackend::name`].
     name: String,
-    /// See [`LlmBackend::identity`]. Equal to `name` unless the argv carries a
-    /// path that says where this machine keeps things rather than what the
-    /// model will do.
+    /// The argv as it will actually run, for error text only. A spawn failure
+    /// is debugged with the whole command, and neither `name` nor `identity`
+    /// is that: one is a product name, the other stands a placeholder where
+    /// the executable's path was.
+    command: String,
+    /// See [`LlmBackend::identity`].
     identity: String,
     /// Set from another thread to kill an in-flight child (a reviewer
     /// abandoning the wait). Without this the subprocess would outlive the
@@ -92,14 +106,20 @@ pub struct CommandBackend {
 }
 
 impl CommandBackend {
+    /// A backend named by its own command line.
+    ///
+    /// The named constructors below are the production path; this is for a
+    /// backend with nothing better to call itself, which in practice means a
+    /// test double.
     pub fn new(argv: Vec<String>, timeout: Duration) -> Self {
         assert!(!argv.is_empty(), "CommandBackend needs a program to run");
-        let name = argv.join(" ");
+        let command = argv.join(" ");
         CommandBackend {
             argv,
             timeout,
-            identity: name.clone(),
-            name,
+            name: command.clone(),
+            identity: command.clone(),
+            command,
             cancel: None,
         }
     }
@@ -136,17 +156,32 @@ impl CommandBackend {
     /// just wrote; the rest read the repository. `git log` and `git show` are
     /// what reach the *reason* a change was made, which no prompt can carry.
     ///
-    /// **Available, not advertised.** The prompt names the fetch command and
-    /// nothing else. A model that needs the code around a hunk can go and read
-    /// it, but it is not sent looking: naming these in the prompt would invite
-    /// a whole-repository read where a class table and a diff were the answer,
-    /// and would offer a way around the generated content the grouping stage
-    /// deliberately folds away. If you add a tool here, do not add a line about
-    /// it to the prompt.
+    /// **`git diff` is advertised; the rest are not.** The prompt names the
+    /// fetch command and `git diff`, and nothing else.
     ///
-    /// The allowlist is this function's business, not the user's. A configured
-    /// `[grouping].command` replaces this whole argv, and whoever writes one
-    /// owns what their agent may do.
+    /// That is a change of rule, and it is worth saying why. `git diff` is
+    /// advertised because it is now the only way to see what a hunk says: the
+    /// fetch command's `diff` query is gone, having duplicated `class` except
+    /// for the text. A tool the model must use and is not told about is a tool
+    /// it will not use.
+    ///
+    /// It costs what advertising always cost — an invitation to read the whole
+    /// repository, and a route around the generated content the grouping stage
+    /// deliberately folds away. Two things pay for it, and both live in the
+    /// prompt rather than here: the prompt says to read what decides a label
+    /// and then stop, and `dfr agent` marks a class's generated files so the
+    /// fold is visible rather than silent.
+    ///
+    /// `Read`, `Grep`, `Glob`, `git log` and `git show` stay unadvertised for
+    /// the original reason: a model that needs the code around a hunk can go
+    /// and read it, but it is not sent looking. If you add a tool here, do not
+    /// add a line about it to the prompt.
+    ///
+    /// The allowlist is this function's business, not the user's, and there is
+    /// no config that replaces it. `[grouping].agent` picks between agents by
+    /// name; it used to take a free argv, which handed a stranger's process the
+    /// prompt and none of the allowlist, fetch command or read path the prompt
+    /// is written for.
     ///
     /// `fetch` is where a binary lives, so it is the one part of this argv that
     /// says nothing about what the model will do. The cache identity stands a
@@ -154,6 +189,7 @@ impl CommandBackend {
     /// is rightly invalidated, move the binary and none of them are.
     pub fn claude_cli(fetch: &str) -> Self {
         let mut b = Self::new(Self::claude_argv(fetch), Duration::from_secs(1200));
+        b.name = "Claude Code".to_string();
         b.identity = Self::claude_argv("<fetch>").join(" ");
         b
     }
@@ -165,7 +201,10 @@ impl CommandBackend {
             "--output-format".to_string(),
             "text".to_string(),
             "--allowed-tools".to_string(),
-            format!("Bash({fetch} agent:*),Read,Grep,Glob,Bash(git log:*),Bash(git show:*)"),
+            format!(
+                "Bash({fetch} agent:*),Bash(git diff:*),Read,Grep,Glob,\
+                 Bash(git log:*),Bash(git show:*)"
+            ),
         ]
     }
 }
@@ -187,7 +226,7 @@ impl LlmBackend for CommandBackend {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|source| LlmError::Spawn {
-                command: self.name.clone(),
+                command: self.command.clone(),
                 source,
             })?;
 
@@ -219,7 +258,7 @@ impl LlmBackend for CommandBackend {
         let deadline = std::time::Instant::now() + self.timeout;
         let status = loop {
             match child.try_wait().map_err(|source| LlmError::Io {
-                command: self.name.clone(),
+                command: self.command.clone(),
                 source,
             })? {
                 Some(status) => break status,
@@ -230,7 +269,7 @@ impl LlmBackend for CommandBackend {
                     let _ = stdout_reader.join();
                     let _ = stderr_reader.join();
                     return Err(LlmError::Cancelled {
-                        command: self.name.clone(),
+                        command: self.command.clone(),
                     });
                 }
                 None if std::time::Instant::now() >= deadline => {
@@ -240,7 +279,7 @@ impl LlmBackend for CommandBackend {
                     let _ = stdout_reader.join();
                     let _ = stderr_reader.join();
                     return Err(LlmError::Timeout {
-                        command: self.name.clone(),
+                        command: self.command.clone(),
                         timeout: self.timeout,
                     });
                 }
@@ -253,14 +292,14 @@ impl LlmBackend for CommandBackend {
             .join()
             .expect("stdout reader panicked")
             .map_err(|source| LlmError::Io {
-                command: self.name.clone(),
+                command: self.command.clone(),
                 source,
             })?;
         let stderr = stderr_reader.join().expect("stderr reader panicked");
 
         if !status.success() {
             return Err(LlmError::Failed {
-                command: self.name.clone(),
+                command: self.command.clone(),
                 code: status.code(),
                 stderr: String::from_utf8_lossy(&stderr[..stderr.len().min(600)]).into_owned(),
             });
@@ -268,7 +307,7 @@ impl LlmBackend for CommandBackend {
         let text = String::from_utf8_lossy(&stdout).into_owned();
         if text.trim().is_empty() {
             return Err(LlmError::Empty {
-                command: self.name.clone(),
+                command: self.command.clone(),
             });
         }
         Ok(text)
@@ -358,22 +397,41 @@ mod tests {
 
     #[test]
     fn where_the_binary_lives_is_not_part_of_the_cache_identity() {
-        // The grouping cache key hashes `identity`. If it hashed `name` the
+        // The grouping cache key hashes `identity`. If it hashed the argv the
         // absolute path would be in the key, and a debug build, a release build
         // and a second checkout of the same commit would each re-run a
         // four-hundred-second call over an identical class partition.
         let a = CommandBackend::claude_cli("/Users/someone/.cargo/bin/dfr");
         let b = CommandBackend::claude_cli("/srv/ci/target/release/dfr");
         assert_eq!(a.identity(), b.identity());
-        assert_ne!(a.name(), b.name(), "the display name is the real command");
+        assert!(!a.identity().contains(".cargo"), "{}", a.identity());
 
-        // A configured command has no path this crate invented, so it is its
-        // own identity — and two different agents must never share a cache
-        // entry.
+        // A backend with nothing better to call itself is its own identity, and
+        // two different agents must never share a cache entry.
         let one = CommandBackend::new(vec!["agent-one".into()], Duration::from_secs(1));
         let two = CommandBackend::new(vec!["agent-two".into()], Duration::from_secs(1));
         assert_eq!(one.identity(), one.name());
         assert_ne!(one.identity(), two.identity());
+    }
+
+    #[test]
+    fn the_reviewer_sees_a_product_name_and_an_error_sees_the_command() {
+        // The splash prints `name` on one line. The argv is four times the
+        // width and answers a different question, so it lives where it is the
+        // answer: a spawn failure.
+        let b = CommandBackend::claude_cli("/opt/bin/dfr");
+        assert_eq!(b.name(), "Claude Code");
+
+        let missing = CommandBackend::new(
+            vec!["definitely-not-a-real-program".into()],
+            Duration::from_secs(1),
+        );
+        match missing.complete("x") {
+            Err(LlmError::Spawn { command, .. }) => {
+                assert_eq!(command, "definitely-not-a-real-program");
+            }
+            other => panic!("expected Spawn, got {other:?}"),
+        }
     }
 
     #[test]
@@ -388,10 +446,25 @@ mod tests {
     #[test]
     fn claude_cli_default_allows_reading_and_nothing_else() {
         let b = CommandBackend::claude_cli("/opt/bin/dfr");
-        let argv = b.name();
+        let argv = &b.command;
         assert!(
             argv.contains("Bash(/opt/bin/dfr agent:*)"),
             "the allowlist names the same executable the prompt does"
+        );
+        assert!(
+            argv.contains("Bash(git diff:*)"),
+            "the prompt tells the model to run git diff, so it must be permitted"
+        );
+        // The whole list, exactly. The argv is built with a line continuation,
+        // and a stray space inside one would produce an allowlist that parses
+        // as something else. This is the security boundary, and a broken fetch
+        // costs minutes of a model working around it, so it fails here loudly
+        // rather than there silently.
+        assert!(
+            argv.ends_with(
+                "--allowed-tools Bash(/opt/bin/dfr agent:*),Bash(git diff:*),Read,Grep,Glob,Bash(git log:*),Bash(git show:*)"
+            ),
+            "{argv}"
         );
         // The allowlist is the security boundary, so the test states what must
         // stay OUT of it, not merely what is in it.

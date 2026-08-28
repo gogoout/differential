@@ -3,10 +3,15 @@
 Turns the mechanical class partition into labelled, effort-rated groups. The model merges
 and labels **class ids, never hunks** (ADR 0001): it cannot drop what it never names, and
 anything it omits is detected and back-filled. Runs inside the engine
-(`run_grouped_pipeline`); the backend is any `LlmBackend` (ADR 0016), defaulting to a
-headless claude invocation with read-only tools (ADR 0022), configurable via
-`[grouping].command` in the user-level config (agents are per-user; the backend command is
-part of the cache key, so different agents get separate cache entries).
+(`run_grouped_pipeline`); the backend is any `LlmBackend` (ADR 0016), selected by name via
+`[grouping].agent` in the user-level config — `claude-code` is the default and so far the
+only one, a headless invocation with read-only tools (ADR 0022). Agents are per-user, and
+the backend's identity is part of the cache key, so different agents get separate cache
+entries.
+
+The key is a **name, not an argv**. The stage hands its agent a tool allowlist, a fetch
+command and a prompt written for what that agent can do; an arbitrary argv got the prompt
+and none of the rest.
 
 ## What the model never sees or cannot override
 
@@ -14,7 +19,7 @@ part of the cache key, so different agents get separate cache entries).
   pre-assigned to one folded noise group and is never offered. A class spanning generated
   and non-generated files stays with the model.
 - **The relocation gate** (ADR 0003). A class touching a file whose `rename_similarity` is
-  below 95 is a modification, not a relocation. `dfr agent class <id>` reports the rename
+  below 95 is a modification, not a relocation. `dfr agent` reports the rename
   ("renamed from …, N% similar") so the model can judge correctly — and a deterministic
   post-audit pass extracts any such class out of a skim group into a synthesized focus group
   ("Modified during move") regardless of what the model claimed.
@@ -25,62 +30,65 @@ Not a payload. The engine writes the **pre-group document** — the frozen schem
 `groups: null` — to `<git-common-dir>/differential/cache/document/<key>.json`, under the
 grouping cache's own key, and the prompt says where it is.
 
-The prompt carries the instructions, the `dfr agent` commands, and the class id list
-(about 1KB for two hundred classes). The id list is the floor: if every fetch fails the
-model still knows the exact id set, so it returns a weak grouping rather than a
-hallucinated one. **There is no size cap**, because nothing about the classes is sent.
+The prompt carries the instructions, the `dfr agent` command, the `git diff` command with
+the range already in it, and the class id list (about 1KB for two hundred classes). The id
+list is the floor: if every fetch fails the model still knows the exact id set, so it
+returns a weak grouping rather than a hallucinated one. **There is no size cap**, because
+nothing about the classes is sent.
 
-Five queries, all against the document (`spec/consumers.md`):
+**One command, one answer.** `dfr agent --doc <path>` prints every class the model may
+group, in full (`spec/consumers.md`): id, hunk count, file count, disposition, exemplar
+location, then every member hunk with its file and line range, then every file it touches,
+with `defines:`, `uses:`, `used by:` and `generated:` lines.
 
-| `dfr agent --doc <path> …` | returns |
-|---|---|
-| `classes` | one line per class: size, files, kind, exemplar location, `defines`, `uses` |
-| `class <id>…` | those classes in full — every member hunk, every file, rename notes |
-| `diff [id…] [--after <hunk>]` | diff text for hunk ids, or every member of class ids; **no ids means the whole change** |
-| `file <path>` | the classes touching a path |
-| `defines <symbol>` | the classes that introduce a symbol |
+There were five queries — `classes`, `class`, `diff`, `file`, `defines`. Two measurements
+collapsed them. `diff` re-enumerated the range to print hunk text, which `git diff` does;
+it went, and with it the only reason `dfr agent` ever opened a repository. What remained is
+**72KB for a 196-class change**, beside the 322KB of diff the model reads anyway — not
+worth four commands and three extra model turns to slice. `file` and `defines` were lookups
+into a list the reader now has in front of it.
 
-`diff` is the one that changes what the model can claim. Rating a class `skim` asserts
-that every member is the same edit; before this the model had seen one member of any
-size of class.
+**Diff text comes from `git diff`, not from the engine.** `dfr agent` says where every hunk
+is; `git diff <base> <head> -- <path>` says what it holds. The prompt spells that command
+out with the range already in it, because the reader is an agent with a terminal and a
+command it can run beats an instruction it has to assemble.
 
-**Every command takes any number of arguments, and none means all of them.** A call is a
-round trip through a model turn, and the work behind one is under a tenth of a second — a
-`diff` batch re-enumerates the range once however many ids it carries. Measured on a
-196-class change: one id per call made 176 fetches, batching brought it to 28, and a bare
-`diff` for the whole change brought it to 15.
+That is what lets the model check the claim a `skim` rating makes. Rating a class `skim`
+asserts every member is the same edit; a 9h class is a claim about nine hunks, and its
+entry gives all nine locations. Only a class with more than one hunk can be wrong about
+equivalence, and on that change 162 of the 196 had exactly one.
 
-Round trips were never most of the time, and the measurement says so: 15 calls at about
-0.9s is 13 seconds of a 391-second run. The rest is the model reading the change and
-reasoning about it. Batching removes waste; it does not move that floor.
+**The lever is reading, not round trips.** Measured on a 196-class change, fetch calls fell
+176 → 28 → 15 → 5 while the wall clock went 450s → 391s → 401s: at about 0.9s a call, round
+trips were never more than about 13 seconds of it. The rest is the model reading the change
+and reasoning about it. So the prompt asks for **selective** reading — read what decides a
+label and then stop, judge a file by its path before opening it, and check a multi-hunk
+class rather than walking every class in turn.
 
-**A reply carries at most 256KB of diff text, and says how to get the rest.** Past the cap
-it ends with the exact `diff --after <hunk-id>` that continues it. The cursor is a hunk id
-because a hunk id already names a position in the list, so nothing has to be encoded.
-Nothing is ever dropped for length — that was the failure of the 90,000-character prompt
-cap this replaced.
+**Generated content is left out, exactly as the prompt's id list leaves it out** — handing
+the model a lockfile would be bytes it must read and a class id it would be penalised for
+naming. One definition serves both sides (`plan::class_is_generated`), because two copies
+of that rule would be two rules.
 
-The prompt also says which classes are worth checking at all: only a class with more than
-one hunk can be wrong about equivalence, and on that change 162 of the 196 had exactly one.
-
-**Asking without naming anything gets the offered set; naming something reaches
-everything.** So `classes` and a bare `diff` leave out generated content, exactly as the
-prompt's id list does — handing the model a lockfile would be bytes it must read and a
-class id it would be penalised for naming. `class C7`, `file <path>` and `defines <symbol>`
-answer for generated content too: the noise tier folds, it never hides. One definition
-serves both sides (`plan::class_is_generated`), because two copies of that rule would be
-two rules.
+**A generated path is marked, because `git diff` honours no tier.** A class that has one
+among its own files carries a `generated:` line naming it (`plan::file_is_generated`). A
+class living entirely in generated files is not printed at all; the marker is for the mixed
+class, which stays with the model by design. The noise tier folds and never hides: `git
+diff` reaches any path at all.
 
 The backend runs with a read-only allowlist —
-`Bash(dfr agent:*),Read,Grep,Glob,Bash(git log:*),Bash(git show:*)` — which supersedes
-ADR 0010's tools-denied contract. `LlmBackend` is unchanged: prompt in, text out, with the
-tools running inside the CLI it spawns.
+`Bash(dfr agent:*),Bash(git diff:*),Read,Grep,Glob,Bash(git log:*),Bash(git show:*)` —
+which supersedes ADR 0010's tools-denied contract. `LlmBackend` is unchanged: prompt in,
+text out, with the tools running inside the CLI it spawns.
 
-**Available, not advertised.** The prompt names the fetch command and nothing else. A
-model that needs the code around a hunk can go and read it; it is not sent looking.
-Naming these tools in the prompt would invite a whole-repository read where a class table
-and a diff were the answer, and would offer a way around the generated content this stage
-deliberately folds away.
+**`git diff` is advertised; the rest are not.** The prompt names the fetch command and
+`git diff`, because `git diff` is now the only way to see what a hunk says, and a tool the
+model must use and is not told about is a tool it will not use. It costs what advertising
+always cost — an invitation to read the whole repository, and a route around the generated
+content this stage folds away. Two things pay for it, and both are above: the prompt's
+instruction to read selectively, and the `generated:` marker. `Read`, `Grep`, `Glob`,
+`git log` and `git show` stay unadvertised: a model that needs the code around a hunk can go
+and read it; it is not sent looking.
 
 ## Audit — nothing is ever dropped
 
@@ -110,7 +118,7 @@ ran and there was nothing to group.
 
 Labels are non-deterministic across model calls; coverage is structural. Groupings are
 pinned under `<git-common-dir>/differential/cache/grouping/<key>.json`, keyed by sha1 over:
-`PROMPT_VERSION`, the backend name, the language-registry fingerprint, and each offered
+`PROMPT_VERSION`, the backend identity, the language-registry fingerprint, and each offered
 class's sorted member hunk digests (content-exact, so keys survive positional-id shifts
 across regenerations). The cached value is the **raw model response**; parsing, audit, the
 gate and assembly are pure functions replayed on every load — their fixes apply to cached
@@ -121,3 +129,9 @@ can capture history. Two clones whose history differs can group differently unde
 
 A cache hit makes the grouped document fully deterministic. No auto-retry on a malformed
 response: the error carries a response sample and the caller decides.
+
+The prompt itself is a text file, `crates/engine/src/grouping/prompt.txt`, pulled in with
+`include_str!` and substituted at five `{{…}}` placeholders. A prompt is prose, so editing
+one should read as a diff of sentences. `crates/engine/tests/golden.rs` pins a second,
+separate copy under `tests/fixtures/prompt-v<N>.txt`: one shared file would move both sides
+together and catch nothing.

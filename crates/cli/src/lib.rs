@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
-use differential_engine::config::Config;
+use differential_engine::config::{Agent, Config};
 use differential_engine::gitio::Repo;
 use differential_engine::grouping::GroupingOptions;
 use differential_engine::lang::LanguageRegistry;
@@ -72,19 +72,16 @@ enum Command {
         #[arg(long)]
         no_cache: bool,
     },
-    /// Answer one question about a pre-group document (ADR 0022).
+    /// Print every class the grouping model may group (ADR 0022).
     ///
-    /// The grouping model's read path. It takes no range and calls no model:
-    /// the document names the range it came from, and this only reads.
+    /// The grouping model's read path, and its whole read path: one call, one
+    /// answer, no sub-questions. It takes no range, opens no repository and
+    /// calls no model. Diff text is `git diff`'s job, which is why this needs
+    /// no `--repo`.
     Agent {
         /// The document the grouping stage wrote.
         #[arg(long)]
         doc: PathBuf,
-        /// Repository to read diffs from (defaults to the one containing the cwd).
-        #[arg(long)]
-        repo: Option<PathBuf>,
-        #[command(subcommand)]
-        query: agent::Query,
     },
 }
 
@@ -131,13 +128,10 @@ pub fn main_impl() -> ExitCode {
 }
 
 fn run(cli: Cli) -> anyhow::Result<ExitCode> {
-    // `agent` opens no pipeline and resolves no range, so it answers before
-    // any of that is set up.
-    if let Command::Agent { doc, repo, query } = &cli.command {
-        let dir = repo
-            .clone()
-            .unwrap_or_else(|| std::env::current_dir().expect("cwd"));
-        print!("{}", agent::run(doc, &dir, query)?);
+    // `agent` opens no pipeline, no repository and no range, so it answers
+    // before any of that is set up.
+    if let Command::Agent { doc } = &cli.command {
+        print!("{}", agent::run(doc)?);
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -395,15 +389,16 @@ fn fetch_command() -> String {
 /// Composition, so it belongs to the application layer rather than the engine
 /// (ADR 0018, 0020). Cancellation rides along here because killing an
 /// in-flight subprocess is a property of the backend, not of the pipeline.
+///
+/// The `match` is what makes `Agent` worth being an enum: adding an agent adds
+/// a variant there and an arm here, and the compiler names this line as the
+/// second half of the job.
 fn backend_from(
     cfg: &differential_engine::config::GroupingConfig,
     cancel: Option<Arc<AtomicBool>>,
 ) -> CommandBackend {
-    let backend = match &cfg.command {
-        Some(argv) if !argv.is_empty() => {
-            CommandBackend::new(argv.clone(), Duration::from_secs(DEFAULT_TIMEOUT_SECS))
-        }
-        _ => CommandBackend::claude_cli(&fetch_command()),
+    let backend = match cfg.agent.unwrap_or_default() {
+        Agent::ClaudeCode => CommandBackend::claude_cli(&fetch_command()),
     };
     let backend = match cfg.timeout_secs {
         Some(s) => backend.with_timeout(Duration::from_secs(s)),
@@ -414,9 +409,6 @@ fn backend_from(
         None => backend,
     }
 }
-
-/// Fallback when `[grouping].command` is set without a timeout.
-const DEFAULT_TIMEOUT_SECS: u64 = 1200;
 
 /// Grouped pipeline with the on-disk cache (unless bypassed).
 fn grouped(

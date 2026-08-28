@@ -55,12 +55,10 @@ pub fn class_is_generated(doc: &schema::PlanDocument, class: &schema::ClassEntry
         .all(|h| file_is_generated(doc, &h.file))
 }
 
-/// Whether one hunk's file is generated. The per-hunk half of the same rule.
-pub fn hunk_is_generated(doc: &schema::PlanDocument, hunk: &schema::HunkEntry) -> bool {
-    file_is_generated(doc, &hunk.file)
-}
-
-fn file_is_generated(doc: &schema::PlanDocument, path: &str) -> bool {
+/// Whether one path is generated. The per-file half of the same rule, which
+/// `dfr agent` marks on a class's file list: the model reads diff text with
+/// `git diff` now, and `git diff` honours no tier.
+pub fn file_is_generated(doc: &schema::PlanDocument, path: &str) -> bool {
     doc.files
         .iter()
         .find(|f| f.path == path)

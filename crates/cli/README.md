@@ -188,12 +188,14 @@ attributes = ["linguist-generated"]
 
 **User file** — `~/.config/differential/config.toml`. It honours `XDG_CONFIG_HOME`.
 
-Optional. The default backend is Claude Code, headless, allowed to read the change and
-the repository and nothing else. Set `command` only to run a different agent.
+Optional. The default agent is Claude Code, headless, allowed to read the change and the
+repository and nothing else. `agent` picks by name between the agents we support, not by
+command line: the grouping call hands its agent a tool allowlist and a prompt written for
+what that agent can do.
 
 ```toml
 [grouping]
-# command = ["my-agent", "--quiet"]   # prompt on stdin, text on stdout
+agent = "claude-code"   # the only one so far, and the default
 timeout_secs = 1200
 
 [review]
@@ -203,7 +205,7 @@ context_step = 10
 
 | key | default | meaning |
 |---|---|---|
-| `grouping.command` | the `claude` line above | The grouping backend, as an argv list. Prompt on stdin, text on stdout. |
+| `grouping.agent` | `claude-code` | Which agent runs the grouping call, by name. |
 | `grouping.timeout_secs` | `1200` | How long to wait for the backend. |
 | `review.context` | `3` | Context lines shown around a hunk before any expansion. |
 | `review.context_step` | `10` | Lines one `z` pulls in at a context boundary row. |

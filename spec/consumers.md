@@ -14,7 +14,7 @@ dfr review [--repo <path>] [--config <path>] [--no-cache] <range>
 dfr stack [--repo <path>] [--config <path>] [--ref <name>] [--no-cache] <range>
 dfr findings [--repo <path>] [--config <path>] [--summary] [--no-cache] <range>
 dfr check [--repo <path>] [--config <path>] [--json] <range>
-dfr agent --doc <path> [--repo <path>] <classes|class|diff|file|defines> [args…]
+dfr agent --doc <path>
 ```
 
 - `review` opens the terminal reviewer ([tui.md](tui.md)); `findings` prints the review's
@@ -23,24 +23,24 @@ dfr agent --doc <path> [--repo <path>] <classes|class|diff|file|defines> [args�
   `ReviewSession`, so the projection has one owner and the two cannot drift.
 - `stack` builds and lands the review commit stack ([stack.md](stack.md)), printing the
   commit list and the `git log` line to review with. The grouping backend comes from
-  `[grouping].command` (default: a claude invocation with read-only tools); the pinning cache
+  `[grouping].agent` (default: `claude-code`, a headless invocation with read-only tools); the pinning cache
   lives under `<git-common-dir>/differential/cache/grouping` unless `--no-cache`. The
   document the model reads sits beside it, under `…/cache/document`.
 - `check` runs the core pipeline and reports invariants 1–4 — the self-test and CI entry
   point.
-- `agent` is the grouping model's read path (ADR 0022), not a human one. The prompt names
-  the running executable, and the default backend's allowlist is derived from the same
-  string, so the two cannot disagree about what the model may invoke. It answers one
-  question about the pre-group document the grouping stage wrote: `classes`,
-  `class`, `diff`, `file`, `defines`. Every one takes any number of arguments and **none
-  means all of them**, because each call is a round trip through a model turn and the work
-  behind one is negligible beside it. Asking without naming anything gets the set the model
-  is offered — generated content left out, as the prompt leaves it out; naming something
-  reaches everything. A `diff` reply larger than 256KB ends with the exact
-  `diff --after <hunk-id>` that continues it, so nothing is dropped for length. It never
-  runs the pipeline and never calls a model, so a grouping run cannot recurse into itself.
-  An unknown id prints a plain sentence and exits 0 — to an agent a non-zero exit reads as
-  "the tool is broken".
+- `agent` is the grouping model's read path (ADR 0022), not a human one, and it is the
+  whole of that path: one command, one answer, no sub-questions. It prints every class the
+  model may group, in full — id, hunk count, file count, disposition, exemplar location,
+  then every member hunk with its file and line range, then every file, with `defines:`,
+  `uses:`, `used by:` and `generated:` lines. That is 72KB for a 196-class change, beside
+  the 322KB of diff the model reads anyway, so slicing it into four queries bought three
+  extra model turns and nothing else. The prompt names the running executable, and the
+  default backend's allowlist is derived from the same string, so the two cannot disagree
+  about what the model may invoke. Generated content is left out, as the prompt's id list
+  leaves it out. It takes no `--repo`: every answer comes from the document, diff text is
+  `git diff`'s job, and so it opens no repository, never runs the pipeline and never calls
+  a model — a grouping run cannot recurse into itself. An empty change prints a plain
+  sentence and exits 0 — to an agent a blank reply reads as "the tool is broken".
 - Exit codes: 0 success/all pass, 1 invariant or pipeline failure, 2 usage/config error.
 
 ## Library surface
@@ -70,7 +70,7 @@ let out = run_pipeline(&repo, &src.base, &src.head, src.kind, &config,
   additionally runs the grouping stage ([grouping.md](grouping.md)). `artefacts` is where
   the pre-group document is left for the model to read (`store::FsArtefactStore`); like the
   cache, disabling it is a state of the store, not an `Option`. All are **injected**: the engine
-  no longer builds a backend from `[grouping].command` — composition is the application
+  no longer builds a backend from `[grouping].agent` — composition is the application
   layer's job (ADR 0020) — and disabling the cache is
   `store::FsGroupingCache::disabled()` rather than an absent one, so the stage never grows
   a branch for `--no-cache`. Cancellation belongs to the backend
@@ -110,15 +110,21 @@ A `[grouping]` table in the REPO file is a hard error with a migration hint.
 
 ```toml
 [grouping]
-# Backend argv: prompt on stdin, completion on stdout. Timeout default: 1200s.
-# Absent means the default backend, which is a headless Claude Code invocation
-# allowed to read the change and the repository and nothing else. That argv,
-# including the tool allowlist, is `CommandBackend::claude_cli`'s business, not
-# something to restate here: setting `command` replaces it whole, and then the
-# agent's capabilities are the author's choice.
-# command = ["my-agent", "--quiet"]
+# Which agent runs the grouping call. Supported: "claude-code" (the default) —
+# a headless Claude Code invocation allowed to read the change and the
+# repository and nothing else. A name nobody implements is a hard error that
+# says which ones exist.
+agent = "claude-code"
+# How long to wait for it. Default 1200s. This one is a number because it tunes
+# the agent rather than replacing it.
 timeout_secs = 1200
 ```
+
+`agent` is a **name, not an argv**, and that is the whole point. The grouping stage does
+not merely spawn a process: it hands the agent a tool allowlist, a fetch command and a
+prompt written for what that agent can do (ADR 0022). An arbitrary argv got the prompt and
+none of the rest, so it was a knob that looked like it worked. Adding an agent is adding a
+`config::Agent` variant and the arm in `backend_from` the compiler then demands.
 
 Because the backend's **identity** is part of the grouping cache key, users running
 different agents get separate cache entries in the clone's shared cache — correct, since a
