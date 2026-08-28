@@ -13,7 +13,7 @@
 //! an entry on it is no longer true. The list can only shrink, and it cannot
 //! rot: finishing a module without deleting its line is also a failure.
 //!
-//! Scanning source text is crude, and normally rule 4 would send us looking
+//! Scanning source text is crude, and normally rule 5 would send us looking
 //! for a crate. There isn't a boring, widely-used one for intra-crate module
 //! layering (`cargo-deny` and friends work at the crate graph level, which is
 //! a coarser question than this one), and the check is a dozen lines of string
