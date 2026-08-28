@@ -188,11 +188,12 @@ attributes = ["linguist-generated"]
 
 **User file** — `~/.config/differential/config.toml`. It honours `XDG_CONFIG_HOME`.
 
+Optional. The default backend is Claude Code, headless, allowed to read the change and
+the repository and nothing else. Set `command` only to run a different agent.
+
 ```toml
 [grouping]
-# Only to run a different agent. The default is Claude Code, headless, allowed
-# to read the change and the repository and nothing else.
-# command = ["my-agent", "--quiet"]
+# command = ["my-agent", "--quiet"]   # prompt on stdin, text on stdout
 timeout_secs = 1200
 
 [review]

@@ -120,9 +120,14 @@ A `[grouping]` table in the REPO file is a hard error with a migration hint.
 timeout_secs = 1200
 ```
 
-Because the backend command is part of the grouping cache key, users running different
-agents get separate cache entries in the clone's shared cache — correct, since a
-different model may group differently.
+Because the backend's **identity** is part of the grouping cache key, users running
+different agents get separate cache entries in the clone's shared cache — correct, since a
+different model may group differently. Identity is not the command as it runs: the default
+backend's argv names the executable the prompt tells the model to fetch with, and where
+that binary lives determines nothing, so it is held out of the key
+(`LlmBackend::identity`). A cache therefore survives a rebuild, a reinstall and a second
+checkout, which is what `plan::grouping_cache_dir` promises by living under the git common
+directory.
 
 A missing file means defaults; a malformed file is a hard error, never silently ignored.
 **The one hard rule: config can never remove a file or hunk from enumeration.**

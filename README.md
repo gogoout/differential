@@ -203,13 +203,13 @@ attributes = ["linguist-generated"]
 **User file** — `~/.config/differential/config.toml`. It honours `XDG_CONFIG_HOME`. Which
 agent to run is your choice, not the repo's. So is how much of a file the reviewer shows.
 
+This whole file is optional. The default backend runs Claude Code headless, and lets it
+read the change and the repository — nothing else. Set `command` only to run a different
+agent, and then its capabilities are yours to choose, not ours.
+
 ```toml
 [grouping]
-# Any command: prompt on stdin, text on stdout. The default runs Claude Code
-# headless, and lets it read the change and the repository — nothing else.
-# Set this only to run a different agent; then its capabilities are yours to
-# choose. The command is part of the cache key, so agents do not share entries.
-# command = ["my-agent", "--quiet"]
+# command = ["my-agent", "--quiet"]   # prompt on stdin, text on stdout
 timeout_secs = 1200
 
 [review]
@@ -221,13 +221,17 @@ context_step = 10
 
 | key | default | meaning |
 |---|---|---|
-| `grouping.command` | the `claude` line above | The grouping backend, as an argv list. |
+| `grouping.command` | headless `claude`, read-only tools | The grouping backend, as an argv list. |
 | `grouping.timeout_secs` | `1200` | How long to wait for the backend. |
 | `review.context` | `3` | Context lines around a hunk before any expansion. |
 | `review.context_step` | `10` | Lines one `z` pulls in at a boundary row. |
 
 A missing file means defaults. A malformed file is a hard error. An unknown key is a hard
 error too.
+
+Which agent you run is part of the grouping cache key, so two agents never share an entry —
+a different model may group differently. Where its binary happens to live is not, so a
+cache survives a rebuild, a reinstall and a second checkout.
 
 Config never removes a file or a hunk from analysis. It tunes classification hints and
 tool behaviour only. Every invariant depends on that.

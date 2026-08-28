@@ -117,7 +117,7 @@ pub fn run<C: GroupingCache, A: ArtefactStore>(
     } else {
         // The key names the artefact as well as the cache entry: one grouping,
         // one document, and a cache hit finds the same file the miss wrote.
-        let key = key::cache_key(&offered, backend.name(), lang_fingerprint);
+        let key = key::cache_key(&offered, backend.identity(), lang_fingerprint);
         let path = artefacts.make_readable(&key, &doc.to_json_pretty()?)?;
         let prompt = payload::build_prompt(&offered, fetch, &path.to_string_lossy());
         let response = fetch_response(&prompt, &key, backend, cache, progress)?;

@@ -44,8 +44,9 @@ the finer graph onto groups manufactured cycles the change did not contain.
   round trip through a model turn, and the work behind one is negligible beside it: `dfr
   agent` answers in under a tenth of a second even on a 283-hunk range in a debug build,
   and a `diff` batch re-enumerates the range once however many ids it carries. Measured on
-  a 196-class change: one id per call made 176 fetches, batching brought it to 28, and a
-  bare `diff` for the whole change brought it to 15.
+  a 196-class change: one id per call made 176 fetches, batching brought it to 28, a bare
+  `diff` for the whole change brought it to 15, and leaving generated content out brought
+  it to 5.
 - **Asking without naming anything gets the offered set; naming something reaches
   everything.** `classes` and a bare `diff` leave out generated content, matching what the
   prompt's id list offers (ADR 0006). Handing the model a lockfile would be bytes it must
@@ -114,9 +115,17 @@ re-ordered on every load without another model call.
   edge only misorders — does not extend to a wrong cut, which would break a coherent group
   and mislabel both halves. The impossibility is information the reviewer wants, not a
   problem to hide behind two rows.
-- **`PROMPT_VERSION` is 3 and the backend argv changed**, so every cached grouping in every
-  checkout is invalidated once. Both feed the cache key, so this is automatic, not a
+- **`PROMPT_VERSION` is 3 and the backend's identity changed**, so every cached grouping in
+  every checkout is invalidated once. Both feed the cache key, so this is automatic, not a
   migration.
+- **The cache key hashes the backend's identity, never its display name.** The default
+  argv names the executable the prompt tells the model to fetch with, which on an installed
+  binary is an absolute path. Where a binary lives determines nothing about a grouping, so
+  `LlmBackend::identity` stands a placeholder in its place. Hashing the name instead would
+  have made a debug build, a release build and two checkouts of one commit each re-run a
+  four-hundred-second call over an identical class partition, and would have defeated the
+  worktree-shared cache `plan::grouping_cache_dir` exists to provide (ADR 0009). The
+  allowlist itself stays in the key: it shapes what the model can see.
 - **A hole the cache key cannot close.** The key covers the prompt version, the backend
   name, the language fingerprint and the class content digests (ADR 0009). A model reading
   `git log` reads history no key can capture, so two clones with different history can group
@@ -126,12 +135,15 @@ re-ordered on every load without another model call.
   re-enumerates the range the document names, so a grouping run cannot recurse into itself.
 - An unknown id prints a plain sentence and exits 0. To an agent a non-zero exit reads as
   "the tool is broken" and stops it asking, which is worse than a clear "no".
-- **Grouping is now minutes, not seconds, and round trips are not why.** The validation
-  corpus took 391 seconds at 15 calls. At roughly 0.9s a call that is 13 seconds; the rest
-  is the model reading 322KB of diff and reasoning about 196 classes. Batching and the
-  cursor remove waste and remove the size cliff — neither moves that floor. The only lever
-  on it is asking the model to read less, and what it does not read is what it cannot
-  label from. The grouping cache means the cost is once per change, not once per run.
+- **Grouping is now minutes, not seconds, and round trips are not why.** Measured on the
+  validation corpus: 176 fetch calls, then 28, then 15, then 5 — and the wall clock went
+  450s, 391s, 401s. Round trips fell thirty-five-fold and the time did not move, because
+  at roughly 0.9s a call they were never more than about 13 seconds of it. The rest is the
+  model reading 322KB of diff and reasoning about 196 classes. Batching, the bare form and
+  the cursor remove waste and remove the size cliff; none of them moves that floor. The
+  only lever on it is asking the model to read less, and what it does not read is what it
+  cannot label from. The grouping cache means the cost is once per change, not once per
+  run.
 - **The artefact-against-mutual verdict did not discriminate on the validation corpus.**
   Every one of 45 broken edges came back `mutual`: the class graph was cyclic wherever the
   group graph was. On 196 classes and 290 edges at roughly 30% precision, spurious edges

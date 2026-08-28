@@ -54,6 +54,25 @@ pub enum LlmError {
 pub trait LlmBackend: Send + Sync {
     /// Human-readable backend name, for logs and audit output.
     fn name(&self) -> &str;
+
+    /// Everything about this backend that could change the grouping, and
+    /// nothing that could not. The grouping cache key hashes this (ADR 0009).
+    ///
+    /// Separate from `name` because the two answer different questions. `name`
+    /// is what to show a reviewer waiting on a subprocess, so it is the command
+    /// as it will actually run. This is what determines the answer — and where
+    /// a binary happens to live does not. Hashing the display name put the
+    /// absolute path of `dfr` into the key, so a debug build, a release build
+    /// and two checkouts of one commit each re-ran a four-hundred-second call
+    /// for an identical class partition, and the worktree-shared cache
+    /// `plan::grouping_cache_dir` promises was defeated.
+    ///
+    /// Defaults to `name`, which is right for any backend whose identity has no
+    /// environment in it.
+    fn identity(&self) -> &str {
+        self.name()
+    }
+
     fn complete(&self, prompt: &str) -> Result<String, LlmError>;
 }
 
@@ -62,6 +81,10 @@ pub struct CommandBackend {
     argv: Vec<String>,
     timeout: Duration,
     name: String,
+    /// See [`LlmBackend::identity`]. Equal to `name` unless the argv carries a
+    /// path that says where this machine keeps things rather than what the
+    /// model will do.
+    identity: String,
     /// Set from another thread to kill an in-flight child (a reviewer
     /// abandoning the wait). Without this the subprocess would outlive the
     /// process that asked for it, up to the whole timeout.
@@ -75,6 +98,7 @@ impl CommandBackend {
         CommandBackend {
             argv,
             timeout,
+            identity: name.clone(),
             name,
             cancel: None,
         }
@@ -123,24 +147,36 @@ impl CommandBackend {
     /// The allowlist is this function's business, not the user's. A configured
     /// `[grouping].command` replaces this whole argv, and whoever writes one
     /// owns what their agent may do.
+    ///
+    /// `fetch` is where a binary lives, so it is the one part of this argv that
+    /// says nothing about what the model will do. The cache identity stands a
+    /// placeholder in its place: change the allowlist and every cached grouping
+    /// is rightly invalidated, move the binary and none of them are.
     pub fn claude_cli(fetch: &str) -> Self {
-        Self::new(
-            vec![
-                "claude".to_string(),
-                "-p".to_string(),
-                "--output-format".to_string(),
-                "text".to_string(),
-                "--allowed-tools".to_string(),
-                format!("Bash({fetch} agent:*),Read,Grep,Glob,Bash(git log:*),Bash(git show:*)"),
-            ],
-            Duration::from_secs(1200),
-        )
+        let mut b = Self::new(Self::claude_argv(fetch), Duration::from_secs(1200));
+        b.identity = Self::claude_argv("<fetch>").join(" ");
+        b
+    }
+
+    fn claude_argv(fetch: &str) -> Vec<String> {
+        vec![
+            "claude".to_string(),
+            "-p".to_string(),
+            "--output-format".to_string(),
+            "text".to_string(),
+            "--allowed-tools".to_string(),
+            format!("Bash({fetch} agent:*),Read,Grep,Glob,Bash(git log:*),Bash(git show:*)"),
+        ]
     }
 }
 
 impl LlmBackend for CommandBackend {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn identity(&self) -> &str {
+        &self.identity
     }
 
     fn complete(&self, prompt: &str) -> Result<String, LlmError> {
@@ -318,6 +354,35 @@ mod tests {
         let big = "line of prompt text\n".repeat(60_000); // ~1.2 MB
         let out = b.complete(&big).unwrap();
         assert_eq!(out.len(), big.len());
+    }
+
+    #[test]
+    fn where_the_binary_lives_is_not_part_of_the_cache_identity() {
+        // The grouping cache key hashes `identity`. If it hashed `name` the
+        // absolute path would be in the key, and a debug build, a release build
+        // and a second checkout of the same commit would each re-run a
+        // four-hundred-second call over an identical class partition.
+        let a = CommandBackend::claude_cli("/Users/someone/.cargo/bin/dfr");
+        let b = CommandBackend::claude_cli("/srv/ci/target/release/dfr");
+        assert_eq!(a.identity(), b.identity());
+        assert_ne!(a.name(), b.name(), "the display name is the real command");
+
+        // A configured command has no path this crate invented, so it is its
+        // own identity — and two different agents must never share a cache
+        // entry.
+        let one = CommandBackend::new(vec!["agent-one".into()], Duration::from_secs(1));
+        let two = CommandBackend::new(vec!["agent-two".into()], Duration::from_secs(1));
+        assert_eq!(one.identity(), one.name());
+        assert_ne!(one.identity(), two.identity());
+    }
+
+    #[test]
+    fn changing_the_allowlist_does_change_the_cache_identity() {
+        // The other half of the rule: the allowlist shapes what the model can
+        // see, so it must stay in the key even though the path does not.
+        let b = CommandBackend::claude_cli("/opt/bin/dfr");
+        assert!(b.identity().contains("Read,Grep,Glob"), "{}", b.identity());
+        assert!(!b.identity().contains("/opt/bin"), "{}", b.identity());
     }
 
     #[test]
