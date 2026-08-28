@@ -12,6 +12,7 @@
 //! and a string. What changed is a flag in the argv below, not the trait.
 
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -99,6 +100,20 @@ pub struct CommandBackend {
     command: String,
     /// See [`LlmBackend::identity`].
     identity: String,
+    /// Where the child runs.
+    ///
+    /// The prompt hands the model `git diff <base> <head> -- <path>` with paths
+    /// as the document records them, which is relative to the repository root.
+    /// Git resolves a bare pathspec against the **current directory**, not the
+    /// root, so a child inheriting `dfr`'s cwd matches nothing whenever `dfr`
+    /// was run from a subdirectory — and matching nothing is an empty diff and
+    /// exit 0, not an error. The model would then rate a class having seen no
+    /// diff at all, and nothing anywhere would say so.
+    ///
+    /// `None` means inherit, which is right for a child that reads no repository
+    /// (the tests here, and any future backend that takes its whole input on
+    /// stdin).
+    working_dir: Option<PathBuf>,
     /// Set from another thread to kill an in-flight child (a reviewer
     /// abandoning the wait). Without this the subprocess would outlive the
     /// process that asked for it, up to the whole timeout.
@@ -120,8 +135,19 @@ impl CommandBackend {
             name: command.clone(),
             identity: command.clone(),
             command,
+            working_dir: None,
             cancel: None,
         }
+    }
+
+    /// Run the child in `dir`.
+    ///
+    /// The repository root, for any backend whose prompt names repo-relative
+    /// paths — which the default one does. See the field for what goes wrong
+    /// without it, and why it goes wrong silently.
+    pub fn with_working_dir(mut self, dir: &Path) -> Self {
+        self.working_dir = Some(dir.to_path_buf());
+        self
     }
 
     /// Kill the child as soon as `flag` is set.
@@ -165,12 +191,14 @@ impl CommandBackend {
     /// for the text. A tool the model must use and is not told about is a tool
     /// it will not use.
     ///
-    /// It costs what advertising always cost — an invitation to read the whole
-    /// repository, and a route around the generated content the grouping stage
-    /// deliberately folds away. Two things pay for it, and both live in the
-    /// prompt rather than here: the prompt says to read what decides a label
-    /// and then stop, and `dfr agent` marks a class's generated files so the
-    /// fold is visible rather than silent.
+    /// It costs an invitation to read the whole repository, and the prompt is
+    /// what pays for that: it says to read what decides a label and then stop.
+    ///
+    /// It no longer costs a route around the generated content this stage folds
+    /// away, though it did when it was written. `generated` is part of the
+    /// shape-class key now (ADR 0004), so no class the model is given contains
+    /// a generated file and there is nothing folded left for it to ask
+    /// `git diff` about by accident. The prompt still says not to go looking.
     ///
     /// `Read`, `Grep`, `Glob`, `git log` and `git show` stay unadvertised for
     /// the original reason: a model that needs the code around a hunk can go
@@ -219,7 +247,11 @@ impl LlmBackend for CommandBackend {
     }
 
     fn complete(&self, prompt: &str) -> Result<String, LlmError> {
-        let mut child = Command::new(&self.argv[0])
+        let mut cmd = Command::new(&self.argv[0]);
+        if let Some(dir) = &self.working_dir {
+            cmd.current_dir(dir);
+        }
+        let mut child = cmd
             .args(&self.argv[1..])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -412,6 +444,38 @@ mod tests {
         let two = CommandBackend::new(vec!["agent-two".into()], Duration::from_secs(1));
         assert_eq!(one.identity(), one.name());
         assert_ne!(one.identity(), two.identity());
+    }
+
+    #[test]
+    fn the_child_runs_where_it_was_told_to() {
+        // The prompt hands the model repo-root-relative paths for `git diff`.
+        // Git resolves a bare pathspec against the CURRENT DIRECTORY, so a child
+        // inheriting this process's cwd matches nothing whenever `dfr` ran from
+        // a subdirectory — and matching nothing is an empty diff and exit 0, not
+        // an error. The model would rate a class having seen no diff, and
+        // nothing would say so. Hence a test on the cwd itself.
+        let dir = tempfile::TempDir::new().unwrap();
+        // The temp dir may be a symlink (/var -> /private/var on macOS), so
+        // compare what the child reports against the canonical form.
+        let want = dir.path().canonicalize().unwrap();
+        let b = CommandBackend::new(vec!["pwd".into()], Duration::from_secs(10))
+            .with_working_dir(dir.path());
+        let got = b.complete("x").unwrap();
+        assert_eq!(
+            std::path::Path::new(got.trim()).canonicalize().unwrap(),
+            want,
+            "the child must run in the directory it was given"
+        );
+
+        // Without it, the child inherits — which is right for a backend that
+        // reads no repository, and wrong for one whose prompt names paths.
+        let inherit = CommandBackend::new(vec!["pwd".into()], Duration::from_secs(10));
+        assert_ne!(
+            std::path::Path::new(inherit.complete("x").unwrap().trim())
+                .canonicalize()
+                .unwrap(),
+            want
+        );
     }
 
     #[test]

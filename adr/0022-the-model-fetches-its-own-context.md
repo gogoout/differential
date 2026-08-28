@@ -45,6 +45,11 @@ the finer graph onto groups manufactured cycles the change did not contain.
   is; `git diff <base> <head> -- <path>` says what it holds. The prompt spells that command
   out with the range already in it, because the reader is an agent with a terminal and a
   command it can run beats an instruction it has to assemble.
+- **The agent runs in the repository root.** Those paths are relative to it, and git resolves
+  a bare pathspec against the current directory. Inheriting the caller's cwd made every
+  `git diff` match nothing whenever `dfr` ran from a subdirectory — silently, because
+  matching nothing is an empty diff and exit 0. That is the same failure the fetch executable
+  has (see the last consequence), reached a different way.
 - **One call, because slicing it bought nothing.** A call is a round trip through a model
   turn, and the work behind one is negligible beside it: `dfr agent` answers in under a tenth
   of a second on a 283-hunk range in a debug build. Measured on a 196-class change: one id

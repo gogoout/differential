@@ -177,7 +177,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             ref_name, no_cache, ..
         } => {
             let source = resolved.expect("range checked above");
-            let backend = backend_from(&config.grouping, None);
+            let backend = backend_from(&config.grouping, repo.root(), None);
             let out = run_stack_pipeline(
                 &repo,
                 &source,
@@ -264,7 +264,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     &GroupingOptions {
                         // The cancel flag lives on the backend: the thing that
                         // needs killing is the subprocess.
-                        backend: &backend_from(&config.grouping, Some(cancel)),
+                        backend: &backend_from(&config.grouping, worker_repo.root(), Some(cancel)),
                         cache: &cache,
                         artefacts: &artefacts,
                         fetch: &fetch,
@@ -393,13 +393,21 @@ fn fetch_command() -> String {
 /// The `match` is what makes `Agent` worth being an enum: adding an agent adds
 /// a variant there and an arm here, and the compiler names this line as the
 /// second half of the job.
+///
+/// The agent runs **in the repository root**, because the prompt hands it
+/// `git diff <base> <head> -- <path>` with paths as the document records them,
+/// which is relative to that root. A child inheriting this process's cwd
+/// matches nothing whenever `dfr` was run from a subdirectory, and matching
+/// nothing is an empty diff and exit 0 rather than an error.
 fn backend_from(
     cfg: &differential_engine::config::GroupingConfig,
+    root: &std::path::Path,
     cancel: Option<Arc<AtomicBool>>,
 ) -> CommandBackend {
     let backend = match cfg.agent.unwrap_or_default() {
         Agent::ClaudeCode => CommandBackend::claude_cli(&fetch_command()),
-    };
+    }
+    .with_working_dir(root);
     let backend = match cfg.timeout_secs {
         Some(s) => backend.with_timeout(Duration::from_secs(s)),
         None => backend,
@@ -418,7 +426,7 @@ fn grouped(
     langs: &LanguageRegistry,
     no_cache: bool,
 ) -> anyhow::Result<differential_engine::PipelineOutput> {
-    let backend = backend_from(&config.grouping, None);
+    let backend = backend_from(&config.grouping, repo.root(), None);
     differential_engine::run_grouped_pipeline(
         repo,
         &source.base,

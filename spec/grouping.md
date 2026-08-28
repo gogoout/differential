@@ -61,6 +61,13 @@ is; `git diff <base> <head> -- <path>` says what it holds. The prompt spells tha
 out with the range already in it, because the reader is an agent with a terminal and a
 command it can run beats an instruction it has to assemble.
 
+**The agent runs in the repository root** (`CommandBackend::with_working_dir`). The paths in
+that command are as the document records them, which is relative to the root, and git
+resolves a bare pathspec against the current directory. A child inheriting the caller's cwd
+therefore matches nothing whenever `dfr` was run from a subdirectory — and matching nothing
+is an empty diff and exit 0, not an error, so the model would rate a class having seen no
+diff at all and nothing would say so.
+
 That is what lets the model check the claim a `skim` rating makes. Rating a class `skim`
 asserts every member is the same edit; a 9h class is a claim about nine hunks, and its
 entry gives all nine locations. Only a class with more than one hunk can be wrong about
