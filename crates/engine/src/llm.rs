@@ -112,6 +112,14 @@ impl CommandBackend {
     /// just wrote; the rest read the repository. `git log` and `git show` are
     /// what reach the *reason* a change was made, which no prompt can carry.
     ///
+    /// **Available, not advertised.** The prompt names the fetch command and
+    /// nothing else. A model that needs the code around a hunk can go and read
+    /// it, but it is not sent looking: naming these in the prompt would invite
+    /// a whole-repository read where a class table and a diff were the answer,
+    /// and would offer a way around the generated content the grouping stage
+    /// deliberately folds away. If you add a tool here, do not add a line about
+    /// it to the prompt.
+    ///
     /// The allowlist is this function's business, not the user's. A configured
     /// `[grouping].command` replaces this whole argv, and whoever writes one
     /// owns what their agent may do.

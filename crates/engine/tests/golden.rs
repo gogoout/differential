@@ -134,9 +134,8 @@ continues it. Run that command. Nothing is ever dropped for length, but you have
 seen the whole change until a reply comes back without one.
 
 Generated files -- lockfiles, snapshots, build artefacts -- are folded away before you
-see them, which is why these replies are smaller than `git show` on the same range.
-Their classes are not in the id list and are not yours to group. Name one and you will
-still be shown it.
+see them, so these replies are smaller than the raw change. Their classes are not in the
+id list and are not yours to group. Name one and you will still be shown it.
 
 Rating a class "skim" is a claim that every one of its hunks is the same edit, and the
 diff is how you check it. Only a class with MORE THAN ONE HUNK can be wrong about that:

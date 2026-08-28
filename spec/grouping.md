@@ -76,6 +76,12 @@ The backend runs with a read-only allowlist —
 ADR 0010's tools-denied contract. `LlmBackend` is unchanged: prompt in, text out, with the
 tools running inside the CLI it spawns.
 
+**Available, not advertised.** The prompt names the fetch command and nothing else. A
+model that needs the code around a hunk can go and read it; it is not sent looking.
+Naming these tools in the prompt would invite a whole-repository read where a class table
+and a diff were the answer, and would offer a way around the generated content this stage
+deliberately folds away.
+
 ## Audit — nothing is ever dropped
 
 Against the offered id set: hallucinated ids are removed (and listed), duplicated ids are

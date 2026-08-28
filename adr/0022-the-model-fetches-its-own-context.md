@@ -61,7 +61,11 @@ the finer graph onto groups manufactured cycles the change did not contain.
   runs.** It lands on `ClassEntry.defines` and `ClassEntry.depends_on`; the ordering stage
   contracts it onto groups. Every edge carries the symbols that produced it.
 - The default backend gains a read-only allowlist:
-  `Bash(dfr agent:*),Read,Grep,Glob,Bash(git log:*),Bash(git show:*)`.
+  `Bash(dfr agent:*),Read,Grep,Glob,Bash(git log:*),Bash(git show:*)`. **Available, not
+  advertised**: the prompt names the fetch command and nothing else. A model that needs the
+  code around a hunk can go and read it, but it is not sent looking — naming these would
+  invite a whole-repository read where a class table and a diff were the answer, and would
+  offer a way around the generated content the stage deliberately folds away.
 - **`schema_version` is 3.** `Group.depends_on` becomes a list of `Edge { on, via, cycle }`,
   and `Group` gains `pivot`.
 
