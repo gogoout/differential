@@ -38,6 +38,7 @@ tempfile = "3"
 toml = "0.8"
 globset = "0.4"
 etcetera = "0.10"
+palette = "0.7"
 petgraph = "0.8"
 # Symbol readers. All grammar crates resolve to one `tree-sitter-language`
 # (0.1.7), which is the ABI that actually matters — their own version numbers

@@ -321,6 +321,7 @@ From the user file, `~/.config/differential/config.toml`:
 
 ```toml
 [review]
+theme = "dark"
 context = 3
 context_step = 10
 # Diff layout a review opens in: "split" or "unified".
@@ -329,12 +330,120 @@ diff = "split"
 
 | key | default | meaning |
 |---|---|---|
+| `review.theme` | `dark` | Which palette to wear, by name. See below. |
 | `review.context` | `3` | Context lines shown either side of a hunk before any expansion. |
 | `review.context_step` | `10` | Lines one `z` pulls in at a context boundary row. |
 | `review.diff` | `split` | Layout a review OPENS in. `s` still toggles, and a review that has recorded a choice keeps it. |
 
-These are presentation only. They widen what is **displayed** around a hunk. They can never
-change which hunks exist.
+These are presentation only. They widen what is **displayed** around a hunk, and what
+colour it is. They can never change which hunks exist.
+
+### Themes
+
+Eleven, each pairing the reviewer's own colours with the syntax theme the code is painted
+in — so the chrome and the code come from one source and cannot drift apart.
+
+`dark` (the default), `one-dark`, `one-light`, `gruvbox-dark`, `gruvbox-light`,
+`solarized-dark`, `solarized-light`, `catppuccin-mocha`, `catppuccin-latte`,
+`dracula`, `monokai`.
+
+Every shot below is the same change in the same reviewer; only the palette differs.
+`./assets/themes.sh` regenerates them.
+
+<details>
+<summary><b>Screenshots — the same change in all eleven</b></summary>
+<br>
+
+<details>
+<summary><code>dark</code> — the default</summary>
+
+![dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/dark.png)
+
+</details>
+
+<details>
+<summary><code>one-dark</code></summary>
+
+![one-dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/one-dark.png)
+
+</details>
+
+<details>
+<summary><code>one-light</code></summary>
+
+![one-light](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/one-light.png)
+
+</details>
+
+<details>
+<summary><code>gruvbox-dark</code></summary>
+
+![gruvbox-dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/gruvbox-dark.png)
+
+</details>
+
+<details>
+<summary><code>gruvbox-light</code></summary>
+
+![gruvbox-light](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/gruvbox-light.png)
+
+</details>
+
+<details>
+<summary><code>solarized-dark</code></summary>
+
+![solarized-dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/solarized-dark.png)
+
+</details>
+
+<details>
+<summary><code>solarized-light</code></summary>
+
+![solarized-light](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/solarized-light.png)
+
+</details>
+
+<details>
+<summary><code>catppuccin-mocha</code></summary>
+
+![catppuccin-mocha](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/catppuccin-mocha.png)
+
+</details>
+
+<details>
+<summary><code>catppuccin-latte</code></summary>
+
+![catppuccin-latte](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/catppuccin-latte.png)
+
+</details>
+
+<details>
+<summary><code>dracula</code></summary>
+
+![dracula](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/dracula.png)
+
+</details>
+
+<details>
+<summary><code>monokai</code></summary>
+
+![monokai](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/monokai.png)
+
+</details>
+
+</details>
+
+A theme **paints its own background** rather than letting the terminal's show through, so a
+light palette works on a dark terminal and the other way round.
+
+Each is *derived* rather than hand-written: a seed names the syntax theme and six accents —
+an addition, a deletion, the accent, the skim tier, a finding, a reviewed mark — and the
+other thirty-odd colours are mixed from those against the ground the syntax theme declares
+(ADR 0024). Seeds live one per file in `src/theme/`.
+
+Adding one is a variant on `ThemeName` and a seed file. Tests then run the legibility,
+chroma and distinctness checks over it along with the rest, which is what makes it cheap:
+a palette that does not hold up fails the build rather than someone's eyes.
 
 ## Using it as a library
 

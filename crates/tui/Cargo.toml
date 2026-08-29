@@ -22,6 +22,7 @@ two-face = { version = "0.5", default-features = false, features = ["syntect-def
 unicode-width = "0.2"
 tui-textarea = { package = "tui-textarea-2", version = "0.13" }
 arboard = "3"
+palette = { workspace = true }
 
 [dev-dependencies]
 differential-testutil = { workspace = true }

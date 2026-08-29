@@ -3,10 +3,10 @@
 //! - **Repo-level** `.differential.toml` at the target repo's root —
 //!   classification hints only. Shared by everyone reviewing the repo.
 //! - **User-level** `~/.config/differential/config.toml` (XDG) — `[grouping]`:
-//!   which agent CLI to run and its timeout, and `[review]`: how much context
-//!   the reviewer shows around a hunk, and which diff layout it opens in.
-//!   Both are per-user choices, not properties of the repo, so neither lives
-//!   in it.
+//!   which agent CLI to run and its timeout, and `[review]`: which palette the
+//!   reviewer wears, how much context it shows around a hunk, and which diff
+//!   layout it opens in. All per-user choices, not properties of the repo, so
+//!   none of them lives in it.
 //!
 //! HARD RULE (ADR 0012): config tunes classification hints and tool behaviour.
 //! It can never remove a file or hunk from enumeration — enumeration runs before
@@ -92,7 +92,35 @@ pub struct GroupingConfig {
     pub timeout_secs: Option<u64>,
 }
 
-/// `[review]` — how much of a file the terminal reviewer shows around a hunk.
+/// Which palette the terminal reviewer wears, by name.
+///
+/// A name, for the same reason [`Agent`] is one: a palette is not a colour the
+/// caller supplies but a whole coherent set the renderer builds — thirty-one
+/// fields plus the syntax theme the code itself is painted with, all derived
+/// together so the chrome and the code cannot disagree (ADR 0024). A free-form
+/// colour list would be a knob that looked like it worked.
+///
+/// Adding a theme is adding a variant here and a seed in the renderer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ThemeName {
+    /// The original palette: a dark slate ground with a cyan accent.
+    #[default]
+    Dark,
+    OneDark,
+    OneLight,
+    GruvboxDark,
+    GruvboxLight,
+    SolarizedDark,
+    SolarizedLight,
+    CatppuccinMocha,
+    CatppuccinLatte,
+    Dracula,
+    Monokai,
+}
+
+/// `[review]` — how the terminal reviewer looks, and how much of a file it
+/// shows around a hunk.
 ///
 /// Presentation only: it can widen what is *displayed* around a hunk and can
 /// never change which hunks exist. Enumeration is total and runs before any of
@@ -113,6 +141,9 @@ pub struct ReviewConfig {
     /// says, so changing it never moves a layout under someone mid-read.
     #[serde(default)]
     pub diff: DiffLayout,
+    /// Which palette to wear. Default: `dark`.
+    #[serde(default)]
+    pub theme: ThemeName,
 }
 
 /// How the reviewer lays a hunk out.
@@ -149,6 +180,7 @@ impl Default for ReviewConfig {
             context: default_context(),
             context_step: default_context_step(),
             diff: DiffLayout::default(),
+            theme: ThemeName::default(),
         }
     }
 }
@@ -443,6 +475,40 @@ attributes = ["linguist-generated", "custom-generated"]
         assert!(Config::parse_user("[grouping]\nagent = [\"my-llm\"]", "test").is_err());
         assert!(Config::parse_user("[review]\nlines = 5", "test").is_err());
         assert!(Config::parse_user("[classify]\ngenerated = []", "test").is_err());
+    }
+
+    /// A theme is a per-user choice like the agent, named for the same reason:
+    /// serde renders the valid names for free, and adding one is a variant.
+    #[test]
+    fn user_config_parses_the_theme_and_names_the_valid_ones() {
+        let u = Config::parse_user("[review]\ntheme = \"gruvbox-light\"", "test").unwrap();
+        assert_eq!(u.review.theme, ThemeName::GruvboxLight);
+        // Absent is the default, and does not zero the other keys.
+        let u = Config::parse_user("[review]\ncontext = 8", "test").unwrap();
+        assert_eq!(u.review.theme, ThemeName::Dark);
+        assert_eq!(u.review.context, 8);
+
+        // An unknown name is an error that says which ones exist.
+        let err = Config::parse_user("[review]\ntheme = \"nosferatu\"", "test").unwrap_err();
+        let msg = err.to_string();
+        for name in [
+            "dark",
+            "light",
+            "gruvbox-dark",
+            "solarized-light",
+            "monokai",
+        ] {
+            assert!(msg.contains(name), "{name} missing from: {msg}");
+        }
+    }
+
+    /// The repo file cannot set it: a palette is the reader's, not the
+    /// repository's. Nothing enforces this by hand — `RawConfig` has no
+    /// `[review]` and denies unknown fields.
+    #[test]
+    fn a_theme_in_the_repo_config_is_rejected() {
+        let err = Config::parse("[review]\ntheme = \"one-light\"", "test").unwrap_err();
+        assert!(err.to_string().contains("review"), "{err}");
     }
 
     #[test]

@@ -98,8 +98,11 @@ where
         + Send
         + 'static,
 {
+    // Built once, before anything draws: the picker and the splash both paint
+    // before `App` exists, and building a palette parses the syntax set.
+    let theme = theme::Theme::named(opts.theme);
     let picked = if pick {
-        match picker::pick_source(terminal, repo)? {
+        match picker::pick_source(terminal, repo, &theme)? {
             Some(p) => Some(p),
             None => return Ok(()), // cancelled
         }
@@ -115,13 +118,13 @@ where
         let cancel = Arc::clone(&cancel);
         std::thread::spawn(move || pipeline(picked, tx, cancel))
     };
-    let finished = splash::run(terminal, rx, &worker)?;
+    let finished = splash::run(terminal, &theme, rx, &worker)?;
     if !finished {
         // Cancelling means the agent subprocess dies too, not just that we
         // stop watching it: raise the flag, then wait for the worker to
         // unwind so nothing outlives this process.
         cancel.store(true, Ordering::Relaxed);
-        splash::draw_cancelling(terminal)?;
+        splash::draw_cancelling(terminal, &theme)?;
         let _ = worker.join();
         return Ok(());
     }
@@ -143,7 +146,11 @@ where
         prepared.out.head.clone(),
     );
     let range = opts.range.clone();
-    run_app(terminal, App::new(session, factory, opts), range.as_deref())
+    run_app(
+        terminal,
+        App::new(session, factory, opts, theme),
+        range.as_deref(),
+    )
 }
 
 /// The terminal's current size, as the model wants it.

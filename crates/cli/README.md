@@ -224,6 +224,7 @@ agent = "claude-code"   # the only one so far, and the default
 timeout_secs = 1200
 
 [review]
+theme = "dark"
 context = 3
 context_step = 10
 # Diff layout a review opens in: "split" or "unified".
@@ -237,10 +238,116 @@ diff = "split"
 | `review.context` | `3` | Context lines shown around a hunk before any expansion. |
 | `review.context_step` | `10` | Lines one `z` pulls in at a context boundary row. |
 | `review.diff` | `split` | Layout a review OPENS in. `s` still toggles, and a review that has recorded a choice keeps it. |
+| `review.theme` | `dark` | Which palette the reviewer wears, by name. See below. |
 
 Resolution order for each file: the explicit flag, then the default path, then the built-in
 defaults. A missing file means defaults. A malformed file is a hard error. An unknown key
 is a hard error too.
+
+### Themes
+
+`review.theme` names one of eleven palettes. Each pairs a set of chrome colours with the
+syntax theme the code is painted in, so the diff and the code come from one source.
+
+`dark` (the default), `one-dark`, `one-light`, `gruvbox-dark`, `gruvbox-light`,
+`solarized-dark`, `solarized-light`, `catppuccin-mocha`, `catppuccin-latte`,
+`dracula`, `monokai`.
+
+The shots below are the same change in the same reviewer, so what differs between them is
+only the palette. Regenerate with `./assets/themes.sh`.
+
+<details>
+<summary><b>Screenshots — the same change in all eleven</b></summary>
+<br>
+
+<details>
+<summary><code>dark</code> — the default</summary>
+
+![dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/dark.png)
+
+</details>
+
+<details>
+<summary><code>one-dark</code></summary>
+
+![one-dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/one-dark.png)
+
+</details>
+
+<details>
+<summary><code>one-light</code></summary>
+
+![one-light](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/one-light.png)
+
+</details>
+
+<details>
+<summary><code>gruvbox-dark</code></summary>
+
+![gruvbox-dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/gruvbox-dark.png)
+
+</details>
+
+<details>
+<summary><code>gruvbox-light</code></summary>
+
+![gruvbox-light](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/gruvbox-light.png)
+
+</details>
+
+<details>
+<summary><code>solarized-dark</code></summary>
+
+![solarized-dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/solarized-dark.png)
+
+</details>
+
+<details>
+<summary><code>solarized-light</code></summary>
+
+![solarized-light](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/solarized-light.png)
+
+</details>
+
+<details>
+<summary><code>catppuccin-mocha</code></summary>
+
+![catppuccin-mocha](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/catppuccin-mocha.png)
+
+</details>
+
+<details>
+<summary><code>catppuccin-latte</code></summary>
+
+![catppuccin-latte](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/catppuccin-latte.png)
+
+</details>
+
+<details>
+<summary><code>dracula</code></summary>
+
+![dracula](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/dracula.png)
+
+</details>
+
+<details>
+<summary><code>monokai</code></summary>
+
+![monokai](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/monokai.png)
+
+</details>
+
+</details>
+
+An unknown name is a hard error that lists the valid ones. `theme` in the **repo** file is
+rejected: a palette is the reader's choice, not the repository's.
+
+A theme is a *derived* palette, not a copy of a published one. Each declares a syntax theme
+and six accents — an addition, a deletion, the accent, the skim tier, a finding, a reviewed
+mark — and the remaining thirty-odd colours are mixed from those against the ground the
+syntax theme itself declares (ADR 0024). Where a published palette's own accents were not
+legible as interface text, they were adjusted and the reason recorded in that theme's file
+under `crates/tui/src/theme/`.
 
 **Config never removes a file or a hunk from analysis.** It tunes classification hints and
 tool behaviour only.
