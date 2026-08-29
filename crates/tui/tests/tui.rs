@@ -4028,11 +4028,15 @@ fn render_dump_themes() {
     use differential_engine::config::ThemeName;
     for name in [
         ThemeName::Dark,
-        ThemeName::Light,
+        ThemeName::OneDark,
+        ThemeName::OneLight,
         ThemeName::GruvboxDark,
         ThemeName::GruvboxLight,
         ThemeName::SolarizedDark,
         ThemeName::SolarizedLight,
+        ThemeName::CatppuccinMocha,
+        ThemeName::CatppuccinLatte,
+        ThemeName::Dracula,
         ThemeName::Monokai,
     ] {
         let (_r, mut app) = make_app();

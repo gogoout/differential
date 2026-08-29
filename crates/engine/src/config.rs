@@ -107,12 +107,15 @@ pub enum ThemeName {
     /// The original palette: a dark slate ground with a cyan accent.
     #[default]
     Dark,
-    /// Its counterpart for a light terminal.
-    Light,
+    OneDark,
+    OneLight,
     GruvboxDark,
     GruvboxLight,
     SolarizedDark,
     SolarizedLight,
+    CatppuccinMocha,
+    CatppuccinLatte,
+    Dracula,
     Monokai,
 }
 
@@ -486,7 +489,7 @@ attributes = ["linguist-generated", "custom-generated"]
         assert_eq!(u.review.context, 8);
 
         // An unknown name is an error that says which ones exist.
-        let err = Config::parse_user("[review]\ntheme = \"dracula\"", "test").unwrap_err();
+        let err = Config::parse_user("[review]\ntheme = \"nosferatu\"", "test").unwrap_err();
         let msg = err.to_string();
         for name in [
             "dark",
@@ -504,7 +507,7 @@ attributes = ["linguist-generated", "custom-generated"]
     /// `[review]` and denies unknown fields.
     #[test]
     fn a_theme_in_the_repo_config_is_rejected() {
-        let err = Config::parse("[review]\ntheme = \"light\"", "test").unwrap_err();
+        let err = Config::parse("[review]\ntheme = \"one-light\"", "test").unwrap_err();
         assert!(err.to_string().contains("review"), "{err}");
     }
 

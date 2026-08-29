@@ -11,11 +11,15 @@
 //! palette the rules were never tested against, and it is the rules every other
 //! theme depends on.
 
+mod catppuccin_latte;
+mod catppuccin_mocha;
 mod dark;
+mod dracula;
 mod gruvbox_dark;
 mod gruvbox_light;
-mod light;
 mod monokai;
+mod one_dark;
+mod one_light;
 mod solarized_dark;
 mod solarized_light;
 
@@ -119,7 +123,11 @@ pub(super) struct Seed {
 fn seed(name: ThemeName) -> Seed {
     match name {
         ThemeName::Dark => dark::seed(),
-        ThemeName::Light => light::seed(),
+        ThemeName::OneDark => one_dark::seed(),
+        ThemeName::OneLight => one_light::seed(),
+        ThemeName::CatppuccinMocha => catppuccin_mocha::seed(),
+        ThemeName::CatppuccinLatte => catppuccin_latte::seed(),
+        ThemeName::Dracula => dracula::seed(),
         ThemeName::GruvboxDark => gruvbox_dark::seed(),
         ThemeName::GruvboxLight => gruvbox_light::seed(),
         ThemeName::SolarizedDark => solarized_dark::seed(),
@@ -452,13 +460,20 @@ fn derive(seed: &Seed, syntect: syntect::highlighting::Theme) -> Theme {
 mod tests {
     use super::*;
 
-    const ALL: [ThemeName; 7] = [
+    /// Every shipped palette. The legibility, chroma and distinctness tests
+    /// below all run over this, which is what makes adding a theme cheap: a
+    /// seed that does not hold up fails here rather than in someone's terminal.
+    const ALL: [ThemeName; 11] = [
         ThemeName::Dark,
-        ThemeName::Light,
+        ThemeName::OneDark,
+        ThemeName::OneLight,
         ThemeName::GruvboxDark,
         ThemeName::GruvboxLight,
         ThemeName::SolarizedDark,
         ThemeName::SolarizedLight,
+        ThemeName::CatppuccinMocha,
+        ThemeName::CatppuccinLatte,
+        ThemeName::Dracula,
         ThemeName::Monokai,
     ];
 
