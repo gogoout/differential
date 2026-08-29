@@ -8,7 +8,6 @@
 use std::collections::HashMap;
 
 use crate::EngineError;
-use crate::plan::identity::class_content_key;
 use crate::plan::ids::{HunkId, PlanIndex};
 use crate::plan::{LineCounts, effort_name};
 use crate::schema;
@@ -39,8 +38,6 @@ pub struct GroupView {
     pub effort: schema::Effort,
     pub role: Option<schema::Role>,
     pub class_ids: Vec<String>,
-    /// Class content keys — the reviewed-mark keys — in `class_ids` order.
-    pub class_keys: Vec<String>,
     /// Members in class order.
     pub hunks: Vec<HunkId>,
     /// Distinct paths touched. A rename counts twice, because the canonical
@@ -71,8 +68,7 @@ pub struct ReviewView {
     pub files: Vec<FileView>,
     group_of_hunk: HashMap<HunkId, usize>,
     hunk_by_digest: HashMap<String, HunkId>,
-    class_key: HashMap<String, String>,
-    hunk_key: HashMap<HunkId, String>,
+    digest_of_hunk: HashMap<HunkId, String>,
 }
 
 impl ReviewView {
@@ -83,21 +79,6 @@ impl ReviewView {
     /// why `ReviewSession` can stop computing its own copy of them.
     pub fn project(doc: &schema::PlanDocument) -> Result<Self, EngineError> {
         let index = PlanIndex::build(doc)?;
-
-        let mut class_key = HashMap::new();
-        let mut hunk_key = HashMap::new();
-        for c in &doc.classes {
-            let members = index.class_hunks(&c.id);
-            let digests: Vec<String> = members
-                .iter()
-                .map(|&h| index.hunk(h).digest.clone())
-                .collect();
-            let key = class_content_key(&digests);
-            for h in &members {
-                hunk_key.insert(*h, key.clone());
-            }
-            class_key.insert(c.id.clone(), key);
-        }
 
         let groups = index.groups();
         let label_of: HashMap<&str, &str> = groups
@@ -127,11 +108,6 @@ impl ReviewView {
                     label: g.label.clone(),
                     effort: g.effort,
                     role: g.role,
-                    class_keys: g
-                        .class_ids
-                        .iter()
-                        .map(|c| class_key[c.as_str()].clone())
-                        .collect(),
                     class_ids: g.class_ids.clone(),
                     n_files: files.len(),
                     counts: hunks
@@ -187,14 +163,19 @@ impl ReviewView {
             .enumerate()
             .map(|(i, h)| (h.digest.clone(), HunkId::from_index(i)))
             .collect();
+        let digest_of_hunk = doc
+            .hunks
+            .iter()
+            .enumerate()
+            .map(|(i, h)| (HunkId::from_index(i), h.digest.clone()))
+            .collect();
 
         Ok(ReviewView {
             groups: projected,
             files,
             group_of_hunk,
             hunk_by_digest,
-            class_key,
-            hunk_key,
+            digest_of_hunk,
         })
     }
 
@@ -220,22 +201,23 @@ impl ReviewView {
         self.hunk_by_digest.get(digest).copied()
     }
 
-    pub fn class_key(&self, class_id: &str) -> &str {
-        &self.class_key[class_id]
+    /// A hunk's exact content digest — the reviewed-mark key.
+    pub fn digest(&self, hunk: HunkId) -> &str {
+        &self.digest_of_hunk[&hunk]
     }
 
-    pub fn hunk_key(&self, hunk: HunkId) -> &str {
-        &self.hunk_key[&hunk]
-    }
-
-    /// Hunks whose class is marked reviewed.
-    pub fn hunks_with_keys<'k>(
+    /// Every hunk whose digest is marked.
+    ///
+    /// Walks the hunks rather than the marks, because a digest is content and
+    /// content repeats: two byte-identical hunks carry one key, and marking
+    /// either marks both. `hunk_by_digest` can only name one of them.
+    pub fn hunks_marked<'k>(
         &self,
-        reviewed: impl Fn(&str) -> bool + 'k,
+        marked: impl Fn(&str) -> bool + 'k,
     ) -> std::collections::HashSet<HunkId> {
-        self.hunk_key
+        self.digest_of_hunk
             .iter()
-            .filter(|(_, key)| reviewed(key))
+            .filter(|(_, digest)| marked(digest))
             .map(|(h, _)| *h)
             .collect()
     }
@@ -287,16 +269,15 @@ mod tests {
     }
 
     #[test]
-    fn reviewed_keys_are_a_pure_function_of_the_documents_digests() {
+    fn reviewed_keys_are_the_documents_own_hunk_digests() {
         let doc = two_group_doc();
         let view = ReviewView::project(&doc).unwrap();
 
-        // Same arithmetic ReviewSession used to do for itself.
-        let expected = class_content_key(&["digest0".into(), "digest1".into()]);
-        assert_eq!(view.class_key("C0"), expected);
-        assert_eq!(view.hunk_key(HunkId::from_index(0)), expected);
-        assert_eq!(view.hunk_key(HunkId::from_index(1)), expected);
-        assert_ne!(view.class_key("C1"), expected);
+        // One key per hunk, not one per class: two hunks of the same class
+        // carry different keys, so changing one cannot unmark the other.
+        assert_eq!(view.digest(HunkId::from_index(0)), "digest0");
+        assert_eq!(view.digest(HunkId::from_index(1)), "digest1");
+        assert_eq!(view.digest(HunkId::from_index(2)), "digest2");
     }
 
     #[test]

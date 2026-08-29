@@ -242,6 +242,22 @@ impl ports::RangeResolver for Repo {
     }
 }
 
+impl ports::Ancestry for Repo {
+    fn commit_of(&self, spec: &str) -> Result<Option<String>, EngineError> {
+        // A spec that names nothing is a deleted branch, not a git failure:
+        // the caller skips that candidate rather than refusing to open.
+        Ok(self.rev_parse(spec).ok())
+    }
+
+    fn is_ancestor(&self, older: &str, newer: &str) -> Result<bool, EngineError> {
+        // Exit 1 means "no", which `run` reports as a failure. Only exit 0 is
+        // a yes, so anything else is treated as "cannot place these two".
+        Ok(self
+            .run(["merge-base", "--is-ancestor", older, newer], None)
+            .is_ok())
+    }
+}
+
 impl ports::TreeResolver for Repo {
     fn tree_of(&self, rev: &str) -> Result<String, EngineError> {
         self.rev_parse_raw(&format!("{rev}^{{tree}}"))

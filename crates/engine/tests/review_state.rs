@@ -1,13 +1,11 @@
-//! Review-state store tests: persistence, class content keys, and the
+//! Review-state store tests: persistence, per-hunk reviewed marks, and the
 //! re-anchoring guarantees across a regenerated plan.
 
 use differential_engine::config::Config;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::run_grouped_pipeline;
 use differential_engine::ports::ReviewStore;
-use differential_engine::review_state::{
-    Anchor, Finding, FindingStatus, class_content_key, reanchor, review_id,
-};
+use differential_engine::review_state::{Anchor, Finding, FindingStatus, reanchor, review_id};
 use differential_engine::schema::SourceKind;
 use differential_engine::store::FsReviewStore;
 use differential_engine::store::{FsArtefactStore, FsGroupingCache};
@@ -36,14 +34,6 @@ fn review_id_is_stable_and_spec_sensitive() {
 }
 
 #[test]
-fn class_content_key_ignores_order() {
-    let a = class_content_key(&["d2".into(), "d1".into()]);
-    let b = class_content_key(&["d1".into(), "d2".into()]);
-    assert_eq!(a, b);
-    assert_ne!(a, class_content_key(&["d1".into()]));
-}
-
-#[test]
 fn store_roundtrips_state_plans_and_findings() {
     let r = TestRepo::new();
     r.write("f.txt", b"alpha_value = 1\n");
@@ -63,12 +53,12 @@ fn store_roundtrips_state_plans_and_findings() {
     store.save_plan(&hash, &json).unwrap();
 
     let mut state = store.load_state().unwrap();
-    assert!(state.reviewed_classes.is_empty());
-    state.reviewed_classes.insert("k1".into());
+    assert!(state.reviewed_hunks.is_empty());
+    state.reviewed_hunks.insert("k1".into());
     state.cursor = Some(("g0".into(), 4));
     store.save_state(&state).unwrap();
     let reloaded = store.load_state().unwrap();
-    assert!(reloaded.reviewed_classes.contains("k1"));
+    assert!(reloaded.reviewed_hunks.contains("k1"));
     assert_eq!(reloaded.cursor, Some(("g0".into(), 4)));
 
     let f = Finding::new(
@@ -243,6 +233,55 @@ fn a_finding_without_an_offset_lands_on_the_hunks_first_line() {
 
 /// commits on the branch — exact digest match when the hunk is untouched,
 /// content match (flagged moved) when it shifted, orphaned when it vanished.
+/// The reason marks moved from the class to the hunk (issue 40).
+///
+/// One class, two hunks. Change one of them and the other stays reviewed. The
+/// class key made every mark in a class hostage to every hunk in it.
+#[test]
+fn a_mark_survives_a_change_to_another_hunk_of_its_class() {
+    let r = TestRepo::new();
+    r.write("a.txt", b"alpha_value = 1\n");
+    r.write("b.txt", b"alpha_value = 1\n");
+    let base = r.commit_all("base");
+    // Two hunks of one shape, so the grouping puts them in one class — and
+    // two DIFFERENT contents, so they cannot share a digest.
+    r.write("a.txt", b"alpha_value = 2\n");
+    r.write("b.txt", b"alpha_value = 3\n");
+    let head1 = r.commit_all("head1");
+
+    let backend = focus_all_backend();
+    let doc1 = grouped(&r, &base, &head1, &backend);
+    let view1 = r.pipeline(&base, &head1).view;
+    assert_eq!(doc1.classes.len(), 1, "one shape, one class");
+    assert_eq!(doc1.hunks.len(), 2);
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dir = tmp.path().join("rev1");
+    let a_index = doc1.hunks.iter().position(|h| h.file == "a.txt").unwrap();
+    let mut session =
+        ReviewSession::open(FsReviewStore::at(dir.clone()).unwrap(), doc1, view1).unwrap();
+    assert!(session.toggle_reviewed(a_index).unwrap());
+
+    // b.txt's hunk changes; a.txt's does not.
+    r.write("b.txt", b"alpha_value = 4\n");
+    let head2 = r.commit_all("head2");
+    let doc2 = grouped(&r, &base, &head2, &backend);
+    let view2 = r.pipeline(&base, &head2).view;
+    let a_index2 = doc2.hunks.iter().position(|h| h.file == "a.txt").unwrap();
+
+    let session2 = ReviewSession::open(FsReviewStore::at(dir).unwrap(), doc2, view2).unwrap();
+    assert!(
+        session2.is_reviewed(session2.hunk_key(a_index2)),
+        "the hunk nobody touched stays read"
+    );
+    assert_eq!(
+        session2.reviewed_count(),
+        1,
+        "and the changed hunk is not marked with it"
+    );
+    drop(session);
+}
+
 #[test]
 fn findings_reanchor_across_regeneration() {
     let r = TestRepo::new();
@@ -411,10 +450,10 @@ fn session_persists_every_mutation() {
 
     // toggle_reviewed: on, then off — each visible to a fresh store.
     assert!(session.toggle_reviewed(0).unwrap());
-    assert_eq!(reread().load_state().unwrap().reviewed_classes.len(), 1);
+    assert_eq!(reread().load_state().unwrap().reviewed_hunks.len(), 1);
     assert_eq!(session.reviewed_hunks(), std::iter::once(0).collect());
     assert!(!session.toggle_reviewed(0).unwrap());
-    assert!(reread().load_state().unwrap().reviewed_classes.is_empty());
+    assert!(reread().load_state().unwrap().reviewed_hunks.is_empty());
 
     // add_finding derives the anchor from the document + view.
     let id = {
@@ -440,21 +479,21 @@ fn session_persists_every_mutation() {
     assert!(reread().load_findings().unwrap().is_empty());
 
     // set_reviewed is SET semantics over a batch, one write.
-    let keys: Vec<String> = doc_class_keys(&session);
+    let keys: Vec<String> = doc_hunk_keys(&session);
     session.set_reviewed(&keys, true).unwrap();
     assert_eq!(
-        reread().load_state().unwrap().reviewed_classes.len(),
+        reread().load_state().unwrap().reviewed_hunks.len(),
         keys.len()
     );
     // A partially reviewed set resolves to "all reviewed", never inverted.
     session.set_reviewed(&keys[..1], false).unwrap();
     session.set_reviewed(&keys, true).unwrap();
     assert_eq!(
-        reread().load_state().unwrap().reviewed_classes.len(),
+        reread().load_state().unwrap().reviewed_hunks.len(),
         keys.len()
     );
     session.set_reviewed(&keys, false).unwrap();
-    assert!(reread().load_state().unwrap().reviewed_classes.is_empty());
+    assert!(reread().load_state().unwrap().reviewed_hunks.is_empty());
 
     // set_split_diff / set_file_view round-trip. `split_diff` starts as None —
     // "no choice recorded" — so the renderer can fall back to its configured
@@ -473,13 +512,10 @@ fn session_persists_every_mutation() {
     assert!(reread().load_state().unwrap().file_view);
 }
 
-/// Class content keys of every class in the session's document.
-fn doc_class_keys(session: &FsReviewSession) -> Vec<String> {
-    session
-        .doc()
-        .classes
-        .iter()
-        .map(|c| session.class_key(&c.id).to_string())
+/// The reviewed-mark key of every hunk in the session's document.
+fn doc_hunk_keys(session: &FsReviewSession) -> Vec<String> {
+    (0..session.doc().hunks.len())
+        .map(|h| session.hunk_key(h).to_string())
         .collect()
 }
 

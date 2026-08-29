@@ -80,6 +80,23 @@ pub trait RangeResolver {
     fn resolve_endpoint(&self, rev: &str) -> Result<String, EngineError>;
 }
 
+/// Placing one review's head against another's.
+///
+/// Kept apart from `RangeResolver` because the question is different: not
+/// "what are this range's endpoints" but "are these two heads on one line of
+/// history". That is what tells a branch that moved on from a different
+/// branch off the same base.
+pub trait Ancestry {
+    /// The commit a spec names NOW, or `None` if it names nothing.
+    ///
+    /// A review filed against a branch that has since been deleted is not an
+    /// error — it is a candidate that cannot be placed, so it is skipped.
+    fn commit_of(&self, spec: &str) -> Result<Option<String>, EngineError>;
+
+    /// Is `older` reachable from `newer`?
+    fn is_ancestor(&self, older: &str, newer: &str) -> Result<bool, EngineError>;
+}
+
 /// Peeling an endpoint to its tree oid — the one thing invariant 3 compares
 /// against.
 ///
@@ -311,6 +328,43 @@ pub trait GroupingCache {
 /// opaque, exactly as `GroupingCache` must.
 pub trait ArtefactStore {
     fn make_readable(&self, key: &str, json: &str) -> Result<PathBuf, EngineError>;
+}
+
+/// What a review was opened as. The id is a hash of these two strings, so the
+/// id alone cannot answer what its head spec means today.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewIdentity {
+    /// The resolved base sha.
+    pub base: String,
+    /// The head endpoint as typed.
+    pub head_spec: String,
+}
+
+/// One review as the catalogue sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FiledReview {
+    pub id: String,
+    /// `None` for a review filed before identities were written, and for a
+    /// review of uncommitted work. Both can be recognised, neither adopted.
+    pub opened_as: Option<ReviewIdentity>,
+}
+
+/// Every review filed in this repository, and the joins between them.
+///
+/// The need is "which reviews already exist, and does this spelling redirect
+/// to one of them" — asked once, when a spelling is first used. The reviews
+/// directory is itself the index, so there is no list file to go stale.
+pub trait ReviewCatalogue {
+    fn filed_reviews(&self) -> Result<Vec<FiledReview>, EngineError>;
+
+    /// The review `id`'s progress lives under the returned id instead.
+    fn alias_of(&self, id: &str) -> Result<Option<String>, EngineError>;
+
+    /// Record that `from` reads `to`'s progress. Permanent.
+    fn file_alias(&self, from: &str, to: &str) -> Result<(), EngineError>;
+
+    /// Record what `id` was opened as, which is what makes it adoptable.
+    fn file_identity(&self, id: &str, opened_as: &ReviewIdentity) -> Result<(), EngineError>;
 }
 
 /// One review's sidecar (ADR 0013).

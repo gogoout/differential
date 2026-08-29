@@ -28,7 +28,9 @@ use anyhow::Context;
 use crossterm::event::{self, Event};
 use differential_engine::gitio::Repo;
 use differential_engine::grouping::Progress;
-use differential_engine::store::FsReviewStore;
+use differential_engine::plan;
+use differential_engine::review_identity;
+use differential_engine::store::{FsReviewCatalogue, FsReviewStore};
 use differential_engine::{PipelineOutput, ReviewSession};
 
 pub use app::ReviewOptions;
@@ -138,7 +140,13 @@ where
         .context("invariants failed; nothing to review")?;
     // The renderer is an adapter: it composes the concrete store rather than
     // carrying a generic parameter for a choice it never makes.
-    let store = FsReviewStore::for_review(repo, &prepared.review_base, &prepared.head_spec)?;
+    let catalogue = FsReviewCatalogue::new(repo)?;
+    let id =
+        review_identity::resolve(&catalogue, repo, &prepared.review_base, &prepared.head_spec)?;
+    // Adoption is silent, but not secret: the marks a reader did not make in
+    // this range are the one thing that would otherwise arrive unexplained.
+    let adopted = id != plan::review_id(&prepared.review_base, &prepared.head_spec);
+    let store = FsReviewStore::for_review(repo, &id)?;
     let session = ReviewSession::open(store, doc, prepared.out.view)?;
     let factory = RowFactory::new(
         repo.clone(),
@@ -146,11 +154,11 @@ where
         prepared.out.head.clone(),
     );
     let range = opts.range.clone();
-    run_app(
-        terminal,
-        App::new(session, factory, opts, theme),
-        range.as_deref(),
-    )
+    let mut app = App::new(session, factory, opts, theme);
+    if adopted {
+        app.status = "resumed the review already open on this branch".into();
+    }
+    run_app(terminal, app, range.as_deref())
 }
 
 /// The terminal's current size, as the model wants it.

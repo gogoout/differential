@@ -86,29 +86,29 @@ impl<S: ReviewStore> ReviewSession<S> {
         &self.findings
     }
 
-    /// Content key of the class owning `hunk`.
-    pub fn hunk_class_key(&self, hunk: usize) -> &str {
-        self.plan.hunk_key(plan::HunkId::from_index(hunk))
+    /// The reviewed-mark key of `hunk` — its exact content digest.
+    pub fn hunk_key(&self, hunk: usize) -> &str {
+        self.plan.digest(plan::HunkId::from_index(hunk))
     }
 
-    /// Content key for a class id (present for every class in the document).
-    pub fn class_key(&self, class_id: &str) -> &str {
-        self.plan.class_key(class_id)
+    pub fn is_reviewed(&self, hunk_key: &str) -> bool {
+        self.state.reviewed_hunks.contains(hunk_key)
     }
 
-    pub fn is_reviewed(&self, class_key: &str) -> bool {
-        self.state.reviewed_classes.contains(class_key)
-    }
-
+    /// Marks that land on a hunk of THIS document.
+    ///
+    /// Keys from an earlier plan stay on disk and revive if their content
+    /// comes back, so counting the stored set would count hunks the reader
+    /// cannot see — and could outrun the total the renderer draws it against.
     pub fn reviewed_count(&self) -> usize {
-        self.state.reviewed_classes.len()
+        self.reviewed_hunks().len()
     }
 
-    /// Canonical hunk indices whose class is marked reviewed (owned — safe to
-    /// hold while borrowing the session elsewhere).
+    /// Canonical hunk indices marked reviewed (owned — safe to hold while
+    /// borrowing the session elsewhere).
     pub fn reviewed_hunks(&self) -> HashSet<usize> {
         self.plan
-            .hunks_with_keys(|key| self.state.reviewed_classes.contains(key))
+            .hunks_marked(|digest| self.state.reviewed_hunks.contains(digest))
             .into_iter()
             .map(|h| h.index())
             .collect()
@@ -165,32 +165,29 @@ impl<S: ReviewStore> ReviewSession<S> {
 
     // ---------------------------- mutations (each persists before returning)
 
-    /// Toggle the reviewed mark of the class owning `hunk`. Returns the new
-    /// mark (true = now reviewed).
+    /// Toggle the reviewed mark of `hunk` itself. Returns the new mark
+    /// (true = now reviewed).
     pub fn toggle_reviewed(&mut self, hunk: usize) -> Result<bool, EngineError> {
-        let key = self
-            .plan
-            .hunk_key(plan::HunkId::from_index(hunk))
-            .to_string();
-        let now = self.state.reviewed_classes.insert(key.clone());
+        let key = self.plan.digest(plan::HunkId::from_index(hunk)).to_string();
+        let now = self.state.reviewed_hunks.insert(key.clone());
         if !now {
-            self.state.reviewed_classes.remove(&key);
+            self.state.reviewed_hunks.remove(&key);
         }
         self.store.save_state(&self.state)?;
         Ok(now)
     }
 
-    /// Mark a whole set of classes reviewed (or not) in one write.
+    /// Mark a whole set of hunks reviewed (or not) in one write.
     ///
     /// Set semantics, not toggle: a partially reviewed group resolves to the
     /// requested state instead of inverting member by member, and the batch
-    /// costs one `save_state` rather than one per class.
-    pub fn set_reviewed(&mut self, class_keys: &[String], on: bool) -> Result<(), EngineError> {
-        for key in class_keys {
+    /// costs one `save_state` rather than one per hunk.
+    pub fn set_reviewed(&mut self, hunk_keys: &[String], on: bool) -> Result<(), EngineError> {
+        for key in hunk_keys {
             if on {
-                self.state.reviewed_classes.insert(key.clone());
+                self.state.reviewed_hunks.insert(key.clone());
             } else {
-                self.state.reviewed_classes.remove(key);
+                self.state.reviewed_hunks.remove(key);
             }
         }
         self.store.save_state(&self.state)

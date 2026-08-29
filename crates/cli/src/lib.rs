@@ -19,8 +19,9 @@ use differential_engine::lang::LanguageRegistry;
 use differential_engine::llm::CommandBackend;
 use differential_engine::pipeline::resolve_picked;
 use differential_engine::plan;
+use differential_engine::review_identity;
 use differential_engine::store::{
-    self, FsArtefactStore, FsGroupingCache, FsReviewStore, OsConfigSource,
+    self, FsArtefactStore, FsGroupingCache, FsReviewCatalogue, FsReviewStore, OsConfigSource,
 };
 use differential_engine::{resolve_range, run_pipeline};
 use differential_stack::{StackOptions, run_stack_pipeline};
@@ -324,7 +325,19 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             let doc = out
                 .document
                 .context("invariants failed; no plan available")?;
-            let store = FsReviewStore::for_review(&repo, &out.base, &source.head_spec)?;
+            // The same resolution the reviewer's session made, so `findings`
+            // reads the review they are looking at and not an empty namesake.
+            let review_base = source
+                .identity_base
+                .clone()
+                .unwrap_or_else(|| out.base.clone());
+            let id = review_identity::resolve(
+                &FsReviewCatalogue::new(&repo)?,
+                &repo,
+                &review_base,
+                &source.head_spec,
+            )?;
+            let store = FsReviewStore::for_review(&repo, &id)?;
             let session = differential_engine::ReviewSession::open(store, doc, out.view)?;
             // Two projections of one store, both the engine's: JSON for a
             // consumer, markdown for a person. The reviewer's `y` copies the

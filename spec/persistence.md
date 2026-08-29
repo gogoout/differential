@@ -22,7 +22,10 @@ private, per-clone, worktree-safe, never committable.
 │   ├── plans/<content-hash>.json   # every generated document, immutable
 │   ├── current                     # the active plan's content hash
 │   ├── findings.jsonl              # the comment store
+│   ├── identity.json               # what this review was opened as
 │   └── state.json                  # review progress
+├── reviews/<review-id>/
+│   └── alias                       # a redirect: read that review instead
 └── cache/
     ├── grouping/<classes-hash>.json   # the raw model response (ADR 0009)
     └── document/<content-hash>.json   # the pre-group document (ADR 0022)
@@ -42,6 +45,32 @@ for a fresh model call.
 A review is keyed by **base + the branch/MR ref under review, not by head** — so the same
 review survives the head moving. Regeneration adds a new immutable plan and advances
 `current`.
+
+The key is the head endpoint **as typed**, which makes the spelling part of the review's
+name. On its own that split one range into two reviews: mark `<base>..<sha>`, reopen
+`<base>..HEAD` where `HEAD` *is* that sha, and the progress was filed under a name you did
+not type again (ADR 0026).
+
+So a spelling with no review of its own **adopts** one. A filed review is adoptable when
+its base sha is the same and one head is reachable from the other:
+
+- Two spellings of one commit — a short sha, a full sha, `HEAD`, a branch name — adopt each
+  other, because the heads are equal.
+- A review opened after new commits adopts the one you were already in, because the old
+  head is an ancestor of the new one. That is the carry-forward: unchanged hunks stay
+  marked and the new commits arrive unread.
+- Two branches off one base do **not** adopt each other. Neither head reaches the other, so
+  their findings can never collide.
+
+Adoption is silent and permanent. It is recorded as an `alias` file under the new
+spelling's id, so every later open costs one file read and `dfr findings` reaches the same
+review the reviewer is looking at. `identity.json` records what a review was opened as,
+which is what a later scan reads; a review of uncommitted work writes none, because its
+head is a synthesized tree and ancestry says nothing about it (ADR 0017).
+
+The join never expires. Switch branches afterwards and the two spellings stay one review:
+marks key on hunk content and findings re-anchor by digest, so a diff that no longer
+matches costs orphans, never loss.
 
 ## Comments
 
@@ -85,8 +114,11 @@ When `current` advances, a migration pass visits every comment:
 Orphaned comments are **never deleted** — the same philosophy as the grouping coverage
 back-fill: detection and preservation, not silent loss.
 
-Review progress (`state.json`) carries "reviewed" marks keyed by class/group **content
-hash**: a group whose content is unchanged stays reviewed; anything that changed resets.
+Review progress (`state.json`) carries "reviewed" marks keyed by **hunk digest**: a hunk
+whose content is unchanged stays reviewed; a hunk that changed resets, and only that hunk
+(ADR 0025). Marking a group marks every hunk in it. Two byte-identical hunks carry one
+digest, so a mark on either covers both — the mark names content, exactly as an anchor
+does.
 It also carries the resume cursor and the TUI's persisted layout choices (`split_diff`,
 `wrap`, `file_view`) — all additive fields. The cursor is `(id, row)` where `id` is a group id in
 the semantic view and a file path in the flattened file view; the `file_view` flag

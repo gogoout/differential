@@ -81,7 +81,7 @@ behind a single line; noise groups are folded entirely.
 show their aggregate counts, and fold with `z`/`enter`; selecting a directory shows every
 hunk beneath it, selecting a file shows that file's hunks in position order regardless of
 grouping, each hunk header carrying its group's label. Reviewed marks are shared between
-the views — they key on class content either way.
+the views — they key on hunk content either way.
 
 **Focus floats a map of the other pane.** Each side keeps its own job; what changes is what
 is laid over it, so an unfocused pane earns its space without either pane losing any.
@@ -295,8 +295,8 @@ this group's reading list. The id is what the plan pane's rows and their `after:
 keyed by, so it is what turns "some other group" into a row you can go and look at. It is absorbed whole
 and costs no context budget, because showing half a change would be worse than showing
 none. `n`/`N` pass over it, since it is not on this reading list. `space` and `c` treat it like
-any other hunk: a reviewed mark keys on class content and a finding anchors on the hunk's
-digest, and both are group-independent — so reading it here is reading it everywhere, and
+any other hunk: a reviewed mark and a finding both key on the hunk's digest, and both are
+group-independent — so reading it here is reading it everywhere, and
 a finding filed here is filed against the hunk itself rather than against this view of it.
 
 That a crossed hunk is a **change** segment, never flattened into context, is what keeps
@@ -347,7 +347,7 @@ list belongs; the footer's job is to point at it.
 | `s` | toggle side-by-side / unified diff layout (persisted) |
 | `w` | soft wrap long lines (persisted) |
 | `f` | files, in the pane you are in — plan pane: toggle reading plan ↔ file tree (persisted) · diff pane: the file-list modal (`enter` jumps to the file) |
-| `space` | mark reviewed — the whole selected group/file in the left pane, the hunk's **class** in the diff pane (one exemplar verifies the shape) |
+| `space` | mark reviewed — the whole selected group/file in the left pane, the **hunk** under the cursor in the diff pane |
 | `v` | start a line selection at the cursor · `j`/`k` extend it · `v` or `esc` drops it · `c` writes a finding over it |
 | `c` | write a finding — on the line under the cursor, on the lines `v` selected, or on the whole hunk from a row that is not a line; on a line that already carries one, rewrite that one |
 | `dd` | delete the finding under the cursor |
@@ -408,7 +408,9 @@ as typed, so the review survives new commits landing.
 A clean worktree is therefore a committed pick, filed under `HEAD`. One consequence worth
 knowing: commit your outstanding work mid-review and the next `dfr review` opens the
 `HEAD`-keyed review, not the `WORKTREE`-keyed one you were in. Nothing is lost — the old
-review is still on disk under its own id — but its marks are not the ones you see.
+review is still on disk under its own id — but its marks are not the ones you see. A
+`WORKTREE` review is never adopted and never adopts (ADR 0026): its head is a synthesized
+tree, and ancestry says nothing about a tree.
 
 ## While the pipeline runs
 
@@ -452,10 +454,14 @@ frontend that reads and mutates review state only via the session, which writes 
 sidecar store (spec/persistence.md) under
 `<git-common-dir>/differential/reviews/<review-id>/`, where the review id derives from the
 resolved base sha plus the head **as typed** — reviewing `main..feature` keeps one review
-while `feature` moves. Reviewed marks key on class content (sorted member digests);
-findings anchor on exact hunk digests and re-anchor on every open (exact digest →
-content match flagged *moved* → orphaned, never dropped; orphans revive when content
-returns). The pane title shows an orphan count when any exist.
+while `feature` moves. A spelling with no review of its own adopts one filed on the same
+line of history, so `main..<sha>` and `main..HEAD` are one review and a new commit does not
+strand what you have read (ADR 0026); the status line says so on the open that adopts.
+
+Reviewed marks key on the exact hunk digest (ADR 0025), so changing one hunk of a class
+leaves the rest read. Findings anchor on the same digests and re-anchor on every open
+(exact digest → content match flagged *moved* → orphaned, never dropped; orphans revive
+when content returns). The pane title shows an orphan count when any exist.
 
 **A finding is about lines.** `c` on a diff row annotates **that line**; `v` first starts a
 selection the cursor extends, and `c` then annotates the run.

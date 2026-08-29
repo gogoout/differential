@@ -307,8 +307,22 @@ sidecar store under `<git-common-dir>/differential/reviews/<review-id>/`.
 The review id derives from the resolved base sha plus the head **as typed**. So reviewing
 `main..feature` keeps one review while `feature` moves.
 
+Because the spelling is part of the name, a range with no review of its own **adopts** one
+filed on the same line of history: the same base, and one head reachable from the other. So
+`main..<sha>`, `main..<short-sha>` and `main..HEAD` are one review, and reviewing again
+after a commit resumes what you had rather than starting empty. Two branches off one base
+adopt nothing from each other. The join is silent, recorded and permanent; the status line
+says so on the open that adopts (ADR 0026).
+
+Reviewed marks key on the exact hunk digest (ADR 0025). `space` in the plan pane marks
+every hunk of the selected group or file; in the diff pane it marks the hunk under the
+cursor. Change one hunk of a class and the rest stay read. Two byte-identical hunks share
+one digest, so a mark on either covers both.
+
 Reviewing uncommitted work keys on the base sha plus the literal `WORKTREE`, so marks and
-findings survive while the snapshot tree churns with every edit.
+findings survive while the snapshot tree churns with every edit. Such a review never adopts
+and is never adopted: its head is a synthesized tree, and ancestry says nothing about a
+tree.
 
 One consequence worth knowing: commit your outstanding work mid-review, and the next
 `dfr review` opens the `HEAD`-keyed review rather than the `WORKTREE`-keyed one you were in.

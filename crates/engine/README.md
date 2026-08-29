@@ -232,6 +232,7 @@ every mutation is on disk before the call returns.
 │   ├── plans/<content-hash>.json   every generated document, immutable
 │   ├── current                     the active plan's content hash
 │   ├── findings.jsonl              the findings store
+│   ├── identity.json               what this review was opened as
 │   └── state.json                  progress and view preferences
 └── cache/grouping/<classes-hash>.json
 ```
@@ -239,13 +240,19 @@ every mutation is on disk before the call returns.
 The review id is `sha1(base_sha ‖ NUL ‖ head_spec)` truncated to 16 characters. The head is
 the string **as typed**, so reviewing `main..feature` keeps one review while `feature` moves.
 
+Because the spelling is part of the name, `review_identity::resolve` decides which review a
+range opens. A spelling with no review of its own adopts one filed on the same base whose
+head is reachable from this one — the two spellings of a commit, and the commits added
+since. Two branches off one base adopt nothing from each other. The join is recorded as an
+`alias` file, so it is permanent and costs one file read (ADR 0026).
+
 Documents are pure functions of `base..head`. Review state lives in the sidecar and
 re-anchors on every regeneration: exact hunk digest first, then a content match flagged
 *moved*, then orphaned. An orphan is listed, never silently dropped. It revives when its
 content comes back.
 
-Reviewed marks key on class content, not on position. One exemplar verifies the shape, so
-marking it marks the class.
+Reviewed marks key on the exact hunk digest, not on position and not on the class (ADR
+0025). Marking a group marks every hunk in it; changing one hunk leaves the rest read.
 
 ## The grouping cache
 
