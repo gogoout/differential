@@ -341,21 +341,86 @@ colour it is. They can never change which hunks exist.
 ### Themes
 
 Eleven, each pairing the reviewer's own colours with the syntax theme the code is painted
-in — so the chrome and the code come from one source and cannot drift apart.
+in — so the chrome and the code come from one source and cannot drift apart. Every shot is
+the same change in the same reviewer; only the palette differs. `./assets/themes.sh`
+regenerates them.
 
-| name | ground | paired syntax theme |
-|---|---|---|
-| `dark` | dark slate, cyan accent — **the default** | Base16 Eighties Dark |
-| `one-dark` | Atom-descended blue-grey | One Half Dark |
-| `one-light` | near-white | One Half Light |
-| `gruvbox-dark` | warm brown-black | Gruvbox Dark |
-| `gruvbox-light` | cream | Gruvbox Light |
-| `solarized-dark` | deep teal | Solarized Dark |
-| `solarized-light` | pale sand | Solarized Light |
-| `catppuccin-mocha` | soft near-black | Catppuccin Mocha |
-| `catppuccin-latte` | cool off-white | Catppuccin Latte |
-| `dracula` | near-black, loud accents | Dracula |
-| `monokai` | near-black, bright accents | Monokai Extended |
+<details open>
+<summary><code>dark</code> — the default</summary>
+
+![dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/dark.png)
+
+</details>
+
+<details>
+<summary><code>one-dark</code></summary>
+
+![one-dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/one-dark.png)
+
+</details>
+
+<details>
+<summary><code>one-light</code></summary>
+
+![one-light](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/one-light.png)
+
+</details>
+
+<details>
+<summary><code>gruvbox-dark</code></summary>
+
+![gruvbox-dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/gruvbox-dark.png)
+
+</details>
+
+<details>
+<summary><code>gruvbox-light</code></summary>
+
+![gruvbox-light](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/gruvbox-light.png)
+
+</details>
+
+<details>
+<summary><code>solarized-dark</code></summary>
+
+![solarized-dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/solarized-dark.png)
+
+</details>
+
+<details>
+<summary><code>solarized-light</code></summary>
+
+![solarized-light](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/solarized-light.png)
+
+</details>
+
+<details>
+<summary><code>catppuccin-mocha</code></summary>
+
+![catppuccin-mocha](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/catppuccin-mocha.png)
+
+</details>
+
+<details>
+<summary><code>catppuccin-latte</code></summary>
+
+![catppuccin-latte](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/catppuccin-latte.png)
+
+</details>
+
+<details>
+<summary><code>dracula</code></summary>
+
+![dracula](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/dracula.png)
+
+</details>
+
+<details>
+<summary><code>monokai</code></summary>
+
+![monokai](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/monokai.png)
+
+</details>
 
 A theme **paints its own background** rather than letting the terminal's show through, so a
 light palette works on a dark terminal and the other way round.

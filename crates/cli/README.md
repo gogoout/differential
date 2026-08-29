@@ -249,19 +249,85 @@ is a hard error too.
 `review.theme` names one of eleven palettes. Each pairs a set of chrome colours with the
 syntax theme the code is painted in, so the diff and the code come from one source.
 
-| name | ground | paired syntax theme |
-|---|---|---|
-| `dark` | dark slate, cyan accent — **the default** | Base16 Eighties Dark |
-| `one-dark` | Atom-descended blue-grey | One Half Dark |
-| `one-light` | near-white | One Half Light |
-| `gruvbox-dark` | warm brown-black | Gruvbox Dark |
-| `gruvbox-light` | cream | Gruvbox Light |
-| `solarized-dark` | deep teal | Solarized Dark |
-| `solarized-light` | pale sand | Solarized Light |
-| `catppuccin-mocha` | soft near-black | Catppuccin Mocha |
-| `catppuccin-latte` | cool off-white | Catppuccin Latte |
-| `dracula` | near-black, loud accents | Dracula |
-| `monokai` | near-black, bright accents | Monokai Extended |
+The shots below are the same change in the same reviewer, so what differs between them is
+only the palette. Regenerate with `./assets/themes.sh`.
+
+<details open>
+<summary><code>dark</code> — the default</summary>
+
+![dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/dark.png)
+
+</details>
+
+<details>
+<summary><code>one-dark</code></summary>
+
+![one-dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/one-dark.png)
+
+</details>
+
+<details>
+<summary><code>one-light</code></summary>
+
+![one-light](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/one-light.png)
+
+</details>
+
+<details>
+<summary><code>gruvbox-dark</code></summary>
+
+![gruvbox-dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/gruvbox-dark.png)
+
+</details>
+
+<details>
+<summary><code>gruvbox-light</code></summary>
+
+![gruvbox-light](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/gruvbox-light.png)
+
+</details>
+
+<details>
+<summary><code>solarized-dark</code></summary>
+
+![solarized-dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/solarized-dark.png)
+
+</details>
+
+<details>
+<summary><code>solarized-light</code></summary>
+
+![solarized-light](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/solarized-light.png)
+
+</details>
+
+<details>
+<summary><code>catppuccin-mocha</code></summary>
+
+![catppuccin-mocha](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/catppuccin-mocha.png)
+
+</details>
+
+<details>
+<summary><code>catppuccin-latte</code></summary>
+
+![catppuccin-latte](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/catppuccin-latte.png)
+
+</details>
+
+<details>
+<summary><code>dracula</code></summary>
+
+![dracula](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/dracula.png)
+
+</details>
+
+<details>
+<summary><code>monokai</code></summary>
+
+![monokai](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/monokai.png)
+
+</details>
 
 An unknown name is a hard error that lists the valid ones. `theme` in the **repo** file is
 rejected: a palette is the reader's choice, not the repository's.
