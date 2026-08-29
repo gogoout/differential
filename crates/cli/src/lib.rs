@@ -195,6 +195,10 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }
     };
     let langs = LanguageRegistry::builtin();
+    // The readers ARE the mechanism, not an optional set: a build that wires
+    // none produces no dependency edges and so no foundation-first ordering.
+    // Each reader ranks itself, so this call site cannot get the order wrong.
+    let symbols = differential_symbols::readers();
 
     match cli.command {
         Command::Agent { .. } | Command::Clean { .. } => {
@@ -210,6 +214,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 &source,
                 &config,
                 &langs,
+                &symbols,
                 &GroupingOptions {
                     backend: &backend,
                     cache: &grouping_cache(&repo, no_cache)?,
@@ -288,6 +293,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     source.kind,
                     &config,
                     &langs,
+                    &symbols,
                     &GroupingOptions {
                         // The cancel flag lives on the backend: the thing that
                         // needs killing is the subprocess.
@@ -312,7 +318,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             summary, no_cache, ..
         } => {
             let source = resolved.expect("range checked above");
-            let out = grouped(&repo, &source, &config, &langs, no_cache)?;
+            let out = grouped(&repo, &source, &config, &langs, &symbols, no_cache)?;
             let doc = out
                 .document
                 .context("invariants failed; no plan available")?;
@@ -337,6 +343,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 source.kind,
                 &config,
                 &langs,
+                &symbols,
             )
             .context("pipeline failed")?;
             if json {
@@ -510,6 +517,7 @@ fn grouped(
     source: &differential_engine::plan::ReviewSource,
     config: &Config,
     langs: &LanguageRegistry,
+    symbols: &differential_engine::artefact::symbols::SymbolReaders,
     no_cache: bool,
 ) -> anyhow::Result<differential_engine::PipelineOutput> {
     let backend = backend_from(&config.grouping, repo.root(), None);
@@ -520,6 +528,7 @@ fn grouped(
         source.kind,
         config,
         langs,
+        symbols,
         &GroupingOptions {
             backend: &backend,
             cache: &grouping_cache(repo, no_cache)?,

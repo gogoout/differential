@@ -1,0 +1,21 @@
+[package]
+name = "differential-symbols"
+description = "Symbol readers for differential: tree-sitter and a crude fallback"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["diff", "code-review", "tree-sitter", "symbols"]
+categories = ["development-tools"]
+
+[dependencies]
+differential-engine = { workspace = true }
+regex = { workspace = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+serde = { workspace = true }
+toml = { workspace = true }

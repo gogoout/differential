@@ -92,6 +92,11 @@ const RELOCATION_THRESHOLD: u8 = 95;
 /// Run the grouping stage over a core-only document. Returns the same document
 /// with `groups`, `reading_plan` and the grouping audit fields filled, and
 /// `"group"` appended to `generator.stages`.
+// The parameter list is the point, exactly as a bound list is: each entry is a
+// distinct authority this function may use. Bundling `langs` and `symbols`
+// behind a context struct would shorten the list without making it clearer,
+// and `CLAUDE.md` rule 2 refuses that shape.
+#[allow(clippy::too_many_arguments)]
 pub fn run<C: GroupingCache, A: ArtefactStore>(
     doc: &schema::PlanDocument,
     backend: &dyn LlmBackend,
@@ -99,6 +104,7 @@ pub fn run<C: GroupingCache, A: ArtefactStore>(
     artefacts: &A,
     fetch: &str,
     lang_fingerprint: &str,
+    symbols_fingerprint: &str,
     progress: Option<&(dyn Fn(Progress) + Send + Sync)>,
 ) -> Result<schema::PlanDocument, EngineError> {
     let infos = class_infos(doc);
@@ -117,7 +123,12 @@ pub fn run<C: GroupingCache, A: ArtefactStore>(
     } else {
         // The key names the artefact as well as the cache entry: one grouping,
         // one document, and a cache hit finds the same file the miss wrote.
-        let key = key::cache_key(&offered, backend.identity(), lang_fingerprint);
+        let key = key::cache_key(
+            &offered,
+            backend.identity(),
+            lang_fingerprint,
+            symbols_fingerprint,
+        );
         let path = artefacts.make_readable(&key, &doc.to_json_pretty()?)?;
         let prompt = payload::build_prompt(
             &offered,

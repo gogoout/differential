@@ -9,18 +9,19 @@
 //! edge only when the model happened to merge those two classes. What depends
 //! on what cannot turn on how a label was drawn.
 //!
-//! Extraction is heuristic, per-language via `Language::file_symbols`
-//! (ADR 0015); no indexer. It reads WHOLE FILES from the head tree, because a
-//! line inside a block comment cannot be told from code on its own. Precision is allowed to be low (ADR 0007): a wrong edge
+//! Extraction is a domain use case with pluggable readers ([`super::symbols`]);
+//! no indexer. It reads WHOLE FILES from the head tree, because a line inside a
+//! block comment cannot be told from code on its own. A file no reader claims
+//! contributes nothing — a guess costs more than silence. Precision is allowed to be low (ADR 0007): a wrong edge
 //! misorders, and it can never hide content. Every edge carries the symbols
 //! that produced it, so a consumer can judge one by its cause rather than take
 //! it on trust.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use super::symbols::{FileSymbols, SymbolReaders};
 use crate::EngineError;
-use crate::lang::{FileSymbols, LanguageRegistry, generic};
-use crate::model::{DiffView, Hunk};
+use crate::model::DiffView;
 use crate::ports::ObjectReader;
 use crate::schema;
 use crate::shape::Partition;
@@ -44,9 +45,9 @@ pub fn build<G: ObjectReader>(
     head: &str,
     view: &DiffView,
     partition: &Partition,
-    langs: &LanguageRegistry,
+    symbols: &SymbolReaders,
 ) -> Result<ClassGraph, EngineError> {
-    let parsed = parse_files(git, head, view, langs)?;
+    let parsed = parse_files(git, head, view, symbols)?;
 
     let n = partition.classes.len();
     let mut defs: Vec<BTreeSet<Vec<u8>>> = vec![BTreeSet::new(); n];
@@ -68,23 +69,15 @@ pub fn build<G: ObjectReader>(
             if file.generated.is_some() || file.submodule.is_some() {
                 continue;
             }
-            match parsed.get(&h.file).filter(|fs| covers(fs, h)) {
-                Some(fs) => {
-                    for i in 0..h.added.len() {
-                        let line = h.new_start + i as u32;
-                        defs[ci].extend(fs.defines_at(line).iter().cloned());
-                        refs[ci].extend(fs.references_at(line).iter().cloned());
-                    }
-                }
-                // No head blob, or one that disagrees with the diff about how
-                // long the file is. Read the hunk's own added lines with the
-                // generic heuristics: fewer symbols than a parse would find,
-                // never none. An absent blob must not silently empty a class.
-                None => {
-                    for line in &h.added {
-                        defs[ci].extend(generic::symbol_definitions(line));
-                        refs[ci].extend(generic::symbol_references(line));
-                    }
+            // No entry means no reader claimed the file, or none could read
+            // it. Either way the class gains no symbols from this hunk: the
+            // domain never substitutes one reader's answer for another's, and
+            // never invents one of its own.
+            if let Some(fs) = parsed.get(&h.file) {
+                for i in 0..h.added.len() {
+                    let line = h.new_start + i as u32;
+                    defs[ci].extend(fs.defines_at(line).iter().cloned());
+                    refs[ci].extend(fs.references_at(line).iter().cloned());
                 }
             }
         }
@@ -155,7 +148,7 @@ fn parse_files<G: ObjectReader>(
     git: &G,
     head: &str,
     view: &DiffView,
-    langs: &LanguageRegistry,
+    symbols: &SymbolReaders,
 ) -> Result<HashMap<usize, FileSymbols>, EngineError> {
     let wanted: Vec<usize> = view
         .files
@@ -182,21 +175,9 @@ fn parse_files<G: ObjectReader>(
         .filter_map(|(fi, blob)| {
             let path = view.files[fi].path.as_slice();
             let content = blob?;
-            Some((fi, langs.detect(path).file_symbols(path, &content)))
+            Some((fi, symbols.of_file(path, &content)?))
         })
         .collect())
-}
-
-/// Does the parsed file reach every new-side line this hunk claims?
-///
-/// It always should: the blob and the diff describe the same tree. A
-/// disagreement is a bug somewhere upstream, and the honest answer is to fall
-/// back to the hunk's own lines rather than attribute no symbols at all.
-fn covers(fs: &FileSymbols, h: &Hunk) -> bool {
-    if h.added.is_empty() {
-        return true;
-    }
-    h.new_start >= 1 && h.new_start as usize + h.added.len() - 1 <= fs.lines()
 }
 
 /// Symbols reach the schema as text. They are identifiers by construction, so
@@ -204,51 +185,4 @@ fn covers(fs: &FileSymbols, h: &Hunk) -> bool {
 /// bytes that are not.
 fn text(sym: &[u8]) -> String {
     String::from_utf8_lossy(sym).into_owned()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn hunk(new_start: u32, added: usize) -> Hunk {
-        Hunk {
-            file: 0,
-            old_start: 1,
-            old_count: 0,
-            new_start,
-            new_count: added as u32,
-            removed: Vec::new(),
-            added: vec![b"x".to_vec(); added],
-            nonl_old: false,
-            nonl_new: false,
-        }
-    }
-
-    fn parsed(lines: usize) -> FileSymbols {
-        FileSymbols {
-            defines: vec![Vec::new(); lines],
-            references: vec![Vec::new(); lines],
-        }
-    }
-
-    #[test]
-    fn a_parse_reaching_the_hunks_last_line_covers_it() {
-        // Lines 4 and 5 of a 5-line file: the boundary, inclusive.
-        assert!(covers(&parsed(5), &hunk(4, 2)));
-        assert!(!covers(&parsed(4), &hunk(4, 2)), "one line short");
-    }
-
-    #[test]
-    fn a_hunk_that_added_nothing_is_always_covered() {
-        // A pure deletion. There is no new-side line to look up, so an empty
-        // parse is not a disagreement.
-        assert!(covers(&parsed(0), &hunk(7, 0)));
-    }
-
-    #[test]
-    fn a_zero_new_start_is_never_covered() {
-        // Defensive: new-side lines count from 1, so 0 with added lines is a
-        // contradiction. Falling back beats indexing off the front.
-        assert!(!covers(&parsed(9), &hunk(0, 1)));
-    }
 }

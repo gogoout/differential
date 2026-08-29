@@ -12,22 +12,34 @@ use sha1::{Digest, Sha1};
 
 use super::{ClassInfo, payload::PROMPT_VERSION};
 
-/// Key over: prompt generation, backend identity, normaliser fingerprint, and
-/// the exact class structure (sorted member hunk digests — content-exact, so
-/// the key survives positional-id shifts across regenerations).
+/// Key over: prompt generation, backend identity, normaliser fingerprint,
+/// SYMBOL-READER fingerprint, and the exact class structure (sorted member hunk
+/// digests — content-exact, so the key survives positional-id shifts across
+/// regenerations).
+///
+/// The symbol readers are in the key because the class graph is part of what
+/// the model reads (ADR 0022). Readers that answer differently must therefore
+/// cold every entry, and adding this component did exactly that, once.
 ///
 /// **Backend IDENTITY, never its display name** (`LlmBackend::identity`). The
 /// name is the command as it will run, absolute paths and all; where a binary
 /// lives does not determine a grouping, and hashing it made a debug build, a
 /// release build and two checkouts of one commit key differently for the same
 /// class partition.
-pub fn cache_key(offered: &[&ClassInfo], backend_identity: &str, lang_fingerprint: &str) -> String {
+pub fn cache_key(
+    offered: &[&ClassInfo],
+    backend_identity: &str,
+    lang_fingerprint: &str,
+    symbols_fingerprint: &str,
+) -> String {
     let mut hasher = Sha1::new();
     hasher.update(PROMPT_VERSION.to_le_bytes());
     hasher.update([0]);
     hasher.update(backend_identity.as_bytes());
     hasher.update([0]);
     hasher.update(lang_fingerprint.as_bytes());
+    hasher.update([0]);
+    hasher.update(symbols_fingerprint.as_bytes());
     let mut classes: Vec<&&ClassInfo> = offered.iter().collect();
     classes.sort_by(|a, b| a.id.cmp(&b.id));
     for c in classes {

@@ -45,6 +45,7 @@ fn open_app_with(r: &TestRepo, backend: &FakeBackend, store: &str) -> App {
         SourceKind::Range,
         &Config::default(),
         &LanguageRegistry::builtin(),
+        &differential_testutil::stub_readers(),
         &differential_engine::grouping::GroupingOptions {
             backend,
             cache: &FsGroupingCache::disabled(),
@@ -78,6 +79,7 @@ fn open_app(r: &TestRepo) -> App {
         SourceKind::Range,
         &Config::default(),
         &LanguageRegistry::builtin(),
+        &differential_testutil::stub_readers(),
         &differential_engine::grouping::GroupingOptions {
             backend: &backend,
             cache: &FsGroupingCache::disabled(),
@@ -1221,6 +1223,7 @@ fn highlighting_is_windowed_not_whole_file() {
         SourceKind::Range,
         &Config::default(),
         &LanguageRegistry::builtin(),
+        &differential_testutil::stub_readers(),
         &differential_engine::grouping::GroupingOptions {
             backend: &backend,
             cache: &FsGroupingCache::disabled(),

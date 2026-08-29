@@ -1,7 +1,7 @@
 //! Dev runner for the grouped pipeline. Prints a reading-plan summary to
 //! stderr and the document JSON to stdout (or -o <file>).
 //!
-//! Usage: cargo run -p differential-engine --example group -- \
+//! Usage: cargo run -p differential-symbols --example group -- \
 //!            [--repo <path>] [--config <path>] [--no-cache] [-o <file>] <base>..<head>
 //!
 //! Backend: Claude Code with the read-only allowlist, the same one the shipped
@@ -99,6 +99,7 @@ fn main() -> ExitCode {
         source.kind,
         &config,
         &LanguageRegistry::builtin(),
+        &differential_symbols::readers(),
         &GroupingOptions {
             backend: &backend,
             cache: &cache,

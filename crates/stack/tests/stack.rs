@@ -17,6 +17,7 @@ fn stacked(r: &TestRepo, base: &str, head: &str, backend: &dyn LlmBackend) -> St
         &ReviewSource::range(base.into(), head.into(), head.into()),
         &Config::default(),
         &LanguageRegistry::builtin(),
+        &differential_testutil::stub_readers(),
         &GroupingOptions {
             backend,
             cache: &FsGroupingCache::disabled(),
@@ -236,6 +237,7 @@ fn custom_ref_name_is_honoured_and_rerun_is_idempotent() {
         &ReviewSource::range(base.clone(), head.clone(), head.clone()),
         &Config::default(),
         &LanguageRegistry::builtin(),
+        &differential_testutil::stub_readers(),
         &GroupingOptions {
             backend: &backend,
             cache: &FsGroupingCache::disabled(),

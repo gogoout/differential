@@ -2,14 +2,14 @@
 //!
 //! The tool must eventually support every language. This module is the seam:
 //! a [`Language`] plugin can override how line content is normalised for shape
-//! classification, and how a file's symbol definitions and references are
-//! extracted for the ordering stage. Everything defaults to the generic
-//! behaviour, so with no plugins registered the engine behaves exactly like the
-//! validated milestone-1 normaliser (the parity test enforces this).
+//! classification. Everything defaults to the generic behaviour, so with no
+//! plugins registered the engine behaves exactly like the validated milestone-1
+//! normaliser (the parity test enforces this).
 //!
-//! Normalisation is per line; symbol extraction is per FILE. A line inside a
-//! block comment or a multi-line string cannot be told from code on its own, so
-//! that decision is made where the context to make it exists.
+//! **Normalisation only.** Symbol extraction used to hang off this trait too.
+//! It is a different use case with different consumers, so it has its own port
+//! (`artefact::symbols`) — one trait serving two unrelated needs is the merged
+//! supertrait `CLAUDE.md` rule 4 forbids.
 //!
 //! Languages never see enumeration: which files and hunks exist is decided
 //! before this module is consulted (ADR 0005/0012). They only influence
@@ -37,56 +37,6 @@ pub trait Language: Send + Sync {
     fn normalize_line(&self, line: &[u8]) -> Vec<u8> {
         generic::normalize_line(line)
     }
-
-    /// Every symbol the file DEFINES and REFERENCES, per line. Feeds the
-    /// ordering stage's definition → use edges; precision is allowed to be low
-    /// (ADR 0007: a wrong edge misorders, it never hides content).
-    ///
-    /// **Whole file, not a line and not a hunk.** A line inside a block comment
-    /// or a multi-line string is indistinguishable from code on its own, so the
-    /// two cuts worth making — drop comment and string tokens, keep only call
-    /// and type positions — are not decidable per line. The generic default is
-    /// still a per-line loop, and stays byte-identical to what it replaced.
-    fn file_symbols(&self, path: &[u8], content: &[u8]) -> FileSymbols {
-        let _ = path;
-        generic::file_symbols(content)
-    }
-}
-
-/// A file's symbols, indexed by NEW-SIDE line number.
-///
-/// Both vectors are parallel and one entry per line, so an entry is addressed
-/// by the line number a hunk already carries. Lines with no symbols hold an
-/// empty `Vec`, which does not allocate — a 100k-line file costs pointers.
-#[derive(Debug, Default, Clone)]
-pub struct FileSymbols {
-    pub defines: Vec<Vec<Vec<u8>>>,
-    pub references: Vec<Vec<Vec<u8>>>,
-}
-
-impl FileSymbols {
-    /// How many lines this covers. A caller comparing it against a hunk's
-    /// new-side range is checking that the blob and the diff agree.
-    pub fn lines(&self) -> usize {
-        self.defines.len().min(self.references.len())
-    }
-
-    /// Symbols defined on `line`, counting from 1. Empty when out of range —
-    /// the range check is `lines()`, so a caller that wants to know asks.
-    pub fn defines_at(&self, line: u32) -> &[Vec<u8>] {
-        at(&self.defines, line)
-    }
-
-    /// Symbols referenced on `line`, counting from 1.
-    pub fn references_at(&self, line: u32) -> &[Vec<u8>] {
-        at(&self.references, line)
-    }
-}
-
-fn at(rows: &[Vec<Vec<u8>>], line: u32) -> &[Vec<u8>] {
-    line.checked_sub(1)
-        .and_then(|i| rows.get(i as usize))
-        .map_or(&[], |v| v.as_slice())
 }
 
 /// The generic fallback: claims every file, uses the default normaliser.
@@ -162,23 +112,6 @@ mod tests {
         fn normalize_line(&self, _line: &[u8]) -> Vec<u8> {
             b"T".to_vec()
         }
-    }
-
-    #[test]
-    fn symbols_are_addressed_by_line_number_counting_from_one() {
-        let fs = FileSymbols {
-            defines: vec![vec![b"a".to_vec()], Vec::new()],
-            references: vec![Vec::new(), vec![b"b".to_vec()]],
-        };
-        assert_eq!(fs.lines(), 2);
-        assert_eq!(fs.defines_at(1), [b"a".to_vec()]);
-        assert!(fs.defines_at(2).is_empty());
-        assert_eq!(fs.references_at(2), [b"b".to_vec()]);
-        // Line 0 does not exist, and neither does line 3. Both answer empty
-        // rather than panic: the range check is `lines()`, for a caller that
-        // wants to know the difference.
-        assert!(fs.defines_at(0).is_empty());
-        assert!(fs.references_at(3).is_empty());
     }
 
     #[test]

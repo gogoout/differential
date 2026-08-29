@@ -18,8 +18,16 @@ hunks = 0          # canonical -U0 hunks
 classes = 0        # shape classes
 applier = "0/0"    # byte-exact reconstructions, "ok/total"
 recount = 0        # independent @@ recount
-# edges = 0        # OPTIONAL: class dependency edges (`depends_on` summed over
-                   # every class). Omit it and nothing is asserted. Unlike the
-                   # numbers above it pins a heuristic, not a fact — set it when
-                   # you want a change in symbol extraction to fail a test
-                   # rather than surface as a puzzling reading order.
+# The two below are read by `crates/symbols/tests/parity.rs`, which runs the
+# shipped symbol readers over the same fixtures. Both are OPTIONAL: omit one and
+# nothing is asserted, only reported. Unlike the numbers above they pin
+# heuristics rather than facts, so set them when you want a reader change to
+# fail a test rather than surface later as a puzzling reading order.
+# edges = 0        # class dependency edges (`depends_on` summed over every class)
+# sccs = 0         # classes inside a real cycle (a component of size > 1)
+                   #
+                   # `sccs` is the one that matters. A topological sort works if
+                   # and only if every component has size one, so a single knot
+                   # makes every class behind it unorderable too and the ordering
+                   # stage falls back to sorting by size. Fewer edges is only
+                   # useful insofar as it removes the false ones tying the knot.

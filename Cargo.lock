@@ -486,6 +486,7 @@ dependencies = [
  "clap",
  "differential-engine",
  "differential-stack",
+ "differential-symbols",
  "differential-testutil",
  "differential-tui",
  "serde_json",
@@ -516,6 +517,16 @@ dependencies = [
  "differential-engine",
  "differential-testutil",
  "tempfile",
+]
+
+[[package]]
+name = "differential-symbols"
+version = "0.5.1"
+dependencies = [
+ "differential-engine",
+ "regex",
+ "serde",
+ "toml",
 ]
 
 [[package]]
