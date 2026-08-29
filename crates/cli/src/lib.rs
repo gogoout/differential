@@ -4,7 +4,7 @@
 
 mod agent;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -19,7 +19,9 @@ use differential_engine::lang::LanguageRegistry;
 use differential_engine::llm::CommandBackend;
 use differential_engine::pipeline::resolve_picked;
 use differential_engine::plan;
-use differential_engine::store::{FsArtefactStore, FsGroupingCache, FsReviewStore, OsConfigSource};
+use differential_engine::store::{
+    self, FsArtefactStore, FsGroupingCache, FsReviewStore, OsConfigSource,
+};
 use differential_engine::{resolve_range, run_pipeline};
 use differential_stack::{StackOptions, run_stack_pipeline};
 
@@ -83,17 +85,34 @@ enum Command {
         #[arg(long)]
         doc: PathBuf,
     },
+    /// Delete the regenerable cache: grouping responses and pre-group
+    /// documents.
+    ///
+    /// Findings are NOT cache and are never touched — reviews live in a sibling
+    /// tree (ADR 0013). Cleaning costs a fresh model call on the next grouped
+    /// run, so `--dry-run` reports what would go without removing it.
+    ///
+    /// Takes no range: the cache is the repository's, not a review's.
+    Clean {
+        /// Repository to operate on (defaults to the one containing the cwd).
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        /// Report what would be removed, and remove nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 impl Command {
-    /// `None` for `agent`, which works from a document rather than a range.
+    /// `None` for the commands that take no range: `agent` works from a
+    /// document, `clean` from the repository alone.
     fn common(&self) -> Option<&Common> {
         match self {
             Command::Stack { common, .. }
             | Command::Check { common, .. }
             | Command::Review { common, .. }
             | Command::Findings { common, .. } => Some(common),
-            Command::Agent { .. } => None,
+            Command::Agent { .. } | Command::Clean { .. } => None,
         }
     }
 }
@@ -135,7 +154,13 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    let common = cli.command.common().expect("agent handled above");
+    // `clean` needs a repository but no range, no config and no languages, so
+    // it answers before those are set up too.
+    if let Command::Clean { repo, dry_run } = &cli.command {
+        return clean(repo.as_deref(), *dry_run);
+    }
+
+    let common = cli.command.common().expect("agent and clean handled above");
 
     let dir = common
         .repo
@@ -172,7 +197,9 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let langs = LanguageRegistry::builtin();
 
     match cli.command {
-        Command::Agent { .. } => unreachable!("handled before the pipeline is built"),
+        Command::Agent { .. } | Command::Clean { .. } => {
+            unreachable!("handled before the pipeline is built")
+        }
         Command::Stack {
             ref_name, no_cache, ..
         } => {
@@ -347,6 +374,65 @@ fn print_range(base: &str, head: &str) {
 ///
 /// `--no-cache` is a state of the cache rather than an absent one, so the
 /// grouping stage never grows a branch for it.
+/// `dfr clean [--dry-run]`: report the regenerable cache, and unless asked not
+/// to, delete it.
+///
+/// The count is taken before the delete either way, so the two modes report the
+/// same thing about the same state.
+fn clean(repo_dir: Option<&Path>, dry_run: bool) -> anyhow::Result<ExitCode> {
+    let dir = repo_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::current_dir().expect("cwd"));
+    let repo = match Repo::open(&dir) {
+        Ok(r) => r,
+        Err(e) => return usage_error(&e.to_string()),
+    };
+    let usage = if dry_run {
+        store::cache_usage(&repo)?
+    } else {
+        store::clear_cache(&repo)?
+    };
+    if usage.is_empty() {
+        println!("cache is already empty");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let verb = if dry_run { "would remove" } else { "removed" };
+    println!(
+        "{verb} {} grouping {}, {} pre-group {} ({})",
+        usage.groupings,
+        plural(usage.groupings, "response", "responses"),
+        usage.documents,
+        plural(usage.documents, "document", "documents"),
+        human_bytes(usage.bytes),
+    );
+    if !dry_run {
+        println!("the next grouped run calls the model again; findings are untouched");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn plural(n: usize, one: &'static str, many: &'static str) -> &'static str {
+    if n == 1 { one } else { many }
+}
+
+/// Deliberately crude: this is one line of console output, and a crate for it
+/// would be a dependency for three branches.
+fn human_bytes(n: u64) -> String {
+    if n < 1024 {
+        return format!("{n} B");
+    }
+    // Round FIRST, then pick the unit. Choosing on the raw value instead prints
+    // "1024.0 KiB" for the last byte below a mebibyte: 1_048_575 / 1024 is
+    // 1023.999, which is under the threshold but rounds to 1024.0 on the way
+    // out. The unit has to be chosen from what will actually be shown.
+    let kib = (n as f64 / 1024.0 * 10.0).round() / 10.0;
+    if kib < 1024.0 {
+        format!("{kib:.1} KiB")
+    } else {
+        format!("{:.1} MiB", n as f64 / 1_048_576.0)
+    }
+}
+
 fn grouping_cache(repo: &Repo, no_cache: bool) -> anyhow::Result<FsGroupingCache> {
     Ok(if no_cache {
         FsGroupingCache::disabled()
@@ -443,4 +529,20 @@ fn grouped(
         },
     )
     .context("grouped pipeline failed")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_size_never_reads_as_a_full_unit_of_the_one_below() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(1023), "1023 B");
+        assert_eq!(human_bytes(1024), "1.0 KiB");
+        // The boundary the naive version got wrong.
+        assert_eq!(human_bytes(1_048_575), "1.0 MiB");
+        assert_eq!(human_bytes(1_048_576), "1.0 MiB");
+        assert_eq!(human_bytes(1_572_864), "1.5 MiB");
+    }
 }

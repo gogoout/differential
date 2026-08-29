@@ -16,7 +16,8 @@ mod view;
 pub use counts::LineCounts;
 pub use enumerate::{Enumeration, attr_marks_generated, build_view, classify};
 pub use identity::{
-    artefact_dir, class_content_key, grouping_cache_dir, plan_hash, review_dir, review_id,
+    artefact_dir, cache_dir, class_content_key, grouping_cache_dir, plan_hash, review_dir,
+    review_id,
 };
 pub use ids::{HunkId, PlanIndex};
 pub use source::{RangeSpec, ReviewSource, parse_range};

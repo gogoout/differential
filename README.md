@@ -110,8 +110,9 @@ Full detail: [`crates/stack/README.md`](crates/stack/README.md).
 | `dfr stack <range>` | Build the review commit stack and land it on a ref. |
 | `dfr check <range>` | Run the structural invariants. Use this in CI. |
 | `dfr findings <range>` | Print the review's findings as JSON. |
+| `dfr clean [--dry-run]` | Delete the regenerable cache. Never touches findings. |
 
-Every command takes `--repo`, `--config` and `--user-config`. Exit codes: `0` success,
+Every command takes `--repo`; all but `dfr clean` also take `--config` and `--user-config`. Exit codes: `0` success,
 `1` invariant or pipeline failure, `2` usage or config error.
 
 Full reference, including every flag and every key in the reviewer:

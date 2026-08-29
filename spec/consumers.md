@@ -15,12 +15,16 @@ dfr stack [--repo <path>] [--config <path>] [--ref <name>] [--no-cache] <range>
 dfr findings [--repo <path>] [--config <path>] [--summary] [--no-cache] <range>
 dfr check [--repo <path>] [--config <path>] [--json] <range>
 dfr agent --doc <path>
+dfr clean [--repo <path>] [--dry-run]
 ```
 
 - `review` opens the terminal reviewer ([tui.md](tui.md)); `findings` prints the review's
   findings as re-anchored JSON, or as markdown with `--summary` — the open ones as
   `- file:lines: note`, which is the same text the reviewer's `y` copies. Both come from
   `ReviewSession`, so the projection has one owner and the two cannot drift.
+- `clean` deletes the regenerable cache ([persistence.md](persistence.md)) and reports
+  what went. It takes no range — the cache belongs to the repository, not to a review —
+  and it never touches findings, which live in a sibling tree.
 - `stack` builds and lands the review commit stack ([stack.md](stack.md)), printing the
   commit list and the `git log` line to review with. The grouping backend comes from
   `[grouping].agent` (default: `claude-code`, a headless invocation with read-only tools); the pinning cache

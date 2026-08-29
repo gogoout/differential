@@ -49,7 +49,7 @@ dfr stack main..feature
 The first run on a range calls the LLM once. The result is cached, so a later run on the
 same range does not call it again.
 
-## The four commands
+## The five commands
 
 ### `dfr review [<range>]`
 
@@ -113,6 +113,28 @@ Each record carries `{id, created, body, status, moved, plan_hash, anchor}`. The
 carries `{file, side, line, end_line, offset, span, hunk_digest, line_text,
 end_line_text}`. `hunk_digest` keys back into the plan document's `hunks[].digest`.
 
+### `dfr clean [--dry-run]`
+
+Delete the regenerable cache and report what went. Takes **no range** — the cache belongs
+to the repository, not to a review.
+
+| flag | meaning |
+|---|---|
+| `--dry-run` | Report what would be removed, and remove nothing. |
+
+```
+$ dfr clean --dry-run
+would remove 93 grouping responses, 2 pre-group documents (1.0 MiB)
+```
+
+Two things go: the grouping responses, which cost a model call to rebuild, and the
+pre-group documents, which rebuild for free. **Findings never go.** They are not cache and
+they live in a sibling tree — see [Where state lives](#where-state-lives).
+
+Clear the cache when a grouping is stale for a reason the cache key cannot see, or to
+reclaim the space. A changed normaliser or language plugin does **not** need this: the key
+includes the language fingerprint, so those entries go cold on their own.
+
 ## Flags every command takes
 
 | flag | default | meaning |
@@ -120,7 +142,9 @@ end_line_text}`. `hunk_digest` keys back into the plan document's `hunks[].diges
 | `--repo <path>` | the repo containing your cwd | Which repository to work on. |
 | `--config <path>` | `<repo-root>/.differential.toml` | The repo config file. |
 | `--user-config <path>` | `~/.config/differential/config.toml` | The user config file. |
-| `<range>` | required, except for `review` | See below. |
+| `<range>` | required, except for `review` and `cache` | See below. |
+
+`dfr clean` takes only `--repo`: it reads no config and resolves no range.
 
 A path you pass explicitly must exist. A missing default file just means defaults.
 
@@ -234,8 +258,14 @@ worktree.
 │   ├── current                     the active plan's content hash
 │   ├── findings.jsonl              the findings store
 │   └── state.json                  progress and view preferences
-└── cache/grouping/<classes-hash>.json
+└── cache/
+    ├── grouping/<classes-hash>.json   the raw model response
+    └── document/<content-hash>.json   the pre-group document
 ```
+
+`cache/` and `reviews/` are siblings on purpose. Everything under `cache/` can be
+recomputed; findings cannot. `dfr clean` removes `cache/` and nothing else, so it has no
+path by which to reach your findings.
 
 The review id derives from the resolved base sha plus the head **as typed**. So reviewing
 `main..feature` keeps one review while `feature` moves.

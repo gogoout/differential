@@ -92,6 +92,75 @@ impl ports::GroupingCache for FsGroupingCache {
     }
 }
 
+/// What the regenerable cache currently holds, or what clearing it removed.
+pub struct CacheUsage {
+    pub groupings: usize,
+    pub documents: usize,
+    pub bytes: u64,
+}
+
+impl CacheUsage {
+    pub fn is_empty(&self) -> bool {
+        self.groupings == 0 && self.documents == 0
+    }
+}
+
+/// Measure the regenerable cache without touching it.
+pub fn cache_usage<L: ports::RepoLayout>(layout: &L) -> Result<CacheUsage, EngineError> {
+    let common = layout.common_dir()?;
+    let (groupings, g_bytes) = count(&plan::grouping_cache_dir(&common))?;
+    let (documents, d_bytes) = count(&plan::artefact_dir(&common))?;
+    Ok(CacheUsage {
+        groupings,
+        documents,
+        bytes: g_bytes + d_bytes,
+    })
+}
+
+/// Delete the regenerable cache, returning what was removed.
+///
+/// **It removes `plan::cache_dir` and nothing else.** Reviews live in a sibling
+/// tree, so findings are out of reach by construction rather than by this
+/// function being careful — see the note on `plan::cache_dir`.
+///
+/// An absent directory is success with an empty result: clearing a cache that
+/// is already clear is not an error.
+///
+/// The count is taken before the delete, so a grouped run writing an entry in
+/// between would have that entry removed without being counted. Deliberately
+/// unlocked: the window is one syscall wide, the consequence is a report short
+/// by one on a machine running two of its own commands at once, and a lock
+/// would be a durable cost for a transient cosmetic one.
+pub fn clear_cache<L: ports::RepoLayout>(layout: &L) -> Result<CacheUsage, EngineError> {
+    let usage = cache_usage(layout)?;
+    let dir = plan::cache_dir(&layout.common_dir()?);
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => Ok(usage),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(usage),
+        Err(e) => Err(io_err(&dir, e)),
+    }
+}
+
+/// Entries and total bytes in one cache directory. An absent directory is zero.
+fn count(dir: &Path) -> Result<(usize, u64), EngineError> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
+        Err(e) => return Err(io_err(dir, e)),
+    };
+    let mut n = 0usize;
+    let mut bytes = 0u64;
+    for entry in entries {
+        let entry = entry.map_err(|e| io_err(dir, e))?;
+        let meta = entry.metadata().map_err(|e| io_err(&entry.path(), e))?;
+        if meta.is_file() {
+            n += 1;
+            bytes += meta.len();
+        }
+    }
+    Ok((n, bytes))
+}
+
 // ---------------------------------------------------------------- artefact
 
 /// Where the pre-group document is left for the model to read (ADR 0022).
