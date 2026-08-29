@@ -27,13 +27,17 @@ The generic default is still a per-line pass, byte-identical to the validated pr
   + identifier),
 - references — identifiers used.
 
-Files that can contribute nothing are never read: generated content (a lockfile would
-otherwise appear to define half the dependency tree), binaries, gitlinks — whose only
-added line is `Subproject commit <oid>`, prose about a commit this repository does not
-have — and files whose every hunk is a pure deletion. When a head blob is absent, or
-disagrees with the diff about how long the file is, the class falls back to the generic
-per-line pass over the hunk's own added lines. Fewer symbols than a parse would find,
-never none.
+Two categories contribute **no symbols at all**: generated content (a lockfile would
+otherwise appear to define half the dependency tree) and gitlinks, whose only added line is
+`Subproject commit <oid>` — diff prose about a commit this repository does not have, whose
+words are plausible identifiers. Both are skipped where the classes are read, not only
+where the blobs are, because a category excluded from the read still reaches the fallback.
+
+Beyond those, a file is not read when it cannot contribute: binaries carry no lines, and a
+file whose every hunk is a pure deletion has no added line to attribute. When a head blob
+is absent, or disagrees with the diff about how long the file is, the class falls back to
+the generic per-line pass over the hunk's own added lines. Fewer symbols than a parse would
+find, never none.
 
 Only symbols defined by **exactly one class** create edges; a symbol two classes define is
 ambiguous and is dropped. `B depends_on A` when B references a symbol only A defines, and

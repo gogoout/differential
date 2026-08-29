@@ -56,7 +56,16 @@ pub fn build<G: ObjectReader>(
         for &hi in members {
             let h = &view.hunks[hi];
             let file = view.file_of(h);
-            if file.generated.is_some() {
+            // Neither contributes a symbol, and each for its own reason.
+            // Generated content defines nothing — a lockfile would otherwise
+            // appear to define half the dependency tree. A gitlink's only added
+            // line is `Subproject commit <oid>`: diff prose about a commit this
+            // repository does not have, whose words are plausible identifiers.
+            //
+            // Both skips belong HERE rather than only in `parse_files`. A
+            // category excluded from the blob read still reaches the fallback,
+            // which is how the gitlink's prose used to become references.
+            if file.generated.is_some() || file.submodule.is_some() {
                 continue;
             }
             match parsed.get(&h.file).filter(|fs| covers(fs, h)) {
@@ -139,10 +148,9 @@ pub fn build<G: ObjectReader>(
 /// define half the dependency tree), a binary carries no lines, and a file
 /// whose every hunk is a pure deletion has no added line to attribute.
 ///
-/// A gitlink is excluded too, and for a different reason: its hunk DOES carry an
-/// added line, but that line is `Subproject commit <oid>` — diff prose about a
-/// commit this repository does not have. There is no blob behind the path, so
-/// asking for one is an error rather than an absence.
+/// A gitlink is excluded twice over: there is no blob behind the path, so asking
+/// for one is an error rather than an absence, and `build` skips it outright so
+/// its pseudo-hunk never reaches the fallback either.
 fn parse_files<G: ObjectReader>(
     git: &G,
     head: &str,
@@ -196,4 +204,51 @@ fn covers(fs: &FileSymbols, h: &Hunk) -> bool {
 /// bytes that are not.
 fn text(sym: &[u8]) -> String {
     String::from_utf8_lossy(sym).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hunk(new_start: u32, added: usize) -> Hunk {
+        Hunk {
+            file: 0,
+            old_start: 1,
+            old_count: 0,
+            new_start,
+            new_count: added as u32,
+            removed: Vec::new(),
+            added: vec![b"x".to_vec(); added],
+            nonl_old: false,
+            nonl_new: false,
+        }
+    }
+
+    fn parsed(lines: usize) -> FileSymbols {
+        FileSymbols {
+            defines: vec![Vec::new(); lines],
+            references: vec![Vec::new(); lines],
+        }
+    }
+
+    #[test]
+    fn a_parse_reaching_the_hunks_last_line_covers_it() {
+        // Lines 4 and 5 of a 5-line file: the boundary, inclusive.
+        assert!(covers(&parsed(5), &hunk(4, 2)));
+        assert!(!covers(&parsed(4), &hunk(4, 2)), "one line short");
+    }
+
+    #[test]
+    fn a_hunk_that_added_nothing_is_always_covered() {
+        // A pure deletion. There is no new-side line to look up, so an empty
+        // parse is not a disagreement.
+        assert!(covers(&parsed(0), &hunk(7, 0)));
+    }
+
+    #[test]
+    fn a_zero_new_start_is_never_covered() {
+        // Defensive: new-side lines count from 1, so 0 with added lines is a
+        // contradiction. Falling back beats indexing off the front.
+        assert!(!covers(&parsed(9), &hunk(0, 1)));
+    }
 }

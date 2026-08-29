@@ -156,3 +156,45 @@ fn a_plugin_can_drop_a_reference_the_hunk_alone_could_not_classify() {
     assert_eq!(aware_edges, 0, "the comment mention is not a reference");
     assert_eq!(aware_defines, generic_defines, "definitions are untouched");
 }
+
+/// A gitlink's pseudo-hunk is `Subproject commit <oid>` — diff prose about a
+/// commit this repository does not have, not code. It has an added line, so it
+/// reached the symbol heuristics and its words became references.
+///
+/// `Subproject` is a plausible identifier, which is what makes this observable:
+/// define it in real code and the submodule bump appears to consume it.
+#[test]
+fn a_gitlink_contributes_no_symbols() {
+    let r = TestRepo::new();
+    let sha_a = "a".repeat(40);
+    let sha_b = "b".repeat(40);
+    // The index is driven by hand: `git add -A` would evict a gitlink whose
+    // submodule is not checked out, which is what the pseudo-hunk needs.
+    r.write("src/a.rs", b"// a\n");
+    r.git(&["add", "src/a.rs"]);
+    r.git(&[
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        &format!("160000,{sha_a},vendor/dep"),
+    ]);
+    r.git(&["commit", "-q", "-m", "base"]);
+    let base = r.git(&["rev-parse", "HEAD"]);
+
+    r.write("src/a.rs", b"// a\nfn Subproject() {}\n");
+    r.git(&["add", "src/a.rs"]);
+    r.git(&[
+        "update-index",
+        "--cacheinfo",
+        &format!("160000,{sha_b},vendor/dep"),
+    ]);
+    r.git(&["commit", "-q", "-m", "bump"]);
+    let head = r.git(&["rev-parse", "HEAD"]);
+
+    let (edges, defines) = graph(&LanguageRegistry::builtin(), &r, &base, &head);
+    assert!(
+        defines.contains(&"Subproject".to_string()),
+        "the real definition is still found"
+    );
+    assert_eq!(edges, 0, "the pseudo-hunk's prose is not a reference");
+}

@@ -165,6 +165,23 @@ mod tests {
     }
 
     #[test]
+    fn symbols_are_addressed_by_line_number_counting_from_one() {
+        let fs = FileSymbols {
+            defines: vec![vec![b"a".to_vec()], Vec::new()],
+            references: vec![Vec::new(), vec![b"b".to_vec()]],
+        };
+        assert_eq!(fs.lines(), 2);
+        assert_eq!(fs.defines_at(1), [b"a".to_vec()]);
+        assert!(fs.defines_at(2).is_empty());
+        assert_eq!(fs.references_at(2), [b"b".to_vec()]);
+        // Line 0 does not exist, and neither does line 3. Both answer empty
+        // rather than panic: the range check is `lines()`, for a caller that
+        // wants to know the difference.
+        assert!(fs.defines_at(0).is_empty());
+        assert!(fs.references_at(3).is_empty());
+    }
+
+    #[test]
     fn fallback_claims_everything() {
         let reg = LanguageRegistry::builtin();
         assert_eq!(reg.detect(b"whatever.xyz").id(), "generic-v1");
