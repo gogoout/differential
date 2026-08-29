@@ -23,8 +23,19 @@ private, per-clone, worktree-safe, never committable.
 │   ├── current                     # the active plan's content hash
 │   ├── findings.jsonl              # the comment store
 │   └── state.json                  # review progress
-└── cache/grouping/<classes-hash>.json
+└── cache/
+    ├── grouping/<classes-hash>.json   # the raw model response (ADR 0009)
+    └── document/<content-hash>.json   # the pre-group document (ADR 0022)
 ```
+
+`cache/` and `reviews/` are **siblings, and that is load-bearing**. Everything under
+`cache/` can be recomputed — the groupings at the cost of a model call, the documents for
+free. Findings cannot be recomputed at all. Rooting the two apart means nothing that
+clears one can reach the other by construction, rather than by remembering to be careful.
+
+`dfr clean` removes `cache/` and nothing else, reporting what it removed; `--dry-run`
+reports without removing. Clearing is a deliberate act because the next grouped run pays
+for a fresh model call.
 
 ## Review identity
 

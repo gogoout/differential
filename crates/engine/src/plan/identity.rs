@@ -56,10 +56,18 @@ pub fn plan_hash(json: &str) -> String {
 /// share a cache — and outside the tracked tree, since a grouping is a local
 /// artefact and not something to commit (ADR 0009).
 pub fn grouping_cache_dir(common_dir: &Path) -> PathBuf {
-    common_dir
-        .join("differential")
-        .join("cache")
-        .join("grouping")
+    cache_dir(common_dir).join("grouping")
+}
+
+/// Everything regenerable, in ONE subtree.
+///
+/// `reviews/` is deliberately a sibling rather than a child. A review's
+/// findings are the reader's own work and cannot be recomputed, so nothing that
+/// clears the cache may be able to reach them — and with the two rooted apart,
+/// that is a property of the layout rather than of a command remembering to be
+/// careful (ADR 0009, ADR 0013).
+pub fn cache_dir(common_dir: &Path) -> PathBuf {
+    common_dir.join("differential").join("cache")
 }
 
 /// Where the pre-group document is left for the model to read, given the git
@@ -69,10 +77,7 @@ pub fn grouping_cache_dir(common_dir: &Path) -> PathBuf {
 /// worktrees, and outside the tracked tree because it describes one local run
 /// (ADR 0009, ADR 0022).
 pub fn artefact_dir(common_dir: &Path) -> PathBuf {
-    common_dir
-        .join("differential")
-        .join("cache")
-        .join("document")
+    cache_dir(common_dir).join("document")
 }
 
 /// One review's sidecar directory, given the git common dir.
