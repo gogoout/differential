@@ -57,6 +57,41 @@ const STAGES: [(&str, &str); 4] = [
     ("order", "foundation-first arrangement"),
 ];
 
+/// What the grouping row says while the agent thinks, after the first slot.
+///
+/// Slot zero is the agent's own name, built from the backend, so it is not in
+/// the table: a const cannot hold a `format!`, and the name is information
+/// rather than copy.
+///
+/// Every line is true, which is the whole constraint on being funny here. The
+/// model fetches its own context (ADR 0022); it merges class ids and never
+/// hunks, so it cannot lose one (ADR 0001); the response is cached (ADR 0009);
+/// and the coverage audit back-fills anything it drops (invariant 5).
+const WAITING: [&str; 5] = [
+    "it reads the diff so you don't have to",
+    "merging class ids — it cannot lose a hunk",
+    "cached after this — you only wait once",
+    "quicker than reading it in file order",
+    "if the model gets bored, the audit notices",
+];
+
+/// Seconds a message holds before the next one.
+///
+/// Long enough to read a line twice, short enough that a minute is not one
+/// sentence. The whole set turns over in under half a minute.
+const MESSAGE_SECS: u64 = 4;
+
+/// Columns any one line on the stage block may spend after the name field.
+///
+/// The block is centred on the widest line that CAN appear in it, so an
+/// overlong message does not slide the block — it widens it, and on a narrow
+/// pane that pushes the whole thing off the left. Hence a cap, and a test.
+const LINE_BUDGET: usize = 44;
+
+/// The budget has to leave the block inside a narrow terminal, or it is capping
+/// the copy against nothing. 70 columns, less the two the borders take.
+const _: () = assert!(STAGE_LEAD + LINE_BUDGET <= 70 - 2);
+
 fn stage_index(p: &Progress) -> usize {
     match p {
         Progress::Enumerating => 0,
@@ -79,6 +114,11 @@ pub fn run<T>(
     let mut current = 0usize;
     // Set once the grouping stage reports which backend it is waiting on.
     let mut agent: Option<(String, bool)> = None;
+    // When that stage began. The rotation counts from HERE, not from `started`:
+    // enumerate and classify run first, so a rotation on the total elapsed time
+    // is already mid-cycle by the moment the row it belongs to appears, and the
+    // reviewer never sees it open on the agent's name.
+    let mut asking_since: Option<Instant> = None;
     let mut tick = 0usize;
 
     loop {
@@ -88,6 +128,7 @@ pub fn run<T>(
                 Ok(p) => {
                     if let Progress::Grouping { backend, cached } = &p {
                         agent = Some((backend.clone(), *cached));
+                        asking_since = Some(Instant::now());
                     }
                     current = stage_index(&p);
                 }
@@ -100,7 +141,17 @@ pub fn run<T>(
             return Ok(true);
         }
 
-        terminal.draw(|frame| draw(frame, current, agent.as_ref(), started, tick))?;
+        let waited = asking_since.map_or(Duration::ZERO, |t| t.elapsed());
+        terminal.draw(|frame| {
+            draw(
+                frame,
+                current,
+                agent.as_ref(),
+                started.elapsed(),
+                waited,
+                tick,
+            )
+        })?;
         tick = tick.wrapping_add(1);
 
         if event::poll(Duration::from_millis(120))?
@@ -149,18 +200,43 @@ fn indent(width: usize, block: usize) -> String {
 
 /// Columns the stage block occupies.
 ///
-/// Measured from the STATIC descriptions only. The grouping row's text changes
-/// when the agent starts, and measuring the live string would slide the whole
-/// block sideways mid-run — a block that moves while you watch it reads as a
-/// glitch. A backend name longer than the widest description simply runs on to
-/// the right.
+/// Measured from every string that is fixed at compile time — the stage
+/// descriptions AND the waiting messages — and never from the line currently
+/// on screen. That is the whole point: the grouping row's text changes while
+/// you watch it, and an indent measured from the live string would slide the
+/// block sideways underneath the reader, which reads as a glitch.
+///
+/// The waiting messages belong in the measurement precisely because they are
+/// const. Leaving them out would keep the indent stable but let a long message
+/// run off the right edge, so the block would be centred on a width it does not
+/// occupy. A backend name longer than all of them still runs on to the right;
+/// that one is not ours to cap.
 fn stage_width() -> usize {
     STAGE_LEAD
         + STAGES
             .iter()
             .map(|(_, what)| what.chars().count())
+            .chain(WAITING.iter().map(|m| m.chars().count()))
             .max()
             .unwrap_or(0)
+}
+
+/// What the grouping row says, `waited` into the AGENT CALL.
+///
+/// Not into the run. Enumerate and classify go first, so a rotation keyed to
+/// the total elapsed time is already several slots deep by the time this row
+/// has anything to say, and slot zero — the one that names the agent — would
+/// be the one slot a reviewer never sees.
+///
+/// Slot zero names the agent, so a reviewer glancing up in the first four
+/// seconds of the call — or once every twenty-four after that — learns which
+/// one is thinking. The rest is something to read while it does.
+fn waiting_line(backend: &str, waited: Duration) -> String {
+    let slot = (waited.as_secs() / MESSAGE_SECS) as usize % (WAITING.len() + 1);
+    match slot.checked_sub(1) {
+        None => format!("asking {backend}"),
+        Some(i) => WAITING[i].to_string(),
+    }
 }
 
 /// The logo's rows, indented so the block sits centred in `width` columns.
@@ -187,7 +263,8 @@ fn draw(
     frame: &mut ratatui::Frame,
     current: usize,
     agent: Option<&(String, bool)>,
-    started: Instant,
+    elapsed: Duration,
+    waited: Duration,
     tick: usize,
 ) {
     let area: Rect = frame.area();
@@ -214,14 +291,24 @@ fn draw(
         };
         let mut detail = what.to_string();
         // The slow stage says which agent it is waiting on, and whether the
-        // grouping cache spared the call.
+        // grouping cache spared the call. On a miss it is the only row anyone
+        // is watching for a minute or more, so it rotates rather than holding
+        // one sentence; a cache hit does not wait, so it does not.
+        //
+        // Only while it is the ACTIVE stage. `asking_since` is never cleared —
+        // the elapsed wait is still wanted after the fact — so without this a
+        // ticked, finished row would go on rotating, and "if the model gets
+        // bored, the audit notices" beside a ✓ reads as still running. Every
+        // other completed row falls back to its static description; so does
+        // this one.
         if i == 2
+            && i == current
             && let Some((backend, cached)) = agent
         {
             detail = if *cached {
                 "cached grouping (no agent call)".to_string()
             } else {
-                format!("asking {backend}")
+                waiting_line(backend, waited)
             };
         }
         lines.push(Line::from(vec![
@@ -235,7 +322,7 @@ fn draw(
     lines.push(Line::from(Span::styled(
         format!(
             "{pad}  {:.0}s elapsed · q cancels (stops the agent too)",
-            started.elapsed().as_secs_f64()
+            elapsed.as_secs_f64()
         ),
         Style::default().fg(THEME.gutter_fg),
     )));
@@ -280,46 +367,165 @@ mod tests {
         assert!(80 - widest <= pad.len() + 1, "the block sits off-centre");
     }
 
-    /// The column each stage NAME starts in, for a given stage and agent line.
-    ///
-    /// The name, not the first visible character: a pending stage's glyph is a
-    /// space, so "first non-blank" would report a column two cells to the
-    /// right and call an aligned block crooked.
-    fn name_columns(stage: usize, agent: Option<&(String, bool)>) -> Vec<usize> {
+    /// The splash drawn `w` columns wide with `stage` active, one `String` per
+    /// screen row.
+    fn screen(
+        w: u16,
+        stage: usize,
+        agent: Option<&(String, bool)>,
+        waited: Duration,
+    ) -> Vec<String> {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
-        let mut t = Terminal::new(TestBackend::new(80, 16)).unwrap();
-        t.draw(|f| draw(f, stage, agent, Instant::now(), 0))
+        let mut t = Terminal::new(TestBackend::new(w, 16)).unwrap();
+        // A total elapsed time deliberately unlike `waited`, so a draw that
+        // rotated on the wrong clock shows up here rather than passing.
+        let elapsed = waited + Duration::from_secs(MESSAGE_SECS * 2 + 1);
+        t.draw(|f| draw(f, stage, agent, elapsed, waited, 0))
             .unwrap();
-        let rows: Vec<String> = t
-            .backend()
+        t.backend()
             .buffer()
             .content
-            .chunks(80)
+            .chunks(w as usize)
             .map(|row| row.iter().map(|c| c.symbol()).collect())
-            .collect();
+            .collect()
+    }
+
+    /// The column each stage NAME starts in.
+    ///
+    /// The name, not the first visible character: a pending stage's glyph is a
+    /// space, so "first non-blank" would report a column two cells to the right
+    /// and call an aligned block crooked.
+    ///
+    /// Each name is looked for in ITS OWN row, found by anchoring on the first
+    /// stage's. Scanning every row for every name reported the grouping row as
+    /// the "order" row the day a waiting message ended in the word "order" — a
+    /// helper that finds the wrong row calls a straight block crooked too.
+    fn name_columns(stage: usize, agent: Option<&(String, bool)>, waited: Duration) -> Vec<usize> {
+        let rows = screen(80, stage, agent, waited);
+        let base = rows
+            .iter()
+            .position(|r| r.contains(STAGES[0].0))
+            .expect("the stage block is not on screen");
         STAGES
             .iter()
-            .filter_map(|(name, _)| {
-                rows.iter()
-                    .find_map(|row| row.find(name).map(|b| row[..b].chars().count()))
+            .enumerate()
+            .filter_map(|(i, (name, _))| {
+                let row = rows.get(base + i)?;
+                row.find(name).map(|b| row[..b].chars().count())
             })
             .collect()
     }
 
-    /// The grouping row's text changes when the agent starts. The block must
-    /// not slide sideways underneath it — a block that moves while you watch
-    /// it reads as a glitch, which is why the indent is measured from the
-    /// static descriptions and never from the live line.
+    /// The grouping row's text changes when the agent starts, and then again
+    /// every few seconds for as long as the wait lasts. The block must not
+    /// slide sideways underneath it — a block that moves while you watch it
+    /// reads as a glitch, which is why the indent is measured from the const
+    /// strings and never from the live line.
     #[test]
-    fn the_stage_block_does_not_move_when_the_agent_line_changes() {
+    fn the_stage_block_does_not_move_as_the_grouping_line_changes() {
         let agent = ("some-agent-with-a-long-name".to_string(), false);
-        let before = name_columns(1, None);
-        let during = name_columns(2, Some(&agent));
+        let before = name_columns(1, None, Duration::ZERO);
         assert_eq!(before.len(), STAGES.len());
-        assert_eq!(before, during, "the stage block shifted mid-run");
         // And it is a block: every row starts in the same column.
         assert!(before.windows(2).all(|w| w[0] == w[1]), "{before:?}");
+        // Once through the whole rotation, and a little past it.
+        for secs in 0..=(MESSAGE_SECS * (WAITING.len() as u64 + 2)) {
+            let during = name_columns(2, Some(&agent), Duration::from_secs(secs));
+            assert_eq!(before, during, "the stage block shifted at {secs}s");
+        }
+    }
+
+    /// Slot zero names the agent, so a reviewer glancing up early learns which
+    /// one is thinking; the rest of the cycle is something to read.
+    #[test]
+    fn the_grouping_line_opens_with_the_agent_then_rotates() {
+        let at = |secs| waiting_line("Claude Code", Duration::from_secs(secs));
+        assert_eq!(at(0), "asking Claude Code");
+        assert_eq!(at(MESSAGE_SECS - 1), "asking Claude Code");
+        assert_eq!(at(MESSAGE_SECS), WAITING[0]);
+        assert_eq!(at(MESSAGE_SECS * 2), WAITING[1]);
+        // A message holds for its whole slot rather than flickering per frame.
+        assert_eq!(at(MESSAGE_SECS), at(MESSAGE_SECS * 2 - 1));
+        // And the cycle comes back round to the name.
+        let cycle = MESSAGE_SECS * (WAITING.len() as u64 + 1);
+        assert_eq!(at(cycle), "asking Claude Code");
+        assert_eq!(at(cycle + MESSAGE_SECS), WAITING[0]);
+    }
+
+    /// The rotation counts from the agent call, not from the splash opening.
+    ///
+    /// Keyed to the total elapsed time, enumerate and classify spend the first
+    /// slots before the grouping row has anything to say, so the row appears
+    /// already mid-cycle and slot zero — the one naming the agent — is the one
+    /// slot nobody ever sees.
+    #[test]
+    fn the_rotation_starts_when_the_agent_does_not_when_the_splash_does() {
+        let agent = ("Claude Code".to_string(), false);
+        // Half a minute into the run, but the agent call has only just begun.
+        let opening = screen(80, 2, Some(&agent), Duration::ZERO).join("\n");
+        assert!(opening.contains("asking Claude Code"), "{opening}");
+        // And it advances on the call's own clock from there.
+        let next = screen(80, 2, Some(&agent), Duration::from_secs(MESSAGE_SECS)).join("\n");
+        assert!(next.contains(WAITING[0]), "{next}");
+    }
+
+    /// A finished row stops talking.
+    ///
+    /// `asking_since` is never cleared — how long the agent took is still worth
+    /// knowing afterwards — so nothing but the active-stage check stops a
+    /// ticked row from rotating for the rest of the run. "if the model gets
+    /// bored, the audit notices" beside a ✓ reads as still running.
+    #[test]
+    fn the_grouping_row_stops_rotating_once_the_stage_is_done() {
+        let agent = ("Claude Code".to_string(), false);
+        let long = Duration::from_secs(MESSAGE_SECS * 3);
+        // Still grouping: the rotation is running.
+        let during = screen(80, 2, Some(&agent), long).join("\n");
+        assert!(during.contains(WAITING[2]), "{during}");
+        // Ordering, and past it: the row is ticked and back to its static
+        // description, like every other finished stage.
+        for stage in [3, STAGES.len()] {
+            let after = screen(80, stage, Some(&agent), long).join("\n");
+            assert!(after.contains(STAGES[2].1), "at stage {stage}: {after}");
+            for line in WAITING {
+                assert!(!after.contains(line), "at stage {stage}: {after}");
+            }
+            assert!(!after.contains("asking Claude Code"), "at stage {stage}");
+        }
+    }
+
+    /// A cache hit does not wait, so it has nothing to fill. Rotating there
+    /// would be motion for its own sake on a row that is already finished.
+    #[test]
+    fn a_cached_grouping_says_one_thing_and_keeps_saying_it() {
+        let cached = ("Claude Code".to_string(), true);
+        for secs in [0, 30, 600] {
+            let drawn = screen(80, 2, Some(&cached), Duration::from_secs(secs)).join("\n");
+            assert!(
+                drawn.contains("cached grouping (no agent call)"),
+                "at {secs}s: {drawn}"
+            );
+        }
+    }
+
+    /// The block is centred on the widest line that can appear in it, so an
+    /// overlong message widens the block rather than sliding it — and on a
+    /// narrow pane that pushes the whole thing off the left edge. This is the
+    /// test that fails when someone writes a funnier, longer joke.
+    #[test]
+    fn no_line_on_the_stage_block_outgrows_its_budget() {
+        for line in WAITING
+            .iter()
+            .copied()
+            .chain(STAGES.iter().map(|(_, what)| *what))
+        {
+            let width = line.chars().count();
+            assert!(
+                width <= LINE_BUDGET,
+                "{width} columns, budget is {LINE_BUDGET}: {line:?}"
+            );
+        }
     }
 
     /// The art and the constant have to agree, or every offset is wrong by the
@@ -343,5 +549,25 @@ mod tests {
         let need = LOGO.len() + STAGES.len() + 3;
         assert!(logo_lines(80, need - 1).is_empty());
         assert!(!logo_lines(80, need).is_empty());
+    }
+
+    /// Not an assertion — the grouping row at each point in the rotation, and
+    /// the narrow pane the budget exists for:
+    /// `cargo test -p differential-tui --lib -- --ignored --nocapture render_dump_splash`
+    #[test]
+    #[ignore = "prints the splash for a human to look at"]
+    fn render_dump_splash() {
+        let agent = ("Claude Code".to_string(), false);
+        for slot in 0..=WAITING.len() as u64 {
+            let secs = slot * MESSAGE_SECS;
+            println!("\n=== {secs}s ===");
+            for row in screen(90, 2, Some(&agent), Duration::from_secs(secs)) {
+                println!("{row}");
+            }
+        }
+        println!("\n=== 70 columns, the width the budget is for ===");
+        for row in screen(70, 2, Some(&agent), Duration::from_secs(MESSAGE_SECS * 5)) {
+            println!("{row}");
+        }
     }
 }
