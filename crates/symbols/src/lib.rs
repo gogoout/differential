@@ -10,8 +10,11 @@
 //! for. And the whole mechanism may move out of the engine later, in which
 //! case the graph, the port and these readers travel together.
 
+mod ast;
 mod naive;
 
+pub use ast::generic::AstTier2Symbols;
+pub use ast::tuned::AstSymbols;
 pub use naive::NaiveSymbols;
 
 use differential_engine::artefact::symbols::SymbolReaders;
@@ -22,6 +25,8 @@ use differential_engine::artefact::symbols::SymbolReaders;
 /// may forget: a build with no readers produces no dependency edges at all.
 pub fn readers() -> SymbolReaders {
     let mut r = SymbolReaders::default();
+    r.register(Box::new(AstSymbols::new()));
+    r.register(Box::new(AstTier2Symbols::new()));
     r.register(Box::new(NaiveSymbols));
     r
 }

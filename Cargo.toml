@@ -38,6 +38,20 @@ tempfile = "3"
 toml = "0.8"
 globset = "0.4"
 etcetera = "0.10"
+# Symbol readers. All grammar crates resolve to one `tree-sitter-language`
+# (0.1.7), which is the ABI that actually matters — their own version numbers
+# scatter across 0.23-0.25 and mean nothing here.
+tree-sitter = "0.26"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-go = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-kotlin-ng = "1.1"
+tree-sitter-javascript = "0.25"
+tree-sitter-java = "0.23"
+tree-sitter-c = "0.24"
+tree-sitter-cpp = "0.23"
+tree-sitter-c-sharp = "0.23"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

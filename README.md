@@ -247,6 +247,7 @@ tool behaviour only. Every invariant depends on that.
 | [`differential`](crates/cli/README.md) | The application. It owns the `dfr` and `differential` binaries. |
 | [`differential-engine`](crates/engine/README.md) | The core library: git io, diff parsing, shape classes, grouping, ordering, invariants. |
 | [`differential-stack`](crates/stack/README.md) | The shadow-branch renderer. The diff as a synthetic commit stack. |
+| [`differential-symbols`](crates/symbols) | Symbol readers: tree-sitter, and a crude fallback. |
 | [`differential-tui`](crates/tui/README.md) | The terminal reviewer behind `dfr review`. |
 
 Dependency direction is strict: `cli → {tui, stack} → engine`.
