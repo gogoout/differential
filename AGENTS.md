@@ -1,7 +1,7 @@
 # Agent instructions for `differential`
 
 Read [`README.md`](README.md) for what this is. `spec/` is normative (what the program does);
-`adr/` records why (0001–0023). When your change contradicts a spec or ADR, the docs and the
+`adr/` records why (0001–0024). When your change contradicts a spec or ADR, the docs and the
 code must change together — or the change is wrong.
 
 ## Working rules

@@ -129,6 +129,31 @@ agent = "claude-code"
 timeout_secs = 1200
 ```
 
+`[review]` is the reviewer's own presentation, and per-user for the same reason: how a
+screen looks is the reader's business, not the repository's. A `[review]` table in the REPO
+file is rejected — nothing enforces that by hand, the repo file simply has no such field
+and denies unknown ones.
+
+```toml
+[review]
+# Which palette the reviewer wears. One of: dark (the default), one-dark,
+# one-light, gruvbox-dark, gruvbox-light, solarized-dark, solarized-light,
+# catppuccin-mocha, catppuccin-latte, dracula, monokai. A name nobody
+# implements is a hard error that says which ones exist.
+theme = "dark"
+# Context lines shown either side of a hunk before any expansion.
+context = 3
+# Lines one `z` at a context boundary row pulls in.
+context_step = 10
+```
+
+`theme` is a **name, not a colour list**, for the same reason `agent` is a name and not an
+argv. A palette is not a value the caller supplies but a coherent set the renderer builds:
+thirty-odd colours plus the syntax theme the code is painted in, all derived together so
+the chrome and the code cannot disagree (ADR 0024). A free-form colour table would be a
+knob that looked like it worked, and would freeze thirty field names as public API.
+Adding a theme is adding a `config::ThemeName` variant and a seed file.
+
 `agent` is a **name, not an argv**, and that is the whole point. The grouping stage does
 not merely spawn a process: it hands the agent a tool allowlist, a fetch command and a
 prompt written for what that agent can do (ADR 0022). An arbitrary argv got the prompt and

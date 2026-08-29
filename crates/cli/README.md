@@ -224,6 +224,7 @@ agent = "claude-code"   # the only one so far, and the default
 timeout_secs = 1200
 
 [review]
+theme = "dark"
 context = 3
 context_step = 10
 # Diff layout a review opens in: "split" or "unified".
@@ -237,10 +238,40 @@ diff = "split"
 | `review.context` | `3` | Context lines shown around a hunk before any expansion. |
 | `review.context_step` | `10` | Lines one `z` pulls in at a context boundary row. |
 | `review.diff` | `split` | Layout a review OPENS in. `s` still toggles, and a review that has recorded a choice keeps it. |
+| `review.theme` | `dark` | Which palette the reviewer wears, by name. See below. |
 
 Resolution order for each file: the explicit flag, then the default path, then the built-in
 defaults. A missing file means defaults. A malformed file is a hard error. An unknown key
 is a hard error too.
+
+### Themes
+
+`review.theme` names one of eleven palettes. Each pairs a set of chrome colours with the
+syntax theme the code is painted in, so the diff and the code come from one source.
+
+| name | ground | paired syntax theme |
+|---|---|---|
+| `dark` | dark slate, cyan accent — **the default** | Base16 Eighties Dark |
+| `one-dark` | Atom-descended blue-grey | One Half Dark |
+| `one-light` | near-white | One Half Light |
+| `gruvbox-dark` | warm brown-black | Gruvbox Dark |
+| `gruvbox-light` | cream | Gruvbox Light |
+| `solarized-dark` | deep teal | Solarized Dark |
+| `solarized-light` | pale sand | Solarized Light |
+| `catppuccin-mocha` | soft near-black | Catppuccin Mocha |
+| `catppuccin-latte` | cool off-white | Catppuccin Latte |
+| `dracula` | near-black, loud accents | Dracula |
+| `monokai` | near-black, bright accents | Monokai Extended |
+
+An unknown name is a hard error that lists the valid ones. `theme` in the **repo** file is
+rejected: a palette is the reader's choice, not the repository's.
+
+A theme is a *derived* palette, not a copy of a published one. Each declares a syntax theme
+and six accents — an addition, a deletion, the accent, the skim tier, a finding, a reviewed
+mark — and the remaining thirty-odd colours are mixed from those against the ground the
+syntax theme itself declares (ADR 0024). Where a published palette's own accents were not
+legible as interface text, they were adjusted and the reason recorded in that theme's file
+under `crates/tui/src/theme/`.
 
 **Config never removes a file or a hunk from analysis.** It tunes classification hints and
 tool behaviour only.

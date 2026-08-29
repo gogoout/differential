@@ -230,6 +230,8 @@ agent = "claude-code"   # the only one so far, and the default
 timeout_secs = 1200
 
 [review]
+# Which palette `dfr review` wears.
+theme = "dark"
 # Context lines shown either side of a hunk in `dfr review`.
 context = 3
 # Lines that one `z` pulls in at a context boundary.
@@ -245,6 +247,13 @@ diff = "split"
 | `review.context` | `3` | Context lines around a hunk before any expansion. |
 | `review.context_step` | `10` | Lines one `z` pulls in at a boundary row. |
 | `review.diff` | `split` | Layout a review OPENS in. `s` still toggles, and a review that has recorded a choice keeps it. |
+| `review.theme` | `dark` | Which palette the reviewer wears, by name. |
+
+Eleven themes: `dark` (default), `one-dark`, `one-light`, `gruvbox-dark`, `gruvbox-light`,
+`solarized-dark`, `solarized-light`, `catppuccin-mocha`, `catppuccin-latte`, `dracula`,
+`monokai`. An unknown name is a hard error listing the valid ones,
+and a theme in the repo file is rejected — a palette is the reader's choice, not the
+repository's.
 
 A missing file means defaults. A malformed file is a hard error. An unknown key is a hard
 error too.

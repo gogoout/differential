@@ -107,6 +107,23 @@ anyway.
 **Diff pane.** Unified layout by default, `s` toggles a side-by-side split (the layout
 choice persists per review); syntax highlighting and word-level change emphasis.
 
+**The palette is chosen, and painted.** `[review].theme` in the user config names one of
+eleven: `dark` (the default), `one-dark`, `one-light`, `gruvbox-dark`, `gruvbox-light`,
+`solarized-dark`, `solarized-light`, `catppuccin-mocha`, `catppuccin-latte`, `dracula`,
+`monokai`. Each pairs the reviewer's colours with the syntax theme the code is painted in,
+and derives the former from the latter's own ground, so the chrome and the code are one
+palette rather than two that drift (ADR 0024).
+
+A theme paints its **own background**. The terminal's used to show through wherever nothing
+else painted, which is most of the screen — and is why the reviewer could only ever be
+dark. It follows that every float clears to the theme's ground rather than to the
+terminal's: a `Clear` that is not repainted punches a hole of the wrong colour, which is
+invisible on a dark terminal and glaring on a light palette.
+
+Nothing about the palette is a run-time toggle. It is read once at startup and threaded
+from there — rows bake their colours in when they are built, not when they are drawn, so a
+palette is an input to building a row rather than something drawing consults.
+
 **Colour carries the change.** There are no `-`/`+` marker columns: a changed line's
 background runs to the pane edge, and its line-number cell is a stronger block of the same
 colour, which is what makes the gutter read as an edge. In split mode a row that exists on
@@ -234,8 +251,8 @@ worse than a pill with corners.
 base and head blobs — three lines either side by default. Where more of the file is
 available, the pane says so on a **boundary row** at each end of what is shown
 (`── ↑ 16 more above ──`); put the cursor on it and `z` pulls in another step.
-Both numbers come from `[review]` in the user config (`context`, `context_step`), as does
-the layout a review opens in (`diff`, default `split`).
+Both numbers come from `[review]` in the user config (`context`, `context_step`), as do
+the palette (`theme`) and the layout a review opens in (`diff`, default `split`).
 
 A layout **default** is not a layout **setting**. `s` toggles, and the toggle is recorded
 against that review; a review with a recorded choice keeps it whatever the config later

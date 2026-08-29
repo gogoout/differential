@@ -321,6 +321,7 @@ From the user file, `~/.config/differential/config.toml`:
 
 ```toml
 [review]
+theme = "dark"
 context = 3
 context_step = 10
 # Diff layout a review opens in: "split" or "unified".
@@ -329,12 +330,44 @@ diff = "split"
 
 | key | default | meaning |
 |---|---|---|
+| `review.theme` | `dark` | Which palette to wear, by name. See below. |
 | `review.context` | `3` | Context lines shown either side of a hunk before any expansion. |
 | `review.context_step` | `10` | Lines one `z` pulls in at a context boundary row. |
 | `review.diff` | `split` | Layout a review OPENS in. `s` still toggles, and a review that has recorded a choice keeps it. |
 
-These are presentation only. They widen what is **displayed** around a hunk. They can never
-change which hunks exist.
+These are presentation only. They widen what is **displayed** around a hunk, and what
+colour it is. They can never change which hunks exist.
+
+### Themes
+
+Eleven, each pairing the reviewer's own colours with the syntax theme the code is painted
+in — so the chrome and the code come from one source and cannot drift apart.
+
+| name | ground | paired syntax theme |
+|---|---|---|
+| `dark` | dark slate, cyan accent — **the default** | Base16 Eighties Dark |
+| `one-dark` | Atom-descended blue-grey | One Half Dark |
+| `one-light` | near-white | One Half Light |
+| `gruvbox-dark` | warm brown-black | Gruvbox Dark |
+| `gruvbox-light` | cream | Gruvbox Light |
+| `solarized-dark` | deep teal | Solarized Dark |
+| `solarized-light` | pale sand | Solarized Light |
+| `catppuccin-mocha` | soft near-black | Catppuccin Mocha |
+| `catppuccin-latte` | cool off-white | Catppuccin Latte |
+| `dracula` | near-black, loud accents | Dracula |
+| `monokai` | near-black, bright accents | Monokai Extended |
+
+A theme **paints its own background** rather than letting the terminal's show through, so a
+light palette works on a dark terminal and the other way round.
+
+Each is *derived* rather than hand-written: a seed names the syntax theme and six accents —
+an addition, a deletion, the accent, the skim tier, a finding, a reviewed mark — and the
+other thirty-odd colours are mixed from those against the ground the syntax theme declares
+(ADR 0024). Seeds live one per file in `src/theme/`.
+
+Adding one is a variant on `ThemeName` and a seed file. Tests then run the legibility,
+chroma and distinctness checks over it along with the rest, which is what makes it cheap:
+a palette that does not hold up fails the build rather than someone's eyes.
 
 ## Using it as a library
 
