@@ -538,12 +538,21 @@ fn a_split_render_draws_more_separators_than_a_unified_one() {
     for app in [&mut split, &mut unified] {
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     }
+    // Both directions, so a failure names which side degenerated rather than
+    // leaving the count comparison to imply it.
     assert!(
         split
             .rows
             .iter()
             .any(|row| matches!(row.content, RowContent::Split { .. })),
-        "the split app must actually hold split rows, or this measures nothing"
+        "the split app holds no split rows, so this measures nothing"
+    );
+    assert!(
+        !unified
+            .rows
+            .iter()
+            .any(|row| matches!(row.content, RowContent::Split { .. })),
+        "the unified app holds split rows, so the two sides are not being compared"
     );
 
     for width in [100u16, 60] {
