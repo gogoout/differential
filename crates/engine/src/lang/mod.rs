@@ -2,10 +2,14 @@
 //!
 //! The tool must eventually support every language. This module is the seam:
 //! a [`Language`] plugin can override how line content is normalised for shape
-//! classification, and — in a later milestone — how symbol definitions and
-//! references are extracted for the ordering stage. Everything defaults to the
-//! generic behaviour, so with no plugins registered the engine behaves exactly
-//! like the validated milestone-1 normaliser (the parity test enforces this).
+//! classification, and how a file's symbol definitions and references are
+//! extracted for the ordering stage. Everything defaults to the generic
+//! behaviour, so with no plugins registered the engine behaves exactly like the
+//! validated milestone-1 normaliser (the parity test enforces this).
+//!
+//! Normalisation is per line; symbol extraction is per FILE. A line inside a
+//! block comment or a multi-line string cannot be told from code on its own, so
+//! that decision is made where the context to make it exists.
 //!
 //! Languages never see enumeration: which files and hunks exist is decided
 //! before this module is consulted (ADR 0005/0012). They only influence
@@ -34,17 +38,55 @@ pub trait Language: Send + Sync {
         generic::normalize_line(line)
     }
 
-    /// Symbol names this line DEFINES (declaration heuristics). Feeds the
+    /// Every symbol the file DEFINES and REFERENCES, per line. Feeds the
     /// ordering stage's definition → use edges; precision is allowed to be low
     /// (ADR 0007: a wrong edge misorders, it never hides content).
-    fn symbol_definitions(&self, line: &[u8]) -> Vec<Vec<u8>> {
-        generic::symbol_definitions(line)
+    ///
+    /// **Whole file, not a line and not a hunk.** A line inside a block comment
+    /// or a multi-line string is indistinguishable from code on its own, so the
+    /// two cuts worth making — drop comment and string tokens, keep only call
+    /// and type positions — are not decidable per line. The generic default is
+    /// still a per-line loop, and stays byte-identical to what it replaced.
+    fn file_symbols(&self, path: &[u8], content: &[u8]) -> FileSymbols {
+        let _ = path;
+        generic::file_symbols(content)
+    }
+}
+
+/// A file's symbols, indexed by NEW-SIDE line number.
+///
+/// Both vectors are parallel and one entry per line, so an entry is addressed
+/// by the line number a hunk already carries. Lines with no symbols hold an
+/// empty `Vec`, which does not allocate — a 100k-line file costs pointers.
+#[derive(Debug, Default, Clone)]
+pub struct FileSymbols {
+    pub defines: Vec<Vec<Vec<u8>>>,
+    pub references: Vec<Vec<Vec<u8>>>,
+}
+
+impl FileSymbols {
+    /// How many lines this covers. A caller comparing it against a hunk's
+    /// new-side range is checking that the blob and the diff agree.
+    pub fn lines(&self) -> usize {
+        self.defines.len().min(self.references.len())
     }
 
-    /// Identifiers this line REFERENCES.
-    fn symbol_references(&self, line: &[u8]) -> Vec<Vec<u8>> {
-        generic::symbol_references(line)
+    /// Symbols defined on `line`, counting from 1. Empty when out of range —
+    /// the range check is `lines()`, so a caller that wants to know asks.
+    pub fn defines_at(&self, line: u32) -> &[Vec<u8>] {
+        at(&self.defines, line)
     }
+
+    /// Symbols referenced on `line`, counting from 1.
+    pub fn references_at(&self, line: u32) -> &[Vec<u8>] {
+        at(&self.references, line)
+    }
+}
+
+fn at(rows: &[Vec<Vec<u8>>], line: u32) -> &[Vec<u8>] {
+    line.checked_sub(1)
+        .and_then(|i| rows.get(i as usize))
+        .map_or(&[], |v| v.as_slice())
 }
 
 /// The generic fallback: claims every file, uses the default normaliser.

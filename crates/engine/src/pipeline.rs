@@ -241,7 +241,7 @@ where
     // rather than from groups: what depends on what is a fact about the diff,
     // so the model reads it before it groups and cannot change it by grouping
     // (ADR 0022).
-    let graph = crate::artefact::graph::build(&view, &part, langs);
+    let graph = crate::artefact::graph::build(git, &head, &view, &part, langs)?;
 
     // Invariants 1–4; no document on violation.
     let report = check_all(git, &base, &head, &view)?;

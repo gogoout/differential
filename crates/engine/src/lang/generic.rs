@@ -7,6 +7,8 @@ use std::sync::LazyLock;
 
 use regex::bytes::Regex;
 
+use super::FileSymbols;
+
 // (?-u): byte-level ASCII classes, matching Python bytes-pattern semantics.
 static STR_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?-u)"[^"]*"|'[^']*'|`[^`]*`"#).unwrap());
@@ -38,6 +40,22 @@ pub fn symbol_references(line: &[u8]) -> Vec<Vec<u8>> {
         .find_iter(line)
         .map(|m| m.as_bytes().to_vec())
         .collect()
+}
+
+/// Every line's definitions and references, from the two heuristics above.
+///
+/// The validated prototype worked one line at a time, and this is that same
+/// loop lifted to a file — so the generic tier stays byte-identical while the
+/// trait gains the whole-file view a parser needs.
+///
+/// Split on `\n` only. A `\r` survives into the line, where the identifier
+/// patterns cannot match it, exactly as it could not in a diff line.
+pub fn file_symbols(content: &[u8]) -> FileSymbols {
+    let lines: Vec<&[u8]> = content.split(|&b| b == b'\n').collect();
+    FileSymbols {
+        defines: lines.iter().map(|l| symbol_definitions(l)).collect(),
+        references: lines.iter().map(|l| symbol_references(l)).collect(),
+    }
 }
 
 /// Strings → `"S"`, numbers → `N`, identifiers (length ≥ 4) → `I`, whitespace

@@ -13,13 +13,27 @@ Deterministic and model-free; runs unconditionally after grouping inside
 reads the same edges the ordering acts on, and grouping cannot change what depends on what.
 This stage contracts that graph onto groups.
 
-Per non-noise class, over the **added** lines of its member hunks, the `Language` hooks
-(ADR 0015) extract:
+`Language::file_symbols` (ADR 0015) is asked once per changed file, and is handed the
+**whole file** from the head tree — not a hunk and not a line. A line inside a block comment
+or a multi-line string is indistinguishable from code on its own, so the two cuts worth
+making (drop comment and string tokens; keep only call and type positions) are not
+decidable per line. It answers per new-side line number, and each class reads the lines its
+member hunks added.
+
+The generic default is still a per-line pass, byte-identical to the validated prototype:
 
 - `defines` — names introduced by declaration keywords (generic heuristic:
   `fn/struct/enum/trait/class/interface/type/def/func/impl/const/static/mod/module/package/protocol`
   + identifier),
 - references — identifiers used.
+
+Files that can contribute nothing are never read: generated content (a lockfile would
+otherwise appear to define half the dependency tree), binaries, gitlinks — whose only
+added line is `Subproject commit <oid>`, prose about a commit this repository does not
+have — and files whose every hunk is a pure deletion. When a head blob is absent, or
+disagrees with the diff about how long the file is, the class falls back to the generic
+per-line pass over the hunk's own added lines. Fewer symbols than a parse would find,
+never none.
 
 Only symbols defined by **exactly one class** create edges; a symbol two classes define is
 ambiguous and is dropped. `B depends_on A` when B references a symbol only A defines, and
