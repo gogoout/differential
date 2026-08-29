@@ -24,7 +24,7 @@ use differential_engine::schema;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::theme::{THEME, highlighter};
+use super::theme::Theme;
 use super::vendor::LineOrigin;
 use super::vendor::diff_algo::compute_side_by_side;
 use super::vendor::diff_types::{ChangeType, DiffLine, InlineSegment, expand_tabs};
@@ -212,12 +212,12 @@ impl Half {
     /// Its line-number cell is blank but keeps the width the real one has, so
     /// the cursor block lands in the same column on both sides of a row that
     /// exists on only one of them.
-    fn hatch() -> Self {
+    fn hatch(theme: &Theme) -> Self {
         Half {
             gutter: Gutter {
                 text: format!(" {:4} ", ""),
                 style: Style::default(),
-                cursor: THEME.gutter_cursor(None),
+                cursor: theme.gutter_cursor(None),
             },
             pairs: Vec::new(),
             fill: Fill::Hatch,
@@ -349,12 +349,12 @@ impl Row {
     ///
     /// Tints the reserved cursor cell to match, since a band is one tinted row
     /// the whole way across and that cell is part of it.
-    pub fn with_button(mut self, glyph: &'static str, tint: Style) -> Self {
+    pub fn with_button(mut self, theme: &Theme, glyph: &'static str, tint: Style) -> Self {
         self.button = Some(glyph);
         if let RowContent::Unified(half) = &mut self.content {
             half.gutter.style = tint;
             // The band lightens under the cursor, and this cell is part of it.
-            half.gutter.cursor = THEME.lit_band(tint);
+            half.gutter.cursor = theme.lit_band(tint);
         }
         self
     }
@@ -497,6 +497,7 @@ impl RowFactory {
     /// is not an ordering a caller can get wrong.
     fn highlight(
         &mut self,
+        theme: &Theme,
         path: &str,
         old_want: &[Range<usize>],
         new_want: &[Range<usize>],
@@ -505,7 +506,7 @@ impl RowFactory {
         HashMap<usize, HighlightedSpans>,
     ) {
         self.source(path);
-        let hl = highlighter();
+        let hl = theme.highlighter();
         let p = std::path::Path::new(path);
         let src = self.cache.get_mut(path).expect("source() just inserted it");
 
@@ -608,6 +609,10 @@ impl RowFactory {
 
 /// What every hunk-level builder needs, independent of the left-pane view.
 pub struct RowsContext<'a> {
+    /// The palette every row is built with. Colours are baked into rows here,
+    /// at BUILD time, not read at draw time — so this is where a theme has to
+    /// reach, and changing one means a rebuild rather than a repaint.
+    pub theme: &'a Theme,
     pub doc: &'a schema::PlanDocument,
     /// The projection: what resolves a file's full hunk list and a hunk's
     /// group.
@@ -659,11 +664,11 @@ pub fn build_group_rows(factory: &mut RowFactory, ctx: &GroupContext) -> Vec<Row
             RowKind::Fold,
             Line::from(Span::styled(
                 format!("  ── {} {what} ──", split.deferred.len()),
-                Style::default().fg(THEME.noise_fg),
+                Style::default().fg(ctx.core.theme.noise_fg),
             )),
         )
         .with_hint(
-            Style::default().fg(THEME.hint_cursor_fg),
+            Style::default().fg(ctx.core.theme.hint_cursor_fg),
             "  ·  z to show".to_string(),
         ),
     );
@@ -709,7 +714,7 @@ fn hunk_list_rows(
             .iter()
             .position(|&h| ctx.doc.hunks[h].file != path)
             .map_or(hunks.len(), |n| i + n);
-        rows.push(file_header_row(ctx.doc, path));
+        rows.push(file_header_row(ctx.theme, ctx.doc, path));
         file_rows(
             factory,
             ctx,
@@ -733,7 +738,7 @@ pub fn build_dir_rows(factory: &mut RowFactory, ctx: &RowsContext, hunks: Vec<us
             RowKind::Blank,
             Line::from(Span::styled(
                 "  (no text hunks under this directory)",
-                Style::default().fg(THEME.noise_fg),
+                Style::default().fg(ctx.theme.noise_fg),
             )),
         ));
         return rows;
@@ -754,12 +759,12 @@ pub fn build_file_rows(
     let mut rows = Vec::new();
     if hunks.is_empty() {
         // Binary / submodule / mode-only changes carry no text hunks.
-        rows.push(file_header_row(ctx.doc, path));
+        rows.push(file_header_row(ctx.theme, ctx.doc, path));
         rows.push(Row::full(
             RowKind::Blank,
             Line::from(Span::styled(
                 "  (no text hunks — binary, submodule or mode-only change)",
-                Style::default().fg(THEME.noise_fg),
+                Style::default().fg(ctx.theme.noise_fg),
             )),
         ));
         return rows;
@@ -777,12 +782,15 @@ fn header_rows(ctx: &GroupContext, rows: &mut Vec<Row>) {
     let mut header = vec![
         Span::styled(
             format!("[{tier}] "),
-            THEME.effort_style(g.effort).add_modifier(Modifier::BOLD),
+            ctx.core
+                .theme
+                .effort_style(g.effort)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             g.label.clone(),
             Style::default()
-                .fg(THEME.header_fg)
+                .fg(ctx.core.theme.header_fg)
                 .add_modifier(Modifier::BOLD),
         ),
     ];
@@ -790,7 +798,7 @@ fn header_rows(ctx: &GroupContext, rows: &mut Vec<Row>) {
     // the grey suffix this replaces was the same `g.role` wearing a different
     // face on the other side of the screen.
     if let Some(r) = g.role {
-        let (fg, bg) = THEME.pill();
+        let (fg, bg) = ctx.core.theme.pill();
         header.push(Span::styled(" ".to_string(), Style::default()));
         header.extend(
             pill(vec![(fg, role_name(r).to_string())], bg)
@@ -804,7 +812,7 @@ fn header_rows(ctx: &GroupContext, rows: &mut Vec<Row>) {
             RowKind::GroupHeader,
             Line::from(Span::styled(
                 format!("  {}", g.description),
-                Style::default().fg(THEME.context_fg),
+                Style::default().fg(ctx.core.theme.context_fg),
             )),
         ));
     }
@@ -821,14 +829,14 @@ fn header_rows(ctx: &GroupContext, rows: &mut Vec<Row>) {
             RowKind::GroupHeader,
             Line::from(Span::styled(
                 format!("  depends on: {}", deps.join(", ")),
-                Style::default().fg(THEME.gutter_fg),
+                Style::default().fg(ctx.core.theme.gutter_fg),
             )),
         ));
     }
     rows.push(Row::full(RowKind::Blank, Line::default()));
 }
 
-fn file_header_row(doc: &schema::PlanDocument, path: &str) -> Row {
+fn file_header_row(theme: &Theme, doc: &schema::PlanDocument, path: &str) -> Row {
     let entry = doc.files.iter().find(|f| f.path == path);
     let mut text = path.to_string();
     if let Some(f) = entry {
@@ -848,7 +856,7 @@ fn file_header_row(doc: &schema::PlanDocument, path: &str) -> Row {
         Line::from(Span::styled(
             text,
             Style::default()
-                .fg(THEME.header_fg)
+                .fg(theme.header_fg)
                 .add_modifier(Modifier::BOLD),
         )),
     )
@@ -857,12 +865,12 @@ fn file_header_row(doc: &schema::PlanDocument, path: &str) -> Row {
 /// The `old` / `new` labels over a split file. Built as a split row so the two
 /// labels land on the columns through the same arithmetic that places the
 /// content, at any pane width.
-fn column_header_row() -> Row {
+fn column_header_row(theme: &Theme) -> Row {
     let label = |text: &str| Half {
         gutter: Gutter::default(),
         pairs: vec![(
             Style::default()
-                .fg(THEME.gutter_fg)
+                .fg(theme.gutter_fg)
                 .add_modifier(Modifier::BOLD),
             format!("  {text}"),
         )],
@@ -918,9 +926,9 @@ pub fn pill(
 /// reader wants at a glance on a hunk they have already been through.
 fn hunk_accent(ctx: &RowsContext, hi: usize, foreign: bool) -> Style {
     let fg = match (foreign, ctx.reviewed.contains(&hi)) {
-        (true, _) => THEME.foreign_fg,
-        (false, true) => THEME.reviewed_fg,
-        (false, false) => THEME.header_fg,
+        (true, _) => ctx.theme.foreign_fg,
+        (false, true) => ctx.theme.reviewed_fg,
+        (false, false) => ctx.theme.header_fg,
     };
     Style::default().fg(fg)
 }
@@ -970,7 +978,7 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
     // a hunk up by; the class is what they need only once they are in it, and
     // leading with it put a token they cannot read at a glance in front of two
     // numbers they can.
-    let (fg, bg) = THEME.pill();
+    let (fg, bg) = ctx.theme.pill();
 
     // The marks an idle header keeps: whose group the hunk is, `✓` for a class
     // already read, `◆ N` for what stands filed against it. A reader scans a
@@ -989,10 +997,10 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
         marks.push((c, t));
     };
     if reviewed {
-        mark(THEME.reviewed_fg, "✓".to_string(), &mut marks);
+        mark(ctx.theme.reviewed_fg, "✓".to_string(), &mut marks);
     }
     if n_findings > 0 {
-        mark(THEME.finding_fg, format!("◆ {n_findings}"), &mut marks);
+        mark(ctx.theme.finding_fg, format!("◆ {n_findings}"), &mut marks);
     }
 
     let mut idle_marks: Vec<(ratatui::style::Color, String)> = Vec::new();
@@ -1004,10 +1012,10 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
     }
     idle_marks.extend(marks.iter().cloned());
 
-    let mut parts = vec![(THEME.add_fg, format!("+{}", hunk.new_count))];
+    let mut parts = vec![(ctx.theme.add_fg, format!("+{}", hunk.new_count))];
     if hunk.old_count > 0 {
         parts.push((fg, " ".to_string()));
-        parts.push((THEME.del_fg, format!("−{}", hunk.old_count)));
+        parts.push((ctx.theme.del_fg, format!("−{}", hunk.old_count)));
     }
     parts.push((fg, format!(" · {}{group_label}", hunk.class)));
     if !marks.is_empty() {
@@ -1041,10 +1049,10 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
 ///
 /// Every line is a `Finding` row, so `dd` deletes the note from any of them
 /// and the cursor never lands on a line that belongs to nothing.
-fn finding_rows(f: &Finding, hunk: usize) -> Vec<Row> {
-    let rail = Style::default().fg(THEME.gutter_fg);
+fn finding_rows(theme: &Theme, f: &Finding, hunk: usize) -> Vec<Row> {
+    let rail = Style::default().fg(theme.gutter_fg);
     let prose = Style::default()
-        .fg(THEME.hint_fg)
+        .fg(theme.hint_fg)
         .add_modifier(Modifier::ITALIC);
     let moved = if f.moved { " (moved)" } else { "" };
     let mut lines: Vec<String> = f.body.lines().map(str::to_string).collect();
@@ -1110,7 +1118,7 @@ fn place_findings(ctx: &RowsContext, rows: &mut Vec<Row>) {
         out.push(row);
         for f in here {
             left.retain(|g| g.id != f.id);
-            out.extend(finding_rows(f, hunk));
+            out.extend(finding_rows(ctx.theme, f, hunk));
         }
     }
 
@@ -1131,7 +1139,7 @@ fn place_findings(ctx: &RowsContext, rows: &mut Vec<Row>) {
             let hunk = row.kind.hunk().unwrap_or(0);
             with_headers.push(row);
             for f in under {
-                with_headers.extend(finding_rows(f, hunk));
+                with_headers.extend(finding_rows(ctx.theme, f, hunk));
             }
         }
         out = with_headers;
@@ -1158,7 +1166,7 @@ fn file_rows(
                 RowKind::Diff(hi),
                 Line::from(Span::styled(
                     "  (binary or submodule change)",
-                    Style::default().fg(THEME.noise_fg),
+                    Style::default().fg(ctx.theme.noise_fg),
                 )),
             ));
         }
@@ -1166,7 +1174,7 @@ fn file_rows(
     }
 
     if ctx.mode == DiffMode::Split {
-        rows.push(column_header_row());
+        rows.push(column_header_row(ctx.theme));
     }
 
     // Every hunk of the file in position order: the ones this view lists, and
@@ -1194,7 +1202,7 @@ fn file_rows(
     let blocks = window::plan(&candidates, ctx.expansion, ctx.context, old_len, new_len);
 
     let (old_want, new_want) = wanted_lines(&blocks);
-    let (old_hl, new_hl) = factory.highlight(path, &old_want, &new_want);
+    let (old_hl, new_hl) = factory.highlight(ctx.theme, path, &old_want, &new_want);
     let src = factory.source(path);
 
     // Set when the previous block's bottom row already spoke for the gap on its
@@ -1226,7 +1234,8 @@ fn file_rows(
                     for n in 0..*len {
                         let (o, w) = (old_from + n, new_from + n);
                         let text = src.new.get(w - 1).map(String::as_str).unwrap_or("");
-                        let row = context_row(text, o, w, new_hl.get(&(w - 1)), ctx.mode);
+                        let row =
+                            context_row(ctx.theme, text, o, w, new_hl.get(&(w - 1)), ctx.mode);
                         rows.push(Row {
                             kind: RowKind::Diff(owner),
                             border: None,
@@ -1261,7 +1270,9 @@ fn file_rows(
                     };
                     let accent = hunk_accent(ctx, *hunk, *foreign);
                     hunk_header_rows(ctx, *hunk, *foreign, rows);
-                    for (content, line) in change_rows(src, old, new, &old_hl, &new_hl, ctx.mode) {
+                    for (content, line) in
+                        change_rows(ctx.theme, src, old, new, &old_hl, &new_hl, ctx.mode)
+                    {
                         rows.push(
                             Row {
                                 kind: RowKind::Diff(*hunk),
@@ -1351,16 +1362,19 @@ fn boundary_row(ctx: &RowsContext, b: &window::Boundary, step: usize, both_ends:
             crossing: b.next.is_some(),
         },
         Line::from(vec![
-            Span::styled(" ".to_string(), Style::default().bg(THEME.hint_bg)),
-            Span::styled(label, Style::default().fg(THEME.hint_fg).bg(THEME.hint_bg)),
+            Span::styled(" ".to_string(), Style::default().bg(ctx.theme.hint_bg)),
+            Span::styled(
+                label,
+                Style::default().fg(ctx.theme.hint_fg).bg(ctx.theme.hint_bg),
+            ),
         ]),
-        Fill::Bg(Style::default().bg(THEME.hint_bg)),
+        Fill::Bg(Style::default().bg(ctx.theme.hint_bg)),
     )
-    .with_button(arrow, Style::default().bg(THEME.hint_bg))
+    .with_button(ctx.theme, arrow, Style::default().bg(ctx.theme.hint_bg))
     .with_hint(
         Style::default()
-            .fg(THEME.hint_cursor_fg)
-            .bg(THEME.hint_cursor_bg)
+            .fg(ctx.theme.hint_cursor_fg)
+            .bg(ctx.theme.hint_cursor_bg)
             .add_modifier(Modifier::BOLD),
         format!("  ·  {hint}"),
     )
@@ -1397,27 +1411,32 @@ fn wanted_lines(blocks: &[window::Block]) -> (Vec<Range<usize>>, Vec<Range<usize
 /// One unchanged line: the same text on both sides, both numbers in the
 /// gutter, no change colour.
 fn context_row(
+    theme: &Theme,
     text: &str,
     old_n: usize,
     new_n: usize,
     hl: Option<&HighlightedSpans>,
     mode: DiffMode,
 ) -> RowContent {
-    let pairs = content_pairs(text, LineOrigin::Context, hl, None);
+    let pairs = content_pairs(theme, text, LineOrigin::Context, hl, None);
     match mode {
         DiffMode::Unified => RowContent::Unified(Half {
-            gutter: gutter(&format!("{old_n:>4} {new_n:>4}"), LineOrigin::Context),
+            gutter: gutter(
+                theme,
+                &format!("{old_n:>4} {new_n:>4}"),
+                LineOrigin::Context,
+            ),
             pairs,
             fill: Fill::Bg(Style::default()),
         }),
         DiffMode::Split => RowContent::Split {
             old: Half {
-                gutter: gutter(&format!("{old_n:>4}"), LineOrigin::Context),
+                gutter: gutter(theme, &format!("{old_n:>4}"), LineOrigin::Context),
                 pairs: pairs.clone(),
                 fill: Fill::Bg(Style::default()),
             },
             new: Half {
-                gutter: gutter(&format!("{new_n:>4}"), LineOrigin::Context),
+                gutter: gutter(theme, &format!("{new_n:>4}"), LineOrigin::Context),
                 pairs,
                 fill: Fill::Bg(Style::default()),
             },
@@ -1429,6 +1448,7 @@ fn context_row(
 /// keeping the GitHub-style pairing and the word-level emphasis, with the
 /// returned numbers rebased onto the file.
 fn change_rows(
+    theme: &Theme,
     src: &FileSource,
     old: &Range<usize>,
     new: &Range<usize>,
@@ -1448,7 +1468,9 @@ fn change_rows(
         // `compute_side_by_side` numbers from 1 within the slice it was given.
         let old_n = row.old_line.as_ref().map(|(n, _)| n + old.start - 1);
         let new_n = row.new_line.as_ref().map(|(n, _)| n + new.start - 1);
-        out.extend(render_change_row(row, old_n, new_n, old_hl, new_hl, mode));
+        out.extend(render_change_row(
+            theme, row, old_n, new_n, old_hl, new_hl, mode,
+        ));
     }
     out
 }
@@ -1456,6 +1478,7 @@ fn change_rows(
 /// One lumen row → row contents. Unified: one or two rows (Modified → the old
 /// line then the new). Split: exactly one row carrying both sides.
 fn render_change_row(
+    theme: &Theme,
     row: &DiffLine,
     old_n: Option<usize>,
     new_n: Option<usize>,
@@ -1475,6 +1498,7 @@ fn render_change_row(
     let old_half = || {
         let (n, text) = (old_n?, row.old_line.as_ref()?.1.as_str());
         Some(half(
+            theme,
             n,
             text,
             LineOrigin::Deletion,
@@ -1485,6 +1509,7 @@ fn render_change_row(
     let new_half = || {
         let (n, text) = (new_n?, row.new_line.as_ref()?.1.as_str());
         Some(half(
+            theme,
             n,
             text,
             LineOrigin::Addition,
@@ -1506,7 +1531,7 @@ fn render_change_row(
             .unwrap_or("");
         let (o, w) = (old_n.unwrap_or(0), new_n.unwrap_or(0));
         return vec![(
-            context_row(text, o, w, new_hl.get(&w.saturating_sub(1)), mode),
+            context_row(theme, text, o, w, new_hl.get(&w.saturating_sub(1)), mode),
             at("new", new_n, text, other("old", old_n)).or_else(|| at("old", old_n, text, None)),
         )];
     }
@@ -1518,8 +1543,8 @@ fn render_change_row(
         // a note on a modification is a note on what the change became.
         return vec![(
             RowContent::Split {
-                old: old_half().unwrap_or_else(Half::hatch),
-                new: new_half().unwrap_or_else(Half::hatch),
+                old: old_half().unwrap_or_else(|| Half::hatch(theme)),
+                new: new_half().unwrap_or_else(|| Half::hatch(theme)),
             },
             // One row, both sides. A note written on the removed half in the
             // unified layout is anchored OLD, and this is the row that holds
@@ -1561,6 +1586,7 @@ fn unify(mut h: Half, old_n: Option<usize>, new_n: Option<usize>) -> Half {
 
 /// One side's content: the gutter block plus the line, on the change colour.
 fn half(
+    theme: &Theme,
     lineno: usize,
     text: &str,
     origin: LineOrigin,
@@ -1568,9 +1594,9 @@ fn half(
     segments: Option<&[InlineSegment]>,
 ) -> Half {
     Half {
-        gutter: gutter(&format!("{lineno:>4}"), origin),
-        pairs: content_pairs(text, origin, hl, segments),
-        fill: Fill::Bg(match THEME.line_bg(origin) {
+        gutter: gutter(theme, &format!("{lineno:>4}"), origin),
+        pairs: content_pairs(theme, text, origin, hl, segments),
+        fill: Fill::Bg(match theme.line_bg(origin) {
             Some(c) => Style::default().bg(c),
             None => Style::default(),
         }),
@@ -1583,24 +1609,25 @@ fn half(
 /// against the code. On a changed line that block carries the change colour,
 /// deliberately stronger than the tint over the code, which is what makes the
 /// gutter read as an edge — and brighter again on the cursor's row.
-fn gutter(text: &str, origin: LineOrigin) -> Gutter {
+fn gutter(theme: &Theme, text: &str, origin: LineOrigin) -> Gutter {
     let mut style = Style::default().fg(match origin {
-        LineOrigin::Context => THEME.gutter_fg,
-        _ => THEME.context_fg,
+        LineOrigin::Context => theme.gutter_fg,
+        _ => theme.context_fg,
     });
-    if let Some(bg) = THEME.gutter_bg(origin) {
+    if let Some(bg) = theme.gutter_bg(origin) {
         style = style.bg(bg);
     }
     Gutter {
         text: format!(" {text} "),
         style,
-        cursor: THEME.gutter_cursor(THEME.gutter_bg(origin)),
+        cursor: theme.gutter_cursor(theme.gutter_bg(origin)),
     }
 }
 
 /// Syntax pairs for one line with the per-side background and word-level
 /// emphasis applied.
 fn content_pairs(
+    theme: &Theme,
     text: &str,
     origin: LineOrigin,
     hl: Option<&HighlightedSpans>,
@@ -1609,10 +1636,10 @@ fn content_pairs(
     // Syntax spans for this line, else plain.
     let mut pairs: Vec<(Style, String)> = hl
         .cloned()
-        .unwrap_or_else(|| vec![(Style::default().fg(THEME.context_fg), text.to_string())]);
+        .unwrap_or_else(|| vec![(Style::default().fg(theme.context_fg), text.to_string())]);
 
     // Line background per side.
-    pairs = highlighter().apply_diff_background(pairs, origin);
+    pairs = theme.highlighter().apply_diff_background(pairs, origin);
 
     // Word-level emphasis over the changed segments.
     if let Some(segs) = segments {
@@ -1629,7 +1656,7 @@ fn content_pairs(
             pairs = split_pairs_at_ranges(
                 &pairs,
                 ranges,
-                THEME.word_emphasis(matches!(origin, LineOrigin::Addition)),
+                theme.word_emphasis(matches!(origin, LineOrigin::Addition)),
             );
         }
     }
@@ -1639,6 +1666,12 @@ fn content_pairs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Any palette will do here: these tests are about which rows come out of
+    /// a diff, not what colour they are.
+    fn theme() -> Theme {
+        Theme::named(differential_engine::config::ThemeName::Dark)
+    }
 
     /// git's `-U0` hunks contain only lines git itself considered changed, so
     /// this is defence rather than a common path — but the two diffs are
@@ -1655,7 +1688,7 @@ mod tests {
             new_segments: None,
         };
         let (no_hl, mode) = (HashMap::new(), DiffMode::Unified);
-        let out = render_change_row(&row, Some(7), Some(9), &no_hl, &no_hl, mode);
+        let out = render_change_row(&theme(), &row, Some(7), Some(9), &no_hl, &no_hl, mode);
 
         assert_eq!(out.len(), 1, "one row, not a removal plus an addition");
         let RowContent::Unified(half) = &out[0].0 else {
@@ -1679,7 +1712,15 @@ mod tests {
         assert!(half.gutter.style.bg.is_none(), "no gutter block on context");
 
         // Split mode shows it once on each side, neither of them hatched.
-        let out = render_change_row(&row, Some(7), Some(9), &no_hl, &no_hl, DiffMode::Split);
+        let out = render_change_row(
+            &theme(),
+            &row,
+            Some(7),
+            Some(9),
+            &no_hl,
+            &no_hl,
+            DiffMode::Split,
+        );
         let RowContent::Split { old, new } = &out[0].0 else {
             panic!("expected a split row");
         };
@@ -1698,7 +1739,15 @@ mod tests {
             new_segments: None,
         };
         let no_hl = HashMap::new();
-        let out = render_change_row(&row, Some(4), Some(4), &no_hl, &no_hl, DiffMode::Unified);
+        let out = render_change_row(
+            &theme(),
+            &row,
+            Some(4),
+            Some(4),
+            &no_hl,
+            &no_hl,
+            DiffMode::Unified,
+        );
         assert_eq!(out.len(), 2);
         let text = |c: &RowContent| match c {
             RowContent::Unified(h) => (

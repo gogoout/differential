@@ -15,8 +15,15 @@ use differential_engine::store::{FsArtefactStore, FsGroupingCache, FsReviewStore
 use differential_testutil::{FakeBackend, TestRepo, json_group};
 use differential_tui::app::{App, Effect, Focus, Mode, ReviewOptions, ViewMode, Viewport};
 use differential_tui::rows::{BoxStyle, RowFactory, RowKind};
-use differential_tui::theme::THEME;
+use differential_tui::theme::Theme;
 use differential_tui::window::Side;
+
+/// The default palette, built once. `Theme::named` parses the syntax set, and
+/// the assertions below reach for it a couple of dozen times.
+fn theme() -> &'static Theme {
+    static T: std::sync::OnceLock<Theme> = std::sync::OnceLock::new();
+    T.get_or_init(|| Theme::named(differential_engine::config::ThemeName::Dark))
+}
 use ratatui::style::Color;
 
 /// First-listed class (the largest) becomes the skim sweep; the rest are
@@ -82,7 +89,7 @@ fn open_app_with_opts(
         out.view,
     )
     .unwrap();
-    App::new(session, factory, opts)
+    App::new(session, factory, opts, theme().clone())
 }
 
 /// Open an App over HEAD~1..HEAD of `r`, with the review store inside the
@@ -116,7 +123,7 @@ fn open_app(r: &TestRepo) -> App {
         out.view,
     )
     .unwrap();
-    App::new(session, factory, ReviewOptions::default())
+    App::new(session, factory, ReviewOptions::default(), theme().clone())
 }
 
 /// Repo with one behavioural change + a 3-file repeated edit (skim material).
@@ -1319,7 +1326,7 @@ fn highlighting_is_windowed_not_whole_file() {
         out.view,
     )
     .unwrap();
-    let app = App::new(session, factory, ReviewOptions::default());
+    let app = App::new(session, factory, ReviewOptions::default(), theme().clone());
 
     // One hunk at line 4,900 of a 5,000-line file. Two sides, each a window of
     // a few lines plus a bounded lookback — nowhere near the 10,000 lines the
@@ -1353,9 +1360,15 @@ fn diff_pane_row(app: &App, y: u16) -> Vec<(String, Option<ratatui::style::Color
 
 /// An unstyled ratatui cell reports `Color::Reset`, which is not a colour
 /// anyone painted — only an explicit RGB counts as a background here.
+/// A background of the row's OWN, as opposed to the theme's ground.
+///
+/// The ground is painted under every cell now that a palette owns its
+/// background, so "has an Rgb bg" stopped meaning anything — every cell does.
+/// What these tests are asking is whether a row carries a tint the ground did
+/// not give it.
 fn painted(bg: Option<ratatui::style::Color>) -> Option<ratatui::style::Color> {
     match bg {
-        Some(ratatui::style::Color::Rgb(..)) => bg,
+        Some(ratatui::style::Color::Rgb(..)) if bg != Some(theme().bg) => bg,
         _ => None,
     }
 }
@@ -1453,7 +1466,7 @@ fn row_backgrounds(app: &mut App, y: u16) -> Vec<ratatui::style::Color> {
 
 /// The brighter line-number block the cursor's row wears on a changed line.
 fn is_cursor_block(c: &ratatui::style::Color) -> bool {
-    *c == THEME.added_gutter_cursor_bg || *c == THEME.deleted_gutter_cursor_bg
+    *c == theme().added_gutter_cursor_bg || *c == theme().deleted_gutter_cursor_bg
 }
 
 /// The screen row the cursor is drawn on, given the pane's scroll.
@@ -1515,7 +1528,7 @@ fn the_cursor_lights_the_absent_side_of_a_split_row_too() {
         let bgs = row_backgrounds(&mut app, y);
         // The hatched half keeps a blank gutter of the same width, so the
         // cursor block lands in the same column on both sides.
-        if bgs[..50].contains(&THEME.cursor_bg) {
+        if bgs[..50].contains(&theme().cursor_bg) {
             return;
         }
         app.handle_key(key('j'));
@@ -1686,7 +1699,7 @@ fn two_boundaries_over_one_gap_are_one_band() {
     // the cursor is standing, so the assertion is about uniformity.
     let tint = buf[(41, band)].style().bg;
     assert!(
-        tint == Some(THEME.hint_bg) || tint == Some(THEME.hint_cursor_bg),
+        tint == Some(theme().hint_bg) || tint == Some(theme().hint_cursor_bg),
         "the band should wear a band colour: {tint:?}"
     );
     assert!(
@@ -1851,8 +1864,8 @@ fn a_foreign_hunk_is_dashed_and_names_its_group() {
 
     // A foreign hunk wears the same cyan the hunk you ARE reading wears, muted:
     // same family, but plainly not on this reading list.
-    assert_eq!(buf[(40, dashed[0])].style().fg, Some(THEME.foreign_fg));
-    assert_ne!(THEME.foreign_fg, THEME.header_fg);
+    assert_eq!(buf[(40, dashed[0])].style().fg, Some(theme().foreign_fg));
+    assert_ne!(theme().foreign_fg, theme().header_fg);
 
     // And it says whose it is, by id and label.
     let text = drawn(&mut app);
@@ -2089,7 +2102,8 @@ fn a_hunks_edge_runs_down_the_panes_own_border_column() {
 
     let lit: Vec<u16> = (1..39u16)
         .filter(|&y| {
-            buf[(40, y)].style().fg == Some(THEME.header_fg) && buf[(40, y)].symbol() == "\u{2502}"
+            buf[(40, y)].style().fg == Some(theme().header_fg)
+                && buf[(40, y)].symbol() == "\u{2502}"
         })
         .collect();
     assert!(lit.len() > 1, "the edge should run, not mark a single row");
@@ -2111,7 +2125,7 @@ fn a_hunks_edge_runs_down_the_panes_own_border_column() {
         !text.contains('\u{2500}'),
         "a hunk should not be ruled off: {text:?}"
     );
-    assert_ne!(buf[(99, lit[0])].style().fg, Some(THEME.skim_fg));
+    assert_ne!(buf[(99, lit[0])].style().fg, Some(theme().skim_fg));
 }
 
 /// Only the hunk the cursor is in wears a colour. Every hunk accented at once
@@ -2129,7 +2143,7 @@ fn only_the_active_hunks_edge_is_coloured() {
     app.focus = Focus::Detail;
     let buf = buffer_of(&app);
     assert!(
-        (1..39u16).all(|y| buf[(40, y)].style().fg != Some(THEME.header_fg)),
+        (1..39u16).all(|y| buf[(40, y)].style().fg != Some(theme().header_fg)),
         "no hunk is under the cursor, so no edge should be lit"
     );
     // The edges are still there — muted, not missing.
@@ -2143,7 +2157,7 @@ fn only_the_active_hunks_edge_is_coloured() {
     let active = app.rows[app.cursor].border.unwrap().hunk;
     let buf = buffer_of(&app);
     let lit: Vec<u16> = (1..39u16)
-        .filter(|&y| buf[(40, y)].style().fg == Some(THEME.header_fg))
+        .filter(|&y| buf[(40, y)].style().fg == Some(theme().header_fg))
         .collect();
     assert!(!lit.is_empty(), "the hunk under the cursor should be lit");
     let rows_on_screen = &app.rows[app.scroll()..];
@@ -2234,17 +2248,17 @@ fn the_lit_hunk_pill_is_a_leading_bar_not_a_fill() {
     let buf = buffer_of(&app);
     assert_eq!(
         pill_bg(&buf),
-        Some(THEME.button_bg),
+        Some(theme().button_bg),
         "a lit pill keeps the muted fill; only its leading cell changes"
     );
     let edge = (1..39u16)
-        .find_map(|y| buf[(40, y)].style().fg.filter(|c| *c == THEME.header_fg))
+        .find_map(|y| buf[(40, y)].style().fg.filter(|c| *c == theme().header_fg))
         .expect("no lit edge");
     let bar = pill_rows(&buf)
         .into_iter()
         .flat_map(|y| (41..99u16).map(move |x| (x, y)))
         .find(|&(x, y)| {
-            buf[(x, y)].symbol() == "▌" && buf[(x, y)].style().bg == Some(THEME.button_bg)
+            buf[(x, y)].symbol() == "▌" && buf[(x, y)].style().bg == Some(theme().button_bg)
         })
         .expect("no lit bar at the head of the pill");
     assert_eq!(
@@ -2275,8 +2289,8 @@ fn the_counts_keep_one_pair_of_colours() {
 
     cursor_into_first_box(&mut app);
     let lit = inks(&app);
-    assert!(lit.contains(&THEME.add_fg), "no + colour: {lit:?}");
-    assert!(lit.contains(&THEME.del_fg), "no − colour: {lit:?}");
+    assert!(lit.contains(&theme().add_fg), "no + colour: {lit:?}");
+    assert!(lit.contains(&theme().del_fg), "no − colour: {lit:?}");
 }
 
 // -------------------------------------------------- the overview surfaces
@@ -2439,7 +2453,7 @@ fn the_file_list_floats_over_the_plan_when_the_detail_is_focused() {
         })
         .expect("the file's row");
     assert!(
-        (1..39u16).all(|x| buf[(x, row)].bg == THEME.selected_bg),
+        (1..39u16).all(|x| buf[(x, row)].bg == theme().selected_bg),
         "the current file's row should be lit the whole way across"
     );
 }
@@ -2526,7 +2540,7 @@ fn counts_are_coloured_in_the_file_modal_and_the_role_is_a_pill() {
     let buf = buffer_of(&app);
     let inks: Vec<_> = buf.content().iter().filter_map(|c| c.style().fg).collect();
     assert!(
-        inks.contains(&THEME.add_fg) && inks.contains(&THEME.del_fg),
+        inks.contains(&theme().add_fg) && inks.contains(&theme().del_fg),
         "the file modal's counts should say added and removed"
     );
 }
@@ -2565,7 +2579,7 @@ fn the_role_wears_the_same_pill_in_both_panes() {
     let (_r, mut app) = app_with_dependency_edge();
     app.focus = Focus::Detail;
     let buf = buffer_of(&app);
-    let (_, pill_bg) = THEME.pill();
+    let (_, pill_bg) = theme().pill();
 
     // The group header row leads the detail pane and carries the role.
     let detail = (1..39u16)
@@ -3326,7 +3340,7 @@ fn a_ranged_note_lights_every_line_it_covers() {
         let buf = buffer_of(app);
         rows.iter().all(|&i| {
             let y = (i - app.scroll()) as u16 + 1;
-            buf[(40, y)].style().fg == Some(THEME.finding_fg)
+            buf[(40, y)].style().fg == Some(theme().finding_fg)
         })
     };
     let cluster: Vec<usize> = covered
@@ -3386,13 +3400,13 @@ fn standing_on_a_note_or_its_line_lights_both() {
         let buf = buffer_of(app);
         let y = |i: usize| (i - app.scroll()) as u16 + 1;
         let border = (line..=note + 1)
-            .map(|i| buf[(40, y(i))].style().fg == Some(THEME.finding_fg))
+            .map(|i| buf[(40, y(i))].style().fg == Some(theme().finding_fg))
             .collect();
         let rails = (note..=note + 1)
             .map(|i| {
                 (41..99u16).any(|x| {
                     buf[(x, y(i))].symbol() == "▍"
-                        && buf[(x, y(i))].style().fg == Some(THEME.finding_fg)
+                        && buf[(x, y(i))].style().fg == Some(theme().finding_fg)
                 })
             })
             .collect();
@@ -3965,6 +3979,32 @@ fn the_help_modal_is_only_keys() {
     assert_eq!(col("half page"), col("unified / split diff"));
 }
 
+/// Not an assertion — every shipped palette on the same screen, so they can be
+/// compared side by side rather than one at a time:
+/// `cargo test -p differential-tui --test tui -- --ignored --nocapture render_dump_themes`
+///
+/// The contrast and distinctness tests say a palette is *usable*. They cannot
+/// say it is nice to look at, which is what this is for.
+#[test]
+#[ignore = "prints every theme for a human to look at"]
+fn render_dump_themes() {
+    use differential_engine::config::ThemeName;
+    for name in [
+        ThemeName::Dark,
+        ThemeName::Light,
+        ThemeName::GruvboxDark,
+        ThemeName::GruvboxLight,
+        ThemeName::SolarizedDark,
+        ThemeName::SolarizedLight,
+        ThemeName::Monokai,
+    ] {
+        let (_r, mut app) = make_app();
+        app.set_theme(Theme::named(name));
+        println!("\n=== {name:?} ===");
+        println!("{}", ansi_dump(&mut app, 120, 30));
+    }
+}
+
 /// Not an assertion — a readable dump of the pane, so the styling can be
 /// eyeballed with `cargo test -- --ignored --nocapture render_dump`.
 #[test]
@@ -4182,7 +4222,7 @@ fn the_footer_is_pills_on_the_left_and_two_keys_on_the_right() {
     app.mode = Mode::Normal;
     terminal.draw(|f| app.draw(f)).unwrap();
     let buf = terminal.backend().buffer().clone();
-    let (_, fill) = THEME.pill();
+    let (_, fill) = theme().pill();
     assert!(
         (0..100u16).any(|x| buf[(x, 39)].bg == fill),
         "the tallies must wear the pill's fill"
@@ -4206,7 +4246,7 @@ fn the_cursor_on_a_hunk_header_keeps_the_hunks_own_accent() {
     assert_eq!(buf[(41, y)].symbol(), "▌", "no marker on the header");
     assert_eq!(
         buf[(41, y)].style().fg,
-        Some(THEME.reviewed_fg),
+        Some(theme().reviewed_fg),
         "the header's leading cell must keep the hunk's accent"
     );
 }
@@ -4316,7 +4356,7 @@ fn a_context_boundary_band_lightens_under_the_cursor() {
     let y = cursor_screen_row(&app);
     let lit = row_backgrounds(&mut app, y);
     assert!(
-        lit.contains(&THEME.hint_cursor_bg),
+        lit.contains(&theme().hint_cursor_bg),
         "the band under the cursor must lighten: {lit:?}"
     );
 
@@ -4329,7 +4369,7 @@ fn a_context_boundary_band_lightens_under_the_cursor() {
         .expect("another selectable row");
     let muted = row_backgrounds(&mut app, y);
     assert!(
-        !muted.contains(&THEME.hint_cursor_bg),
+        !muted.contains(&theme().hint_cursor_bg),
         "only the cursor's band lightens: {muted:?}"
     );
 }

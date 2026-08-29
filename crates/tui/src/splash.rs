@@ -16,7 +16,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use super::theme::THEME;
+use super::theme::Theme;
 use super::vendor;
 
 const SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
@@ -107,6 +107,7 @@ fn stage_index(p: &Progress) -> usize {
 /// `q`/Esc and the caller must stop the work.
 pub fn run<T>(
     terminal: &mut vendor::terminal::TerminalSession<Stdout>,
+    theme: &Theme,
     rx: Receiver<Progress>,
     worker: &JoinHandle<T>,
 ) -> anyhow::Result<bool> {
@@ -145,6 +146,7 @@ pub fn run<T>(
         terminal.draw(|frame| {
             draw(
                 frame,
+                theme,
                 current,
                 agent.as_ref(),
                 started.elapsed(),
@@ -168,16 +170,19 @@ pub fn run<T>(
 /// subprocess takes a moment, and a frozen screen would look like a hang.
 pub fn draw_cancelling(
     terminal: &mut vendor::terminal::TerminalSession<Stdout>,
+    theme: &Theme,
 ) -> anyhow::Result<()> {
     terminal.draw(|frame| {
         let area = frame.area();
         frame.render_widget(Clear, area);
+        frame.render_widget(Block::default().style(theme.ground()), area);
+        frame.render_widget(Block::default().style(theme.ground()), area);
         frame.render_widget(
             Paragraph::new(vec![
                 Line::default(),
                 Line::from(Span::styled(
                     "  cancelling — stopping the agent…",
-                    Style::default().fg(THEME.gutter_fg),
+                    Style::default().fg(theme.gutter_fg),
                 )),
             ])
             .block(Block::default().borders(Borders::ALL).title(" dfr review ")),
@@ -244,7 +249,7 @@ fn waiting_line(backend: &str, waited: Duration) -> String {
 /// Empty when the pane cannot hold it: too narrow and the art wraps, too short
 /// and it pushes the stages — the thing the reader is actually waiting on —
 /// off the bottom. A wordmark is worth a pane's room only when there is room.
-fn logo_lines(width: usize, height: usize) -> Vec<Line<'static>> {
+fn logo_lines(theme: &Theme, width: usize, height: usize) -> Vec<Line<'static>> {
     if width < LOGO_WIDTH || height < LOGO.len() + STAGES.len() + 3 {
         return Vec::new();
     }
@@ -253,7 +258,7 @@ fn logo_lines(width: usize, height: usize) -> Vec<Line<'static>> {
         .map(|l| {
             Line::from(Span::styled(
                 format!("{pad}{l}"),
-                Style::default().fg(THEME.header_fg),
+                Style::default().fg(theme.header_fg),
             ))
         })
         .collect()
@@ -261,6 +266,7 @@ fn logo_lines(width: usize, height: usize) -> Vec<Line<'static>> {
 
 fn draw(
     frame: &mut ratatui::Frame,
+    theme: &Theme,
     current: usize,
     agent: Option<&(String, bool)>,
     elapsed: Duration,
@@ -271,7 +277,7 @@ fn draw(
     let spin = SPINNER[tick % SPINNER.len()];
     // The block's borders take one column and one row on each side.
     let inner = area.width.saturating_sub(2) as usize;
-    let mut lines: Vec<Line> = logo_lines(inner, area.height.saturating_sub(2) as usize);
+    let mut lines: Vec<Line> = logo_lines(theme, inner, area.height.saturating_sub(2) as usize);
     lines.push(Line::default());
     // The stages and the footer share this one indent, so the footer lines up
     // with the column the stage names start in and neither moves as the
@@ -280,14 +286,14 @@ fn draw(
 
     for (i, (name, what)) in STAGES.iter().enumerate() {
         let (glyph, style) = match i.cmp(&current) {
-            std::cmp::Ordering::Less => ("✓".to_string(), Style::default().fg(THEME.reviewed_fg)),
+            std::cmp::Ordering::Less => ("✓".to_string(), Style::default().fg(theme.reviewed_fg)),
             std::cmp::Ordering::Equal => (
                 spin.to_string(),
                 Style::default()
-                    .fg(THEME.header_fg)
+                    .fg(theme.header_fg)
                     .add_modifier(Modifier::BOLD),
             ),
-            std::cmp::Ordering::Greater => (" ".to_string(), Style::default().fg(THEME.gutter_fg)),
+            std::cmp::Ordering::Greater => (" ".to_string(), Style::default().fg(theme.gutter_fg)),
         };
         let mut detail = what.to_string();
         // The slow stage says which agent it is waiting on, and whether the
@@ -314,7 +320,7 @@ fn draw(
         lines.push(Line::from(vec![
             Span::styled(format!("{pad}  {glyph} "), style),
             Span::styled(format!("{name:<10}"), style),
-            Span::styled(detail, Style::default().fg(THEME.gutter_fg)),
+            Span::styled(detail, Style::default().fg(theme.gutter_fg)),
         ]));
     }
 
@@ -324,10 +330,11 @@ fn draw(
             "{pad}  {:.0}s elapsed · q cancels (stops the agent too)",
             elapsed.as_secs_f64()
         ),
-        Style::default().fg(THEME.gutter_fg),
+        Style::default().fg(theme.gutter_fg),
     )));
 
     frame.render_widget(Clear, area);
+    frame.render_widget(Block::default().style(theme.ground()), area);
     frame.render_widget(
         Paragraph::new(lines).block(
             Block::default()
@@ -342,6 +349,11 @@ fn draw(
 mod tests {
     use super::*;
 
+    /// The default palette: these tests are about layout, not colour.
+    fn theme() -> Theme {
+        Theme::named(differential_engine::config::ThemeName::Dark)
+    }
+
     fn text(lines: &[Line<'_>]) -> Vec<String> {
         lines
             .iter()
@@ -351,7 +363,7 @@ mod tests {
 
     #[test]
     fn the_logo_is_centred_as_one_block() {
-        let lines = logo_lines(80, 40);
+        let lines = logo_lines(&theme(), 80, 40);
         let drawn = text(&lines);
         assert_eq!(drawn.len(), LOGO.len());
         // ONE offset, applied to every row untouched. The art's own leading
@@ -381,7 +393,7 @@ mod tests {
         // A total elapsed time deliberately unlike `waited`, so a draw that
         // rotated on the wrong clock shows up here rather than passing.
         let elapsed = waited + Duration::from_secs(MESSAGE_SECS * 2 + 1);
-        t.draw(|f| draw(f, stage, agent, elapsed, waited, 0))
+        t.draw(|f| draw(f, &theme(), stage, agent, elapsed, waited, 0))
             .unwrap();
         t.backend()
             .buffer()
@@ -539,16 +551,16 @@ mod tests {
     #[test]
     fn a_pane_too_narrow_for_the_logo_gets_none() {
         // One column short is still short: art that wraps is worse than none.
-        assert!(logo_lines(LOGO_WIDTH - 1, 40).is_empty());
-        assert!(!logo_lines(LOGO_WIDTH, 40).is_empty());
+        assert!(logo_lines(&theme(), LOGO_WIDTH - 1, 40).is_empty());
+        assert!(!logo_lines(&theme(), LOGO_WIDTH, 40).is_empty());
     }
 
     #[test]
     fn a_short_pane_keeps_the_stages_and_drops_the_logo() {
         // The stages are what the reader is waiting on. The wordmark yields.
         let need = LOGO.len() + STAGES.len() + 3;
-        assert!(logo_lines(80, need - 1).is_empty());
-        assert!(!logo_lines(80, need).is_empty());
+        assert!(logo_lines(&theme(), 80, need - 1).is_empty());
+        assert!(!logo_lines(&theme(), 80, need).is_empty());
     }
 
     /// Not an assertion — the grouping row at each point in the rotation, and

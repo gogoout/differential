@@ -16,7 +16,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use super::theme::THEME;
+use super::theme::Theme;
 
 /// What the user picked: a base commit, plus whether uncommitted work is in.
 pub struct PickedSource {
@@ -42,6 +42,7 @@ const RECENT: usize = 30;
 pub fn pick_source(
     terminal: &mut super::vendor::terminal::TerminalSession<std::io::Stdout>,
     repo: &Repo,
+    theme: &Theme,
 ) -> anyhow::Result<Option<PickedSource>> {
     // An unborn HEAD has nothing to diff against.
     if !repo.has_commits() {
@@ -80,7 +81,7 @@ pub fn pick_source(
     };
     let mut picked: Option<PickedSource> = None;
     let result = loop {
-        terminal.draw(|frame| draw(frame, &commits, &mut state))?;
+        terminal.draw(|frame| draw(frame, theme, &commits, &mut state))?;
         if !event::poll(Duration::from_millis(200))? {
             continue;
         }
@@ -151,16 +152,16 @@ fn is_empty_range(base: usize, include_worktree: bool) -> bool {
 /// The rows above the commit list. Its length drives the scroll viewport, so
 /// it is a function rather than inline pushes — the checkbox row is
 /// conditional, and a hard-coded count would mis-scroll the list without it.
-fn header(state: &PickerState, bar: Style) -> Vec<Line<'static>> {
+fn header(theme: &Theme, state: &PickerState, bar: Style) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = Vec::new();
     // The checkbox, only when there is something to include: itself inside
     // the range when ticked. On a clean tree it would be a no-op that also
     // files the review under a different identity, so it is not offered.
     if state.dirty {
         let (check_bar, check_style) = if state.include_worktree {
-            (IN_RANGE, Style::default().fg(THEME.header_fg))
+            (IN_RANGE, Style::default().fg(theme.header_fg))
         } else {
-            (OUT_RANGE, Style::default().fg(THEME.gutter_fg))
+            (OUT_RANGE, Style::default().fg(theme.gutter_fg))
         };
         let mark = if state.include_worktree { "x" } else { " " };
         lines.push(Line::from(vec![
@@ -169,7 +170,7 @@ fn header(state: &PickerState, bar: Style) -> Vec<Line<'static>> {
                 format!("[{mark}] uncommitted changes (worktree)"),
                 check_style,
             ),
-            Span::styled("   space toggles", Style::default().fg(THEME.gutter_fg)),
+            Span::styled("   space toggles", Style::default().fg(theme.gutter_fg)),
         ]));
     }
     lines.push(Line::from(vec![
@@ -183,7 +184,7 @@ fn header(state: &PickerState, bar: Style) -> Vec<Line<'static>> {
         ),
         Span::styled(
             "── pick the base: everything after it is reviewed ──",
-            Style::default().fg(THEME.gutter_fg),
+            Style::default().fg(theme.gutter_fg),
         ),
     ]));
 
@@ -195,11 +196,24 @@ fn chrome_rows(header_rows: usize) -> usize {
     header_rows + BORDER_ROWS + FOOTER_ROWS
 }
 
-fn draw(frame: &mut ratatui::Frame, commits: &[CommitEntry], state: &mut PickerState) {
+fn draw(
+    frame: &mut ratatui::Frame,
+    theme: &Theme,
+    commits: &[CommitEntry],
+    state: &mut PickerState,
+) {
     let area: Rect = frame.area();
-    let bar = Style::default().fg(THEME.reviewed_fg);
+    // The theme's own ground, under everything. Without it the terminal's
+    // background shows through wherever nothing else paints, which is most
+    // of the screen — and a light palette over a dark terminal is pale ink
+    // on black.
+    frame.render_widget(
+        ratatui::widgets::Block::default().style(theme.ground()),
+        frame.area(),
+    );
+    let bar = Style::default().fg(theme.reviewed_fg);
 
-    let mut lines = header(state, bar);
+    let mut lines = header(theme, state, bar);
 
     // Scroll the commit list to keep the cursor visible. The chrome height is
     // DERIVED from the header just built — the checkbox row is conditional, so
@@ -215,9 +229,9 @@ fn draw(frame: &mut ratatui::Frame, commits: &[CommitEntry], state: &mut PickerS
 
     for (i, c) in commits.iter().enumerate().skip(state.scroll).take(viewport) {
         let at_base = i == state.selected;
-        let mut style = Style::default().fg(THEME.context_fg);
+        let mut style = Style::default().fg(theme.context_fg);
         if at_base {
-            style = style.bg(THEME.selected_bg).add_modifier(Modifier::BOLD);
+            style = style.bg(theme.selected_bg).add_modifier(Modifier::BOLD);
         }
         let gutter = if at_base {
             AT_BASE
@@ -234,19 +248,19 @@ fn draw(frame: &mut ratatui::Frame, commits: &[CommitEntry], state: &mut PickerS
             spans.push(Span::styled(
                 format!("({})  ", c.refs.join(", ")),
                 Style::default()
-                    .fg(THEME.header_fg)
+                    .fg(theme.header_fg)
                     .add_modifier(Modifier::BOLD),
             ));
         }
         spans.push(Span::styled(format!("{}  ", c.summary.subject), style));
         spans.push(Span::styled(
             format!("({})", c.summary.author),
-            Style::default().fg(THEME.gutter_fg),
+            Style::default().fg(theme.gutter_fg),
         ));
         if at_base {
             spans.push(Span::styled(
                 "  ← base, not reviewed",
-                Style::default().fg(THEME.gutter_fg),
+                Style::default().fg(theme.gutter_fg),
             ));
         }
         lines.push(Line::from(spans));
@@ -259,7 +273,7 @@ fn draw(frame: &mut ratatui::Frame, commits: &[CommitEntry], state: &mut PickerS
         } else {
             "  j/k move · enter review · q cancel"
         },
-        Style::default().fg(THEME.gutter_fg),
+        Style::default().fg(theme.gutter_fg),
     )));
 
     let head = if state.include_worktree {
@@ -289,6 +303,11 @@ fn draw(frame: &mut ratatui::Frame, commits: &[CommitEntry], state: &mut PickerS
 
 #[cfg(test)]
 mod tests {
+    /// The default palette: these tests are about layout, not colour.
+    fn theme() -> super::Theme {
+        super::Theme::named(differential_engine::config::ThemeName::Dark)
+    }
+
     fn state(dirty: bool) -> super::PickerState {
         super::PickerState {
             selected: 0,
@@ -302,8 +321,8 @@ mod tests {
     #[test]
     fn the_checkbox_row_appears_only_when_the_worktree_is_dirty() {
         let bar = ratatui::style::Style::default();
-        assert_eq!(super::header(&state(true), bar).len(), 2);
-        assert_eq!(super::header(&state(false), bar).len(), 1);
+        assert_eq!(super::header(&theme(), &state(true), bar).len(), 2);
+        assert_eq!(super::header(&theme(), &state(false), bar).len(), 1);
     }
 
     /// The commit list's viewport is derived from the header, so hiding a row
@@ -313,11 +332,11 @@ mod tests {
     fn chrome_height_tracks_the_header() {
         let bar = ratatui::style::Style::default();
         assert_eq!(
-            super::chrome_rows(super::header(&state(true), bar).len()),
+            super::chrome_rows(super::header(&theme(), &state(true), bar).len()),
             6
         );
         assert_eq!(
-            super::chrome_rows(super::header(&state(false), bar).len()),
+            super::chrome_rows(super::header(&theme(), &state(false), bar).len()),
             5
         );
     }

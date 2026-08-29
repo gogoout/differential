@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use differential_engine::FsReviewSession;
+use differential_engine::config::ThemeName;
 use differential_engine::plan::{Fold, PlanIndex};
 use differential_engine::review_state::{Finding, FindingStatus, Lines};
 use ratatui::Frame;
@@ -22,7 +23,7 @@ use super::rows::{
     Border, DiffMode, Fill, GroupContext, Half, LineRef, Row, RowContent, RowFactory, RowKind,
     RowsContext, build_dir_rows, build_file_rows, build_group_rows, pill,
 };
-use super::theme::{THEME, Theme};
+use super::theme::Theme;
 use super::vendor::text_utils::truncate_or_pad_spans;
 use super::window::{Expansion, Side};
 
@@ -55,6 +56,10 @@ pub struct ReviewOptions {
     /// than from the pipeline's result: the review's IDENTITY is a resolved
     /// sha plus a spec, and neither is what the reader would type back.
     pub range: Option<String>,
+    /// Which palette to wear. A name, not a built [`Theme`]: building one
+    /// parses the syntax set, and this struct is plain data the app layer
+    /// fills in from config.
+    pub theme: ThemeName,
 }
 
 impl Default for ReviewOptions {
@@ -67,6 +72,7 @@ impl Default for ReviewOptions {
             // agree.
             split_diff: true,
             range: None,
+            theme: ThemeName::default(),
         }
     }
 }
@@ -331,6 +337,10 @@ pub struct App {
     /// sidecar store.
     expanded: HashMap<usize, Expansion>,
     opts: ReviewOptions,
+    /// The palette, built once. Held rather than rebuilt per frame because
+    /// building one parses the syntax set, and because rows bake their colours
+    /// in at build time — `rebuild_rows` reads it as much as `draw` does.
+    theme: Theme,
     pub status: String,
     /// The overviews' inputs, computed when the rows are. Both used to be
     /// derived inside `draw`, which meant an O(hunks) scan with a string
@@ -344,7 +354,23 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(session: FsReviewSession, factory: RowFactory, opts: ReviewOptions) -> Self {
+    /// Swap the palette. Rows bake their colours in at build time, so this
+    /// rebuilds them rather than leaving the old ink on screen.
+    ///
+    /// Only the theme gallery uses it — a running reviewer picks its palette
+    /// from config once, at startup.
+    #[doc(hidden)]
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme;
+        self.rebuild_rows();
+    }
+
+    pub fn new(
+        session: FsReviewSession,
+        factory: RowFactory,
+        opts: ReviewOptions,
+        theme: Theme,
+    ) -> Self {
         // Resume position: the cursor id is a group id in the semantic view,
         // a file path in the file view (session.file_view() disambiguates).
         let view_mode = if session.file_view() {
@@ -361,6 +387,7 @@ impl App {
         let mut app = App {
             session,
             factory,
+            theme,
             tree: Vec::new(),
             collapsed: HashSet::new(),
             focus: Focus::Groups,
@@ -567,6 +594,7 @@ impl App {
                 let g = &groups[self.selected_group.min(groups.len() - 1)];
                 let ctx = GroupContext {
                     core: RowsContext {
+                        theme: &self.theme,
                         doc: self.session.doc(),
                         plan: self.session.plan(),
                         findings: self.session.findings(),
@@ -599,6 +627,7 @@ impl App {
                 let row = self.selected_file.min(self.tree.len() - 1);
                 let targets = self.files_of_tree_row(row);
                 let ctx = RowsContext {
+                    theme: &self.theme,
                     doc: self.session.doc(),
                     plan: self.session.plan(),
                     findings: self.session.findings(),
@@ -1418,7 +1447,7 @@ impl App {
                     ta.set_block(
                         Block::default()
                             .borders(Borders::ALL)
-                            .border_style(Style::default().fg(THEME.header_fg))
+                            .border_style(Style::default().fg(self.theme.header_fg))
                             .title(format!(" {file} · {at} ")),
                     );
                     self.visual = None;
@@ -1807,6 +1836,14 @@ impl App {
     // ------------------------------------------------------------- drawing
 
     pub fn draw(&self, frame: &mut Frame) {
+        // The theme's own ground, under everything. Without it the terminal's
+        // background shows through wherever nothing else paints, which is most
+        // of the screen — and a light palette over a dark terminal is pale ink
+        // on black.
+        frame.render_widget(
+            ratatui::widgets::Block::default().style(self.theme.ground()),
+            frame.area(),
+        );
         let panes = layout(frame.area());
         self.draw_groups(frame, panes.plan);
         self.draw_diff(frame, panes.detail);
@@ -1846,16 +1883,16 @@ impl App {
                 };
                 frame.render_widget(
                     Paragraph::new(Line::from(vec![
-                        Span::styled("  enter ", Style::default().fg(THEME.header_fg)),
-                        Span::styled("save", Style::default().fg(THEME.context_fg)),
-                        Span::styled("  │  ", Style::default().fg(THEME.gutter_fg)),
-                        Span::styled("shift+enter ", Style::default().fg(THEME.header_fg)),
-                        Span::styled("or", Style::default().fg(THEME.context_fg)),
-                        Span::styled(" \\↵ ", Style::default().fg(THEME.header_fg)),
-                        Span::styled("newline", Style::default().fg(THEME.context_fg)),
-                        Span::styled("  │  ", Style::default().fg(THEME.gutter_fg)),
-                        Span::styled("esc ", Style::default().fg(THEME.header_fg)),
-                        Span::styled("cancel", Style::default().fg(THEME.context_fg)),
+                        Span::styled("  enter ", Style::default().fg(self.theme.header_fg)),
+                        Span::styled("save", Style::default().fg(self.theme.context_fg)),
+                        Span::styled("  │  ", Style::default().fg(self.theme.gutter_fg)),
+                        Span::styled("shift+enter ", Style::default().fg(self.theme.header_fg)),
+                        Span::styled("or", Style::default().fg(self.theme.context_fg)),
+                        Span::styled(" \\↵ ", Style::default().fg(self.theme.header_fg)),
+                        Span::styled("newline", Style::default().fg(self.theme.context_fg)),
+                        Span::styled("  │  ", Style::default().fg(self.theme.gutter_fg)),
+                        Span::styled("esc ", Style::default().fg(self.theme.header_fg)),
+                        Span::styled("cancel", Style::default().fg(self.theme.context_fg)),
                     ]))
                     .alignment(ratatui::layout::Alignment::Center),
                     footer,
@@ -1864,7 +1901,7 @@ impl App {
             Mode::Help => {
                 let area = centered_rect(panes.body, 62, 21);
                 frame.render_widget(Clear, area);
-                frame.render_widget(help_paragraph(), area);
+                frame.render_widget(help_paragraph(&self.theme), area);
             }
             Mode::Findings {
                 entries,
@@ -1886,7 +1923,7 @@ impl App {
                 // drawn in.
                 let inner_h = findings_rows(entries.len(), rule_at.is_some(), body_rows);
 
-                let dim = Style::default().fg(THEME.gutter_fg);
+                let dim = Style::default().fg(self.theme.gutter_fg);
                 // A BUDGET, not a measurement. `{:<width$}` pads and never
                 // truncates, so a path longer than the column used to overflow
                 // it and starve every note in the list of its row. A third of
@@ -1907,17 +1944,21 @@ impl App {
                     }
                     let on = i == *selected;
                     let base = Style::default().fg(if e.orphaned {
-                        THEME.gutter_fg
+                        self.theme.gutter_fg
                     } else {
-                        THEME.context_fg
+                        self.theme.context_fg
                     });
                     let style = if on {
-                        base.bg(THEME.selected_bg).add_modifier(Modifier::BOLD)
+                        base.bg(self.theme.selected_bg).add_modifier(Modifier::BOLD)
                     } else {
                         base
                     };
                     let bg = |st: Style| {
-                        if on { st.bg(THEME.selected_bg) } else { st }
+                        if on {
+                            st.bg(self.theme.selected_bg)
+                        } else {
+                            st
+                        }
                     };
                     let moved = if e.moved { " (moved)" } else { "" };
                     let at_text = elide_head(&e.at, at_col);
@@ -1941,7 +1982,7 @@ impl App {
                         Span::styled(moved.to_string(), bg(dim)),
                     ]);
                     if on {
-                        pad_to_width(&mut line, inner_w, THEME.selected_bg);
+                        pad_to_width(&mut line, inner_w, self.theme.selected_bg);
                     }
                     lines.push(line);
                 }
@@ -1952,8 +1993,8 @@ impl App {
                 // The keys go in a footer inside the box, as the composer's
                 // do: the confirmation needs that row anyway, and a title
                 // carrying four keys is longer than the box.
-                let key = Style::default().fg(THEME.header_fg);
-                let text = Style::default().fg(THEME.context_fg);
+                let key = Style::default().fg(self.theme.header_fg);
+                let text = Style::default().fg(self.theme.context_fg);
                 let footer = if *confirming {
                     Line::from(Span::styled(
                         match entries.len() {
@@ -1961,7 +2002,7 @@ impl App {
                             n => format!("  delete all {n} findings?  y / n"),
                         },
                         Style::default()
-                            .fg(THEME.finding_fg)
+                            .fg(self.theme.finding_fg)
                             .add_modifier(Modifier::BOLD),
                     ))
                 } else {
@@ -1981,7 +2022,10 @@ impl App {
                     n => format!(" findings · {} · {n} orphaned ", entries.len()),
                 };
                 frame.render_widget(Clear, area);
-                frame.render_widget(Paragraph::new(shown).block(pane(title, true)), area);
+                frame.render_widget(
+                    Paragraph::new(shown).block(pane(&self.theme, title, true)),
+                    area,
+                );
                 frame.render_widget(
                     Paragraph::new(footer),
                     Rect {
@@ -2026,9 +2070,11 @@ impl App {
                     .take(inner_h)
                     .map(|(i, e)| {
                         let mark = if e.reviewed { "✓" } else { " " };
-                        let mut style = Style::default().fg(THEME.context_fg);
+                        let mut style = Style::default().fg(self.theme.context_fg);
                         if i == *selected {
-                            style = style.bg(THEME.selected_bg).add_modifier(Modifier::BOLD);
+                            style = style
+                                .bg(self.theme.selected_bg)
+                                .add_modifier(Modifier::BOLD);
                         }
                         // The counts say added and removed here too — they were
                         // one grey run, which is the one thing a file list is
@@ -2042,8 +2088,8 @@ impl App {
                         };
                         Line::from(vec![
                             Span::styled(format!("{mark} "), style),
-                            Span::styled(format!("+{:<add_w$}", e.adds), on(THEME.add_fg)),
-                            Span::styled(format!("−{:<del_w$} ", e.dels), on(THEME.del_fg)),
+                            Span::styled(format!("+{:<add_w$}", e.adds), on(self.theme.add_fg)),
+                            Span::styled(format!("−{:<del_w$} ", e.dels), on(self.theme.del_fg)),
                             // Whole when it fits, and cut at its HEAD when it
                             // does not, so the name survives whatever the
                             // directories above it cost.
@@ -2088,7 +2134,7 @@ impl App {
         // out to the pane so the background runs to the right edge.
         if let Some(block) = blocks.get_mut(selected) {
             for line in block.iter_mut() {
-                pad_to_width(line, inner_w, THEME.selected_bg);
+                pad_to_width(line, inner_w, self.theme.selected_bg);
             }
         }
         // Scroll was decided in update; drawing only reads it. The heights
@@ -2123,7 +2169,7 @@ impl App {
         } else {
             format!(" {pane_name} ")
         };
-        let block = pane(title, self.focus == Focus::Groups);
+        let block = pane(&self.theme, title, self.focus == Focus::Groups);
         frame.render_widget(Paragraph::new(items).block(block), area);
     }
 
@@ -2193,7 +2239,7 @@ impl App {
             Relation::None if idx > lo && idx < hi => "│ ",
             Relation::None => "  ",
         };
-        let head_style = Style::default().fg(THEME.gutter_fg);
+        let head_style = Style::default().fg(self.theme.gutter_fg);
         let tail_glyph = if idx >= lo && idx < hi { "│ " } else { "  " };
         let done =
             g.class_keys.iter().all(|k| self.session.is_reviewed(k)) && !g.class_keys.is_empty();
@@ -2205,49 +2251,55 @@ impl App {
         };
         let bg = |st: Style| {
             if selected {
-                st.bg(THEME.selected_bg).add_modifier(Modifier::BOLD)
+                st.bg(self.theme.selected_bg).add_modifier(Modifier::BOLD)
             } else {
                 st
             }
         };
-        let dim = bg(Style::default().fg(THEME.gutter_fg));
+        let dim = bg(Style::default().fg(self.theme.gutter_fg));
 
         let mut lines = vec![Line::from(vec![
             Span::styled(head_glyph.to_string(), head_style),
             Span::styled(
                 // The id is what `after:` references, so it has to be visible.
                 format!("{:>3} ", g.id),
-                bg(Style::default().fg(THEME.gutter_fg)),
+                bg(Style::default().fg(self.theme.gutter_fg)),
             ),
             Span::styled(
                 format!("{tier} "),
-                bg(THEME.effort_style(g.effort).add_modifier(Modifier::BOLD)),
+                bg(self
+                    .theme
+                    .effort_style(g.effort)
+                    .add_modifier(Modifier::BOLD)),
             ),
             Span::styled(
                 g.label.clone(),
                 bg(Style::default().fg(if done {
-                    THEME.reviewed_fg
+                    self.theme.reviewed_fg
                 } else {
-                    THEME.context_fg
+                    self.theme.context_fg
                 })),
             ),
             Span::styled(
                 if done { "  ✓" } else { "" }.to_string(),
-                bg(Style::default().fg(THEME.reviewed_fg)),
+                bg(Style::default().fg(self.theme.reviewed_fg)),
             ),
         ])];
 
         let mut counts = vec![
-            Span::styled(tail_glyph.to_string(), Style::default().fg(THEME.gutter_fg)),
+            Span::styled(
+                tail_glyph.to_string(),
+                Style::default().fg(self.theme.gutter_fg),
+            ),
             Span::styled(format!("   {} files  ", g.n_files), dim),
             Span::styled(
                 format!("+{}", g.counts.adds),
-                bg(Style::default().fg(THEME.add_fg)),
+                bg(Style::default().fg(self.theme.add_fg)),
             ),
             Span::styled(" ", dim),
             Span::styled(
                 format!("−{}", g.counts.dels),
-                bg(Style::default().fg(THEME.del_fg)),
+                bg(Style::default().fg(self.theme.del_fg)),
             ),
         ];
         // The ordering role is a fact about the group, like the class on a hunk
@@ -2258,7 +2310,7 @@ impl App {
         // own. Trailing the counts, they started at a different place on every
         // row — a word you can only read by finding it first.
         if let Some(r) = g.role {
-            let (fg, pill_bg) = THEME.pill();
+            let (fg, pill_bg) = self.theme.pill();
             let badge: Vec<Span> = pill(
                 vec![(fg, differential_engine::plan::role_name(r).to_string())],
                 pill_bg,
@@ -2285,7 +2337,10 @@ impl App {
             // — and the connector already shows it, by running DOWN from the
             // selected group instead of up.
             let mut spans = vec![
-                Span::styled(tail_glyph.to_string(), Style::default().fg(THEME.gutter_fg)),
+                Span::styled(
+                    tail_glyph.to_string(),
+                    Style::default().fg(self.theme.gutter_fg),
+                ),
                 Span::styled("   after: ".to_string(), dim),
             ];
             for d in &g.depends_on {
@@ -2311,7 +2366,7 @@ impl App {
         let entry = &self.tree[row];
         let bg = |st: Style| {
             if selected {
-                st.bg(THEME.selected_bg).add_modifier(Modifier::BOLD)
+                st.bg(self.theme.selected_bg).add_modifier(Modifier::BOLD)
             } else {
                 st
             }
@@ -2329,11 +2384,11 @@ impl App {
         let done = !hunks.is_empty() && hunks.iter().all(|h| reviewed.contains(h));
         let mark = if done { "✓" } else { " " };
         let name_style = bg(Style::default().fg(if done {
-            THEME.reviewed_fg
+            self.theme.reviewed_fg
         } else {
-            THEME.context_fg
+            self.theme.context_fg
         }));
-        let dim = bg(Style::default().fg(THEME.gutter_fg));
+        let dim = bg(Style::default().fg(self.theme.gutter_fg));
 
         match &entry.kind {
             TreeKind::Dir { path } => {
@@ -2348,13 +2403,19 @@ impl App {
                     Span::styled(
                         format!("{name}/"),
                         bg(Style::default()
-                            .fg(THEME.header_fg)
+                            .fg(self.theme.header_fg)
                             .add_modifier(Modifier::BOLD)),
                     ),
                     Span::styled("  ", dim),
-                    Span::styled(format!("+{adds}"), bg(Style::default().fg(THEME.add_fg))),
+                    Span::styled(
+                        format!("+{adds}"),
+                        bg(Style::default().fg(self.theme.add_fg)),
+                    ),
                     Span::styled(" ", dim),
-                    Span::styled(format!("−{dels}"), bg(Style::default().fg(THEME.del_fg))),
+                    Span::styled(
+                        format!("−{dels}"),
+                        bg(Style::default().fg(self.theme.del_fg)),
+                    ),
                 ])]
             }
             TreeKind::File { file_idx } => {
@@ -2370,12 +2431,12 @@ impl App {
                 } else {
                     spans.push(Span::styled(
                         format!("+{}", f.counts.adds),
-                        bg(Style::default().fg(THEME.add_fg)),
+                        bg(Style::default().fg(self.theme.add_fg)),
                     ));
                     spans.push(Span::styled(" ", dim));
                     spans.push(Span::styled(
                         format!("−{}", f.counts.dels),
-                        bg(Style::default().fg(THEME.del_fg)),
+                        bg(Style::default().fg(self.theme.del_fg)),
                     ));
                 }
                 vec![Line::from(spans)]
@@ -2423,12 +2484,12 @@ impl App {
                 let done =
                     !f.hunks.is_empty() && f.hunks.iter().all(|hk| reviewed.contains(&hk.index()));
                 let base = Style::default().fg(if done {
-                    THEME.reviewed_fg
+                    self.theme.reviewed_fg
                 } else {
-                    THEME.context_fg
+                    self.theme.context_fg
                 });
                 let style = if on {
-                    base.bg(THEME.selected_bg).add_modifier(Modifier::BOLD)
+                    base.bg(self.theme.selected_bg).add_modifier(Modifier::BOLD)
                 } else {
                     base
                 };
@@ -2441,7 +2502,7 @@ impl App {
                     Span::styled(name.to_string(), style),
                 ]);
                 if on {
-                    pad_to_width(&mut line, inner_w, THEME.selected_bg);
+                    pad_to_width(&mut line, inner_w, self.theme.selected_bg);
                 }
                 line
             })
@@ -2449,14 +2510,17 @@ impl App {
         if lines.is_empty() {
             lines.push(Line::from(Span::styled(
                 "  (no files)",
-                Style::default().fg(THEME.gutter_fg),
+                Style::default().fg(self.theme.gutter_fg),
             )));
         }
         let title = match at {
             Some(n) => format!(" file {} of {} ", n + 1, files.len()),
             None => format!(" {} files ", files.len()),
         };
-        frame.render_widget(Paragraph::new(lines).block(pane(title, true)), area);
+        frame.render_widget(
+            Paragraph::new(lines).block(pane(&self.theme, title, true)),
+            area,
+        );
     }
 
     /// The right pane while the plan has focus: the whole document's file tree
@@ -2489,7 +2553,7 @@ impl App {
         };
         frame.render_widget(Clear, area);
         let inner_h = area.height.saturating_sub(2) as usize;
-        let dim = Style::default().fg(THEME.gutter_fg);
+        let dim = Style::default().fg(self.theme.gutter_fg);
         let guides = guides_for_depths(&rows.iter().map(MapRow::depth).collect::<Vec<_>>());
         let lines: Vec<Line> = rows
             .iter()
@@ -2499,7 +2563,10 @@ impl App {
                 match row {
                     MapRow::Dir { name, .. } => Line::from(vec![
                         lead,
-                        Span::styled(format!("{name}/"), Style::default().fg(THEME.context_fg)),
+                        Span::styled(
+                            format!("{name}/"),
+                            Style::default().fg(self.theme.context_fg),
+                        ),
                     ]),
                     // A folded directory keeps the file view's own fold marker,
                     // and says how much it stands for — a row that hid six
@@ -2523,24 +2590,27 @@ impl App {
                         let f = &self.files()[*file_idx];
                         let name = f.path.rsplit('/').next().unwrap_or(&f.path);
                         let style = Style::default()
-                            .fg(THEME.context_fg)
+                            .fg(self.theme.context_fg)
                             .add_modifier(Modifier::BOLD);
                         // The marker sits WITH the name, not out in a column of
                         // its own — a dot at the far left of a deep tree points
                         // at nothing.
                         Line::from(vec![
                             lead,
-                            Span::styled("● ".to_string(), Style::default().fg(THEME.header_fg)),
+                            Span::styled(
+                                "● ".to_string(),
+                                Style::default().fg(self.theme.header_fg),
+                            ),
                             Span::styled(name.to_string(), style),
                             Span::styled("  ", style),
                             Span::styled(
                                 format!("+{}", f.counts.adds),
-                                Style::default().fg(THEME.add_fg),
+                                Style::default().fg(self.theme.add_fg),
                             ),
                             Span::styled(" ", style),
                             Span::styled(
                                 format!("−{}", f.counts.dels),
-                                Style::default().fg(THEME.del_fg),
+                                Style::default().fg(self.theme.del_fg),
                             ),
                         ])
                     }
@@ -2574,7 +2644,7 @@ impl App {
                     .take(inner_h)
                     .collect::<Vec<_>>(),
             )
-            .block(pane(title, true)),
+            .block(pane(&self.theme, title, true)),
             area,
         );
     }
@@ -2753,17 +2823,17 @@ impl App {
                 };
                 // How to work this row, on the one row it can be worked from.
                 let hint = on.then_some(r.hint.as_ref()).flatten();
-                let mut line = compose_row(&r.content, inner_w, on, marker, hint);
+                let mut line = compose_row(&self.theme, &r.content, inner_w, on, marker, hint);
                 if on {
                     // Span backgrounds win over a line style, so this colours
                     // exactly the rows that have no change colour of their own
                     // — on the rest, the brightened gutter block carries it.
-                    line = line.style(Style::default().bg(THEME.cursor_bg));
+                    line = line.style(Style::default().bg(self.theme.cursor_bg));
                 } else if selection.is_some_and(|(lo, hi)| (lo..=hi).contains(&i)) {
                     // The rest of a line selection, in the plan pane's own
                     // selection colour: quieter than the cursor's row, which
                     // is still one end of it.
-                    line = line.style(Style::default().bg(THEME.selected_bg));
+                    line = line.style(Style::default().bg(self.theme.selected_bg));
                 }
                 line
             })
@@ -2779,16 +2849,21 @@ impl App {
             && let Some(first) = lines.first_mut()
         {
             *first = compose_row(
+                &self.theme,
                 &self.rows[header].content,
                 inner_w,
                 false,
                 Marker::None,
                 None,
             )
-            .style(Style::default().bg(THEME.sticky_bg));
+            .style(Style::default().bg(self.theme.sticky_bg));
         }
 
-        let block = pane(" detail ".to_string(), self.focus == Focus::Detail);
+        let block = pane(
+            &self.theme,
+            " detail ".to_string(),
+            self.focus == Focus::Detail,
+        );
         frame.render_widget(Paragraph::new(lines).block(block), area);
 
         // A hunk's edge shares the pane's left border column rather than
@@ -2801,11 +2876,13 @@ impl App {
             // A control's button takes the same column a hunk's edge would, and
             // lightens with the band it belongs to.
             if let Some(glyph) = row.button {
-                let band = Style::default().fg(THEME.hint_fg).bg(THEME.hint_bg);
+                let band = Style::default()
+                    .fg(self.theme.hint_fg)
+                    .bg(self.theme.hint_bg);
                 let cell = &mut buf[(area.x, y)];
                 cell.set_symbol(glyph);
                 cell.set_style(if on_cursor(self.scroll + n) {
-                    THEME.lit_band(band)
+                    self.theme.lit_band(band)
                 } else {
                     band
                 });
@@ -2814,7 +2891,7 @@ impl App {
             if let Some(border) = row.border {
                 let cell = &mut buf[(area.x, y)];
                 cell.set_symbol(border.glyph().encode_utf8(&mut [0u8; 4]));
-                cell.set_style(chrome(border, active));
+                cell.set_style(chrome(&self.theme, border, active));
             }
             // A note and the line it annotates, while the cursor is on either:
             // the border column carries the findings colour down both, which
@@ -2822,7 +2899,7 @@ impl App {
             // — a hunk's edge, or the pane's own border on a note's row —
             // keeps its shape and takes the colour.
             if in_note(self.scroll + n) {
-                buf[(area.x, y)].set_fg(THEME.finding_fg);
+                buf[(area.x, y)].set_fg(self.theme.finding_fg);
             }
         }
 
@@ -2849,7 +2926,7 @@ impl App {
         {
             let cell = &mut buf[(area.x + 1, area.y + 1 + n as u16)];
             cell.set_symbol(CURSOR_BAR);
-            cell.set_fg(THEME.header_fg);
+            cell.set_fg(self.theme.header_fg);
             cell.modifier.insert(Modifier::BOLD);
         }
     }
@@ -2864,8 +2941,8 @@ impl App {
             .filter(|f| f.status == FindingStatus::Open)
             .count();
 
-        let bar = Style::default().bg(THEME.status_bg);
-        let (ink, fill) = THEME.pill();
+        let bar = Style::default().bg(self.theme.status_bg);
+        let (ink, fill) = self.theme.pill();
         // Progress and findings are FACTS about the review, so they wear the
         // same pill a group's role and a hunk's class wear rather than trailing
         // off as a run of grey words. Each takes its own colour once it has
@@ -2887,7 +2964,7 @@ impl App {
             left.extend(
                 pill(
                     vec![(
-                        THEME.header_fg,
+                        self.theme.header_fg,
                         format!("selecting {n} line{}", if n == 1 { "" } else { "s" }),
                     )],
                     fill,
@@ -2899,19 +2976,19 @@ impl App {
         }
         left.extend(tally(
             total > 0 && done == total,
-            THEME.reviewed_fg,
+            self.theme.reviewed_fg,
             format!("{done}/{total} classes reviewed"),
         ));
         left.push(Span::styled(" ", bar));
         left.extend(tally(
             open > 0,
-            THEME.finding_fg,
+            self.theme.finding_fg,
             format!("{open} finding{}", if open == 1 { "" } else { "s" }),
         ));
         if !self.status.is_empty() {
             left.push(Span::styled(
                 format!("  {}", self.status),
-                bar.fg(THEME.context_fg),
+                bar.fg(self.theme.context_fg),
             ));
         }
 
@@ -2920,11 +2997,11 @@ impl App {
         // the reader stops seeing, and it named them in a different order and a
         // different wording from the modal that also named them.
         let right = vec![
-            Span::styled("? ", bar.fg(THEME.header_fg)),
-            Span::styled("help", bar.fg(THEME.context_fg)),
-            Span::styled("  ·  ", bar.fg(THEME.gutter_fg)),
-            Span::styled("q ", bar.fg(THEME.header_fg)),
-            Span::styled("quit", bar.fg(THEME.context_fg)),
+            Span::styled("? ", bar.fg(self.theme.header_fg)),
+            Span::styled("help", bar.fg(self.theme.context_fg)),
+            Span::styled("  ·  ", bar.fg(self.theme.gutter_fg)),
+            Span::styled("q ", bar.fg(self.theme.header_fg)),
+            Span::styled("quit", bar.fg(self.theme.context_fg)),
             Span::styled(" ", bar),
         ];
 
@@ -2950,6 +3027,7 @@ impl App {
 /// to the pane edge is a width question, and row counts must stay independent
 /// of width or each resize would rebuild them.
 fn compose_row(
+    theme: &Theme,
     content: &RowContent,
     width: usize,
     cursor: bool,
@@ -2986,7 +3064,7 @@ fn compose_row(
                     // The rail only. The prose stays quiet: what the colour
                     // says is which rows belong together, not read this.
                     Marker::Note if !pairs.is_empty() => {
-                        pairs[0].0 = pairs[0].0.fg(THEME.finding_fg);
+                        pairs[0].0 = pairs[0].0.fg(theme.finding_fg);
                     }
                     _ => {}
                 }
@@ -3006,16 +3084,16 @@ fn compose_row(
             } else {
                 half
             };
-            Line::from(compose_half(half, width, cursor))
+            Line::from(compose_half(theme, half, width, cursor))
         }
         RowContent::Split { old, new } => {
             let lw = width.saturating_sub(1) / 2;
             let rw = width.saturating_sub(1).saturating_sub(lw);
             // Both gutters light: a split row IS one row, and a cursor that
             // showed on one side only read as a cursor on that side's line.
-            let mut spans = compose_half(old, lw, cursor);
-            spans.push(Span::styled("│", Style::default().fg(THEME.gutter_fg)));
-            spans.extend(compose_half(new, rw, cursor));
+            let mut spans = compose_half(theme, old, lw, cursor);
+            spans.push(Span::styled("│", Style::default().fg(theme.gutter_fg)));
+            spans.extend(compose_half(theme, new, rw, cursor));
             Line::from(spans)
         }
     }
@@ -3026,17 +3104,17 @@ fn compose_row(
 /// Deliberately not a flag on the row: the cursor moves without rebuilding
 /// rows, so "is this the active hunk" cannot be decided when the row is built.
 /// The row carries the colour it WOULD take, and drawing chooses.
-fn chrome(border: Border, active: Option<usize>) -> Style {
+fn chrome(theme: &Theme, border: Border, active: Option<usize>) -> Style {
     if active == Some(border.hunk) {
         border.active_style
     } else {
-        Style::default().fg(THEME.gutter_fg)
+        Style::default().fg(theme.gutter_fg)
     }
 }
 
 /// One side of a diff row at a known column width: the gutter, the content,
 /// and padding out to the edge in whatever the row is filled with.
-fn compose_half(half: &Half, width: usize, cursor: bool) -> Vec<Span<'static>> {
+fn compose_half(theme: &Theme, half: &Half, width: usize, cursor: bool) -> Vec<Span<'static>> {
     let gutter = half.gutter.text.clone();
     let used = UnicodeWidthStr::width(gutter.as_str());
     let rest = width.saturating_sub(used);
@@ -3059,7 +3137,7 @@ fn compose_half(half: &Half, width: usize, cursor: bool) -> Vec<Span<'static>> {
     let pairs: Vec<(Style, String)> = if cursor {
         half.pairs
             .iter()
-            .map(|(st, t)| (THEME.lit_band(*st), t.clone()))
+            .map(|(st, t)| (theme.lit_band(*st), t.clone()))
             .collect()
     } else {
         half.pairs.clone()
@@ -3068,7 +3146,7 @@ fn compose_half(half: &Half, width: usize, cursor: bool) -> Vec<Span<'static>> {
         Fill::Bg(bg) => spans.extend(truncate_or_pad_spans(
             &pairs,
             rest,
-            if cursor { THEME.lit_band(bg) } else { bg },
+            if cursor { theme.lit_band(bg) } else { bg },
         )),
         // Hatched, not blank. On the absent side of a split row that says a
         // line does not exist here rather than that it is empty; on a hunk's
@@ -3082,7 +3160,7 @@ fn compose_half(half: &Half, width: usize, cursor: bool) -> Vec<Span<'static>> {
                 spans.extend(pairs.iter().map(|(st, t)| Span::styled(t.clone(), *st)));
                 spans.push(Span::styled(
                     "╱".repeat(rest - used),
-                    Style::default().fg(THEME.hatch_fg),
+                    Style::default().fg(theme.hatch_fg),
                 ));
             }
         }
@@ -3187,15 +3265,15 @@ enum Marker<'a> {
 /// cursor, which is the smallest thing on it — and it competed with the hunk
 /// edge, the one border in this view that means something. The title is where
 /// a reader looks to know which pane they are in anyway.
-fn pane(title: String, focused: bool) -> Block<'static> {
+fn pane(theme: &Theme, title: String, focused: bool) -> Block<'static> {
     let ink = if focused {
-        THEME.header_fg
+        theme.header_fg
     } else {
-        THEME.gutter_fg
+        theme.gutter_fg
     };
     Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(THEME.gutter_fg))
+        .border_style(Style::default().fg(theme.gutter_fg))
         .title(Span::styled(
             title,
             Style::default().fg(ink).add_modifier(Modifier::BOLD),
@@ -3354,13 +3432,13 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
-fn help_paragraph() -> Paragraph<'static> {
+fn help_paragraph(theme: &Theme) -> Paragraph<'static> {
     // Nothing but keys. Five lines of prose about the plan pane and the diff's
     // colours used to sit between `n/N` and `s`, splitting the table in half —
     // and a legend is not what anyone opens `?` to find.
-    let key = Style::default().fg(THEME.header_fg);
-    let text = Style::default().fg(THEME.context_fg);
-    let dim = Style::default().fg(THEME.gutter_fg);
+    let key = Style::default().fg(theme.header_fg);
+    let text = Style::default().fg(theme.context_fg);
+    let dim = Style::default().fg(theme.gutter_fg);
 
     let row = |k: &str, what: &str| {
         Line::from(vec![
@@ -3391,7 +3469,7 @@ fn help_paragraph() -> Paragraph<'static> {
         Line::from(Span::styled("  press any key to close", dim)),
     ];
     lines.insert(0, Line::from(""));
-    Paragraph::new(lines).block(pane(" help ".to_string(), true))
+    Paragraph::new(lines).block(pane(theme, " help ".to_string(), true))
 }
 
 #[cfg(test)]

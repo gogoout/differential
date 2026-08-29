@@ -272,6 +272,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 context: config.review.context,
                 context_step: config.review.context_step,
                 split_diff: config.review.diff.is_split(),
+                theme: config.review.theme,
                 // As TYPED, so the footer can hand it straight back. Empty
                 // when the picker chose the source, which has no spelling.
                 range: (!common.range.is_empty()).then(|| common.range.join(" ")),
