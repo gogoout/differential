@@ -34,6 +34,10 @@ use super::window::{self, Expansion, Segment, Side};
 
 const TAB_WIDTH: usize = 4;
 
+/// A finding's quoting rail. Shared with the renderer, which repeats it down
+/// the continuation lines of a wrapped note.
+pub const RAIL: char = '▍';
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum RowKind {
     GroupHeader,
@@ -1072,7 +1076,7 @@ fn finding_rows(theme: &Theme, f: &Finding, hunk: usize) -> Vec<Row> {
             Row::full(
                 RowKind::Finding(f.id.clone(), hunk),
                 Line::from(vec![
-                    Span::styled("  ▍ ".to_string(), rail),
+                    Span::styled(format!("  {RAIL} "), rail),
                     Span::styled(text, prose),
                 ]),
             )

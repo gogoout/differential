@@ -38,6 +38,12 @@ pub struct ReviewState {
     /// already on disk keeps the layout it had, whatever the config now says.
     #[serde(default)]
     pub split_diff: Option<bool>,
+    /// The reader's soft-wrap choice, or `None` if they have not pressed `w`.
+    ///
+    /// An option for the same reason `split_diff` is one: absent means the
+    /// reader has never chosen, and the renderer's own default stands.
+    #[serde(default)]
+    pub wrap: Option<bool>,
     /// Flattened per-file view instead of semantic groups (default: groups).
     #[serde(default)]
     pub file_view: bool,

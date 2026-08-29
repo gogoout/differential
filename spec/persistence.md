@@ -88,7 +88,7 @@ back-fill: detection and preservation, not silent loss.
 Review progress (`state.json`) carries "reviewed" marks keyed by class/group **content
 hash**: a group whose content is unchanged stays reviewed; anything that changed resets.
 It also carries the resume cursor and the TUI's persisted layout choices (`split_diff`,
-`file_view`) — all additive fields. The cursor is `(id, row)` where `id` is a group id in
+`wrap`, `file_view`) — all additive fields. The cursor is `(id, row)` where `id` is a group id in
 the semantic view and a file path in the flattened file view; the `file_view` flag
 disambiguates on load.
 
@@ -96,6 +96,10 @@ disambiguates on load.
 has never pressed `s` on this review, so the reviewer falls back to `review.diff` from the
 user config; `Some` is a choice they made, and it wins whatever the config later says. That
 is what stops a config edit moving the layout under someone midway through a read.
+
+`wrap` is an option for the same shape of reason, though it has no config key to fall back
+to: soft wrap is off until the reader presses `w`. A layout preference is worth setting
+once; wrapping is something a reader wants for the file in front of them.
 
 The migration needed no code. A `state.json` written before the field became an option
 records a bare `false` or `true`, which deserialises to `Some(false)` or `Some(true)` — so

@@ -20,11 +20,11 @@ use tui_textarea::TextArea;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::rows::{
-    Border, DiffMode, Fill, GroupContext, Half, LineRef, Row, RowContent, RowFactory, RowKind,
-    RowsContext, build_dir_rows, build_file_rows, build_group_rows, pill,
+    Border, DiffMode, Fill, GroupContext, Gutter, Half, LineRef, RAIL, Row, RowContent, RowFactory,
+    RowKind, RowsContext, build_dir_rows, build_file_rows, build_group_rows, pill,
 };
 use super::theme::Theme;
-use super::vendor::text_utils::truncate_or_pad_spans;
+use super::vendor::text_utils::{slice_pairs, truncate_or_pad_spans, wrap_pairs};
 use super::window::{Expansion, Side};
 
 const SCROLL_MARGIN: usize = 3;
@@ -118,13 +118,17 @@ pub fn layout(area: Rect) -> Panes {
 /// handled — so scroll math is arithmetic over a known height rather than a
 /// guess corrected one frame later.
 ///
-/// Deliberately carries no WIDTH. Row building must never depend on width
-/// (`RowContent::Split` defers its columns to draw time precisely so a resize
-/// never rebuilds rows), and a width here would be an invitation to break
-/// that.
+/// Row BUILDING must still never depend on width. `RowContent::Split` defers
+/// its columns to draw time precisely so a resize never rebuilds rows, and the
+/// one width measured here does not change that: it is what a WRAPPED row is
+/// composed at. Wrapping is a draw-time fact, and the scroll budget needs the
+/// same fact, so both read one number measured in one place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Viewport {
     pub detail_rows: usize,
+    /// The detail pane's CONTENT width — what a row wraps at, and therefore
+    /// what its height is a function of.
+    pub detail_cols: usize,
     pub plan_rows: usize,
     /// The body's FULL height, borders included — a modal floats over the
     /// body and draws its own box, so it needs the raw number the two panes
@@ -138,6 +142,7 @@ impl Viewport {
         Viewport {
             // Every pane is bordered.
             detail_rows: panes.detail.height.saturating_sub(2) as usize,
+            detail_cols: panes.detail.width.saturating_sub(2) as usize,
             plan_rows: panes.plan.height.saturating_sub(2) as usize,
             body_rows: panes.body.height as usize,
         }
@@ -149,6 +154,7 @@ impl Default for Viewport {
     fn default() -> Self {
         Viewport {
             detail_rows: 24,
+            detail_cols: 78,
             plan_rows: 24,
             body_rows: 26,
         }
@@ -746,11 +752,10 @@ impl App {
     }
 
     fn follow_cursor(&mut self) {
-        let h = self.viewport.detail_rows.max(MIN_VIEWPORT);
         if self.cursor < self.scroll + SCROLL_MARGIN {
             self.scroll = self.cursor.saturating_sub(SCROLL_MARGIN);
-        } else if self.cursor + SCROLL_MARGIN + 1 > self.scroll + h {
-            self.scroll = self.cursor + SCROLL_MARGIN + 1 - h;
+        } else {
+            self.scroll = self.scroll.max(self.highest_scroll());
         }
         // The rows above the first selectable one are the group header —
         // label, description, dependencies — and the cursor can never enter
@@ -762,6 +767,50 @@ impl App {
         {
             self.scroll = 0;
         }
+    }
+
+    /// The furthest the view can be scrolled DOWN and still hold the cursor
+    /// and its margin.
+    ///
+    /// The bottom edge is a budget of screen LINES, not a count of rows: a
+    /// wrapped row is one row and several lines. Walking back from the last
+    /// row that must stay visible, the first row the budget cannot afford is
+    /// where the view has to start.
+    fn highest_scroll(&self) -> usize {
+        let h = self.viewport.detail_rows.max(MIN_VIEWPORT);
+        let last = (self.cursor + SCROLL_MARGIN).min(self.rows.len().saturating_sub(1));
+        let mut used = 0;
+        let mut top = last;
+        for i in (0..=last).rev() {
+            used += self.row_height(i);
+            if used > h {
+                break;
+            }
+            top = i;
+        }
+        // Never past the cursor: a row taller than the whole pane pins to the
+        // top of the view and is cut off at the bottom, rather than scrolling
+        // the row the reader is on out of sight.
+        top.min(self.cursor)
+    }
+
+    /// The row half a pane away from `from`, walking `dir`.
+    ///
+    /// Half a pane of screen LINES. Counting rows would jump a screenful of
+    /// wrapped prose in one press.
+    fn half_page(&self, from: usize, dir: isize) -> usize {
+        let budget = self.viewport.detail_rows.max(MIN_VIEWPORT) / 2;
+        let mut used = 0;
+        let mut i = from;
+        while used < budget {
+            let next = i as isize + dir;
+            if next < 0 || next as usize >= self.rows.len() {
+                break;
+            }
+            i = next as usize;
+            used += self.row_height(i);
+        }
+        i
     }
 
     /// Select the idx-th entry of the left pane (group or file).
@@ -1046,6 +1095,61 @@ impl App {
         }
     }
 
+    /// Is soft wrap on? Off until the reader presses `w` on this review.
+    ///
+    /// No config default, unlike `split_diff`: a layout preference is worth
+    /// setting once, but wrapping is something a reader wants for the file
+    /// they are on.
+    fn wrap_on(&self) -> bool {
+        self.session.wrap().unwrap_or(false)
+    }
+
+    /// Does this row wrap right now?
+    ///
+    /// Prose always does. A group's description and a reviewer's note are the
+    /// reasons a plan and a finding exist, they are never code, and a reader
+    /// who cannot see the end of one is missing the point of the pane. File
+    /// content is the reader's call, because wrapping code is often unwanted.
+    fn wraps(&self, row: &Row) -> bool {
+        match row.kind {
+            RowKind::GroupHeader | RowKind::Finding(..) => true,
+            RowKind::Diff(_) => self.wrap_on(),
+            _ => false,
+        }
+    }
+
+    /// Screen lines one row takes.
+    ///
+    /// The scroll budget and the drawing both read this, so they cannot
+    /// disagree about where a row ends. Deliberately independent of the
+    /// cursor: no row that wraps carries a marker or a hint, so nothing the
+    /// cursor changes can change a height.
+    fn row_height(&self, i: usize) -> usize {
+        self.rows.get(i).map_or(1, |r| {
+            compose_row_lines(
+                &self.theme,
+                &r.content,
+                self.viewport.detail_cols,
+                false,
+                Marker::None,
+                None,
+                self.wraps(r),
+            )
+            .len()
+        })
+    }
+
+    /// Toggle soft wrap. Row COUNTS do not change — a wrapped line is still one
+    /// row — so nothing is rebuilt and the cursor stays where it was.
+    fn toggle_wrap(&mut self) {
+        let on = !self.wrap_on();
+        if let Err(e) = self.session.set_wrap(on) {
+            self.status = format!("save failed: {e:#}");
+            return;
+        }
+        self.follow_cursor();
+    }
+
     /// Toggle unified/split. Row counts differ between the modes, so keep the
     /// reviewer's place by re-anchoring the cursor to the current hunk.
     fn toggle_split(&mut self) {
@@ -1318,14 +1422,12 @@ impl App {
                 self.select_entry(self.selected_entry().saturating_sub(1))
             }
             (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
-                let h = self.viewport.detail_rows.max(MIN_VIEWPORT) / 2;
-                self.cursor = (self.cursor + h).min(self.rows.len().saturating_sub(1));
+                self.cursor = self.half_page(self.cursor, 1);
                 self.cursor = self.next_selectable(self.cursor, -1).unwrap_or(self.cursor);
                 self.follow_cursor();
             }
             (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
-                let h = self.viewport.detail_rows.max(MIN_VIEWPORT) / 2;
-                self.cursor = self.cursor.saturating_sub(h);
+                self.cursor = self.half_page(self.cursor, -1);
                 self.cursor = self.next_selectable(self.cursor, 1).unwrap_or(self.cursor);
                 self.follow_cursor();
             }
@@ -1364,6 +1466,7 @@ impl App {
             (KeyCode::Char('n'), KeyModifiers::NONE) => self.jump_hunk(1),
             (KeyCode::Char('N'), _) => self.jump_hunk(-1),
             (KeyCode::Char('s'), KeyModifiers::NONE) => self.toggle_split(),
+            (KeyCode::Char('w'), KeyModifiers::NONE) => self.toggle_wrap(),
             // One key for files, acting on the pane it is pressed in. In the
             // left pane that is which list of files you are reading — the
             // plan or the tree; in the diff pane it is which file you want to
@@ -1900,7 +2003,7 @@ impl App {
                 );
             }
             Mode::Help => {
-                let area = centered_rect(panes.body, 62, 21);
+                let area = centered_rect(panes.body, 62, 22);
                 clear_to_ground(frame, &self.theme, area);
                 frame.render_widget(help_paragraph(&self.theme), area);
             }
@@ -2803,60 +2906,90 @@ impl App {
         });
         let note = self.note_cluster();
         let in_note = |i: usize| note.is_some_and(|(lo, hi)| (lo..=hi).contains(&i));
-        let lines: Vec<Line> = self
-            .rows
-            .iter()
-            .enumerate()
-            .skip(self.scroll)
-            .take(inner_h)
-            .map(|(i, r)| {
-                let on = i == self.cursor && self.focus == Focus::Detail && r.kind.selectable();
-                // A hunk's pill follows its edge, so the marker and the run
-                // below it read as one thing — and which is lit is a cursor
-                // question, decided here rather than when the row was built.
-                let marker = match (r.border, &r.kind) {
-                    (Some(b), RowKind::HunkHeader { .. }) if active == Some(b.hunk) => {
-                        b.active_style.fg.map_or(Marker::Idle(&r.idle), Marker::Lit)
-                    }
-                    (_, RowKind::HunkHeader { .. }) => Marker::Idle(&r.idle),
-                    (_, RowKind::Finding(..)) if in_note(i) => Marker::Note,
-                    _ => Marker::None,
-                };
-                // How to work this row, on the one row it can be worked from.
-                let hint = on.then_some(r.hint.as_ref()).flatten();
-                let mut line = compose_row(&self.theme, &r.content, inner_w, on, marker, hint);
+        // Each visible row, where it starts, and the lines it takes. Composed
+        // ONCE, here: the content, the border glyphs and the cursor bar are
+        // three passes over the same rows, and a wrapped row means a screen
+        // line is no longer a row index. Heights come from the lines
+        // themselves, so the glyphs cannot land a row away from the text.
+        //
+        // A row is never cut at its TOP, so one taller than the pane pins
+        // there and loses its tail.
+        let mut placed: Vec<(usize, u16, Vec<Line>)> = Vec::new();
+        let mut y = 0usize;
+        for i in self.scroll..self.rows.len() {
+            if y >= inner_h {
+                break;
+            }
+            let r = &self.rows[i];
+            let on = i == self.cursor && self.focus == Focus::Detail && r.kind.selectable();
+            // A hunk's pill follows its edge, so the marker and the run
+            // below it read as one thing — and which is lit is a cursor
+            // question, decided here rather than when the row was built.
+            let marker = match (r.border, &r.kind) {
+                (Some(b), RowKind::HunkHeader { .. }) if active == Some(b.hunk) => {
+                    b.active_style.fg.map_or(Marker::Idle(&r.idle), Marker::Lit)
+                }
+                (_, RowKind::HunkHeader { .. }) => Marker::Idle(&r.idle),
+                (_, RowKind::Finding(..)) if in_note(i) => Marker::Note,
+                _ => Marker::None,
+            };
+            // How to work this row, on the one row it can be worked from.
+            let hint = on.then_some(r.hint.as_ref()).flatten();
+            let composed: Vec<Line> = compose_row_lines(
+                &self.theme,
+                &r.content,
+                inner_w,
+                on,
+                marker,
+                hint,
+                self.wraps(r),
+            )
+            .into_iter()
+            .map(|mut line| {
                 if on {
-                    // Span backgrounds win over a line style, so this colours
-                    // exactly the rows that have no change colour of their own
-                    // — on the rest, the brightened gutter block carries it.
+                    // Span backgrounds win over a line style, so this
+                    // colours exactly the rows that have no change colour
+                    // of their own — on the rest, the brightened gutter
+                    // block carries it.
                     line = line.style(Style::default().bg(self.theme.cursor_bg));
                 } else if selection.is_some_and(|(lo, hi)| (lo..=hi).contains(&i)) {
                     // The rest of a line selection, in the plan pane's own
-                    // selection colour: quieter than the cursor's row, which
-                    // is still one end of it.
+                    // selection colour: quieter than the cursor's row,
+                    // which is still one end of it.
                     line = line.style(Style::default().bg(self.theme.selected_bg));
                 }
                 line
             })
             .collect();
+            y += composed.len();
+            placed.push((i, (y - composed.len()) as u16, composed));
+        }
+        let mut lines: Vec<Line> = placed
+            .iter()
+            .flat_map(|(_, _, l)| l.iter().cloned())
+            .take(inner_h)
+            .collect();
 
         // Scrolled past a file's header, pin it to the top row. It costs a row
         // only while the filename would otherwise be off-screen, which is
         // exactly when a long file stops saying which file it is.
-        let mut lines = lines;
         if let Some(header) = self
             .file_header_above(self.scroll)
             .filter(|&h| h < self.scroll)
             && let Some(first) = lines.first_mut()
         {
-            *first = compose_row(
+            // Its first line only: the pin costs the reader one row by
+            // design, wrapped or not.
+            *first = compose_row_lines(
                 &self.theme,
                 &self.rows[header].content,
                 inner_w,
                 false,
                 Marker::None,
                 None,
+                false,
             )
+            .swap_remove(0)
             .style(Style::default().bg(self.theme.sticky_bg));
         }
 
@@ -2872,35 +3005,50 @@ impl App {
         // a cell away from the first. Drawn over the block, so it comes after.
         let buf = frame.buffer_mut();
         let on_cursor = |i: usize| i == self.cursor && self.focus == Focus::Detail;
-        for (n, row) in self.rows.iter().skip(self.scroll).take(inner_h).enumerate() {
-            let y = area.y + 1 + n as u16;
-            // A control's button takes the same column a hunk's edge would, and
-            // lightens with the band it belongs to.
-            if let Some(glyph) = row.button {
-                let band = Style::default()
-                    .fg(self.theme.hint_fg)
-                    .bg(self.theme.hint_bg);
-                let cell = &mut buf[(area.x, y)];
-                cell.set_symbol(glyph);
-                cell.set_style(if on_cursor(self.scroll + n) {
-                    self.theme.lit_band(band)
-                } else {
-                    band
-                });
-                continue;
-            }
-            if let Some(border) = row.border {
-                let cell = &mut buf[(area.x, y)];
-                cell.set_symbol(border.glyph().encode_utf8(&mut [0u8; 4]));
-                cell.set_style(chrome(&self.theme, border, active));
-            }
-            // A note and the line it annotates, while the cursor is on either:
-            // the border column carries the findings colour down both, which
-            // is what says they are one thing. Whatever glyph is in that cell
-            // — a hunk's edge, or the pane's own border on a note's row —
-            // keeps its shape and takes the colour.
-            if in_note(self.scroll + n) {
-                buf[(area.x, y)].set_fg(self.theme.finding_fg);
+        for (i, top, composed) in &placed {
+            let (i, top, height) = (*i, *top, composed.len());
+            let row = &self.rows[i];
+            // Every line of the row, not just its first: a hunk's edge is a
+            // continuous run down the pane, and a gap in it would read as the
+            // hunk ending there.
+            for line in 0..height {
+                let y = area.y + 1 + top + line as u16;
+                if y >= area.y + 1 + inner_h as u16 {
+                    break;
+                }
+                // A control's button takes the same column a hunk's edge
+                // would, and lightens with the band it belongs to.
+                if let Some(glyph) = row.button {
+                    let band = Style::default()
+                        .fg(self.theme.hint_fg)
+                        .bg(self.theme.hint_bg);
+                    let cell = &mut buf[(area.x, y)];
+                    // The glyph names the control once. A column of them down
+                    // a wrapped row would be a column of buttons that are all
+                    // the same button.
+                    if line == 0 {
+                        cell.set_symbol(glyph);
+                    }
+                    cell.set_style(if on_cursor(i) {
+                        self.theme.lit_band(band)
+                    } else {
+                        band
+                    });
+                    continue;
+                }
+                if let Some(border) = row.border {
+                    let cell = &mut buf[(area.x, y)];
+                    cell.set_symbol(border.glyph().encode_utf8(&mut [0u8; 4]));
+                    cell.set_style(chrome(&self.theme, border, active));
+                }
+                // A note and the line it annotates, while the cursor is on
+                // either: the border column carries the findings colour down
+                // both, which is what says they are one thing. Whatever glyph
+                // is in that cell — a hunk's edge, or the pane's own border on
+                // a note's row — keeps its shape and takes the colour.
+                if in_note(i) {
+                    buf[(area.x, y)].set_fg(self.theme.finding_fg);
+                }
             }
         }
 
@@ -2918,17 +3066,29 @@ impl App {
         //
         // Keeps the cell's own background — over a lit gutter it stands on the
         // change colour rather than punching a hole in it.
+        //
+        // Down EVERY line of a wrapped row: the row is what the cursor is on,
+        // and a bar against its first line only would read as the cursor being
+        // on that line rather than on the whole of it.
         if self.focus == Focus::Detail
-            && let Some(n) = self.cursor.checked_sub(self.scroll)
-            && n < inner_h
+            && let Some((_, top, height)) = placed
+                .iter()
+                .find(|(i, _, _)| *i == self.cursor)
+                .map(|(i, top, l)| (i, *top, l.len()))
             && self.rows.get(self.cursor).is_some_and(|r| {
                 r.kind.selectable() && !matches!(r.kind, RowKind::HunkHeader { .. })
             })
         {
-            let cell = &mut buf[(area.x + 1, area.y + 1 + n as u16)];
-            cell.set_symbol(CURSOR_BAR);
-            cell.set_fg(self.theme.header_fg);
-            cell.modifier.insert(Modifier::BOLD);
+            for line in 0..height {
+                let y = area.y + 1 + top + line as u16;
+                if y >= area.y + 1 + inner_h as u16 {
+                    break;
+                }
+                let cell = &mut buf[(area.x + 1, y)];
+                cell.set_symbol(CURSOR_BAR);
+                cell.set_fg(self.theme.header_fg);
+                cell.modifier.insert(Modifier::BOLD);
+            }
         }
     }
 
@@ -3027,16 +3187,23 @@ impl App {
 /// Every diff row pads HERE rather than at build time: a background that runs
 /// to the pane edge is a width question, and row counts must stay independent
 /// of width or each resize would rebuild them.
-fn compose_row(
+/// A row, as the screen lines it takes.
+///
+/// One line unless `wrap` is on and the content is wider than the pane. A
+/// wrapped row is still ONE row: the cursor indexes rows, a finding anchors to
+/// a line, and a line that became three selectable rows would let a reader
+/// annotate a third of it.
+fn compose_row_lines(
     theme: &Theme,
     content: &RowContent,
     width: usize,
     cursor: bool,
     marker: Marker<'_>,
     hint: Option<&(Style, String)>,
-) -> Line<'static> {
+    wrap: bool,
+) -> Vec<Line<'static>> {
     match content {
-        RowContent::Full(line) => line.clone(),
+        RowContent::Full(line) => vec![line.clone()],
         RowContent::Unified(half) => {
             // A hunk's pill stays in the muted palette whether the cursor is in
             // it or not. What changes is ONE cell: the pill's leading pad
@@ -3085,19 +3252,117 @@ fn compose_row(
             } else {
                 half
             };
-            Line::from(compose_half(theme, half, width, cursor))
+            compose_half_lines(theme, half, width, cursor, wrap)
+                .into_iter()
+                .map(Line::from)
+                .collect()
         }
         RowContent::Split { old, new } => {
             let lw = width.saturating_sub(1) / 2;
             let rw = width.saturating_sub(1).saturating_sub(lw);
             // Both gutters light: a split row IS one row, and a cursor that
             // showed on one side only read as a cursor on that side's line.
-            let mut spans = compose_half(theme, old, lw, cursor);
-            spans.push(Span::styled("│", Style::default().fg(theme.gutter_fg)));
-            spans.extend(compose_half(theme, new, rw, cursor));
-            Line::from(spans)
+            let mut left = compose_half_lines(theme, old, lw, cursor, wrap);
+            let mut right = compose_half_lines(theme, new, rw, cursor, wrap);
+            // A row is as tall as its taller half, and the shorter one pads —
+            // the rule the `╱` fill already follows across a row, applied down
+            // one.
+            let h = left.len().max(right.len());
+            while left.len() < h {
+                left.push(compose_half(theme, &continued(old), lw, cursor));
+            }
+            while right.len() < h {
+                right.push(compose_half(theme, &continued(new), rw, cursor));
+            }
+            left.into_iter()
+                .zip(right)
+                .map(|(mut spans, r)| {
+                    spans.push(Span::styled("│", Style::default().fg(theme.gutter_fg)));
+                    spans.extend(r);
+                    Line::from(spans)
+                })
+                .collect()
         }
     }
+}
+
+/// A half with nothing left to say: the padding under a side that ran out of
+/// lines before the other did. It keeps the row's fill, so an absent line goes
+/// on hatching and a change goes on carrying its colour.
+fn continued(half: &Half) -> Half {
+    Half {
+        gutter: blank_gutter(&half.gutter),
+        pairs: Vec::new(),
+        fill: half.fill,
+    }
+}
+
+/// The line-number cell on a wrapped row's later lines.
+///
+/// Blank, and the SAME WIDTH: a continuation has no number of its own, and the
+/// cursor block has to land in one column whichever line of the row it is on.
+fn blank_gutter(gutter: &Gutter) -> Gutter {
+    Gutter {
+        text: " ".repeat(UnicodeWidthStr::width(gutter.text.as_str())),
+        style: gutter.style,
+        cursor: gutter.cursor,
+    }
+}
+
+/// One side of a row, as the screen lines it takes.
+fn compose_half_lines(
+    theme: &Theme,
+    half: &Half,
+    width: usize,
+    cursor: bool,
+    wrap: bool,
+) -> Vec<Vec<Span<'static>>> {
+    let rest = width.saturating_sub(UnicodeWidthStr::width(half.gutter.text.as_str()));
+    if !wrap {
+        return vec![compose_half(theme, half, width, cursor)];
+    }
+    let blank = blank_gutter(&half.gutter);
+    wrap_indented(&half.pairs, rest)
+        .into_iter()
+        .enumerate()
+        .map(|(i, pairs)| {
+            let half = Half {
+                gutter: if i == 0 {
+                    half.gutter.clone()
+                } else {
+                    blank.clone()
+                },
+                pairs,
+                fill: half.fill,
+            };
+            compose_half(theme, &half, width, cursor)
+        })
+        .collect()
+}
+
+/// A row's content, as the lines it wraps to — each carrying the leading
+/// indent and rail of the first.
+///
+/// A finding is a quoted panel and the rail IS the panel: a note whose second
+/// line began at the pane edge would leave the quote hanging open. A group
+/// description is indented, and a continuation flush against the border would
+/// not read as part of it. Code is the same fact once more — a statement
+/// picked up under its own indentation reads as the statement continuing.
+fn wrap_indented(pairs: &[(Style, String)], width: usize) -> Vec<Vec<(Style, String)>> {
+    let plain: String = pairs.iter().map(|(_, t)| t.as_str()).collect();
+    let head = plain.find(|c| c != ' ' && c != RAIL).unwrap_or(0);
+    let prefix = slice_pairs(pairs, 0, head);
+    let indent: usize = prefix.iter().map(|(_, t)| t.width()).sum();
+    if head == 0 || indent >= width {
+        return wrap_pairs(pairs, width);
+    }
+    let mut lines = wrap_pairs(&slice_pairs(pairs, head, plain.len()), width - indent);
+    for line in lines.iter_mut() {
+        let mut out = prefix.clone();
+        out.append(line);
+        *line = out;
+    }
+    lines
 }
 
 /// What colour a hunk's box and band take right now.
@@ -3469,6 +3734,7 @@ fn help_paragraph(theme: &Theme) -> Paragraph<'static> {
         row("z", "boundary: show more, or cross into the hunk"),
         row("", "elsewhere: unfold skim remainder / noise"),
         row("s", "unified / split diff"),
+        row("w", "soft wrap long lines"),
         row("f", "plan pane: reading plan / file tree"),
         row("", "diff pane: file list (enter jumps)"),
         row("space", "mark the hunk's class reviewed"),
