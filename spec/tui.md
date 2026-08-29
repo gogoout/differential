@@ -388,6 +388,10 @@ rotation counting from the moment the splash opened is already several lines dee
 time this row has anything to say — and the line that names the agent, which is the one
 piece of information on it, would be the one line a reviewer never sees.
 
+It rotates only while grouping is the **active** stage. Once the pipeline moves on the row
+takes its tick and falls back to its static description, like every other finished stage:
+a line still cycling next to a ✓ reads as work still going on.
+
 The agent slot names the agent's **name**, not its command line: the argv is four times the
 width of the line and answers a different question, so it lives where it is the answer, in
 the text of a spawn failure (`LlmBackend::name`).

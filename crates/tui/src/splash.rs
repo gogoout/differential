@@ -294,7 +294,15 @@ fn draw(
         // grouping cache spared the call. On a miss it is the only row anyone
         // is watching for a minute or more, so it rotates rather than holding
         // one sentence; a cache hit does not wait, so it does not.
+        //
+        // Only while it is the ACTIVE stage. `asking_since` is never cleared —
+        // the elapsed wait is still wanted after the fact — so without this a
+        // ticked, finished row would go on rotating, and "if the model gets
+        // bored, the audit notices" beside a ✓ reads as still running. Every
+        // other completed row falls back to its static description; so does
+        // this one.
         if i == 2
+            && i == current
             && let Some((backend, cached)) = agent
         {
             detail = if *cached {
@@ -359,12 +367,8 @@ mod tests {
         assert!(80 - widest <= pad.len() + 1, "the block sits off-centre");
     }
 
-    /// The column each stage NAME starts in, for a given stage and agent line.
-    ///
-    /// The name, not the first visible character: a pending stage's glyph is a
-    /// space, so "first non-blank" would report a column two cells to the
-    /// right and call an aligned block crooked.
-    /// The splash drawn at `w` x `h`, one `String` per screen row.
+    /// The splash drawn `w` columns wide with `stage` active, one `String` per
+    /// screen row.
     fn screen(
         w: u16,
         stage: usize,
@@ -387,11 +391,16 @@ mod tests {
             .collect()
     }
 
-    /// Each stage name is looked for in ITS OWN row, found by anchoring on the
-    /// first stage's name. Scanning every row for every name reported the
-    /// grouping row as the "order" row the day a waiting message ended in the
-    /// word "order" — a helper that finds the wrong row calls a straight block
-    /// crooked.
+    /// The column each stage NAME starts in.
+    ///
+    /// The name, not the first visible character: a pending stage's glyph is a
+    /// space, so "first non-blank" would report a column two cells to the right
+    /// and call an aligned block crooked.
+    ///
+    /// Each name is looked for in ITS OWN row, found by anchoring on the first
+    /// stage's. Scanning every row for every name reported the grouping row as
+    /// the "order" row the day a waiting message ended in the word "order" — a
+    /// helper that finds the wrong row calls a straight block crooked too.
     fn name_columns(stage: usize, agent: Option<&(String, bool)>, waited: Duration) -> Vec<usize> {
         let rows = screen(80, stage, agent, waited);
         let base = rows
@@ -459,6 +468,31 @@ mod tests {
         // And it advances on the call's own clock from there.
         let next = screen(80, 2, Some(&agent), Duration::from_secs(MESSAGE_SECS)).join("\n");
         assert!(next.contains(WAITING[0]), "{next}");
+    }
+
+    /// A finished row stops talking.
+    ///
+    /// `asking_since` is never cleared — how long the agent took is still worth
+    /// knowing afterwards — so nothing but the active-stage check stops a
+    /// ticked row from rotating for the rest of the run. "if the model gets
+    /// bored, the audit notices" beside a ✓ reads as still running.
+    #[test]
+    fn the_grouping_row_stops_rotating_once_the_stage_is_done() {
+        let agent = ("Claude Code".to_string(), false);
+        let long = Duration::from_secs(MESSAGE_SECS * 3);
+        // Still grouping: the rotation is running.
+        let during = screen(80, 2, Some(&agent), long).join("\n");
+        assert!(during.contains(WAITING[2]), "{during}");
+        // Ordering, and past it: the row is ticked and back to its static
+        // description, like every other finished stage.
+        for stage in [3, STAGES.len()] {
+            let after = screen(80, stage, Some(&agent), long).join("\n");
+            assert!(after.contains(STAGES[2].1), "at stage {stage}: {after}");
+            for line in WAITING {
+                assert!(!after.contains(line), "at stage {stage}: {after}");
+            }
+            assert!(!after.contains("asking Claude Code"), "at stage {stage}");
+        }
     }
 
     /// A cache hit does not wait, so it has nothing to fill. Rotating there
