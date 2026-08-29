@@ -234,7 +234,13 @@ worse than a pill with corners.
 base and head blobs — three lines either side by default. Where more of the file is
 available, the pane says so on a **boundary row** at each end of what is shown
 (`── ↑ 16 more above ──`); put the cursor on it and `z` pulls in another step.
-Both numbers come from `[review]` in the user config (`context`, `context_step`). Expand
+Both numbers come from `[review]` in the user config (`context`, `context_step`), as does
+the layout a review opens in (`diff`, default `split`).
+
+A layout **default** is not a layout **setting**. `s` toggles, and the toggle is recorded
+against that review; a review with a recorded choice keeps it whatever the config later
+says. So changing `diff` never moves the layout under someone midway through a read, and a
+review that has never been toggled has nothing recorded at all. Expand
 two hunks until their windows meet and the boundary rows between them disappear: the file
 reads as one continuous stretch, each hunk keeping its own header band so `n`/`N` and
 findings still work. A gap between two blocks keeps a boundary at each end rather than
@@ -305,7 +311,7 @@ list belongs; the footer's job is to point at it.
 | `g`/`G` | top / bottom |
 | `n`/`N` | next / previous hunk (skipping hunks crossed in from other groups) |
 | `z` | show what is being withheld, in the pane you are in — diff pane: on a `──` context boundary row, more of the file, or the hunk it names · elsewhere, the skim remainder or noise group · plan pane, file view: a directory |
-| `s` | toggle unified / side-by-side diff layout (persisted) |
+| `s` | toggle side-by-side / unified diff layout (persisted) |
 | `f` | files, in the pane you are in — plan pane: toggle reading plan ↔ file tree (persisted) · diff pane: the file-list modal (`enter` jumps to the file) |
 | `space` | mark reviewed — the whole selected group/file in the left pane, the hunk's **class** in the diff pane (one exemplar verifies the shape) |
 | `v` | start a line selection at the cursor · `j`/`k` extend it · `v` or `esc` drops it · `c` writes a finding over it |

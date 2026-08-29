@@ -30,9 +30,14 @@ pub struct ReviewState {
     /// plan — a group id in the semantic view, a file path in the file view.
     #[serde(default)]
     pub cursor: Option<(String, usize)>,
-    /// Side-by-side diff layout (default: unified).
+    /// The reader's diff-layout choice, or `None` if they have not made one.
+    ///
+    /// `None` means "use the configured default" — which is why this is an
+    /// option and not a bool. A state file written before this field existed
+    /// records `false`, and that deserialises to `Some(false)`: a review
+    /// already on disk keeps the layout it had, whatever the config now says.
     #[serde(default)]
-    pub split_diff: bool,
+    pub split_diff: Option<bool>,
     /// Flattened per-file view instead of semantic groups (default: groups).
     #[serde(default)]
     pub file_view: bool,

@@ -136,7 +136,7 @@ the diff cursor, whichever pane you are in.
 | `z` | diff, on a `──` boundary row | Show more of the file, or cross into the hunk the row names. |
 | `z` | left, file view | Fold or unfold the directory. |
 | `z` | anywhere else | Unfold the skim remainder, or the noise group. |
-| `s` | either | Toggle unified and side-by-side layout. Saved per review. |
+| `s` | either | Toggle side-by-side and unified layout. Saved per review; `review.diff` sets what a review opens as. |
 | `f` | left | Toggle the reading plan and the file tree. Saved per review. |
 | `f` | diff | Open the file-list modal. |
 
@@ -323,12 +323,15 @@ From the user file, `~/.config/differential/config.toml`:
 [review]
 context = 3
 context_step = 10
+# Diff layout a review opens in: "split" or "unified".
+diff = "split"
 ```
 
 | key | default | meaning |
 |---|---|---|
 | `review.context` | `3` | Context lines shown either side of a hunk before any expansion. |
 | `review.context_step` | `10` | Lines one `z` pulls in at a context boundary row. |
+| `review.diff` | `split` | Layout a review OPENS in. `s` still toggles, and a review that has recorded a choice keeps it. |
 
 These are presentation only. They widen what is **displayed** around a hunk. They can never
 change which hunks exist.
@@ -341,7 +344,7 @@ use differential_tui::{review, ReviewOptions, Prepared};
 review(
     &repo,
     pick,          // true opens the picker first
-    ReviewOptions { context: 3, context_step: 10 },
+    ReviewOptions { context: 3, context_step: 10, split_diff: true, range: None },
     |picked, progress, cancel| {
         // Run the pipeline on a worker thread. Send Progress values down the
         // channel to drive the splash. Watch `cancel` and kill the subprocess.

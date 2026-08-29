@@ -4,7 +4,8 @@
 //!   classification hints only. Shared by everyone reviewing the repo.
 //! - **User-level** `~/.config/differential/config.toml` (XDG) — `[grouping]`:
 //!   which agent CLI to run and its timeout, and `[review]`: how much context
-//!   the reviewer shows around a hunk. Both are per-user choices, not
+//!   the reviewer shows around a hunk, and which diff layout it opens in. Both
+//!   are per-user choices, not
 //!   properties of the repo, so neither lives in it.
 //!
 //! HARD RULE (ADR 0012): config tunes classification hints and tool behaviour.
@@ -105,6 +106,33 @@ pub struct ReviewConfig {
     /// Lines one `z` at a context boundary row pulls in.
     #[serde(default = "default_context_step")]
     pub context_step: usize,
+    /// Which diff layout a review opens in, before the reader says otherwise.
+    ///
+    /// A DEFAULT, not a setting: `s` still toggles, and the toggle is recorded
+    /// per review. A review that has recorded a choice keeps it whatever this
+    /// says, so changing it never moves a layout under someone mid-read.
+    #[serde(default)]
+    pub diff: DiffLayout,
+}
+
+/// How the reviewer lays a hunk out.
+///
+/// An enum rather than a bool because a config key is permanent, and a third
+/// layout would otherwise need a second key contradicting the first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DiffLayout {
+    /// Old and new side by side.
+    #[default]
+    Split,
+    /// One column, removals above additions.
+    Unified,
+}
+
+impl DiffLayout {
+    pub fn is_split(self) -> bool {
+        matches!(self, DiffLayout::Split)
+    }
 }
 
 const fn default_context() -> usize {
@@ -120,6 +148,7 @@ impl Default for ReviewConfig {
         ReviewConfig {
             context: default_context(),
             context_step: default_context_step(),
+            diff: DiffLayout::default(),
         }
     }
 }
@@ -361,6 +390,26 @@ attributes = ["linguist-generated", "custom-generated"]
     fn grouping_in_repo_config_errors_with_migration_hint() {
         let err = Config::parse("[grouping]\nagent = \"claude-code\"", "test").unwrap_err();
         assert!(err.to_string().contains("user config"), "{err}");
+    }
+
+    #[test]
+    fn the_diff_layout_defaults_to_split_and_accepts_either_name() {
+        // Absent means split. A reader who has never opened the config gets the
+        // side-by-side layout.
+        let u = Config::parse_user("[review]\ncontext = 3", "test").unwrap();
+        assert_eq!(u.review.diff, DiffLayout::Split);
+        assert!(u.review.diff.is_split());
+
+        let u = Config::parse_user("[review]\ndiff = \"unified\"", "test").unwrap();
+        assert_eq!(u.review.diff, DiffLayout::Unified);
+        assert!(!u.review.diff.is_split());
+        assert_eq!(u.review.context, 3, "setting one key must not zero another");
+
+        let u = Config::parse_user("[review]\ndiff = \"split\"", "test").unwrap();
+        assert_eq!(u.review.diff, DiffLayout::Split);
+
+        // A typo is an error, not a silent fallback to the default.
+        assert!(Config::parse_user("[review]\ndiff = \"side\"", "test").is_err());
     }
 
     #[test]

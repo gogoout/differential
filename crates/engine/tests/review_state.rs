@@ -456,10 +456,18 @@ fn session_persists_every_mutation() {
     session.set_reviewed(&keys, false).unwrap();
     assert!(reread().load_state().unwrap().reviewed_classes.is_empty());
 
-    // set_split_diff / set_file_view round-trip (additive, default false).
-    assert!(!session.split_diff());
+    // set_split_diff / set_file_view round-trip. `split_diff` starts as None —
+    // "no choice recorded" — so the renderer can fall back to its configured
+    // default without mistaking an untouched review for a deliberate one.
+    assert_eq!(session.split_diff(), None);
     session.set_split_diff(true).unwrap();
-    assert!(reread().load_state().unwrap().split_diff);
+    assert_eq!(reread().load_state().unwrap().split_diff, Some(true));
+    session.set_split_diff(false).unwrap();
+    assert_eq!(
+        reread().load_state().unwrap().split_diff,
+        Some(false),
+        "choosing the non-default is still a choice, and must be recorded"
+    );
     assert!(!session.file_view());
     session.set_file_view(true).unwrap();
     assert!(reread().load_state().unwrap().file_view);
