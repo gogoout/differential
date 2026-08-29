@@ -19,7 +19,7 @@
 //! instead.
 
 use differential_engine::artefact::symbols::{FileSymbols, SymbolSource};
-use tree_sitter::{Language, Node, TreeCursor};
+use tree_sitter::{Language, Node, Tree};
 
 use super::{is_prose, line_count, line_of, parse, text_of};
 
@@ -138,7 +138,7 @@ impl SymbolSource for AstTier2Symbols {
             defines: vec![Vec::new(); lines],
             references: vec![Vec::new(); lines],
         };
-        walk(&mut tree.walk(), content, false, &mut out);
+        walk(&tree, content, &mut out);
         Some(out)
     }
 
@@ -147,32 +147,52 @@ impl SymbolSource for AstTier2Symbols {
     }
 }
 
-/// Descend, carrying whether we are already inside a callee position.
+/// Visit every node, carrying whether we are already inside a callee position.
 ///
 /// `in_callee` propagates because a method call nests: `foo.bar()` puts
 /// `field_expression` in the `function:` field, and `bar` one level below that.
 /// A rule that looked only at a token's own parent would miss every method call
 /// in Rust, Go, Python, TypeScript and C++.
-fn walk(cursor: &mut TreeCursor, content: &[u8], in_callee: bool, out: &mut FileSymbols) {
-    let node = cursor.node();
-    let field = cursor.field_name().unwrap_or("");
-    let parent_kind = node.parent().map(|p| p.kind()).unwrap_or("");
+///
+/// **Iterative, with the flag on an explicit stack.** This reader takes
+/// JavaScript, Java, C, C++ and C#, where a minified bundle or a deeply nested
+/// literal produces AST depth proportional to nesting. Recursion there would
+/// abort the whole process on overflow, rather than returning `None` and
+/// letting a cruder reader answer.
+fn walk(tree: &Tree, content: &[u8], out: &mut FileSymbols) {
+    let mut cursor = tree.walk();
+    // One entry per depth, holding what this node's CHILDREN inherit. Pushed on
+    // the way down and popped on the way up, so it unwinds with the cursor.
+    let mut inherited: Vec<bool> = vec![false];
+    loop {
+        let node = cursor.node();
+        let field = cursor.field_name().unwrap_or("");
+        let parent_kind = node.parent().map(|p| p.kind()).unwrap_or("");
+        let from_above = *inherited.last().expect("the root entry is never popped");
+        let here = CALLEE_FIELDS.contains(&field)
+            || (MEMBER_FIELDS.contains(&field)
+                && (parent_kind.contains("call") || parent_kind.contains("invocation")));
+        let inside_callee = from_above || here;
 
-    let callee_here = CALLEE_FIELDS.contains(&field)
-        || (MEMBER_FIELDS.contains(&field)
-            && (parent_kind.contains("call") || parent_kind.contains("invocation")));
-    let inside_callee = in_callee || callee_here;
+        if node.child_count() == 0 {
+            record(node, field, parent_kind, inside_callee, content, out);
+        }
 
-    if node.child_count() == 0 {
-        record(node, field, parent_kind, inside_callee, content, out);
-    } else if cursor.goto_first_child() {
+        if cursor.goto_first_child() {
+            inherited.push(inside_callee);
+            continue;
+        }
+        // A sibling shares our depth, so it inherits the same value; only
+        // climbing out of a level pops one.
         loop {
-            walk(cursor, content, inside_callee, out);
-            if !cursor.goto_next_sibling() {
+            if cursor.goto_next_sibling() {
                 break;
             }
+            if !cursor.goto_parent() {
+                return;
+            }
+            inherited.pop();
         }
-        cursor.goto_parent();
     }
 }
 

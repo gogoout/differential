@@ -14,8 +14,11 @@
 //! the failure it exists to fix. Removing edges is only useful insofar as it
 //! removes the false ones holding that knot together.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
+
+use petgraph::algo::tarjan_scc;
+use petgraph::graph::DiGraph;
 
 use differential_engine::config::Config;
 use differential_engine::gitio::Repo;
@@ -93,20 +96,20 @@ fn real_corpus_graph() {
             .enumerate()
             .map(|(j, c)| (c.id.as_str(), j))
             .collect();
-        let adjacency: Vec<HashSet<usize>> = doc
-            .classes
-            .iter()
-            .map(|c| {
-                c.depends_on
-                    .iter()
-                    .filter_map(|e| index.get(e.on.as_str()).copied())
-                    .collect()
-            })
-            .collect();
-        let edges: usize = adjacency.iter().map(HashSet::len).sum();
-        let knots: Vec<usize> = tarjan(&adjacency)
+        // `depends_on` is already one entry per target, so no edge repeats.
+        let mut graph = DiGraph::<(), ()>::new();
+        let nodes: Vec<_> = doc.classes.iter().map(|_| graph.add_node(())).collect();
+        for (j, c) in doc.classes.iter().enumerate() {
+            for e in &c.depends_on {
+                if let Some(&target) = index.get(e.on.as_str()) {
+                    graph.add_edge(nodes[j], nodes[target], ());
+                }
+            }
+        }
+        let edges = graph.edge_count();
+        let knots: Vec<usize> = tarjan_scc(&graph)
             .into_iter()
-            .map(|c| c.len())
+            .map(|component| component.len())
             .filter(|&n| n > 1)
             .collect();
         let in_a_cycle: usize = knots.iter().sum();
@@ -132,69 +135,6 @@ fn real_corpus_graph() {
             );
         }
     }
-}
-
-/// Iterative Tarjan, so a deep graph cannot exhaust the stack.
-fn tarjan(adjacency: &[HashSet<usize>]) -> Vec<Vec<usize>> {
-    let n = adjacency.len();
-    let mut index = vec![usize::MAX; n];
-    let mut low = vec![0usize; n];
-    let mut on_stack = vec![false; n];
-    let mut stack: Vec<usize> = Vec::new();
-    let mut out: Vec<Vec<usize>> = Vec::new();
-    let mut next = 0usize;
-
-    for root in 0..n {
-        if index[root] != usize::MAX {
-            continue;
-        }
-        let mut work: Vec<(usize, Vec<usize>, usize)> =
-            vec![(root, adjacency[root].iter().copied().collect(), 0)];
-        index[root] = next;
-        low[root] = next;
-        next += 1;
-        stack.push(root);
-        on_stack[root] = true;
-
-        while let Some((v, successors, mut i)) = work.pop() {
-            let mut descended = false;
-            while i < successors.len() {
-                let w = successors[i];
-                i += 1;
-                if index[w] == usize::MAX {
-                    index[w] = next;
-                    low[w] = next;
-                    next += 1;
-                    stack.push(w);
-                    on_stack[w] = true;
-                    work.push((v, successors.clone(), i));
-                    work.push((w, adjacency[w].iter().copied().collect(), 0));
-                    descended = true;
-                    break;
-                } else if on_stack[w] {
-                    low[v] = low[v].min(index[w]);
-                }
-            }
-            if descended {
-                continue;
-            }
-            if low[v] == index[v] {
-                let mut component = Vec::new();
-                while let Some(w) = stack.pop() {
-                    on_stack[w] = false;
-                    component.push(w);
-                    if w == v {
-                        break;
-                    }
-                }
-                out.push(component);
-            }
-            if let Some(&mut (parent, _, _)) = work.last_mut() {
-                low[parent] = low[parent].min(low[v]);
-            }
-        }
-    }
-    out
 }
 
 fn shellexpand_home(p: &str) -> String {
