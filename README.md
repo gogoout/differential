@@ -118,6 +118,18 @@ Every command takes `--repo`; all but `dfr clean` also take `--config` and `--us
 Full reference, including every flag and every key in the reviewer:
 [`crates/cli/README.md`](crates/cli/README.md).
 
+## Languages
+
+Every file is read and every hunk is counted, whatever the language — that never depends on
+a parser. What a parser buys is the **reading order**: which change to open before which.
+
+Rust, TypeScript, Python, Go and Kotlin get the most precise ordering. JavaScript, Java, C,
+C++ and C# follow. Seventeen more are read by a regex, and anything else contributes no
+dependency edges — it is still enumerated, classified and read.
+
+Full table, and what each rung costs:
+[`crates/symbols/README.md`](crates/symbols/README.md).
+
 ## How it works
 
 The pipeline has four stages.
@@ -248,7 +260,7 @@ tool behaviour only. Every invariant depends on that.
 | [`differential`](crates/cli/README.md) | The application. It owns the `dfr` and `differential` binaries. |
 | [`differential-engine`](crates/engine/README.md) | The core library: git io, diff parsing, shape classes, grouping, ordering, invariants. |
 | [`differential-stack`](crates/stack/README.md) | The shadow-branch renderer. The diff as a synthetic commit stack. |
-| [`differential-symbols`](crates/symbols) | Symbol readers: tree-sitter, and a crude fallback. |
+| [`differential-symbols`](crates/symbols/README.md) | Symbol readers: tree-sitter, and a crude fallback. |
 | [`differential-tui`](crates/tui/README.md) | The terminal reviewer behind `dfr review`. |
 
 Dependency direction is strict: `cli → {tui, stack} → engine`.

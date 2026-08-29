@@ -33,6 +33,9 @@ Three readers ship. Which one answered is not a distinction this stage can see:
 | field-rule | JavaScript, Java, C, C++, C# | from the tree | calls and types, from field names |
 | crude | any other source extension | declaration keywords | every identifier ≥ 4 chars |
 
+Which language sits in which row, and every extension:
+[`crates/symbols/README.md`](../crates/symbols/README.md).
+
 **A definition is a file-scope name others can use.** `mod template;` is not one — it names
 a module. `fn from` inside an `impl` is not one — it is reached through its type. Counting
 those made a single common word into a globally unique symbol that every file mentioning it
