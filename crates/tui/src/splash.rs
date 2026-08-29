@@ -176,7 +176,6 @@ pub fn draw_cancelling(
         let area = frame.area();
         frame.render_widget(Clear, area);
         frame.render_widget(Block::default().style(theme.ground()), area);
-        frame.render_widget(Block::default().style(theme.ground()), area);
         frame.render_widget(
             Paragraph::new(vec![
                 Line::default(),

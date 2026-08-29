@@ -203,14 +203,6 @@ fn draw(
     state: &mut PickerState,
 ) {
     let area: Rect = frame.area();
-    // The theme's own ground, under everything. Without it the terminal's
-    // background shows through wherever nothing else paints, which is most
-    // of the screen — and a light palette over a dark terminal is pale ink
-    // on black.
-    frame.render_widget(
-        ratatui::widgets::Block::default().style(theme.ground()),
-        frame.area(),
-    );
     let bar = Style::default().fg(theme.reviewed_fg);
 
     let mut lines = header(theme, state, bar);
@@ -291,6 +283,10 @@ fn draw(
         " "
     };
     frame.render_widget(Clear, area);
+    // The theme's own ground, under everything. `Clear` resets cells to the
+    // TERMINAL's default, so without this a light palette shows the terminal's
+    // background wherever nothing else paints — which is most of the screen.
+    frame.render_widget(Block::default().style(theme.ground()), area);
     frame.render_widget(
         Paragraph::new(lines).block(
             Block::default()

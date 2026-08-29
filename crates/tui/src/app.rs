@@ -1871,7 +1871,7 @@ impl App {
                 // A float over the diff, not a strip pinned to the bottom: a
                 // finding is about the lines you can still see around it.
                 let area = centered_rect(panes.body, panes.body.width * 3 / 5, 10);
-                frame.render_widget(Clear, area);
+                clear_to_ground(frame, &self.theme, area);
                 frame.render_widget(&**textarea, area);
                 // The keys go INSIDE the box, on its last row, where a footer
                 // belongs — the title says what you are annotating.
@@ -1900,7 +1900,7 @@ impl App {
             }
             Mode::Help => {
                 let area = centered_rect(panes.body, 62, 21);
-                frame.render_widget(Clear, area);
+                clear_to_ground(frame, &self.theme, area);
                 frame.render_widget(help_paragraph(&self.theme), area);
             }
             Mode::Findings {
@@ -2021,7 +2021,7 @@ impl App {
                     0 => format!(" findings · {} ", entries.len()),
                     n => format!(" findings · {} · {n} orphaned ", entries.len()),
                 };
-                frame.render_widget(Clear, area);
+                clear_to_ground(frame, &self.theme, area);
                 frame.render_widget(
                     Paragraph::new(shown).block(pane(&self.theme, title, true)),
                     area,
@@ -2097,13 +2097,13 @@ impl App {
                         ])
                     })
                     .collect();
-                frame.render_widget(Clear, area);
+                clear_to_ground(frame, &self.theme, area);
                 frame.render_widget(
-                    Paragraph::new(lines).block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .title(" files — enter jump · esc close "),
-                    ),
+                    Paragraph::new(lines).block(pane(
+                        &self.theme,
+                        " files — enter jump · esc close ".to_string(),
+                        true,
+                    )),
                     area,
                 );
             }
@@ -2460,7 +2460,7 @@ impl App {
             width: plan.width,
             height: h,
         };
-        frame.render_widget(Clear, area);
+        clear_to_ground(frame, &self.theme, area);
         self.draw_file_list_in(frame, area);
     }
 
@@ -2551,7 +2551,7 @@ impl App {
                 .min(rows.len() as u16 + 2)
                 .max(3),
         };
-        frame.render_widget(Clear, area);
+        clear_to_ground(frame, &self.theme, area);
         let inner_h = area.height.saturating_sub(2) as usize;
         let dim = Style::default().fg(self.theme.gutter_fg);
         let guides = guides_for_depths(&rows.iter().map(MapRow::depth).collect::<Vec<_>>());
@@ -3265,6 +3265,16 @@ enum Marker<'a> {
 /// cursor, which is the smallest thing on it — and it competed with the hunk
 /// edge, the one border in this view that means something. The title is where
 /// a reader looks to know which pane they are in anyway.
+/// Clear a float's area and repaint the theme's ground under it.
+///
+/// `Clear` resets cells to the TERMINAL's default, which is not the theme's
+/// background — so a float over a light palette punched a dark hole in it.
+/// Every float goes through here rather than calling `Clear` directly.
+fn clear_to_ground(frame: &mut Frame, theme: &Theme, area: Rect) {
+    frame.render_widget(Clear, area);
+    frame.render_widget(Block::default().style(theme.ground()), area);
+}
+
 fn pane(theme: &Theme, title: String, focused: bool) -> Block<'static> {
     let ink = if focused {
         theme.header_fg

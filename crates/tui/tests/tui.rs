@@ -3979,6 +3979,43 @@ fn the_help_modal_is_only_keys() {
     assert_eq!(col("half page"), col("unified / split diff"));
 }
 
+/// A float is drawn with `Clear`, which resets cells to the TERMINAL's default
+/// rather than the theme's — so before this every float punched a hole of the
+/// terminal's own background through a light palette, most visibly the group
+/// map floating over the detail pane.
+#[test]
+fn a_float_keeps_the_themes_ground_rather_than_the_terminals() {
+    use differential_engine::config::ThemeName;
+    let (_r, mut app) = make_app();
+    app.set_theme(Theme::named(ThemeName::SolarizedLight));
+    let ground = Some(Theme::named(ThemeName::SolarizedLight).bg);
+    let buf = buffer_of(&app);
+
+    let cells = || (0..40u16).flat_map(|y| (0..100u16).map(move |x| (x, y)));
+
+    // Nothing anywhere falls back to the terminal's own background.
+    let stray: Vec<String> = cells()
+        .filter(|&(x, y)| buf[(x, y)].style().bg == Some(ratatui::style::Color::Reset))
+        .map(|(x, y)| format!("({x},{y})"))
+        .take(5)
+        .collect();
+    assert!(stray.is_empty(), "cells left to the terminal: {stray:?}");
+
+    // And the float itself is on the ground rather than a hole in it.
+    let row = (0..40u16)
+        .find(|&y| {
+            (0..100u16)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect::<String>()
+                .contains("files in")
+        })
+        .expect("the group map float is not on screen");
+    assert!(
+        (0..100u16).any(|x| buf[(x, row)].style().bg == ground),
+        "the float carries none of the theme's ground"
+    );
+}
+
 /// Not an assertion — every shipped palette on the same screen, so they can be
 /// compared side by side rather than one at a time:
 /// `cargo test -p differential-tui --test tui -- --ignored --nocapture render_dump_themes`
