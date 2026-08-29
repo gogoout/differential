@@ -13,11 +13,10 @@ use super::{Seed, rgb};
 pub(super) fn seed() -> Seed {
     Seed {
         syntax: EmbeddedThemeName::SolarizedLight,
-        add: rgb(0x5B, 0x69, 0x00),
+        add: rgb(0x4F, 0x6B, 0x00),
         del: rgb(0xC2, 0x2B, 0x28),
         accent: rgb(0x1E, 0x6F, 0xA8),
         skim: rgb(0x8A, 0x68, 0x00),
         finding: rgb(0xB0, 0x2B, 0x6C),
-        reviewed: rgb(0x5B, 0x69, 0x00),
     }
 }

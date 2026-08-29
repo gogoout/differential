@@ -67,6 +67,24 @@ fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
     mixed.into_format()
 }
 
+/// `c` with its lightness pushed away from the ground, chroma untouched.
+///
+/// Oklab makes this the one-line operation it ought to be: move `l`, leave `a`
+/// and `b` alone. Mixing towards another colour cannot do it — towards the
+/// ground or towards the foreground, both drag chroma down, and chroma is what
+/// makes a mark read as a mark rather than as a shade of the text.
+fn deepen(c: Rgb, bg: Rgb, by: f32) -> Rgb {
+    let mut lab: Oklab = c.into_format::<f32>().into_color();
+    let ground: Oklab = bg.into_format::<f32>().into_color();
+    lab.l = if ground.l < 0.5 {
+        (lab.l + by).min(1.0)
+    } else {
+        (lab.l - by).max(0.0)
+    };
+    let out: Srgb<f32> = Srgb::from_color(lab);
+    out.into_format()
+}
+
 /// WCAG 2.1 contrast ratio, 1.0 (identical) to 21.0 (black on white).
 pub fn contrast(a: Rgb, b: Rgb) -> f32 {
     a.into_format::<f32>()
@@ -103,9 +121,15 @@ fn from_syntect(c: syntect::highlighting::Color) -> Rgb {
 
 /// What a theme decides for itself.
 ///
-/// Six accents, because a syntect theme carries a background and a foreground
+/// Five accents, because a syntect theme carries a background and a foreground
 /// but has no opinion about what an *addition* is, or a finding, or the skim
 /// tier. Everything else on [`Theme`] is derived from these.
+///
+/// A reviewed mark is NOT one of them. It was, and all eleven seeds set it to
+/// the same literal as `add` — eleven files independently agreeing to keep two
+/// fields in lockstep, which is a field that has not earned its place. It is
+/// derived from `add` instead, and derived rather than aliased because the
+/// palette this replaced did distinguish them.
 pub(super) struct Seed {
     /// The code's own colours, and the ground the chrome is mixed against.
     pub syntax: EmbeddedThemeName,
@@ -117,7 +141,6 @@ pub(super) struct Seed {
     /// is the only tier with an ink of its own.
     pub skim: Rgb,
     pub finding: Rgb,
-    pub reviewed: Rgb,
 }
 
 fn seed(name: ThemeName) -> Seed {
@@ -443,7 +466,17 @@ fn derive(seed: &Seed, syntect: syntect::highlighting::Theme) -> Theme {
         focus_fg: color(del),
         skim_fg: color(seed.skim),
         noise_fg: m(fg, 0.42),
-        reviewed_fg: color(seed.reviewed),
+        // A deeper sibling of the addition green. `reviewed` used to be its own
+        // seed field and every theme set it to exactly `add`; the palette
+        // before that distinguished them, and this keeps the distinction
+        // without eleven literals to hold in step.
+        //
+        // A LIGHTNESS shift away from the ground, not a mix. Both mixes were
+        // tried: towards the background cost contrast and chroma at once and
+        // took the ✓ under AA on every light theme, and towards the foreground
+        // fixed the contrast but still desaturated three themes under the
+        // chroma floor. Moving `l` alone changes neither hue nor chroma.
+        reviewed_fg: color(deepen(add, bg, 0.10)),
         add_fg: color(add),
         del_fg: color(del),
         finding_fg: color(seed.finding),
@@ -562,6 +595,11 @@ mod tests {
                 // Not a dispatch, but the same class of bug: a foreign hunk
                 // wearing the full accent stops saying it is foreign.
                 ("foreign vs header", t.foreign_fg, t.header_fg),
+                // A reviewed ✓ and an addition count sit in the same pane and
+                // are both green. They derive from one seed now, so this is
+                // what keeps deriving them to the same colour from being
+                // silent.
+                ("reviewed vs add", t.reviewed_fg, t.add_fg),
             ];
             for (what, a, b) in pairs {
                 assert_ne!(a, b, "{name:?}: {what} derived to one colour");
