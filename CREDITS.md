@@ -43,8 +43,15 @@ The colour field schema in `crates/tui/src/theme.rs` is modelled on lumen's `Dif
   [`adr/0001-llm-merges-class-ids-never-hunks.md`](adr/0001-llm-merges-class-ids-never-hunks.md).
 - **Git's own `diff-highlight`.** The word-level emphasis follows its approach: highlight
   words only when most of the line is unchanged.
-- **SCIP and code indexers.** Considered for the ordering stage, then rejected. See
-  [`adr/0015-language-abstraction.md`](adr/0015-language-abstraction.md).
+- **SCIP and code indexers.** Considered for the ordering stage, then rejected: an indexer
+  wants a working build per language against a checkout of the right revision, to feed a
+  stage that tolerates noise. Tree-sitter needs only bytes. **stack-graphs** was weighed
+  too, and archived upstream in September 2025. See
+  [`adr/0015-language-abstraction.md`](adr/0015-language-abstraction.md) and
+  [`adr/0023-symbol-extraction-is-a-domain-port.md`](adr/0023-symbol-extraction-is-a-domain-port.md).
+- **nvim-treesitter's `highlights.scm`.** Weighed as a ready-made query set for around 151
+  grammars, then rejected: those files use predicates the Rust query engine does not
+  support, and pin to grammar versions we do not control.
 
 ## git
 
@@ -81,6 +88,20 @@ The engine and the application:
 | [`tempfile`](https://crates.io/crates/tempfile) | Temporary index files for git plumbing. |
 | [`etcetera`](https://crates.io/crates/etcetera) | Finding the user config directory. |
 | [`clap`](https://crates.io/crates/clap) | Argument parsing. |
+
+The symbol readers:
+
+| crate | what it does here |
+|---|---|
+| [`tree-sitter`](https://crates.io/crates/tree-sitter) | Parsing, and the query engine behind the tuned readers. |
+| [`tree-sitter-rust`](https://crates.io/crates/tree-sitter-rust), [`-python`](https://crates.io/crates/tree-sitter-python), [`-go`](https://crates.io/crates/tree-sitter-go), [`-typescript`](https://crates.io/crates/tree-sitter-typescript), [`-kotlin-ng`](https://crates.io/crates/tree-sitter-kotlin-ng) | Grammars for the languages with a hand-written query. |
+| [`tree-sitter-javascript`](https://crates.io/crates/tree-sitter-javascript), [`-java`](https://crates.io/crates/tree-sitter-java), [`-c`](https://crates.io/crates/tree-sitter-c), [`-cpp`](https://crates.io/crates/tree-sitter-cpp), [`-c-sharp`](https://crates.io/crates/tree-sitter-c-sharp) | Grammars read by field name, with no query. |
+| [`petgraph`](https://crates.io/crates/petgraph) | Test-only. Finds the cycles the corpus measurement reports. |
+
+The queries in `crates/symbols/src/ast/queries` are ours, not vendored. The grammars all
+bind through one `tree-sitter-language` version, which is the ABI that matters — their own
+version numbers scatter and mean nothing here. See
+[`adr/0023-symbol-extraction-is-a-domain-port.md`](adr/0023-symbol-extraction-is-a-domain-port.md).
 
 ## Tooling
 

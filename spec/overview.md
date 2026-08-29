@@ -46,9 +46,9 @@ large refactors it silently dropped up to ~73% of hunks while reporting success.
 | stage | what it does | milestone |
 |---|---|---|
 | `enumerate` | canonical hunk enumeration from `git diff -U0 --no-renames`; rename-detected view (`-M`) merged in as annotations | 1 |
-| `classify` | shape classes, `pure_substitution`, generated-file hints | 1 |
+| `classify` | shape classes, `pure_substitution`, generated-file hints, the class dependency graph (ADR 0022) | 1 |
 | `group` | LLM merge/label of class ids; coverage audit; back-fill ([grouping.md](grouping.md)) | 2 |
-| `order` | group dependency graph, foundation-first topological sort, roles ([ordering.md](ordering.md)) | 3 |
+| `order` | contract the class dependency graph onto groups, foundation-first topological sort, roles ([ordering.md](ordering.md)) | 3 |
 
 ## Honest reporting
 

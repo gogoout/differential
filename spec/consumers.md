@@ -57,7 +57,8 @@ let repo = Repo::open(path)?;                       // any dir inside the repo
 let config = Config::load(&OsConfigSource, repo.root(), None, None)?; // or defaults
 let src = resolve_range(&repo, &["main..feature"])?;   // a ReviewSource
 let out = run_pipeline(&repo, &src.base, &src.head, src.kind, &config,
-                       &LanguageRegistry::builtin())?;
+                       &LanguageRegistry::builtin(),
+                       &differential_symbols::readers())?;   // the symbol readers
 // out.report: InvariantReport — always present
 // out.document: Option<PlanDocument> — None iff an invariant failed
 ```
@@ -79,9 +80,11 @@ let out = run_pipeline(&repo, &src.base, &src.head, src.kind, &config,
   `store::FsGroupingCache::disabled()` rather than an absent one, so the stage never grows
   a branch for `--no-cache`. Cancellation belongs to the backend
   (`CommandBackend::with_cancel`), since the thing that needs killing is the subprocess.
-- Language plugins (ADR 0015) and LLM backends (`engine::llm`, ADR 0016/0018) are injected
-  by the consumer; `LanguageRegistry::builtin()` and `CommandBackend::claude_cli()` are the
-  defaults.
+- Language plugins (ADR 0015), symbol readers (`engine::artefact::symbols`, ADR 0023) and
+  LLM backends (`engine::llm`, ADR 0016/0018) are injected by the consumer;
+  `LanguageRegistry::builtin()`, `differential_symbols::readers()` and
+  `CommandBackend::claude_cli()` are the defaults. A consumer that wires no readers gets a
+  document with no dependency edges, so nothing is ordered foundation-first.
 
 ## Dev entry point
 
