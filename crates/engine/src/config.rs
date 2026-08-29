@@ -4,9 +4,9 @@
 //!   classification hints only. Shared by everyone reviewing the repo.
 //! - **User-level** `~/.config/differential/config.toml` (XDG) — `[grouping]`:
 //!   which agent CLI to run and its timeout, and `[review]`: how much context
-//!   the reviewer shows around a hunk, and which diff layout it opens in. Both
-//!   are per-user choices, not
-//!   properties of the repo, so neither lives in it.
+//!   the reviewer shows around a hunk, and which diff layout it opens in.
+//!   Both are per-user choices, not properties of the repo, so neither lives
+//!   in it.
 //!
 //! HARD RULE (ADR 0012): config tunes classification hints and tool behaviour.
 //! It can never remove a file or hunk from enumeration — enumeration runs before
