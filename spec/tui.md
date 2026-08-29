@@ -373,12 +373,31 @@ review is still on disk under its own id — but its marks are not the ones you 
 ## While the pipeline runs
 
 The reviewer opens immediately and shows a splash until the document is ready:
-enumerate → classify → group → order, the active stage spinning, with an elapsed timer.
-The grouping line names the agent it is waiting on ("asking Claude Code"), or says the
-cache spared the call — that stage shells out to an LLM on a cache miss and dominates the
-wait. It is the agent's **name**, not its command line: the argv is four times the width
-of the line and answers a different question, so it lives where it is the answer, in the
-text of a spawn failure (`LlmBackend::name`). `q` cancels, and
+enumerate → classify → group → order, the active stage spinning, with an elapsed timer and
+a grouping line that changes every few seconds.
+
+That stage shells out to an LLM on a cache miss and dominates the wait, so its line is the
+one anybody is actually looking at, sometimes for minutes. It **rotates**: first the agent
+it is waiting on ("asking Claude Code"), then a handful of short lines about what the stage
+is doing, four seconds each, round and round. Every line is true — the rotation is there so
+a long wait has something to read, not to fill it with noise. A cache hit does not rotate;
+it says the cache spared the call and leaves it there, because that path never waits.
+
+The clock is the **agent call's**, not the splash's. Enumerate and classify run first, so a
+rotation counting from the moment the splash opened is already several lines deep by the
+time this row has anything to say — and the line that names the agent, which is the one
+piece of information on it, would be the one line a reviewer never sees.
+
+The agent slot names the agent's **name**, not its command line: the argv is four times the
+width of the line and answers a different question, so it lives where it is the answer, in
+the text of a spawn failure (`LlmBackend::name`).
+
+The block does not move while the line changes underneath it. The indent is measured from
+every string that can appear there — the stage descriptions and the rotating messages, all
+fixed at compile time — and never from the line currently on screen, so a block that shifts
+sideways mid-wait is not a thing this screen can do. A message longer than the budget would
+widen the block rather than slide it, and on a narrow pane push it off the left edge, which
+is why the copy is capped and the cap is a test. `q` cancels, and
 cancelling kills the agent subprocess rather than merely stopping the screen from
 watching it: raw mode has already disabled `Ctrl-C`, so nothing else would reap it.
 
