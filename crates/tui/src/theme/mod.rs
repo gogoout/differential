@@ -6,77 +6,80 @@
 //! the syntect theme itself declares. That is what keeps the chrome and the
 //! code in one palette rather than two that drift.
 //!
-//! Field schema modelled on lumen's `DiffColors`. There is no hand-tuned
-//! palette any more: a hand-tuned one is a palette the rules were never tested
-//! against, and it is the rules every other theme depends on.
+//! One seed per file, in the modules below. Field schema modelled on lumen's
+//! `DiffColors`. There is no hand-tuned palette any more: a hand-tuned one is a
+//! palette the rules were never tested against, and it is the rules every other
+//! theme depends on.
+
+mod dark;
+mod gruvbox_dark;
+mod gruvbox_light;
+mod light;
+mod monokai;
+mod solarized_dark;
+mod solarized_light;
 
 use std::sync::Arc;
 
 use differential_engine::config::ThemeName;
+use palette::color_difference::Wcag21RelativeContrast;
+use palette::{FromColor, IntoColor, Mix, Oklab, Srgb};
 use ratatui::style::{Color, Modifier, Style};
 use two_face::theme::EmbeddedThemeName;
 
 use super::vendor::LineOrigin;
 use super::vendor::syntax::SyntaxHighlighter;
 
-/// Eight bits a channel — the only form the derivation can mix.
+/// A colour the derivation can actually work with.
 ///
 /// `ratatui::style::Color` cannot be: most of its variants are ANSI names,
 /// which have no value until a terminal supplies one, so there is nothing to
 /// blend and nothing to contrast-check. That is exactly why the palettes
 /// stopped using them.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Rgb(pub u8, pub u8, pub u8);
+type Rgb = Srgb<u8>;
 
-impl Rgb {
-    const fn color(self) -> Color {
-        Color::Rgb(self.0, self.1, self.2)
-    }
+pub(super) const fn rgb(r: u8, g: u8, b: u8) -> Rgb {
+    Srgb::new(r, g, b)
+}
 
-    /// The colour `t` of the way from `self` to `other`, `t` in 0..=1.
-    ///
-    /// Plain sRGB interpolation. Weighed against the `palette` crate, which
-    /// would do this in a perceptual space: that is a colour-science library
-    /// for what is here two functions over `u8` triples. If a derived palette
-    /// ever reads as muddy, this is the line to reach for Oklab in.
-    fn mix(self, other: Rgb, t: f32) -> Rgb {
-        let t = t.clamp(0.0, 1.0);
-        let c = |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * t).round() as u8;
-        Rgb(c(self.0, other.0), c(self.1, other.1), c(self.2, other.2))
-    }
+fn color(c: Rgb) -> Color {
+    Color::Rgb(c.red, c.green, c.blue)
+}
 
-    /// Relative luminance, per WCAG 2.1 — the input to [`Rgb::contrast`].
-    pub fn luminance(self) -> f32 {
-        let channel = |v: u8| {
-            let v = f32::from(v) / 255.0;
-            if v <= 0.03928 {
-                v / 12.92
-            } else {
-                ((v + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * channel(self.0) + 0.7152 * channel(self.1) + 0.0722 * channel(self.2)
-    }
+/// The colour `t` of the way from `a` to `b`, mixed **perceptually**.
+///
+/// Oklab rather than sRGB, so `t` is a share of the PERCEIVED distance rather
+/// than of the encoded value — which is the judgement every derivation rule
+/// below is actually making when it says "a whisper of colour over the
+/// ground". The two differ a lot: half way from black to white is 99 here and
+/// 128 in sRGB.
+///
+/// `palette` does the conversion and the mix. A hand-rolled `u8` lerp was the
+/// wrong answer twice over — more code, and the wrong colour space.
+fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
+    let a: Oklab = a.into_format::<f32>().into_color();
+    let b: Oklab = b.into_format::<f32>().into_color();
+    let mixed: Srgb<f32> = Srgb::from_color(a.mix(b, t.clamp(0.0, 1.0)));
+    mixed.into_format()
+}
 
-    /// WCAG contrast ratio, 1.0 (identical) to 21.0 (black on white).
-    pub fn contrast(self, other: Rgb) -> f32 {
-        let (a, b) = (self.luminance(), other.luminance());
-        let (hi, lo) = if a > b { (a, b) } else { (b, a) };
-        (hi + 0.05) / (lo + 0.05)
-    }
+/// WCAG 2.1 contrast ratio, 1.0 (identical) to 21.0 (black on white).
+pub fn contrast(a: Rgb, b: Rgb) -> f32 {
+    a.into_format::<f32>()
+        .relative_contrast(b.into_format::<f32>())
+}
 
-    /// The RGB behind a `Color`. `None` for anything a palette should no
-    /// longer contain, which is what the tests assert on.
-    pub fn of(c: Color) -> Option<Rgb> {
-        match c {
-            Color::Rgb(r, g, b) => Some(Rgb(r, g, b)),
-            _ => None,
-        }
+/// The RGB behind a `Color`. `None` for anything a palette should no longer
+/// contain, which is what the tests assert on.
+pub fn rgb_of(c: Color) -> Option<Rgb> {
+    match c {
+        Color::Rgb(r, g, b) => Some(rgb(r, g, b)),
+        _ => None,
     }
+}
 
-    fn from_syntect(c: syntect::highlighting::Color) -> Rgb {
-        Rgb(c.r, c.g, c.b)
-    }
+fn from_syntect(c: syntect::highlighting::Color) -> Rgb {
+    rgb(c.r, c.g, c.b)
 }
 
 /// What a theme decides for itself.
@@ -84,87 +87,29 @@ impl Rgb {
 /// Six accents, because a syntect theme carries a background and a foreground
 /// but has no opinion about what an *addition* is, or a finding, or the skim
 /// tier. Everything else on [`Theme`] is derived from these.
-struct Seed {
+pub(super) struct Seed {
     /// The code's own colours, and the ground the chrome is mixed against.
-    syntax: EmbeddedThemeName,
-    add: Rgb,
-    del: Rgb,
+    pub syntax: EmbeddedThemeName,
+    pub add: Rgb,
+    pub del: Rgb,
     /// The hunk you are reading, a header, the cursor's tint.
-    accent: Rgb,
+    pub accent: Rgb,
     /// The middle effort tier. Focus takes `del` and noise is derived, so this
     /// is the only tier with an ink of its own.
-    skim: Rgb,
-    finding: Rgb,
-    reviewed: Rgb,
+    pub skim: Rgb,
+    pub finding: Rgb,
+    pub reviewed: Rgb,
 }
 
-/// Accents are the theme family's own, so a Gruvbox review is Gruvbox all the
-/// way down rather than one palette wearing another's green.
 fn seed(name: ThemeName) -> Seed {
     match name {
-        ThemeName::Dark => Seed {
-            syntax: EmbeddedThemeName::Base16EightiesDark,
-            add: Rgb(0x7C, 0xC7, 0x7F),
-            del: Rgb(0xEF, 0x8A, 0x8A),
-            accent: Rgb(0x5D, 0xD5, 0xE8),
-            skim: Rgb(0xF2, 0xC9, 0x60),
-            finding: Rgb(0xCB, 0x8A, 0xD6),
-            reviewed: Rgb(0x7C, 0xC7, 0x7F),
-        },
-        ThemeName::Light => Seed {
-            syntax: EmbeddedThemeName::Github,
-            add: Rgb(0x1A, 0x7F, 0x37),
-            del: Rgb(0xCF, 0x22, 0x2E),
-            accent: Rgb(0x0A, 0x5C, 0xC2),
-            skim: Rgb(0x8A, 0x5A, 0x00),
-            finding: Rgb(0x7A, 0x3D, 0xD0),
-            reviewed: Rgb(0x1A, 0x7F, 0x37),
-        },
-        ThemeName::GruvboxDark => Seed {
-            syntax: EmbeddedThemeName::GruvboxDark,
-            add: Rgb(0xB8, 0xBB, 0x26),
-            del: Rgb(0xFB, 0x69, 0x54),
-            accent: Rgb(0x8E, 0xC0, 0x7C),
-            skim: Rgb(0xFA, 0xBD, 0x2F),
-            finding: Rgb(0xD3, 0x86, 0x9B),
-            reviewed: Rgb(0xB8, 0xBB, 0x26),
-        },
-        ThemeName::GruvboxLight => Seed {
-            syntax: EmbeddedThemeName::GruvboxLight,
-            add: Rgb(0x69, 0x64, 0x0C),
-            del: Rgb(0x9D, 0x00, 0x06),
-            accent: Rgb(0x07, 0x5F, 0x70),
-            skim: Rgb(0x8F, 0x5D, 0x10),
-            finding: Rgb(0x8F, 0x3F, 0x71),
-            reviewed: Rgb(0x42, 0x6B, 0x4E),
-        },
-        ThemeName::SolarizedDark => Seed {
-            syntax: EmbeddedThemeName::SolarizedDark,
-            add: Rgb(0x9E, 0xB5, 0x00),
-            del: Rgb(0xFF, 0x6E, 0x6B),
-            accent: Rgb(0x35, 0xB9, 0xAF),
-            skim: Rgb(0xCA, 0x9A, 0x00),
-            finding: Rgb(0xEE, 0x74, 0xAA),
-            reviewed: Rgb(0x9E, 0xB5, 0x00),
-        },
-        ThemeName::SolarizedLight => Seed {
-            syntax: EmbeddedThemeName::SolarizedLight,
-            add: Rgb(0x5B, 0x69, 0x00),
-            del: Rgb(0xC2, 0x2B, 0x28),
-            accent: Rgb(0x1E, 0x6F, 0xA8),
-            skim: Rgb(0x8A, 0x68, 0x00),
-            finding: Rgb(0xB0, 0x2B, 0x6C),
-            reviewed: Rgb(0x5B, 0x69, 0x00),
-        },
-        ThemeName::Monokai => Seed {
-            syntax: EmbeddedThemeName::MonokaiExtended,
-            add: Rgb(0xA6, 0xE2, 0x2E),
-            del: Rgb(0xF9, 0x5C, 0x8E),
-            accent: Rgb(0x66, 0xD9, 0xEF),
-            skim: Rgb(0xE6, 0xDB, 0x74),
-            finding: Rgb(0xAE, 0x81, 0xFF),
-            reviewed: Rgb(0xA6, 0xE2, 0x2E),
-        },
+        ThemeName::Dark => dark::seed(),
+        ThemeName::Light => light::seed(),
+        ThemeName::GruvboxDark => gruvbox_dark::seed(),
+        ThemeName::GruvboxLight => gruvbox_light::seed(),
+        ThemeName::SolarizedDark => solarized_dark::seed(),
+        ThemeName::SolarizedLight => solarized_light::seed(),
+        ThemeName::Monokai => monokai::seed(),
     }
 }
 
@@ -381,8 +326,8 @@ impl Theme {
 /// same way in a light theme as in a dark one: 0.86 is a whisper of colour over
 /// the ground, 0.35 is most of the way to the accent itself. That relativity is
 /// the whole reason a light palette needs no rules of its own.
-const WHITE: Rgb = Rgb(0xFF, 0xFF, 0xFF);
-const BLACK: Rgb = Rgb(0x00, 0x00, 0x00);
+const WHITE: Rgb = rgb(0xFF, 0xFF, 0xFF);
+const BLACK: Rgb = rgb(0x00, 0x00, 0x00);
 
 fn derive(seed: &Seed, syntect: syntect::highlighting::Theme) -> Theme {
     let settings = &syntect.settings;
@@ -390,22 +335,22 @@ fn derive(seed: &Seed, syntect: syntect::highlighting::Theme) -> Theme {
     // does. The fallbacks keep a missing setting from being an invisible screen.
     let bg = settings
         .background
-        .map_or(Rgb(0x1E, 0x20, 0x28), Rgb::from_syntect);
+        .map_or(rgb(0x1E, 0x20, 0x28), from_syntect);
     let fg = settings
         .foreground
-        .map_or(Rgb(0xE0, 0xE2, 0xE8), Rgb::from_syntect);
+        .map_or(rgb(0xE0, 0xE2, 0xE8), from_syntect);
 
     // How much room the theme gives before anything is muted at all. Solarized
     // puts its own foreground 4.1:1 from its own ground; Monokai puts it at
     // 15:1. Muting both by the same fraction makes the quiet inks unreadable in
     // the first and merely quiet in the second — so the ramp is a share of the
     // headroom rather than a constant.
-    let headroom = (fg.contrast(bg) / 8.0).clamp(0.45, 1.0);
+    let headroom = (contrast(fg, bg) / 8.0).clamp(0.45, 1.0);
 
     // Towards the ground, always. `q` for an accent, `m` for a muted ink, which
     // is the one that has to yield on a low-contrast palette.
-    let q = |c: Rgb, t: f32| c.mix(bg, t).color();
-    let m = |c: Rgb, t: f32| c.mix(bg, t * headroom).color();
+    let q = |c: Rgb, t: f32| color(mix(c, bg, t));
+    let m = |c: Rgb, t: f32| color(mix(c, bg, t * headroom));
     let (add, del, accent) = (seed.add, seed.del, seed.accent);
 
     // One ink for all three cursor blocks, so the line number does not change
@@ -416,11 +361,15 @@ fn derive(seed: &Seed, syntect: syntect::highlighting::Theme) -> Theme {
     //
     // From the palette rather than a flat white, so a Solarized cursor stays
     // Solarized.
-    let blocks = [add.mix(bg, 0.52), del.mix(bg, 0.52), accent.mix(bg, 0.72)];
+    let blocks = [
+        mix(add, bg, 0.52),
+        mix(del, bg, 0.52),
+        mix(accent, bg, 0.72),
+    ];
     let worst = |ink: Rgb| {
         blocks
             .iter()
-            .map(|b| ink.contrast(*b))
+            .map(|b| contrast(ink, *b))
             .fold(f32::INFINITY, f32::min)
     };
     // The palette's own extremes first. They are not always enough: a mid
@@ -429,14 +378,14 @@ fn derive(seed: &Seed, syntect: syntect::highlighting::Theme) -> Theme {
     // near-white and a near-black, pulled a little towards the ground so they
     // still belong to the theme. A line number has to be readable before it
     // has to be tasteful.
-    let cursor_gutter_fg = [fg, bg, bg.mix(WHITE, 0.94), bg.mix(BLACK, 0.94)]
+    let cursor_gutter_fg = [fg, bg, mix(bg, WHITE, 0.94), mix(bg, BLACK, 0.94)]
         .into_iter()
         .max_by(|a, b| worst(*a).total_cmp(&worst(*b)))
         .expect("four candidates");
 
     Theme {
-        bg: bg.color(),
-        fg: fg.color(),
+        bg: color(bg),
+        fg: color(fg),
         // A tint you read code through, and the stronger block beside it.
         added_bg: q(add, 0.90),
         deleted_bg: q(del, 0.90),
@@ -444,7 +393,7 @@ fn derive(seed: &Seed, syntect: syntect::highlighting::Theme) -> Theme {
         deleted_gutter_bg: q(del, 0.78),
         added_gutter_cursor_bg: q(add, 0.52),
         deleted_gutter_cursor_bg: q(del, 0.52),
-        cursor_gutter_fg: cursor_gutter_fg.color(),
+        cursor_gutter_fg: color(cursor_gutter_fg),
         // Word emphasis sits on top of the line tint, so it has to be a clear
         // step past it without becoming the gutter block.
         added_word_bg: q(add, 0.58),
@@ -461,20 +410,20 @@ fn derive(seed: &Seed, syntect: syntect::highlighting::Theme) -> Theme {
         // The code's own ink, not a mix of it: an unchanged line is the
         // theme's foreground, and quieting it by a tenth cost a low-contrast
         // palette like Solarized a quarter of the contrast it had.
-        context_fg: fg.color(),
+        context_fg: color(fg),
         cursor_bg: q(accent, 0.72),
         selected_bg: q(accent, 0.90),
-        header_fg: accent.color(),
+        header_fg: color(accent),
         foreign_fg: m(accent, 0.34),
         // Focus is the must-read tier and wears the deletion red; noise is the
         // quietest thing on screen, one step past the gutter.
-        focus_fg: del.color(),
-        skim_fg: seed.skim.color(),
+        focus_fg: color(del),
+        skim_fg: color(seed.skim),
         noise_fg: m(fg, 0.42),
-        reviewed_fg: seed.reviewed.color(),
-        add_fg: add.color(),
-        del_fg: del.color(),
-        finding_fg: seed.finding.color(),
+        reviewed_fg: color(seed.reviewed),
+        add_fg: color(add),
+        del_fg: color(del),
+        finding_fg: color(seed.finding),
         status_bg: q(fg, 0.93),
         highlighter: Arc::new(SyntaxHighlighter::with_theme(
             syntect,
@@ -498,8 +447,8 @@ mod tests {
         ThemeName::Monokai,
     ];
 
-    fn rgb(c: Color) -> Rgb {
-        Rgb::of(c).unwrap_or_else(|| panic!("{c:?} is not an Rgb — a palette may not use ANSI"))
+    fn must_rgb(c: Color) -> Rgb {
+        rgb_of(c).unwrap_or_else(|| panic!("{c:?} is not an Rgb — a palette may not use ANSI"))
     }
 
     fn fields(t: &Theme) -> Vec<(&'static str, Color)> {
@@ -546,7 +495,7 @@ mod tests {
     fn every_named_theme_builds() {
         for name in ALL {
             let t = Theme::named(name);
-            assert!(Rgb::of(t.bg).is_some(), "{name:?}");
+            assert!(rgb_of(t.bg).is_some(), "{name:?}");
         }
     }
 
@@ -558,7 +507,7 @@ mod tests {
         for name in ALL {
             let t = Theme::named(name);
             for (what, c) in fields(&t) {
-                assert!(Rgb::of(c).is_some(), "{name:?}.{what} is {c:?}, not Rgb");
+                assert!(rgb_of(c).is_some(), "{name:?}.{what} is {c:?}, not Rgb");
             }
         }
     }
@@ -600,12 +549,12 @@ mod tests {
         let mut bad = Vec::new();
         for name in ALL {
             let t = Theme::named(name);
-            let bg = rgb(t.bg);
+            let bg = must_rgb(t.bg);
             // A theme cannot be held to a bar it does not clear on bare
             // ground: Solarized is low-contrast on purpose. What is being
             // tested is that the DERIVATION never makes a theme less legible
             // than the theme already is.
-            let base = rgb(t.fg).contrast(bg);
+            let base = contrast(must_rgb(t.fg), bg);
             let text = 4.5f32.min(base);
             let muted = 3.0f32.min(base * 0.65);
             let checks = [
@@ -627,7 +576,7 @@ mod tests {
                 (muted, "button_fg", t.button_fg),
             ];
             for (want, what, c) in checks {
-                let got = rgb(c).contrast(bg);
+                let got = contrast(must_rgb(c), bg);
                 if got < want {
                     bad.push(format!("{name:?}.{what}: {got:.2}:1, want {want:.2}:1"));
                 }
@@ -642,13 +591,13 @@ mod tests {
     fn the_cursor_line_number_reads_on_every_block_it_sits_on() {
         for name in ALL {
             let t = Theme::named(name);
-            let ink = rgb(t.cursor_gutter_fg);
+            let ink = must_rgb(t.cursor_gutter_fg);
             for (what, block) in [
                 ("added", t.added_gutter_cursor_bg),
                 ("deleted", t.deleted_gutter_cursor_bg),
                 ("plain", t.cursor_bg),
             ] {
-                let ratio = ink.contrast(rgb(block));
+                let ratio = contrast(ink, must_rgb(block));
                 assert!(ratio >= 3.0, "{name:?}: on the {what} block {ratio:.2}:1");
             }
         }
@@ -660,17 +609,17 @@ mod tests {
     fn a_change_tint_is_visible_without_drowning_the_code() {
         for name in ALL {
             let t = Theme::named(name);
-            let (bg, fg) = (rgb(t.bg), rgb(t.fg));
-            let base = fg.contrast(bg);
+            let (bg, fg) = (must_rgb(t.bg), must_rgb(t.fg));
+            let base = contrast(fg, bg);
             for (what, tint) in [("added", t.added_bg), ("deleted", t.deleted_bg)] {
-                let tint = rgb(tint);
+                let tint = must_rgb(tint);
                 assert_ne!(tint, bg, "{name:?}: the {what} tint is the ground");
                 // Relative to what the theme itself offers, plus a floor. An
                 // absolute 4.5:1 would be unmeetable for a base palette that
                 // only reaches 5.6:1 on its own ground — the question is
                 // whether the tint DROWNS the code, not whether the theme is
                 // high-contrast.
-                let on_tint = fg.contrast(tint);
+                let on_tint = contrast(fg, tint);
                 assert!(
                     on_tint >= base * 0.75,
                     "{name:?}: code on {what} is {on_tint:.2}:1, \
@@ -684,23 +633,47 @@ mod tests {
 
     #[test]
     fn mixing_moves_between_the_two_ends_and_stops_there() {
-        let (a, b) = (Rgb(0, 0, 0), Rgb(100, 200, 40));
-        assert_eq!(a.mix(b, 0.0), a);
-        assert_eq!(a.mix(b, 1.0), b);
-        assert_eq!(a.mix(b, 0.5), Rgb(50, 100, 20));
+        let (a, b) = (rgb(0, 0, 0), rgb(100, 200, 40));
+        assert_eq!(mix(a, b, 0.0), a);
+        assert_eq!(mix(a, b, 1.0), b);
         // Out of range is clamped rather than extrapolated into nonsense.
-        assert_eq!(a.mix(b, 2.0), b);
-        assert_eq!(a.mix(b, -1.0), a);
+        assert_eq!(mix(a, b, 2.0), b);
+        assert_eq!(mix(a, b, -1.0), a);
     }
 
-    /// The two anchors of the WCAG scale, so a wrong constant in `luminance`
-    /// cannot pass by making every ratio equally wrong.
+    /// The mix is PERCEPTUAL, which is the reason for the `palette` dependency
+    /// rather than a detail.
+    ///
+    /// Halfway from black to white is about 99, not the 128 a straight sRGB
+    /// interpolation gives: Oklab's lightness is roughly the cube root of
+    /// luminance, so half the perceived distance is well below half the
+    /// encoded value. Every "t of the way to the background" rule below is
+    /// stated in those terms — if this ever reads 128, the mix has silently
+    /// reverted to sRGB and every derived palette has shifted with it.
+    #[test]
+    fn mixing_is_perceptual_rather_than_a_straight_srgb_lerp() {
+        let grey = mix(rgb(0, 0, 0), rgb(255, 255, 255), 0.5);
+        assert_ne!(
+            grey.red, 128,
+            "that is the sRGB midpoint, not a perceptual one"
+        );
+        assert!(
+            (90..=110).contains(&grey.red),
+            "midpoint is {}, expected the Oklab midpoint near 99",
+            grey.red
+        );
+        assert_eq!(grey.red, grey.green);
+        assert_eq!(grey.green, grey.blue);
+    }
+
+    /// The two anchors of the WCAG scale, so a wrong conversion cannot pass by
+    /// making every ratio equally wrong.
     #[test]
     fn contrast_runs_from_one_to_twenty_one() {
-        let (black, white) = (Rgb(0, 0, 0), Rgb(255, 255, 255));
-        assert!((black.contrast(white) - 21.0).abs() < 0.01);
-        assert!((white.contrast(white) - 1.0).abs() < 0.01);
+        let (black, white) = (rgb(0, 0, 0), rgb(255, 255, 255));
+        assert!((contrast(black, white) - 21.0).abs() < 0.01);
+        assert!((contrast(white, white) - 1.0).abs() < 0.01);
         // Symmetric: the ratio does not depend on which is the ground.
-        assert_eq!(black.contrast(white), white.contrast(black));
+        assert_eq!(contrast(black, white), contrast(white, black));
     }
 }
