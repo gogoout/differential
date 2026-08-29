@@ -69,6 +69,21 @@ pub fn contrast(a: Rgb, b: Rgb) -> f32 {
         .relative_contrast(b.into_format::<f32>())
 }
 
+/// How colourful an ink is, independent of how light it is.
+///
+/// Oklab chroma, and the thing that makes a mark read AS a mark.
+///
+/// Perceptual DISTANCE from the foreground was the obvious measure and it is
+/// the wrong one: Gruvbox Light's invisible reviewed green sat 0.160 from its
+/// foreground while the dark theme's perfectly visible cyan header sits 0.124
+/// from its own. What separated them was chroma — 0.066 against 0.110. A dark
+/// desaturated ink beside dark desaturated prose is a shade, and a reader does
+/// not see shades.
+pub fn chroma(c: Rgb) -> f32 {
+    let c: Oklab = c.into_format::<f32>().into_color();
+    c.a.hypot(c.b)
+}
+
 /// The RGB behind a `Color`. `None` for anything a palette should no longer
 /// contain, which is what the tests assert on.
 pub fn rgb_of(c: Color) -> Option<Rgb> {
@@ -414,7 +429,7 @@ fn derive(seed: &Seed, syntect: syntect::highlighting::Theme) -> Theme {
         cursor_bg: q(accent, 0.72),
         selected_bg: q(accent, 0.90),
         header_fg: color(accent),
-        foreign_fg: m(accent, 0.34),
+        foreign_fg: m(accent, 0.30),
         // Focus is the must-read tier and wears the deletion red; noise is the
         // quietest thing on screen, one step past the gutter.
         focus_fg: color(del),
@@ -579,6 +594,38 @@ mod tests {
                 let got = contrast(must_rgb(c), bg);
                 if got < want {
                     bad.push(format!("{name:?}.{what}: {got:.2}:1, want {want:.2}:1"));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+    }
+
+    /// An ink that MEANS something has to be tellable from ordinary text.
+    ///
+    /// Contrast against the ground does not give you this, and checking only
+    /// that was how Gruvbox Light shipped a reviewed ✓ nobody could see: a dark
+    /// desaturated green, comfortably legible on cream, and all but identical
+    /// to the dark brown prose beside it.
+    #[test]
+    fn a_semantic_ink_is_tellable_from_ordinary_text() {
+        let mut bad = Vec::new();
+        for name in ALL {
+            let t = Theme::named(name);
+            for (what, c) in [
+                ("reviewed_fg", t.reviewed_fg),
+                ("add_fg", t.add_fg),
+                ("del_fg", t.del_fg),
+                ("skim_fg", t.skim_fg),
+                ("finding_fg", t.finding_fg),
+                ("header_fg", t.header_fg),
+                ("focus_fg", t.focus_fg),
+            ] {
+                // Chroma, not distance from the foreground: the green that
+                // vanished was FURTHER from its foreground than the dark
+                // theme's cyan header is from its own.
+                let ch = chroma(must_rgb(c));
+                if ch < 0.10 {
+                    bad.push(format!("{name:?}.{what}: chroma {ch:.3}, want 0.10"));
                 }
             }
         }
