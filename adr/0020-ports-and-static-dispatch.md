@@ -63,6 +63,14 @@ Two seams are polymorphism and **stay `dyn`**, both by earlier recorded decision
 `LanguageRegistry` (a heterogeneous `Vec<Box<dyn Language>>` plugin set — ADR 0015).
 Everything else in this refactor is inversion and takes a generic.
 
+> **Since amended: a third seam.** ADR 0023 added
+> `artefact::symbols::SymbolSource`, and it is `dyn` for the reason stated here rather
+> than as an exception to it. Each reader answers `priority(path)`, so which one reads a
+> file is decided per file while the pipeline runs. A Rust file gets a reader with a tuned
+> query, a Java file one with generic rules, a shell script the crude one. That is a
+> run-time answer to a run-time question, which is exactly what this section reserves
+> `dyn` for.
+
 **One type parameter per provider, with a bound list that is the function's budget.**
 
 ```rust

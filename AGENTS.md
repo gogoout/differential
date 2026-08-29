@@ -13,8 +13,9 @@ code must change together — or the change is wrong.
    would want to make.
 
 2. **Prefer the simple solution. No new abstractions without a demonstrated reason.**
-   The abstractions that exist (`Language`, `LlmBackend`, the `engine::ports` seams, the
-   `engine::schema` boundary) were author decisions with recorded rationale. A new trait,
+   The abstractions that exist (`Language`, `LlmBackend`, `SymbolSource`, the
+   `engine::ports` seams, the `engine::schema` boundary) were author decisions with
+   recorded rationale. A new trait,
    layer, or indirection needs the same bar: a concrete second consumer or a recorded
    decision — not "we might need it". If you feel a "manager", "helper", or "context"
    struct forming, stop. A `Context` bundling a git provider with a `Config` is the
@@ -56,10 +57,11 @@ code must change together — or the change is wrong.
    **Generics for inversion, `dyn` for polymorphism.** A trait with one production
    implementation, chosen at compile time, exists to invert a dependency: take it as a
    generic (`fn f<G: ObjectReader>(git: &G)`). A trait whose implementation is genuinely
-   chosen at run time is polymorphism: `dyn` is correct. Exactly two seams are the
-   latter — `llm::LlmBackend` (config picks the backend) and `lang::Language` (an open
-   plugin set). Reaching for `Box<dyn>` anywhere else means you have mistaken one for
-   the other.
+   chosen at run time is polymorphism: `dyn` is correct. Exactly three seams are the
+   latter — `llm::LlmBackend` (config picks the backend), `lang::Language` (an open
+   plugin set), and `artefact::symbols::SymbolSource` (each reader ranks itself per
+   file, so which one answers is a run-time answer to a run-time question — ADR 0023).
+   Reaching for `Box<dyn>` anywhere else means you have mistaken one for the other.
 
    Three rules that follow, each of which has a way of quietly reversing itself:
    - **Name the port for what the caller needs**, not for the thing that implements it.

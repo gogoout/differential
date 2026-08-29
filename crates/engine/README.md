@@ -28,7 +28,7 @@ Four stages. The document records which ones ran, in `generator.stages`.
 | `enumerate` | Read every hunk from `git diff -U0 --no-renames`. Merge in the rename-detected view (`-M`) as annotations. |
 | `classify` | Assign shape classes. Compute `pure_substitution`. Compute generated-file hints. |
 | `group` | Ask an LLM to merge and label class ids. Audit the answer. Back-fill anything missing. |
-| `order` | Build a symbol-definition to symbol-use graph. Topologically sort the focus groups. |
+| `order` | Contract the class dependency graph onto groups. Topologically sort the focus groups. |
 
 ### Shape classes
 
@@ -127,7 +127,8 @@ let repo = Repo::open(path)?;                                          // any di
 let config = Config::load(&OsConfigSource, repo.root(), None, None)?;   // or Config::default()
 let src = resolve_range(&repo, &["main..feature"])?;                    // a plan::ReviewSource
 let out = run_pipeline(&repo, &src.base, &src.head, src.kind, &config,
-                       &LanguageRegistry::builtin())?;
+                       &LanguageRegistry::builtin(),
+                       &differential_symbols::readers())?;   // the symbol readers
 
 // out.report   — an InvariantReport. Always present.
 // out.document — Some(PlanDocument), or None if an invariant failed.
@@ -159,8 +160,12 @@ let opts = GroupingOptions { backend: &backend, cache: &cache,
                              artefacts: &artefacts, progress: None };
 
 let out = run_grouped_pipeline(&repo, &src.base, &src.head, src.kind, &config,
-                               &LanguageRegistry::builtin(), &opts)?;
+                               &LanguageRegistry::builtin(),
+                               &differential_symbols::readers(), &opts)?;
 ```
+
+The symbol readers are injected the same way, and `differential_symbols::readers()` is
+the whole of it — the readers rank themselves, so there is no order to get wrong (ADR 0023).
 
 The backend, the cache and the artefact store are all **injected**. The engine does not
 build a backend from config: composing one is the application's job. Disabling either store
@@ -180,17 +185,17 @@ needs killing is a subprocess.
 
 | module | what it holds |
 |---|---|
-| `schema` | The frozen JSON contract. Serde types only, no engine internals. `SCHEMA_VERSION` is `2`. |
+| `schema` | The frozen JSON contract. Serde types only, no engine internals. `SCHEMA_VERSION` is `3`. |
 | `plan` | Shared domain policy over the schema: tiers, reading splits, review identity, the plan index, range parsing. |
-| `ports` | The traits the domain owns. Seventeen of them, each named for a need. |
+| `ports` | The traits the domain owns. Eighteen of them, each named for a need. |
 | `gitio` | `Repo` — the only implementation of the git ports. |
 | `store` | Filesystem adapters: `FsGroupingCache`, `FsReviewStore`, `OsConfigSource`. |
 | `llm` | `LlmBackend` and `CommandBackend`. Prompt in, text out. |
-| `lang` | The `Language` trait and `LanguageRegistry`. |
+| `lang` | The `Language` trait and `LanguageRegistry`. Shape normalisation only — symbol extraction is `artefact::symbols` (ADR 0023). |
 | `pipeline` | `run_pipeline`, `run_grouped_pipeline`, `resolve_range`, `resolve_picked`. |
 | `grouping` | The grouping stage: prompt, parse, audit, gate, assembly, cache. |
-| `artefact` | The class dependency graph, the document the model reads, and the queries behind `dfr agent`. |
-| `ordering` | The dependency graph and the foundation-first sort. |
+| `artefact` | The class dependency graph, the `SymbolSource` port and the rule for choosing between readers, the document the model reads, and the queries behind `dfr agent`. |
+| `ordering` | The foundation-first sort. It does NOT build the graph — `artefact::graph` does, from classes, before the model runs (ADR 0022). |
 | `invariants` | All five checks. |
 | `review_session` | `ReviewSession` — the facade over review state on disk. |
 | `apply`, `parse`, `shape`, `tree`, `document`, `model` | The mechanical core. |

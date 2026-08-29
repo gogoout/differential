@@ -25,6 +25,11 @@ normalisation.
 A shape class is nothing more than normalised text, hashed. There is no parser, no AST, no
 index and no model — four regex substitutions over the raw bytes of the diff.
 
+That holds for the partition, and only for the partition. One later stage does parse: the
+dependency graph behind *Deterministic ordering*, below, reads whole files with
+tree-sitter. Coverage is never at stake there — a wrong edge misorders, it can never hide a
+hunk — so the two claims sit side by side rather than in tension.
+
 The generic normaliser is
 [`crates/engine/src/lang/generic.rs`](../crates/engine/src/lang/generic.rs), in
 `normalize_line`. It does exactly this, in this order:
@@ -98,8 +103,20 @@ and nothing is dropped to fit a prompt. See
 Edges run from a symbol's definition to its uses, between **classes**, computed before the
 model runs. The focus section is sorted foundation-first by contracting those edges onto
 groups, so a definition is ordered before its references. Every edge names the symbol that
-produced it, and a cycle says whether it is in the change or only in the grouping. See
-[spec/ordering.md](../spec/ordering.md).
+produced it, and a cycle says whether it is in the change or only in the grouping.
+
+The symbols come from a reader, and which reader is decided per file. A tuned tree-sitter
+query handles Rust, TypeScript, Python, Go and Kotlin; generic field rules handle
+JavaScript, Java, C, C++ and C#; a regex handles anything else that looks like source. **A
+file no reader claims — a lockfile, a manifest, a README — contributes nothing**, because a
+guess costs more than silence.
+
+What counts as a definition is the part that matters. It is a file-scope name others can
+use: not `mod template;`, which names a module, and not a method inside a type, which is
+reached through that type. Counting those turned common words into globally unique symbols,
+and six of them once produced 64% of a real range's edges. See
+[spec/ordering.md](../spec/ordering.md) and
+[`adr/0023-symbol-extraction-is-a-domain-port.md`](../adr/0023-symbol-extraction-is-a-domain-port.md).
 
 ### 4. Structural audits
 
@@ -139,7 +156,11 @@ Renderers are views over it:
 **No file is excluded from enumeration.** No extension filters. No path exclusions. Not
 even through config. Manifest and lockfile edits are where repeated edits appear, and
 path filtering was the single worst coverage bug found during validation (ADR 0005, 0012).
-Config and language plugins tune *classification*, never *what exists*.
+Config, language plugins and symbol readers tune *classification*, never *what exists*.
+
+A reader declining a file is classification, not exclusion. A README contributes no symbols,
+so it draws no dependency edges — and its file, its hunks and its classes are all still
+there, still counted, still read.
 
 **A low-similarity rename is not treated as a verbatim move.** Renames carry git's
 similarity score on both halves. Below 95, the change is a modification and is never
@@ -157,7 +178,8 @@ orphan is listed, never silently dropped. See
 
 | crate | what it holds |
 |---|---|
-| [`crates/engine`](../crates/engine/README.md) | The backend: git io, diff parsing, the byte-exact applier, shape classes, the language registry, grouping, ordering, invariants and review sessions. |
+| [`crates/engine`](../crates/engine/README.md) | The backend: git io, diff parsing, the byte-exact applier, shape classes, grouping, ordering, invariants and review sessions. Owns the ports, including the symbol one; implements none of the readers. |
+| [`crates/symbols`](../crates/symbols) | The symbol readers: tree-sitter with tuned queries, tree-sitter with generic field rules, and a regex floor. Depends on the engine, never the reverse. |
 | [`crates/stack`](../crates/stack/README.md) | The shadow-branch renderer. The diff as a synthetic commit stack. |
 | [`crates/tui`](../crates/tui/README.md) | The terminal reviewer. Vendored `tuicr` and `lumen` pieces live here. |
 | [`crates/cli`](../crates/cli/README.md) | The application layer: the `dfr` and `differential` binaries. Argument parsing and dispatch only. |

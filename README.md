@@ -170,7 +170,8 @@ let repo = Repo::open(path)?;
 let config = Config::load(&OsConfigSource, repo.root(), None, None)?;
 let src = resolve_range(&repo, &["main..feature"])?;   // a ReviewSource
 let out = run_pipeline(&repo, &src.base, &src.head, src.kind, &config,
-                       &LanguageRegistry::builtin())?;
+                       &LanguageRegistry::builtin(),
+                       &differential_symbols::readers())?;   // the symbol readers
 // out.report   — the invariant report, always present
 // out.document — Some(PlanDocument), or None if an invariant failed
 ```
