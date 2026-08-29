@@ -32,8 +32,12 @@ Four stages. The document records which ones ran, in `generator.stages`.
 
 ### Shape classes
 
-A shape class is **normalised text, then a hash of it**. No parser, no AST, no model. Four
-regex substitutions over the raw bytes.
+A shape class is **normalised text, then a hash of it** — four regex substitutions over the
+raw bytes.
+
+Regex rather than a parser because enumeration is total: every hunk in every file needs a
+class, including files no grammar covers. Symbol extraction does parse, and it is a
+separate job behind a separate port (`artefact::symbols`, ADR 0023).
 
 `lang::generic::normalize_line` does the substitutions: strings become `"S"`, numbers become
 `N`, identifiers of four characters or more become `I`, then whitespace collapses and the

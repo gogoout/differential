@@ -22,13 +22,18 @@ Coverage is structural. Judgement is delegated.
 Every hunk gets a **shape class**. Two hunks in one class are textually identical after
 normalisation.
 
-A shape class is nothing more than normalised text, hashed. There is no parser, no AST, no
-index and no model — four regex substitutions over the raw bytes of the diff.
+A shape class is normalised text, hashed: four regex substitutions over the raw bytes of the
+diff.
 
-That holds for the partition, and only for the partition. One later stage does parse: the
-dependency graph behind *Deterministic ordering*, below, reads whole files with
-tree-sitter. Coverage is never at stake there — a wrong edge misorders, it can never hide a
-hunk — so the two claims sit side by side rather than in tension.
+Regex rather than a parser, and for one reason. Enumeration is total, so **every** hunk in
+every file needs a class — a lockfile, a manifest, a translation catalogue, a language
+nobody has written a grammar for. A parser can only classify what it can parse. Freezing
+the normaliser follows from the same place: changing it moves every class population at
+once (ADR 0015).
+
+The tool does parse elsewhere. The dependency graph behind *Deterministic ordering*, below,
+reads whole files with tree-sitter and declines the files it cannot read. It can afford to.
+A missing edge misorders; a missing class would hide a hunk.
 
 The generic normaliser is
 [`crates/engine/src/lang/generic.rs`](../crates/engine/src/lang/generic.rs), in
