@@ -497,17 +497,65 @@ fn a_recorded_choice_wins_over_the_configured_default() {
     }
 }
 
+/// A split render carries more separators than a unified one, at any width.
+///
+/// This replaces a test that pressed `s` and asserted the screen contained a
+/// `│` somewhere. Both halves were wrong once split became the default: `s`
+/// toggled OUT of split, and `│` is drawn by the pane borders whatever the
+/// layout — so it passed while rendering no split row at all.
+///
+/// Counting is what gives it teeth. A split row adds one separator of its own,
+/// so the split render must carry strictly more than the unified one. Pinning
+/// both layouts explicitly is what stops a moved default breaking it again.
 #[test]
-fn split_view_draw_smoke_shows_separator() {
-    let (_r, mut app) = make_app();
-    app.handle_key(key('s'));
-    for width in [100u16, 60] {
+fn a_split_render_draws_more_separators_than_a_unified_one() {
+    use differential_tui::rows::RowContent;
+
+    /// The most separators any single screen row carries.
+    ///
+    /// Per row rather than per screen: the totals differ by only two, because
+    /// the pane borders draw a hundred of them whatever the layout. A row is
+    /// where the difference actually lives — a split diff row carries its own
+    /// separator between the halves, on top of the borders either side.
+    fn busiest_row(app: &mut App, width: u16) -> usize {
         let backend = ratatui::backend::TestBackend::new(width, 30);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| app.draw(f)).unwrap();
         let buffer = terminal.backend().buffer().clone();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        assert!(content.contains("│"), "no separator at width {width}");
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .filter(|&x| buffer[(x, y)].symbol() == "│")
+                    .count()
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    let (_rs, mut split) = make_app_with(laid_out(true));
+    let (_ru, mut unified) = make_app_with(laid_out(false));
+    // Focus the detail pane, which is what puts diff rows on screen at all.
+    for app in [&mut split, &mut unified] {
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    }
+    assert!(
+        split
+            .rows
+            .iter()
+            .any(|row| matches!(row.content, RowContent::Split { .. })),
+        "the split app must actually hold split rows, or this measures nothing"
+    );
+
+    for width in [100u16, 60] {
+        let (with, without) = (
+            busiest_row(&mut split, width),
+            busiest_row(&mut unified, width),
+        );
+        assert!(
+            with > without,
+            "width {width}: the busiest split row carried {with} separators, \
+             the busiest unified row {without}"
+        );
     }
 }
 
