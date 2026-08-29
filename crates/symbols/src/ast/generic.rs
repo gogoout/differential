@@ -21,7 +21,7 @@
 use differential_engine::artefact::symbols::{FileSymbols, SymbolSource};
 use tree_sitter::{Language, Node, Tree};
 
-use super::{is_prose, line_count, line_of, parse, text_of};
+use super::{line_count, line_of, parse, text_of};
 
 /// Grammars this reader handles. One entry per extension.
 struct Grammar {
@@ -147,42 +147,70 @@ impl SymbolSource for AstTier2Symbols {
     }
 }
 
-/// Visit every node, carrying whether we are already inside a callee position.
+/// Visit every node, carrying down everything a decision needs.
 ///
 /// `in_callee` propagates because a method call nests: `foo.bar()` puts
 /// `field_expression` in the `function:` field, and `bar` one level below that.
 /// A rule that looked only at a token's own parent would miss every method call
 /// in Rust, Go, Python, TypeScript and C++.
 ///
-/// **Iterative, with the flag on an explicit stack.** This reader takes
-/// JavaScript, Java, C, C++ and C#, where a minified bundle or a deeply nested
-/// literal produces AST depth proportional to nesting. Recursion there would
-/// abort the whole process on overflow, rather than returning `None` and
-/// letting a cruder reader answer.
+/// **Iterative, and it never calls `Node::parent`.** Both matter for the same
+/// input. This reader takes JavaScript, Java, C, C++ and C#, where a minified
+/// bundle or a generated literal makes AST depth track nesting. Recursion would
+/// abort the process on overflow instead of returning `None` and letting a
+/// cruder reader answer — and `parent()` walks down from the root each time it
+/// is called, so asking every node for its parent costs depth per node. One
+/// stack carries the parent's kind and the prose flags down instead, which
+/// makes the whole pass linear in nodes.
 fn walk(tree: &Tree, content: &[u8], out: &mut FileSymbols) {
+    /// What a node inherits from the level above it.
+    #[derive(Clone, Copy)]
+    struct Above {
+        parent_kind: &'static str,
+        in_callee: bool,
+        in_comment: bool,
+        /// Inside a string, and no interpolation since — `"${resolve(id)}"`
+        /// holds a real call, so an interpolation clears this.
+        in_string: bool,
+    }
+
     let mut cursor = tree.walk();
-    // One entry per depth, holding what this node's CHILDREN inherit. Pushed on
-    // the way down and popped on the way up, so it unwinds with the cursor.
-    let mut inherited: Vec<bool> = vec![false];
+    // One entry per depth, pushed on descent and popped on ascent, so it
+    // unwinds exactly with the cursor. The root's entry is never popped.
+    let mut stack: Vec<Above> = vec![Above {
+        parent_kind: "",
+        in_callee: false,
+        in_comment: false,
+        in_string: false,
+    }];
+
     loop {
         let node = cursor.node();
+        let kind = node.kind();
         let field = cursor.field_name().unwrap_or("");
-        let parent_kind = node.parent().map(|p| p.kind()).unwrap_or("");
-        let from_above = *inherited.last().expect("the root entry is never popped");
-        let here = CALLEE_FIELDS.contains(&field)
+        let above = *stack.last().expect("the root entry is never popped");
+
+        let here_is_callee = CALLEE_FIELDS.contains(&field)
             || (MEMBER_FIELDS.contains(&field)
-                && (parent_kind.contains("call") || parent_kind.contains("invocation")));
-        let inside_callee = from_above || here;
+                && (above.parent_kind.contains("call")
+                    || above.parent_kind.contains("invocation")));
+        let in_callee = above.in_callee || here_is_callee;
 
         if node.child_count() == 0 {
-            record(node, field, parent_kind, inside_callee, content, out);
-        }
-
-        if cursor.goto_first_child() {
-            inherited.push(inside_callee);
+            if !above.in_comment && !above.in_string {
+                record(node, field, above.parent_kind, in_callee, content, out);
+            }
+        } else if cursor.goto_first_child() {
+            let interpolates = kind.contains("interpolation") || kind.contains("substitution");
+            stack.push(Above {
+                parent_kind: kind,
+                in_callee,
+                in_comment: above.in_comment || kind.contains("comment"),
+                in_string: !interpolates && (above.in_string || kind.contains("string")),
+            });
             continue;
         }
-        // A sibling shares our depth, so it inherits the same value; only
+        // A sibling shares our depth, so it inherits the same entry; only
         // climbing out of a level pops one.
         loop {
             if cursor.goto_next_sibling() {
@@ -191,7 +219,7 @@ fn walk(tree: &Tree, content: &[u8], out: &mut FileSymbols) {
             if !cursor.goto_parent() {
                 return;
             }
-            inherited.pop();
+            stack.pop();
         }
     }
 }
@@ -206,9 +234,6 @@ fn record(
 ) {
     let kind = node.kind();
     if !kind.contains("identifier") && !kind.contains("type") {
-        return;
-    }
-    if is_prose(node) {
         return;
     }
     let Some(text) = text_of(node, content) else {

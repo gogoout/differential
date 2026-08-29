@@ -196,3 +196,40 @@ fn the_tuned_reader_outranks_the_field_reader_and_they_never_overlap() {
     }
     assert!(tuned.priority(b"src/lib.rs") > fields.priority(b"Main.java"));
 }
+
+/// Deep nesting must cost neither stack nor quadratic time.
+///
+/// This reader takes JavaScript, Java, C, C++ and C#, where a minified bundle
+/// or a generated literal makes AST depth track nesting. Two separate hazards
+/// live there, and this one test catches both:
+///
+/// - **Stack.** A recursive walk takes a frame per node. 50,000 levels is far
+///   past what a 2 MiB test thread survives, so a return to recursion aborts
+///   rather than merely slowing down.
+/// - **Time.** `Node::parent` walks down from the root every call, so asking
+///   each node for its parent costs depth per node. Writing it that way made
+///   this test exceed two minutes; carrying the parent's kind down on the
+///   walk's own stack makes it finish in milliseconds.
+///
+/// Tree-sitter parses this input in about 12ms, so anything slower is ours.
+#[test]
+fn deep_nesting_costs_neither_stack_nor_quadratic_time() {
+    const DEPTH: usize = 50_000;
+    let mut src = String::with_capacity(DEPTH * 2 + 32);
+    src.push_str("const deep = ");
+    for _ in 0..DEPTH {
+        src.push('[');
+    }
+    src.push_str("widgetMaker()");
+    for _ in 0..DEPTH {
+        src.push(']');
+    }
+    src.push_str(";\n");
+
+    let symbols = AstTier2Symbols::new()
+        .file_symbols(b"bundle.js", src.as_bytes())
+        .expect("the reader claimed this file and must answer");
+    // The call at the bottom is still found, so the walk reached it rather than
+    // bailing out part way.
+    has(&flatten(&symbols.references), &["widgetMaker"]);
+}
