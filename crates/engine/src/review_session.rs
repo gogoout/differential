@@ -118,7 +118,9 @@ impl<S: ReviewStore> ReviewSession<S> {
         self.state.cursor.as_ref()
     }
 
-    pub fn split_diff(&self) -> bool {
+    /// The reader's recorded layout choice, or `None` if they have not made
+    /// one and the caller should fall back to its configured default.
+    pub fn split_diff(&self) -> Option<bool> {
         self.state.split_diff
     }
 
@@ -196,7 +198,7 @@ impl<S: ReviewStore> ReviewSession<S> {
 
     /// Persist the diff layout (unified / side-by-side).
     pub fn set_split_diff(&mut self, on: bool) -> Result<(), EngineError> {
-        self.state.split_diff = on;
+        self.state.split_diff = Some(on);
         self.store.save_state(&self.state)
     }
 

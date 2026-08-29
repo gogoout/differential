@@ -43,6 +43,11 @@ pub struct ReviewOptions {
     pub context: usize,
     /// Lines one `z` on a context boundary row pulls in.
     pub context_step: usize,
+    /// Which layout a review opens in when the reader has not chosen one.
+    ///
+    /// Resolved from config by the application layer, so the renderer takes a
+    /// plain value and never learns the config's vocabulary.
+    pub split_diff: bool,
     /// The range the reader typed, if they typed one — so the footer can name
     /// `dfr findings <range> --summary` when the clipboard is out of reach.
     ///
@@ -57,6 +62,10 @@ impl Default for ReviewOptions {
         ReviewOptions {
             context: 3,
             context_step: 10,
+            // Matches `config::DiffLayout`'s default. The two are separate
+            // because the renderer must not read config; a test asserts they
+            // agree.
+            split_diff: true,
             range: None,
         }
     }
@@ -992,8 +1001,15 @@ impl App {
         self.rows.get(self.cursor).and_then(|r| r.kind.hunk())
     }
 
+    /// The reader's choice if they have made one, otherwise the configured
+    /// default. A review that has recorded a choice keeps it, so changing the
+    /// config never moves a layout under someone mid-read.
+    fn split_diff(&self) -> bool {
+        self.session.split_diff().unwrap_or(self.opts.split_diff)
+    }
+
     fn diff_mode(&self) -> DiffMode {
-        if self.session.split_diff() {
+        if self.split_diff() {
             DiffMode::Split
         } else {
             DiffMode::Unified
@@ -1004,7 +1020,7 @@ impl App {
     /// reviewer's place by re-anchoring the cursor to the current hunk.
     fn toggle_split(&mut self) {
         let hunk = self.current_hunk();
-        let on = !self.session.split_diff();
+        let on = !self.split_diff();
         if let Err(e) = self.session.set_split_diff(on) {
             self.status = format!("save failed: {e:#}");
             return;

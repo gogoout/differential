@@ -88,9 +88,19 @@ back-fill: detection and preservation, not silent loss.
 Review progress (`state.json`) carries "reviewed" marks keyed by class/group **content
 hash**: a group whose content is unchanged stays reviewed; anything that changed resets.
 It also carries the resume cursor and the TUI's persisted layout choices (`split_diff`,
-`file_view`) — all additive, defaulted fields. The cursor is `(id, row)` where `id` is a
-group id in the semantic view and a file path in the flattened file view; the `file_view`
-flag disambiguates on load.
+`file_view`) — all additive fields. The cursor is `(id, row)` where `id` is a group id in
+the semantic view and a file path in the flattened file view; the `file_view` flag
+disambiguates on load.
+
+`split_diff` is an **option, and the absent case is load-bearing**. `None` means the reader
+has never pressed `s` on this review, so the reviewer falls back to `review.diff` from the
+user config; `Some` is a choice they made, and it wins whatever the config later says. That
+is what stops a config edit moving the layout under someone midway through a read.
+
+The migration needed no code. A `state.json` written before the field became an option
+records a bare `false` or `true`, which deserialises to `Some(false)` or `Some(true)` — so
+every review already on disk keeps the layout it had, and only a review with no state file
+at all takes the configured default.
 
 ## Status
 

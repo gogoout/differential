@@ -234,6 +234,8 @@ timeout_secs = 1200
 context = 3
 # Lines that one `z` pulls in at a context boundary.
 context_step = 10
+# Diff layout a review opens in: "split" or "unified".
+diff = "split"
 ```
 
 | key | default | meaning |
@@ -242,6 +244,7 @@ context_step = 10
 | `grouping.timeout_secs` | `1200` | How long to wait for the backend. |
 | `review.context` | `3` | Context lines around a hunk before any expansion. |
 | `review.context_step` | `10` | Lines one `z` pulls in at a boundary row. |
+| `review.diff` | `split` | Layout a review OPENS in. `s` still toggles, and a review that has recorded a choice keeps it. |
 
 A missing file means defaults. A malformed file is a hard error. An unknown key is a hard
 error too.

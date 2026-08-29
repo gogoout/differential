@@ -35,6 +35,26 @@ fn skim_first_backend() -> FakeBackend {
 
 /// Open an App over HEAD~1..HEAD of `r` with an explicit backend.
 fn open_app_with(r: &TestRepo, backend: &FakeBackend, store: &str) -> App {
+    open_app_with_opts(r, backend, store, ReviewOptions::default())
+}
+
+/// Options pinning the diff layout, so a test that depends on one says so
+/// rather than inheriting whatever the default happens to be.
+fn laid_out(split_diff: bool) -> ReviewOptions {
+    ReviewOptions {
+        split_diff,
+        ..ReviewOptions::default()
+    }
+}
+
+/// The same, with the renderer's options spelled out — for the tests that care
+/// what a review opens as before the reader has chosen.
+fn open_app_with_opts(
+    r: &TestRepo,
+    backend: &FakeBackend,
+    store: &str,
+    opts: ReviewOptions,
+) -> App {
     let repo = Repo::open(Path::new(&r.root)).unwrap();
     let base = r.git(&["rev-parse", "HEAD~1"]);
     let head = r.git(&["rev-parse", "HEAD"]);
@@ -62,7 +82,7 @@ fn open_app_with(r: &TestRepo, backend: &FakeBackend, store: &str) -> App {
         out.view,
     )
     .unwrap();
-    App::new(session, factory, ReviewOptions::default())
+    App::new(session, factory, opts)
 }
 
 /// Open an App over HEAD~1..HEAD of `r`, with the review store inside the
@@ -119,6 +139,15 @@ fn make_app() -> (TestRepo, App) {
     }
     r.commit_all("head");
     let app = open_app(&r);
+    (r, app)
+}
+
+/// `make_app`, with the renderer's options spelled out — for the tests that
+/// care what a review opens as before the reader has chosen a layout.
+fn make_app_with(opts: ReviewOptions) -> (TestRepo, App) {
+    let (r, _) = make_app();
+    let backend = skim_first_backend();
+    let app = open_app_with_opts(&r, &backend, ".dfr-opts-store", opts);
     (r, app)
 }
 
@@ -378,6 +407,31 @@ fn split_view_toggles_and_keeps_cursor_on_hunk() {
     use differential_tui::rows::RowContent;
     let (r, mut app) = make_app();
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+    // A review nobody has chosen a layout for opens split, because that is the
+    // configured default. Nothing is written until the reader presses `s`.
+    assert!(
+        app.rows
+            .iter()
+            .any(|row| matches!(row.content, RowContent::Split { .. }))
+    );
+    let store = FsReviewStore::at(r.root.join(".dfr-test-store")).unwrap();
+    assert_eq!(
+        store.load_state().unwrap().split_diff,
+        None,
+        "a default is not a choice, so nothing is recorded"
+    );
+    let split_diff_rows = app
+        .rows
+        .iter()
+        .filter(|row| matches!(row.kind, RowKind::Diff(_)))
+        .count();
+
+    let hunk_before = app.rows[app.cursor].kind.hunk();
+    app.handle_key(key('s'));
+
+    // Unified now, the choice persisted, and a Modified line takes two rows
+    // where the split layout took one.
     assert!(
         !app.rows
             .iter()
@@ -388,35 +442,59 @@ fn split_view_toggles_and_keeps_cursor_on_hunk() {
         .iter()
         .filter(|row| matches!(row.kind, RowKind::Diff(_)))
         .count();
+    assert!(split_diff_rows < unified_diff_rows);
+    assert_eq!(app.rows[app.cursor].kind.hunk(), hunk_before);
+    assert_eq!(store.load_state().unwrap().split_diff, Some(false));
 
-    let hunk_before = app.rows[app.cursor].kind.hunk();
+    // Toggling back restores the split layout, and still as a choice.
     app.handle_key(key('s'));
-
-    // Split rows exist, the layout persisted, and a Modified line now takes
-    // one row instead of two.
     assert!(
         app.rows
             .iter()
             .any(|row| matches!(row.content, RowContent::Split { .. }))
     );
-    let split_diff_rows = app
-        .rows
-        .iter()
-        .filter(|row| matches!(row.kind, RowKind::Diff(_)))
-        .count();
-    assert!(split_diff_rows < unified_diff_rows);
-    assert_eq!(app.rows[app.cursor].kind.hunk(), hunk_before);
-    let store = FsReviewStore::at(r.root.join(".dfr-test-store")).unwrap();
-    assert!(store.load_state().unwrap().split_diff);
+    assert_eq!(store.load_state().unwrap().split_diff, Some(true));
+}
 
-    // Toggling back restores the unified layout.
-    app.handle_key(key('s'));
-    assert!(
-        !app.rows
-            .iter()
-            .any(|row| matches!(row.content, RowContent::Split { .. }))
+/// The renderer's default and the config's must agree.
+///
+/// `ReviewOptions` deliberately takes a plain bool so the renderer never reads
+/// config. That leaves two places stating one default, and nothing but this
+/// test to stop them drifting apart.
+#[test]
+fn the_renderers_default_layout_matches_the_configs() {
+    use differential_engine::config::ReviewConfig;
+    assert_eq!(
+        ReviewOptions::default().split_diff,
+        ReviewConfig::default().diff.is_split()
     );
-    assert!(!store.load_state().unwrap().split_diff);
+}
+
+/// A recorded choice outranks the configured default, in both directions.
+///
+/// This is what stops a config edit moving the layout under someone who is
+/// midway through a review.
+#[test]
+fn a_recorded_choice_wins_over_the_configured_default() {
+    use differential_tui::rows::RowContent;
+    for (chosen, opt_default) in [(false, true), (true, false)] {
+        let (_r, mut app) = make_app_with(ReviewOptions {
+            split_diff: opt_default,
+            ..ReviewOptions::default()
+        });
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        // Record the opposite of the default, then confirm the layout follows
+        // the record rather than the option.
+        app.handle_key(key('s'));
+        let is_split = app
+            .rows
+            .iter()
+            .any(|row| matches!(row.content, RowContent::Split { .. }));
+        assert_eq!(
+            is_split, chosen,
+            "chosen {chosen} must beat the default {opt_default}"
+        );
+    }
 }
 
 #[test]
@@ -1027,7 +1105,8 @@ fn app_with_a_long_file() -> (TestRepo, App) {
             )
         )
     });
-    let app = open_app_with(&r, &backend, ".dfr-long-store");
+    // Unified: the row arithmetic these tests check counts one row per line.
+    let app = open_app_with_opts(&r, &backend, ".dfr-long-store", laid_out(false));
     (r, app)
 }
 
@@ -1351,9 +1430,7 @@ fn the_absent_side_of_a_split_row_is_hatched() {
     r.write("src/a.rs", b"let keep = 1;\nlet tail = 3;\n");
     r.commit_all("head");
     let backend = skim_first_backend();
-    let mut app = open_app_with(&r, &backend, ".dfr-hatch-store");
-
-    app.handle_key(key('s')); // split
+    let mut app = open_app_with_opts(&r, &backend, ".dfr-hatch-store", laid_out(true));
     let text = drawn(&mut app);
     assert!(
         text.contains('╱'),
@@ -1404,7 +1481,7 @@ fn the_cursor_is_a_brighter_gutter_block_on_a_changed_row() {
 #[test]
 fn the_cursor_lights_the_gutter_on_both_sides_of_a_split_row() {
     let (_r, mut app) = app_with_a_long_file();
-    app.handle_key(key('s')); // split
+    app.handle_key(key('s')); // that helper opens unified, so switch to split
     put_cursor_on(&mut app, |k| matches!(k, RowKind::Diff(_)));
     // A modification exists on both sides, so both gutters must light.
     for _ in 0..30 {
@@ -1431,8 +1508,7 @@ fn the_cursor_lights_the_absent_side_of_a_split_row_too() {
     );
     r.commit_all("head");
     let backend = skim_first_backend();
-    let mut app = open_app_with(&r, &backend, ".dfr-cursor-hatch-store");
-    app.handle_key(key('s'));
+    let mut app = open_app_with_opts(&r, &backend, ".dfr-cursor-hatch-store", laid_out(true));
     put_cursor_on(&mut app, |k| matches!(k, RowKind::Diff(_)));
     for _ in 0..20 {
         let y = cursor_screen_row(&app);
@@ -4272,8 +4348,7 @@ fn render_dump_hatch() {
     );
     r.commit_all("head");
     let backend = skim_first_backend();
-    let mut app = open_app_with(&r, &backend, ".dfr-hatch-dump-store");
-    app.handle_key(key('s'));
+    let mut app = open_app_with_opts(&r, &backend, ".dfr-hatch-dump-store", laid_out(true));
     put_cursor_on(&mut app, |k| matches!(k, RowKind::Diff(_)));
     for _ in 0..20 {
         let y = cursor_screen_row(&app);
@@ -4336,7 +4411,7 @@ fn a_note_survives_the_diff_layout_it_was_written_in() {
     r.commit_all("head");
 
     let backend = skim_first_backend();
-    let mut app = open_app_with(&r, &backend, ".dfr-layout-note-store");
+    let mut app = open_app_with_opts(&r, &backend, ".dfr-layout-note-store", laid_out(false));
     app.focus = Focus::Detail;
 
     // The two halves of the modification, in the unified layout.
