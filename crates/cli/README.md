@@ -249,10 +249,18 @@ is a hard error too.
 `review.theme` names one of eleven palettes. Each pairs a set of chrome colours with the
 syntax theme the code is painted in, so the diff and the code come from one source.
 
+`dark` (the default), `one-dark`, `one-light`, `gruvbox-dark`, `gruvbox-light`,
+`solarized-dark`, `solarized-light`, `catppuccin-mocha`, `catppuccin-latte`,
+`dracula`, `monokai`.
+
 The shots below are the same change in the same reviewer, so what differs between them is
 only the palette. Regenerate with `./assets/themes.sh`.
 
-<details open>
+<details>
+<summary><b>Screenshots — the same change in all eleven</b></summary>
+<br>
+
+<details>
 <summary><code>dark</code> — the default</summary>
 
 ![dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/dark.png)
@@ -326,6 +334,8 @@ only the palette. Regenerate with `./assets/themes.sh`.
 <summary><code>monokai</code></summary>
 
 ![monokai](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/monokai.png)
+
+</details>
 
 </details>
 

@@ -341,11 +341,20 @@ colour it is. They can never change which hunks exist.
 ### Themes
 
 Eleven, each pairing the reviewer's own colours with the syntax theme the code is painted
-in — so the chrome and the code come from one source and cannot drift apart. Every shot is
-the same change in the same reviewer; only the palette differs. `./assets/themes.sh`
-regenerates them.
+in — so the chrome and the code come from one source and cannot drift apart.
 
-<details open>
+`dark` (the default), `one-dark`, `one-light`, `gruvbox-dark`, `gruvbox-light`,
+`solarized-dark`, `solarized-light`, `catppuccin-mocha`, `catppuccin-latte`,
+`dracula`, `monokai`.
+
+Every shot below is the same change in the same reviewer; only the palette differs.
+`./assets/themes.sh` regenerates them.
+
+<details>
+<summary><b>Screenshots — the same change in all eleven</b></summary>
+<br>
+
+<details>
 <summary><code>dark</code> — the default</summary>
 
 ![dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/dark.png)
@@ -419,6 +428,8 @@ regenerates them.
 <summary><code>monokai</code></summary>
 
 ![monokai](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/monokai.png)
+
+</details>
 
 </details>
 
