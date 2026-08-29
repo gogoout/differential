@@ -211,25 +211,32 @@ fn the_tuned_reader_outranks_the_field_reader_and_they_never_overlap() {
 ///   this test exceed two minutes; carrying the parent's kind down on the
 ///   walk's own stack makes it finish in milliseconds.
 ///
-/// Tree-sitter parses this input in about 12ms, so anything slower is ours.
+/// **An identifier at every level, not just the deepest one.** Nesting bare
+/// brackets would leave one token at maximum depth, and a per-token ancestor
+/// walk — the shape `is_prose` has — would still pass. `f(f(f(…)))` puts a
+/// token in callee position at each level, so any rule that climbs from a token
+/// to the root goes quadratic here too.
+///
+/// Tree-sitter parses this input in milliseconds, so anything slower is ours.
 #[test]
 fn deep_nesting_costs_neither_stack_nor_quadratic_time() {
-    const DEPTH: usize = 50_000;
-    let mut src = String::with_capacity(DEPTH * 2 + 32);
+    const DEPTH: usize = 20_000;
+    let mut src = String::with_capacity(DEPTH * 6 + 32);
     src.push_str("const deep = ");
     for _ in 0..DEPTH {
-        src.push('[');
+        src.push_str("wrap(");
     }
     src.push_str("widgetMaker()");
     for _ in 0..DEPTH {
-        src.push(']');
+        src.push(')');
     }
     src.push_str(";\n");
 
     let symbols = AstTier2Symbols::new()
         .file_symbols(b"bundle.js", src.as_bytes())
         .expect("the reader claimed this file and must answer");
-    // The call at the bottom is still found, so the walk reached it rather than
-    // bailing out part way.
-    has(&flatten(&symbols.references), &["widgetMaker"]);
+    // The innermost call is still found, so the walk reached the bottom rather
+    // than stopping part way.
+    let references = flatten(&symbols.references);
+    has(&references, &["widgetMaker", "wrap"]);
 }

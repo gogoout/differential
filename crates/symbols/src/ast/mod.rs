@@ -5,8 +5,14 @@
 //! AstTier2Symbols`] has none, and works from field names instead. They claim
 //! disjoint sets of languages, so they never rank against each other.
 //!
-//! What they share is here: parsing, and the rule for deciding that a token is
-//! prose rather than code.
+//! What they share is here: parsing, line numbering, and [`is_prose`] — the
+//! rule for deciding that a token is comment or string rather than code.
+//!
+//! Only the tuned reader calls `is_prose`. It climbs from a token to the root,
+//! which is fine when a query hands you a few captures and ruinous when you are
+//! visiting every node, so the field-rule reader carries the same rule down its
+//! own stack instead. Two spellings of one rule, and the reason is measured:
+//! see `deep_nesting_costs_neither_stack_nor_quadratic_time`.
 
 pub mod generic;
 pub mod tuned;
