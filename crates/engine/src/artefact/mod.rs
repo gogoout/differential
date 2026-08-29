@@ -20,6 +20,7 @@
 //! as text is `crates/cli`'s job, the same as for every other consumer.
 
 pub mod graph;
+pub mod symbols;
 
 use crate::plan::HunkId;
 use crate::schema;

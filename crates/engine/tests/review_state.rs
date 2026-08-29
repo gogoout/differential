@@ -109,6 +109,7 @@ fn doc_and_view(
         SourceKind::Range,
         &Config::default(),
         &LanguageRegistry::builtin(),
+        &differential_testutil::stub_readers(),
         &differential_engine::grouping::GroupingOptions {
             backend: &focus_all_backend(),
             cache: &FsGroupingCache::disabled(),
@@ -308,6 +309,7 @@ fn findings_reanchor_across_regeneration() {
         SourceKind::Range,
         &Config::default(),
         &LanguageRegistry::builtin(),
+        &differential_testutil::stub_readers(),
         &differential_engine::grouping::GroupingOptions {
             backend: &focus_all_backend(),
             cache: &FsGroupingCache::disabled(),
@@ -347,6 +349,7 @@ fn findings_reanchor_across_regeneration() {
         SourceKind::Range,
         &Config::default(),
         &LanguageRegistry::builtin(),
+        &differential_testutil::stub_readers(),
         &differential_engine::grouping::GroupingOptions {
             backend: &focus_all_backend(),
             cache: &FsGroupingCache::disabled(),
@@ -384,6 +387,7 @@ fn session_persists_every_mutation() {
         SourceKind::Range,
         &Config::default(),
         &LanguageRegistry::builtin(),
+        &differential_testutil::stub_readers(),
         &differential_engine::grouping::GroupingOptions {
             backend: &focus_all_backend(),
             cache: &FsGroupingCache::disabled(),

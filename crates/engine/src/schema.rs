@@ -185,7 +185,7 @@ pub struct ClassEntry {
     /// True iff, after erasing identifiers and literals, the removed and added
     /// lines match — a structure-free substitution. Computed, never claimed.
     pub pure_substitution: bool,
-    /// Symbols this class introduces, from `Language::symbol_definitions`.
+    /// Symbols this class introduces, from `Language::file_symbols`.
     /// Sorted and deduplicated.
     pub defines: Vec<String>,
     /// Classes this class consumes: it references a symbol they define. Sorted

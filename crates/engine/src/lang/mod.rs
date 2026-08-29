@@ -2,10 +2,14 @@
 //!
 //! The tool must eventually support every language. This module is the seam:
 //! a [`Language`] plugin can override how line content is normalised for shape
-//! classification, and — in a later milestone — how symbol definitions and
-//! references are extracted for the ordering stage. Everything defaults to the
-//! generic behaviour, so with no plugins registered the engine behaves exactly
-//! like the validated milestone-1 normaliser (the parity test enforces this).
+//! classification. Everything defaults to the generic behaviour, so with no
+//! plugins registered the engine behaves exactly like the validated milestone-1
+//! normaliser (the parity test enforces this).
+//!
+//! **Normalisation only.** Symbol extraction used to hang off this trait too.
+//! It is a different use case with different consumers, so it has its own port
+//! (`artefact::symbols`) — one trait serving two unrelated needs is the merged
+//! supertrait `CLAUDE.md` rule 4 forbids.
 //!
 //! Languages never see enumeration: which files and hunks exist is decided
 //! before this module is consulted (ADR 0005/0012). They only influence
@@ -32,18 +36,6 @@ pub trait Language: Send + Sync {
     /// exact-content persistence anchor.
     fn normalize_line(&self, line: &[u8]) -> Vec<u8> {
         generic::normalize_line(line)
-    }
-
-    /// Symbol names this line DEFINES (declaration heuristics). Feeds the
-    /// ordering stage's definition → use edges; precision is allowed to be low
-    /// (ADR 0007: a wrong edge misorders, it never hides content).
-    fn symbol_definitions(&self, line: &[u8]) -> Vec<Vec<u8>> {
-        generic::symbol_definitions(line)
-    }
-
-    /// Identifiers this line REFERENCES.
-    fn symbol_references(&self, line: &[u8]) -> Vec<Vec<u8>> {
-        generic::symbol_references(line)
     }
 }
 

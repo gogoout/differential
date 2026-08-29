@@ -95,6 +95,7 @@ fn full_pipeline_passes_invariants_over_synthesized_trees() {
             kind,
             &Config::default(),
             &LanguageRegistry::builtin(),
+            &differential_testutil::stub_readers(),
         )
         .unwrap();
         assert_all_ok(&out);

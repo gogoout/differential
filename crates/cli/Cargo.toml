@@ -12,6 +12,7 @@ categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 differential-engine = { workspace = true }
+differential-symbols = { workspace = true }
 differential-stack = { workspace = true }
 differential-tui = { workspace = true }
 anyhow = { workspace = true }

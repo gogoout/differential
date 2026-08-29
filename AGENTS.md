@@ -1,7 +1,7 @@
 # Agent instructions for `differential`
 
 Read [`README.md`](README.md) for what this is. `spec/` is normative (what the program does);
-`adr/` records why (0001–0022). When your change contradicts a spec or ADR, the docs and the
+`adr/` records why (0001–0023). When your change contradicts a spec or ADR, the docs and the
 code must change together — or the change is wrong.
 
 ## Working rules
@@ -156,7 +156,7 @@ cargo run -q --bin dfr -- check <base>..<head>    # invariant runner
 cargo run -q --bin dfr -- stack <base>..<head>    # review stack (needs an LLM CLI on a cache miss)
 cargo run -q --bin dfr -- review <base>..<head>   # terminal reviewer (same cache rule)
 cargo run -q --bin dfr -- agent --doc <path>          # what the grouping model sees
-cargo run -p differential-engine --example group -- <base>..<head>   # grouped document JSON (dev)
+cargo run -p differential-symbols --example group -- <base>..<head> # grouped document JSON (dev)
 DIFFERENTIAL_FIXTURE_CONFIG=$PWD/fixtures.local.toml cargo test -- --ignored  # parity (local)
 ```
 

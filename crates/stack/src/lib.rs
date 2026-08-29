@@ -409,6 +409,7 @@ pub fn run_stack_pipeline<G, C, A>(
     source: &plan::ReviewSource,
     config: &differential_engine::config::Config,
     langs: &differential_engine::lang::LanguageRegistry,
+    symbols: &differential_engine::artefact::symbols::SymbolReaders,
     grouping: &differential_engine::grouping::GroupingOptions<C, A>,
     stack: &StackOptions,
 ) -> Result<StackOutput, EngineError>
@@ -433,6 +434,7 @@ where
         source.kind,
         config,
         langs,
+        symbols,
         grouping,
     )?;
     let Some(doc) = &out.document else {

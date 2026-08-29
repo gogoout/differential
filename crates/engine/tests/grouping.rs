@@ -646,6 +646,7 @@ fn progress_reports_stages_and_cache_state() {
             SourceKind::Range,
             &Config::default(),
             &LanguageRegistry::builtin(),
+            &differential_testutil::stub_readers(),
             &differential_engine::grouping::GroupingOptions {
                 backend: &backend,
                 cache: &cache,

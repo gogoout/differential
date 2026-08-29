@@ -109,8 +109,13 @@ fn grouping_prompt_bytes_are_frozen() {
 }
 
 /// The cache key hashes `PROMPT_VERSION`, the backend name, the language
-/// fingerprint and the sorted member digests. Every one of those is pinned by
-/// this single hex string.
+/// fingerprint, the SYMBOL-READER fingerprint and the sorted member digests.
+/// Every one of those is pinned by this single hex string.
+///
+/// The symbol readers joined the key when symbol extraction became a port with
+/// its own implementations. The class graph is part of what the model reads
+/// (ADR 0022), so a reader that answers differently must cold the cache — and
+/// adding the component did exactly that, once, on purpose.
 #[test]
 fn grouping_cache_key_and_entry_shape_are_frozen() {
     let (r, base, head) = two_class_repo();
@@ -126,7 +131,7 @@ fn grouping_cache_key_and_entry_shape_are_frozen() {
 
     assert_eq!(
         entries[0].file_name().to_string_lossy(),
-        "26a785d7351509d31282cb091c51bf2141acba8a.json",
+        "f8ff14d6ecd8d6c6d912790bc85a671ef7e6042b.json",
         "the grouping cache key changed; every existing cache entry in every \
          checkout just became unreachable, and the only symptom is a silent \
          re-run of the model"
@@ -178,6 +183,7 @@ fn review_sidecar_layout_is_frozen() {
         SourceKind::Range,
         &Config::default(),
         &LanguageRegistry::builtin(),
+        &differential_testutil::stub_readers(),
         &GroupingOptions {
             backend: &backend,
             cache: &FsGroupingCache::disabled(),

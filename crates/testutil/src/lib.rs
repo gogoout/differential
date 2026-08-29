@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use differential_engine::artefact::symbols::{FileSymbols, SymbolReaders, SymbolSource};
 use differential_engine::config::Config;
 use differential_engine::gitio::Repo;
 use differential_engine::lang::LanguageRegistry;
@@ -84,9 +85,82 @@ impl TestRepo {
             SourceKind::Range,
             config,
             &LanguageRegistry::builtin(),
+            &stub_readers(),
         )
         .unwrap()
     }
+}
+
+/// A symbol reader for tests that need SOME symbols to exist.
+///
+/// **A double, not a copy of any shipped reader.** It claims every path,
+/// including the `.txt` fixtures these tests use, and it answers with a rule
+/// crude enough to state in one line: a declaration keyword defines the name
+/// after it, and any word of four characters or more is a reference.
+///
+/// Tests that care what real extraction produces belong in
+/// `crates/symbols`, against real grammars and the real corpus. Tests here care
+/// about grouping and ordering, and only need edges to exist at all.
+pub struct StubSymbols;
+
+impl SymbolSource for StubSymbols {
+    fn priority(&self, _path: &[u8]) -> Option<u8> {
+        Some(1)
+    }
+
+    fn file_symbols(&self, _path: &[u8], content: &[u8]) -> Option<FileSymbols> {
+        const KEYWORDS: &[&str] = &[
+            "fn",
+            "struct",
+            "enum",
+            "trait",
+            "class",
+            "interface",
+            "type",
+            "def",
+            "func",
+            "impl",
+            "const",
+            "static",
+            "mod",
+            "module",
+            "package",
+            "protocol",
+        ];
+        let mut out = FileSymbols::default();
+        for line in content.split(|&b| b == b'\n') {
+            let words: Vec<&str> = std::str::from_utf8(line)
+                .unwrap_or("")
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .filter(|w| !w.is_empty())
+                .collect();
+            let mut defines = Vec::new();
+            for pair in words.windows(2) {
+                if KEYWORDS.contains(&pair[0]) && pair[1].len() >= 3 {
+                    defines.push(pair[1].as_bytes().to_vec());
+                }
+            }
+            let references = words
+                .iter()
+                .filter(|w| w.len() >= 4 && !w.chars().next().unwrap().is_ascii_digit())
+                .map(|w| w.as_bytes().to_vec())
+                .collect();
+            out.defines.push(defines);
+            out.references.push(references);
+        }
+        Some(out)
+    }
+
+    fn fingerprint(&self) -> String {
+        "stub-symbols-v1".to_string()
+    }
+}
+
+/// The readers every test in this workspace uses.
+pub fn stub_readers() -> SymbolReaders {
+    let mut r = SymbolReaders::default();
+    r.register(Box::new(StubSymbols));
+    r
 }
 
 pub fn assert_all_ok(out: &PipelineOutput) {
@@ -214,6 +288,7 @@ pub fn grouped_with_cache(
         SourceKind::Range,
         &Config::default(),
         &LanguageRegistry::builtin(),
+        &stub_readers(),
         &GroupingOptions {
             backend,
             cache: &cache,

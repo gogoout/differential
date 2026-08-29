@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use crate::schema;
 
 use crate::EngineError;
+use crate::artefact::symbols::SymbolReaders;
 use crate::config::Config;
 use crate::document::{SourceInfo, assemble};
 use crate::invariants::{InvariantReport, check_all};
@@ -94,6 +95,7 @@ pub fn run_pipeline<G>(
     kind: schema::SourceKind,
     config: &Config,
     langs: &LanguageRegistry,
+    symbols: &SymbolReaders,
 ) -> Result<PipelineOutput, EngineError>
 where
     G: RangeResolver
@@ -105,7 +107,7 @@ where
         + TreeBuilder
         + RecountSource,
 {
-    run_core(git, base_rev, head_rev, kind, config, langs)
+    run_core(git, base_rev, head_rev, kind, config, langs, symbols)
 }
 
 /// Core pipeline + the grouping stage (stages: enumerate, classify, group).
@@ -115,6 +117,11 @@ where
 /// takes no diff view, because everything it needs is in the document and the
 /// model fetches the rest (ADR 0022). On any invariant failure the grouping
 /// stage is skipped and `document` is `None`, exactly like the core pipeline.
+// The parameter list is the point, exactly as a bound list is: each entry is a
+// distinct authority this function may use. Bundling `langs` and `symbols`
+// behind a context struct would shorten the list without making it clearer,
+// and `CLAUDE.md` rule 2 refuses that shape.
+#[allow(clippy::too_many_arguments)]
 pub fn run_grouped_pipeline<G, C, A>(
     git: &G,
     base_rev: &str,
@@ -122,6 +129,7 @@ pub fn run_grouped_pipeline<G, C, A>(
     kind: schema::SourceKind,
     config: &Config,
     langs: &LanguageRegistry,
+    symbols: &SymbolReaders,
     grouping: &crate::grouping::GroupingOptions<C, A>,
 ) -> Result<PipelineOutput, EngineError>
 where
@@ -143,6 +151,7 @@ where
         kind,
         config,
         langs,
+        symbols,
         grouping.progress,
     )?;
 
@@ -154,6 +163,7 @@ where
             grouping.artefacts,
             grouping.fetch,
             &langs.fingerprint(),
+            &symbols.fingerprint(),
             grouping.progress,
         )?;
         // Ordering is deterministic and model-free: always runs after grouping.
@@ -176,6 +186,7 @@ fn run_core<G>(
     kind: schema::SourceKind,
     config: &Config,
     langs: &LanguageRegistry,
+    symbols: &SymbolReaders,
 ) -> Result<PipelineOutput, EngineError>
 where
     G: RangeResolver
@@ -187,9 +198,14 @@ where
         + TreeBuilder
         + RecountSource,
 {
-    run_core_with_progress(git, base_rev, head_rev, kind, config, langs, None)
+    run_core_with_progress(git, base_rev, head_rev, kind, config, langs, symbols, None)
 }
 
+// The parameter list is the point, exactly as a bound list is: each entry is a
+// distinct authority this function may use. Bundling `langs` and `symbols`
+// behind a context struct would shorten the list without making it clearer,
+// and `CLAUDE.md` rule 2 refuses that shape.
+#[allow(clippy::too_many_arguments)]
 fn run_core_with_progress<G>(
     git: &G,
     base_rev: &str,
@@ -197,6 +213,7 @@ fn run_core_with_progress<G>(
     kind: schema::SourceKind,
     config: &Config,
     langs: &LanguageRegistry,
+    symbols: &SymbolReaders,
     progress: Option<&(dyn Fn(crate::grouping::Progress) + Send + Sync)>,
 ) -> Result<PipelineOutput, EngineError>
 where
@@ -241,7 +258,7 @@ where
     // rather than from groups: what depends on what is a fact about the diff,
     // so the model reads it before it groups and cannot change it by grouping
     // (ADR 0022).
-    let graph = crate::artefact::graph::build(&view, &part, langs);
+    let graph = crate::artefact::graph::build(git, &head, &view, &part, symbols)?;
 
     // Invariants 1–4; no document on violation.
     let report = check_all(git, &base, &head, &view)?;
