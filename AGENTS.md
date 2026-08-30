@@ -156,6 +156,23 @@ code must change together — or the change is wrong.
   and the decisions behind the fix were written down — a reader who finds the commit can
   then find the reasoning, and nobody has to close the issue by hand and get it wrong.
   Use `Refs #NN` for a commit that advances an issue without finishing it.
+- **The PR title follows the same convention, because the PR title is what reaches the
+  changelog.** Main is merged by SQUASH, so a whole branch arrives as one commit. GitHub
+  takes that commit's subject from the PR title whenever the branch holds more than one
+  commit, and from the single commit's own subject when it holds exactly one — so both
+  have to carry the type, and a `[feat]` both have to name the crate.
+
+  Squash is not a preference here, it is the only method left. The `main` ruleset
+  requires **linear history**, which rules out a merge commit, and **signed commits**,
+  which rules out rebase-and-merge: GitHub has no access to a committer's private key,
+  so it adds a rebased commit without a signature. A squash commit is written by GitHub
+  itself and signed by it — every commit on `main` reads `committer GitHub` and verifies.
+
+  The consequence to write for: **one PR is one changelog entry.** The commits inside a
+  branch are for the reviewer, not for the release notes; only their bodies survive, and
+  a `Closes #NN` in any of them still fires. So choose the type for what the PR as a
+  whole does. A PR that is a feature and a fix at once is two PRs, or it is titled for
+  the feature and says so in its body.
 - **A change you can SEE needs eyes before it needs a PR.** If the change alters what the
   reviewer looks at — layout, colour, glyphs, what a row says, where a pane's content goes —
   show the author a rendering and get confirmation *before* opening the PR. A
