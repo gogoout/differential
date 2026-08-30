@@ -14,6 +14,22 @@ The panes are a fixed split and **focus never changes a height**: the overviews 
 over a pane rather than taking room from one, which is what keeps the heights a function of
 the terminal alone.
 
+**A wrapped line is still one row.** `w` soft-wraps the detail pane, and a line that takes
+three screen lines is one selectable row throughout: the cursor indexes rows, a finding
+anchors to a line, and a line split into three rows would let a reader annotate a third of
+it. What that costs is the scroll offset, which stops being a count of rows and becomes a
+budget of screen lines — the view walks cumulative row heights, so a wrapped row is never
+cut at its top. A row taller than the whole pane therefore pins to the top and loses its
+tail. Every continuation line repeats the row's leading indent, and a finding's rail with
+it, so a wrapped note stays inside its quoted panel. The line-number cell on a continuation
+is blank and the same width, per the rule that the cell never changes width.
+
+**Prose wraps whether `w` is on or not** — a group's description, its `depends on:` line
+and a reviewer's note. They are never code, they are the reason the plan and the finding
+exist, and a reader who cannot see the end of one is missing the point of the pane.
+Wrapping FILE CONTENT is the reader's call, because wrapping code is often unwanted;
+`w` is persisted per review, as `s` is.
+
 **Keys act on the pane you are in.** `z` shows what is being withheld — a context
 boundary's hidden lines, a folded remainder, a directory — and which of those it means is
 decided by the focused pane, not by where the diff's cursor happens to be parked. The
@@ -329,6 +345,7 @@ list belongs; the footer's job is to point at it.
 | `n`/`N` | next / previous hunk (skipping hunks crossed in from other groups) |
 | `z` | show what is being withheld, in the pane you are in — diff pane: on a `──` context boundary row, more of the file, or the hunk it names · elsewhere, the skim remainder or noise group · plan pane, file view: a directory |
 | `s` | toggle side-by-side / unified diff layout (persisted) |
+| `w` | soft wrap long lines (persisted) |
 | `f` | files, in the pane you are in — plan pane: toggle reading plan ↔ file tree (persisted) · diff pane: the file-list modal (`enter` jumps to the file) |
 | `space` | mark reviewed — the whole selected group/file in the left pane, the hunk's **class** in the diff pane (one exemplar verifies the shape) |
 | `v` | start a line selection at the cursor · `j`/`k` extend it · `v` or `esc` drops it · `c` writes a finding over it |

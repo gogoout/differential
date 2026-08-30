@@ -964,12 +964,14 @@ fn the_selected_plan_row_is_highlighted_edge_to_edge() {
 
 #[test]
 fn scrolling_back_up_reveals_the_group_header() {
-    let (_r, mut app) = make_app();
-    app.handle_key(key('z')); // unfold, so there is enough to scroll through
+    // A file with more rows than the pane can hold: the scroll offset only
+    // leaves the top when something is genuinely below the fold.
+    let (_r, mut app) = app_with_a_long_file();
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     // A short pane, as a small terminal would give: the rows now overflow it.
     app.set_viewport(Viewport {
         detail_rows: 8,
+        detail_cols: 58,
         plan_rows: 8,
         body_rows: 8 + 2,
     });
@@ -1089,14 +1091,14 @@ fn a_backfilled_group_renders_as_unclassified() {
 /// with no key pressed and nothing drawn.
 #[test]
 fn shrinking_the_viewport_re_clamps_scroll_without_a_draw() {
-    let (_r, mut app) = make_app();
-    app.handle_key(key('z'));
+    let (_r, mut app) = app_with_a_long_file();
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
 
     // Tall enough that the whole diff fits, so nothing has scrolled yet.
     let tall = app.rows.len() + SCROLL_MARGIN + 2;
     app.set_viewport(Viewport {
         detail_rows: tall,
+        detail_cols: 58,
         plan_rows: tall,
         body_rows: tall + 2,
     });
@@ -1107,6 +1109,7 @@ fn shrinking_the_viewport_re_clamps_scroll_without_a_draw() {
     // pressed and nothing is drawn between here and the assertion.
     app.set_viewport(Viewport {
         detail_rows: SHORT,
+        detail_cols: 58,
         plan_rows: SHORT,
         body_rows: SHORT + 2,
     });
@@ -1173,6 +1176,38 @@ fn app_with_a_long_file() -> (TestRepo, App) {
     let app = open_app_with_opts(&r, &backend, ".dfr-long-store", laid_out(false));
     (r, app)
 }
+
+/// A repo whose change is one long paragraph — a prose file, the case soft
+/// wrap exists for.
+fn app_with_a_long_line() -> (TestRepo, App) {
+    let r = TestRepo::new();
+    r.write("notes.md", b"# Notes\n\nshort line\n");
+    r.commit_all("base");
+    r.write("notes.md", format!("# Notes\n\n{PARAGRAPH}\n").as_bytes());
+    r.commit_all("head");
+    // The description is long on purpose: the header that states the plan is
+    // the other half of what soft wrap is for.
+    let backend = FakeBackend::new("fake", |ids| {
+        let all: Vec<String> = ids
+            .iter()
+            .map(|i| format!("{i:?}").trim_matches('"').to_string())
+            .collect();
+        format!(
+            r#"{{"groups": [{{"label": "Everything", "description": "{DESCRIPTION}", "classes": [{}], "effort": "focus", "reason": "r"}}]}}"#,
+            all.iter()
+                .map(|c| format!("\"{c}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    });
+    let app = open_app_with_opts(&r, &backend, ".dfr-wrap-store", laid_out(false));
+    (r, app)
+}
+
+const DESCRIPTION: &str = "This group rewrites the notes file, and the sentence \
+    describing why it does so is longer than the detail pane is wide.";
+
+const PARAGRAPH: &str = "Soft wrap exists because a paragraph is one line, and a line that runs off the right edge of the pane is a line nobody can review; the rest of it is simply not there to read.";
 
 /// Boundary rows, and how many diff rows a view is showing.
 fn edges(app: &App) -> Vec<(usize, Side)> {
@@ -1910,6 +1945,7 @@ fn a_foreign_hunk_is_dashed_and_names_its_group() {
     app.focus = Focus::Detail;
     app.set_viewport(Viewport {
         detail_rows: 38,
+        detail_cols: 58,
         plan_rows: 38,
         body_rows: 38 + 2,
     });
@@ -1986,6 +2022,7 @@ fn an_active_foreign_header_names_its_group_once() {
     app.focus = Focus::Detail;
     app.set_viewport(Viewport {
         detail_rows: 38,
+        detail_cols: 58,
         plan_rows: 38,
         body_rows: 38 + 2,
     });
@@ -2136,6 +2173,7 @@ fn cursor_into_first_box(app: &mut App) {
     app.focus = Focus::Detail;
     app.set_viewport(Viewport {
         detail_rows: 38,
+        detail_cols: 58,
         plan_rows: 38,
         body_rows: 38 + 2,
     });
@@ -2523,6 +2561,7 @@ fn focus_never_changes_a_pane_height() {
     let (_r, mut app) = app_with_two_groups_in_one_file();
     app.set_viewport(Viewport {
         detail_rows: 30,
+        detail_cols: 58,
         plan_rows: 30,
         body_rows: 30 + 2,
     });
@@ -2543,6 +2582,7 @@ fn a_file_header_sticks_while_scrolled_past_it() {
     app.focus = Focus::Detail;
     app.set_viewport(Viewport {
         detail_rows: 10,
+        detail_cols: 58,
         plan_rows: 10,
         body_rows: 10 + 2,
     });
@@ -2556,6 +2596,7 @@ fn a_file_header_sticks_while_scrolled_past_it() {
     app.cursor = app.rows.len() - 1;
     app.set_viewport(Viewport {
         detail_rows: 10,
+        detail_cols: 58,
         plan_rows: 10,
         body_rows: 10 + 2,
     });
@@ -2576,6 +2617,7 @@ fn a_file_header_sticks_while_scrolled_past_it() {
     app.cursor = 0;
     app.set_viewport(Viewport {
         detail_rows: 10,
+        detail_cols: 58,
         plan_rows: 10,
         body_rows: 10 + 2,
     });
@@ -3912,6 +3954,7 @@ fn the_list_scrolls_to_keep_the_selection_on_screen() {
     let (_r, mut app) = app_with_a_long_file();
     app.set_viewport(Viewport {
         detail_rows: 4,
+        detail_cols: 58,
         plan_rows: 4,
         body_rows: 4 + 2,
     });
@@ -4638,6 +4681,7 @@ fn the_file_list_scrolls_to_keep_the_selection_on_screen() {
     // a border pair, capped by the body.
     app.set_viewport(Viewport {
         detail_rows: 2,
+        detail_cols: 58,
         plan_rows: 2,
         body_rows: 4,
     });
@@ -4874,6 +4918,7 @@ fn render_dump_chrome() {
     many.focus = Focus::Detail;
     many.set_viewport(Viewport {
         detail_rows: 4,
+        detail_cols: 58,
         plan_rows: 4,
         body_rows: 6,
     });
@@ -4962,5 +5007,194 @@ fn render_dump_summary_footer() {
             println!("\n=== {w} columns: {status} ===");
             println!("{}", ansi_dump(&mut app, w, 6));
         }
+    }
+}
+
+/// The pane at a known width, as rows of text.
+fn wrapped_pane(app: &mut App) -> Vec<String> {
+    app.focus = Focus::Detail;
+    app.set_viewport(Viewport {
+        detail_rows: 22,
+        detail_cols: 58,
+        plan_rows: 22,
+        body_rows: 24,
+    });
+    drawn_rows(app)
+        .into_iter()
+        // The detail pane's CONTENT only: 40 columns of plan pane, then the
+        // two panes' borders.
+        .map(|row| row.chars().skip(41).take(58).collect())
+        .collect()
+}
+
+#[test]
+fn w_wraps_a_long_line_and_leaves_the_row_count_alone() {
+    // given - a paragraph wider than the pane
+    let (_r, mut app) = app_with_a_long_line();
+    let before = wrapped_pane(&mut app);
+    assert!(
+        before.iter().any(|r| r.contains("...")),
+        "the line should be cut before w is pressed: {before:#?}"
+    );
+    let rows = app.rows.len();
+    let cursor = app.cursor;
+
+    // when
+    app.handle_key(key('w'));
+    let after = wrapped_pane(&mut app);
+
+    // then - the tail is on screen, on its own line
+    assert!(
+        after
+            .iter()
+            .any(|r| r.contains("simply not there to read.")),
+        "the end of the paragraph should be visible: {after:#?}"
+    );
+    assert!(!after.iter().any(|r| r.contains("...")));
+
+    // and - a wrapped line is still ONE row, and the cursor has not moved
+    assert_eq!(app.rows.len(), rows, "wrapping must not change row COUNT");
+    assert_eq!(app.cursor, cursor);
+}
+
+#[test]
+fn a_continuation_line_has_no_line_number_of_its_own() {
+    // given
+    let (_r, mut app) = app_with_a_long_line();
+
+    // when
+    app.handle_key(key('w'));
+    let pane = wrapped_pane(&mut app);
+
+    // then - the number cell is blank on the continuation, and the same width,
+    // so the content still starts in one column.
+    let first = pane
+        .iter()
+        .position(|r| r.contains("Soft wrap exists"))
+        .expect("the wrapped line");
+    let head = &pane[first][..11];
+    let tail = &pane[first + 1][..11];
+    assert!(head.trim().ends_with('3'), "line number missing: {head:?}");
+    assert_eq!(tail, " ".repeat(11), "continuation should have no number");
+}
+
+#[test]
+fn prose_wraps_whether_or_not_w_is_on() {
+    // given - a group description longer than the pane, and w untouched
+    let (_r, mut app) = app_with_a_long_line();
+
+    // when
+    let pane = wrapped_pane(&mut app);
+
+    // then - the description reads to its end, indented under itself
+    assert!(pane.iter().any(|r| r.contains("This group rewrites")));
+    let tail = pane
+        .iter()
+        .find(|r| r.contains("pane is wide."))
+        .expect("the end of the description");
+    assert!(
+        tail.starts_with("   "),
+        "continuation lost its indent: {tail:?}"
+    );
+}
+
+#[test]
+fn a_wrapped_note_stays_inside_its_rail() {
+    // given - a note longer than the pane
+    let (_r, mut app) = app_with_a_long_line();
+    app.focus = Focus::Detail;
+    app.handle_key(key('c'));
+    for ch in "a note about this line that is longer than the pane is wide".chars() {
+        app.handle_key(key(ch));
+    }
+    app.handle_key(ctrl('s'));
+
+    // when
+    let pane = wrapped_pane(&mut app);
+
+    // then - every line of the panel keeps the rail
+    let rails: Vec<&String> = pane.iter().filter(|r| r.contains('▍')).collect();
+    assert!(rails.len() >= 2, "the note should wrap: {pane:#?}");
+    assert!(
+        rails.last().is_some_and(|r| r.contains("is wide")),
+        "the end of the note should sit behind the rail: {rails:#?}"
+    );
+}
+
+#[test]
+fn the_scroll_budget_counts_screen_lines_not_rows() {
+    // given - a long file in a pane narrow enough that its lines wrap
+    let (_r, mut app) = app_with_a_long_file();
+    app.focus = Focus::Detail;
+    app.set_viewport(Viewport {
+        detail_rows: 12,
+        detail_cols: 24,
+        plan_rows: 12,
+        body_rows: 14,
+    });
+    app.handle_key(key('w'));
+
+    // when - the cursor goes to the bottom
+    app.handle_key(key('G'));
+
+    // then - the window really does hold wrapped rows, so counting rows and
+    // counting lines are different numbers here
+    let rows = app.cursor + 1 - app.scroll();
+    let lines: usize = (app.scroll()..=app.cursor).map(|i| app.row_height(i)).sum();
+    assert!(
+        lines > rows,
+        "the window should hold a wrapped row: {lines} lines over {rows} rows"
+    );
+
+    // and - it is the LINES that fit the pane. Counting rows would overflow it.
+    assert!(lines <= 12, "the view must hold the cursor: {lines} lines");
+    assert!(app.scroll() <= app.cursor);
+}
+
+#[test]
+fn the_wrap_choice_is_persisted() {
+    // given
+    let (r, mut app) = app_with_a_long_line();
+    assert!(!app.session.wrap().unwrap_or(false));
+
+    // when
+    app.handle_key(key('w'));
+
+    // then - it is on disk, not just in the model
+    assert_eq!(app.session.wrap(), Some(true));
+    let state = std::fs::read_to_string(r.root.join(".dfr-wrap-store/state.json")).unwrap();
+    assert!(state.contains("\"wrap\": true"), "{state}");
+}
+
+/// `cargo test -p differential-tui --test tui -- --ignored --nocapture render_dump_wrap`
+#[test]
+#[ignore = "prints the pane for a human to look at"]
+fn render_dump_wrap() {
+    let (_r, mut app) = app_with_a_long_line();
+    app.focus = Focus::Detail;
+    app.set_viewport(Viewport {
+        detail_rows: 22,
+        detail_cols: 58,
+        plan_rows: 22,
+        body_rows: 24,
+    });
+    app.handle_key(key('c'));
+    for ch in "the note a reviewer writes about this line is prose too, and it also runs past the edge of the pane".chars() {
+        app.handle_key(key(ch));
+    }
+    app.handle_key(ctrl('s'));
+    eprintln!("=== unified, w OFF ===");
+    for row in drawn_rows(&mut app) {
+        eprintln!("{row}");
+    }
+    app.handle_key(key('w'));
+    eprintln!("=== unified, w ON ===");
+    for row in drawn_rows(&mut app) {
+        eprintln!("{row}");
+    }
+    app.handle_key(key('s'));
+    eprintln!("=== split, w ON ===");
+    for row in drawn_rows(&mut app) {
+        eprintln!("{row}");
     }
 }

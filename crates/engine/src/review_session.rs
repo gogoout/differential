@@ -128,6 +128,12 @@ impl<S: ReviewStore> ReviewSession<S> {
         self.state.file_view
     }
 
+    /// The reader's recorded wrap choice, or `None` if they have not pressed
+    /// `w` on this review.
+    pub fn wrap(&self) -> Option<bool> {
+        self.state.wrap
+    }
+
     /// The open findings as markdown: one `- file:lines: note` per line.
     ///
     /// The human-readable projection of `findings()`, and domain policy rather
@@ -199,6 +205,12 @@ impl<S: ReviewStore> ReviewSession<S> {
     /// Persist the diff layout (unified / side-by-side).
     pub fn set_split_diff(&mut self, on: bool) -> Result<(), EngineError> {
         self.state.split_diff = Some(on);
+        self.store.save_state(&self.state)
+    }
+
+    /// Persist the soft-wrap choice.
+    pub fn set_wrap(&mut self, on: bool) -> Result<(), EngineError> {
+        self.state.wrap = Some(on);
         self.store.save_state(&self.state)
     }
 
