@@ -5122,23 +5122,32 @@ fn a_wrapped_note_stays_inside_its_rail() {
 }
 
 #[test]
-fn a_wrapped_row_keeps_the_scroll_budget_in_screen_lines() {
-    // given - a long file, wrapped, in a pane of a known height
+fn the_scroll_budget_counts_screen_lines_not_rows() {
+    // given - a long file in a pane narrow enough that its lines wrap
     let (_r, mut app) = app_with_a_long_file();
     app.focus = Focus::Detail;
     app.set_viewport(Viewport {
         detail_rows: 12,
-        detail_cols: 58,
+        detail_cols: 24,
         plan_rows: 12,
         body_rows: 14,
     });
+    app.handle_key(key('w'));
 
     // when - the cursor goes to the bottom
     app.handle_key(key('G'));
 
-    // then - every row from the offset to the cursor fits the pane
-    let shown: usize = (app.scroll()..=app.cursor).map(|_| 1).sum();
-    assert!(shown <= 12, "the view must hold the cursor: {shown}");
+    // then - the window really does hold wrapped rows, so counting rows and
+    // counting lines are different numbers here
+    let rows = app.cursor + 1 - app.scroll();
+    let lines: usize = (app.scroll()..=app.cursor).map(|i| app.row_height(i)).sum();
+    assert!(
+        lines > rows,
+        "the window should hold a wrapped row: {lines} lines over {rows} rows"
+    );
+
+    // and - it is the LINES that fit the pane. Counting rows would overflow it.
+    assert!(lines <= 12, "the view must hold the cursor: {lines} lines");
     assert!(app.scroll() <= app.cursor);
 }
 

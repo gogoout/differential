@@ -1124,7 +1124,11 @@ impl App {
     /// disagree about where a row ends. Deliberately independent of the
     /// cursor: no row that wraps carries a marker or a hint, so nothing the
     /// cursor changes can change a height.
-    fn row_height(&self, i: usize) -> usize {
+    ///
+    /// Exposed for the same reason `viewport` is: a test asserting that the
+    /// scroll budget counts screen LINES has to be able to count them, and
+    /// counting rows instead is exactly the bug it guards against.
+    pub fn row_height(&self, i: usize) -> usize {
         self.rows.get(i).map_or(1, |r| {
             compose_row_lines(
                 &self.theme,
