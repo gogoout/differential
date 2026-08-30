@@ -251,7 +251,7 @@ fn draw(
         ));
         if at_base {
             spans.push(Span::styled(
-                "  ← base, not reviewed",
+                "  ← base (excluded)",
                 Style::default().fg(theme.gutter_fg),
             ));
         }
