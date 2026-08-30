@@ -339,13 +339,45 @@ pub struct FsReviewCatalogue {
 
 /// The on-disk form of `ports::ReviewIdentity`. Additive by the same rule as
 /// the rest of the sidecar: every field defaults, so a file written by a later
-/// version still loads.
+/// version still loads. A named session records `name` and no endpoints; a
+/// range records the endpoints and no name.
 #[derive(Serialize, Deserialize)]
 struct IdentityFile {
-    #[serde(default)]
-    base: String,
-    #[serde(default)]
-    head_spec: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    head_spec: Option<String>,
+}
+
+impl IdentityFile {
+    fn read(&self) -> Option<ports::ReviewIdentity> {
+        match (&self.name, &self.base, &self.head_spec) {
+            (Some(name), _, _) => Some(ports::ReviewIdentity::Named(name.clone())),
+            (None, Some(base), Some(head_spec)) => Some(ports::ReviewIdentity::Range {
+                base: base.clone(),
+                head_spec: head_spec.clone(),
+            }),
+            // Half a record answers nothing: recognisable, not adoptable.
+            _ => None,
+        }
+    }
+
+    fn of(identity: &ports::ReviewIdentity) -> Self {
+        match identity {
+            ports::ReviewIdentity::Named(name) => IdentityFile {
+                name: Some(name.clone()),
+                base: None,
+                head_spec: None,
+            },
+            ports::ReviewIdentity::Range { base, head_spec } => IdentityFile {
+                name: None,
+                base: Some(base.clone()),
+                head_spec: Some(head_spec.clone()),
+            },
+        }
+    }
 }
 
 impl FsReviewCatalogue {
@@ -386,10 +418,7 @@ impl ports::ReviewCatalogue for FsReviewCatalogue {
             let opened_as = match std::fs::read(plan::identity_path(&self.common_dir, &id)) {
                 Ok(bytes) => serde_json::from_slice::<IdentityFile>(&bytes)
                     .ok()
-                    .map(|f| ports::ReviewIdentity {
-                        base: f.base,
-                        head_spec: f.head_spec,
-                    }),
+                    .and_then(|f| f.read()),
                 Err(_) => None,
             };
             out.push(ports::FiledReview { id, opened_as });
@@ -424,11 +453,8 @@ impl ports::ReviewCatalogue for FsReviewCatalogue {
         let dir = plan::review_dir(&self.common_dir, id);
         std::fs::create_dir_all(&dir).map_err(|e| io_err(&dir, e))?;
         let path = plan::identity_path(&self.common_dir, id);
-        let body = serde_json::to_string_pretty(&IdentityFile {
-            base: opened_as.base.clone(),
-            head_spec: opened_as.head_spec.clone(),
-        })
-        .expect("identity serialises");
+        let body = serde_json::to_string_pretty(&IdentityFile::of(opened_as))
+            .expect("identity serialises");
         std::fs::write(&path, body).map_err(|e| io_err(&path, e))
     }
 }

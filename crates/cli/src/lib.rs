@@ -19,6 +19,7 @@ use differential_engine::lang::LanguageRegistry;
 use differential_engine::llm::CommandBackend;
 use differential_engine::pipeline::resolve_picked;
 use differential_engine::plan;
+use differential_engine::ports::ReviewIdentity;
 use differential_engine::review_identity;
 use differential_engine::store::{
     self, FsArtefactStore, FsGroupingCache, FsReviewCatalogue, FsReviewStore, OsConfigSource,
@@ -59,6 +60,15 @@ enum Command {
     Review {
         #[command(flatten)]
         common: Common,
+        /// Name this review session, instead of filing it under the range.
+        ///
+        /// The name becomes the whole identity, so neither endpoint is in the
+        /// key and a rebase of either cannot strand your progress. Use the
+        /// same name to resume it, with any range and from the picker.
+        ///
+        ///   dfr review --name "$(git branch --show-current)" main..HEAD
+        #[arg(long)]
+        name: Option<String>,
         /// Bypass the grouping cache (forces a fresh LLM call).
         #[arg(long)]
         no_cache: bool,
@@ -67,6 +77,10 @@ enum Command {
     Findings {
         #[command(flatten)]
         common: Common,
+        /// Read the named review session rather than the one filed under the
+        /// range. Must match the name `dfr review --name` was given.
+        #[arg(long)]
+        name: Option<String>,
         /// Print the open findings as markdown instead — the same text the
         /// reviewer's `y` copies, for pasting into an agent or a PR.
         #[arg(long)]
@@ -162,6 +176,12 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     }
 
     let common = cli.command.common().expect("agent and clean handled above");
+    // Read here because `common` borrows the command that the dispatch below
+    // moves. A name is the whole review identity when one is given (ADR 0027).
+    let session_name = match &cli.command {
+        Command::Review { name, .. } | Command::Findings { name, .. } => name.clone(),
+        _ => None,
+    };
 
     let dir = common
         .repo
@@ -308,12 +328,16 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     },
                 )
                 .context("grouped pipeline failed")?;
-                let review_base = source.identity_base.unwrap_or_else(|| out.base.clone());
-                Ok(differential_tui::Prepared {
-                    out,
-                    review_base,
-                    head_spec: source.head_spec,
-                })
+                // A name is the whole identity; without one the review is
+                // filed under its endpoints (ADR 0026, ADR 0027).
+                let identity = match session_name {
+                    Some(name) => ReviewIdentity::Named(name),
+                    None => ReviewIdentity::Range {
+                        base: source.identity_base.unwrap_or_else(|| out.base.clone()),
+                        head_spec: source.head_spec,
+                    },
+                };
+                Ok(differential_tui::Prepared { out, identity })
             })?;
             Ok(ExitCode::SUCCESS)
         }
@@ -327,16 +351,17 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 .context("invariants failed; no plan available")?;
             // The same resolution the reviewer's session made, so `findings`
             // reads the review they are looking at and not an empty namesake.
-            let review_base = source
-                .identity_base
-                .clone()
-                .unwrap_or_else(|| out.base.clone());
-            let id = review_identity::resolve(
-                &FsReviewCatalogue::new(&repo)?,
-                &repo,
-                &review_base,
-                &source.head_spec,
-            )?;
+            let identity = match session_name {
+                Some(name) => ReviewIdentity::Named(name),
+                None => ReviewIdentity::Range {
+                    base: source
+                        .identity_base
+                        .clone()
+                        .unwrap_or_else(|| out.base.clone()),
+                    head_spec: source.head_spec.clone(),
+                },
+            };
+            let id = review_identity::resolve(&FsReviewCatalogue::new(&repo)?, &repo, &identity)?;
             let store = FsReviewStore::for_review(&repo, &id)?;
             let session = differential_engine::ReviewSession::open(store, doc, out.view)?;
             // Two projections of one store, both the engine's: JSON for a

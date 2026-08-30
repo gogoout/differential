@@ -22,7 +22,7 @@ private, per-clone, worktree-safe, never committable.
 │   ├── plans/<content-hash>.json   # every generated document, immutable
 │   ├── current                     # the active plan's content hash
 │   ├── findings.jsonl              # the comment store
-│   ├── identity.json               # what this review was opened as
+│   ├── identity.json               # a name, or the endpoints it was opened as
 │   └── state.json                  # review progress
 ├── reviews/<review-id>/
 │   └── alias                       # a redirect: read that review instead
@@ -71,6 +71,32 @@ head is a synthesized tree and ancestry says nothing about it (ADR 0017).
 The join never expires. Switch branches afterwards and the two spellings stay one review:
 marks key on hunk content and findings re-anchor by digest, so a diff that no longer
 matches costs orphans, never loss.
+
+### A rebase, and the named session
+
+Adoption rests on ancestry, and **a rebase defeats ancestry by construction**: rewriting
+commits gives a head that is not a descendant of the old one, and rebasing onto a moved base
+changes the base sha too. Neither endpoint reaches its old self, so nothing is adoptable.
+
+The loss is the directory, not the content — a hunk digest hashes only the removed and added
+lines, so a clean rebase leaves every digest unchanged.
+
+So a reader who wants a session that outlives a rebase **names** it (ADR 0027). The name is
+then the whole identity: no endpoint is in the key, it works from the picker and with any
+range, and it neither adopts nor is adopted.
+
+```sh
+# the branch name as the session name — the shell already knows it, so the
+# tool does not have to guess it from a commit
+dfr review   --name "$(git branch --show-current)" main..HEAD
+dfr findings --name "$(git branch --show-current)" main..HEAD
+```
+
+The name is never inferred. Asking git which refs point at the base gives zero names, or
+several, and a different answer as branches move. A pull request is not inferred either: you
+name the source and target branch when you open it.
+
+`identity.json` records **either** a name **or** a pair of endpoints, never both.
 
 ## Comments
 

@@ -29,6 +29,7 @@ use crossterm::event::{self, Event};
 use differential_engine::gitio::Repo;
 use differential_engine::grouping::Progress;
 use differential_engine::plan;
+use differential_engine::ports::ReviewIdentity;
 use differential_engine::review_identity;
 use differential_engine::store::{FsReviewCatalogue, FsReviewStore};
 use differential_engine::{PipelineOutput, ReviewSession};
@@ -42,12 +43,12 @@ use rows::RowFactory;
 type Session = vendor::terminal::TerminalSession<Stdout>;
 
 /// A pipeline result plus the review's IDENTITY — the head AS TYPED keeps a
-/// branch review stable while its tip moves, and uncommitted reviews key on a
-/// real sha plus a stable literal (ADR 0017).
+/// branch review stable while its tip moves, uncommitted reviews key on a real
+/// sha plus a stable literal (ADR 0017), and a named session keys on the name
+/// alone (ADR 0027).
 pub struct Prepared {
     pub out: PipelineOutput,
-    pub review_base: String,
-    pub head_spec: String,
+    pub identity: ReviewIdentity,
 }
 
 /// Run the whole review surface. `pick` opens the source picker first and
@@ -141,11 +142,13 @@ where
     // The renderer is an adapter: it composes the concrete store rather than
     // carrying a generic parameter for a choice it never makes.
     let catalogue = FsReviewCatalogue::new(repo)?;
-    let id =
-        review_identity::resolve(&catalogue, repo, &prepared.review_base, &prepared.head_spec)?;
+    let id = review_identity::resolve(&catalogue, repo, &prepared.identity)?;
     // Adoption is silent, but not secret: the marks a reader did not make in
     // this range are the one thing that would otherwise arrive unexplained.
-    let adopted = id != plan::review_id(&prepared.review_base, &prepared.head_spec);
+    let adopted = match &prepared.identity {
+        ReviewIdentity::Range { base, head_spec } => id != plan::review_id(base, head_spec),
+        ReviewIdentity::Named(_) => false,
+    };
     let store = FsReviewStore::for_review(repo, &id)?;
     let session = ReviewSession::open(store, doc, prepared.out.view)?;
     let factory = RowFactory::new(

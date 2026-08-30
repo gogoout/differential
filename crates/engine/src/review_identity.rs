@@ -15,6 +15,12 @@
 //! Adoption is silent and permanent. It is recorded as a redirect, so every
 //! later open costs one file read, and `dfr findings` reaches the same review
 //! the reviewer is looking at.
+//!
+//! Adoption cannot cover a rebase: rewriting commits changes both endpoints,
+//! so neither the base nor the head is reachable from its old self. A reader
+//! who wants a session that outlives a rebase **names** it, and the name is
+//! then the whole identity — the way a pull request survives a force-push
+//! because it is an object rather than a range (ADR 0027).
 
 use crate::EngineError;
 use crate::plan;
@@ -25,17 +31,31 @@ use crate::ports::{Ancestry, FiledReview, ReviewCatalogue, ReviewIdentity};
 /// adopt nor be adopted.
 pub const WORKTREE_SPEC: &str = "WORKTREE";
 
-/// The review directory `base_sha`/`head_spec` should read and write.
+/// The review directory this identity should read and write.
 ///
-/// Returns the id of an existing review when this spelling names the same work,
-/// and records the join. Otherwise returns this spelling's own id, and records
-/// what it was opened as so a later spelling can find it.
+/// For a named session that is the name's own id, and nothing else is
+/// consulted. For a range it is the id of an existing review when this
+/// spelling names the same work, with the join recorded; otherwise this
+/// spelling's own id, with what it was opened as recorded so a later spelling
+/// can find it.
 pub fn resolve<C: ReviewCatalogue, G: Ancestry>(
     catalogue: &C,
     git: &G,
-    base_sha: &str,
-    head_spec: &str,
+    opened_as: &ReviewIdentity,
 ) -> Result<String, EngineError> {
+    let (base_sha, head_spec) = match opened_as {
+        // A name is the identity. No alias, no scan, no git call — and no
+        // adoption in either direction, because the reader has already said
+        // which review this is.
+        ReviewIdentity::Named(name) => {
+            let id = plan::review_id_named(name);
+            if !catalogue.filed_reviews()?.iter().any(|r| r.id == id) {
+                catalogue.file_identity(&id, opened_as)?;
+            }
+            return Ok(id);
+        }
+        ReviewIdentity::Range { base, head_spec } => (base.as_str(), head_spec.as_str()),
+    };
     let id = plan::review_id(base_sha, head_spec);
 
     // A join already recorded. One file read, no scan and no git call.
@@ -43,10 +63,6 @@ pub fn resolve<C: ReviewCatalogue, G: Ancestry>(
         return Ok(target);
     }
 
-    let opened_as = ReviewIdentity {
-        base: base_sha.to_string(),
-        head_spec: head_spec.to_string(),
-    };
     let filed = catalogue.filed_reviews()?;
     let known = filed.iter().find(|r| r.id == id);
 
@@ -63,33 +79,34 @@ pub fn resolve<C: ReviewCatalogue, G: Ancestry>(
         // existed becomes adoptable rather than staying invisible forever —
         // and so the steady state costs no write.
         if known.opened_as.is_none() {
-            catalogue.file_identity(&id, &opened_as)?;
+            catalogue.file_identity(&id, opened_as)?;
         }
         return Ok(id);
     }
 
-    match adopt(&filed, &opened_as, git)? {
+    match adopt(&filed, base_sha, head_spec, git)? {
         Some(target) => {
             catalogue.file_alias(&id, &target)?;
             Ok(target)
         }
         None => {
-            catalogue.file_identity(&id, &opened_as)?;
+            catalogue.file_identity(&id, opened_as)?;
             Ok(id)
         }
     }
 }
 
-/// The review `want` should inherit, if any.
+/// The review this range should inherit, if any.
 ///
 /// Cheapest test first: the base is a string compare and drops every review of
 /// other work before a single git process starts.
 fn adopt<G: Ancestry>(
     filed: &[FiledReview],
-    want: &ReviewIdentity,
+    base_sha: &str,
+    head_spec: &str,
     git: &G,
 ) -> Result<Option<String>, EngineError> {
-    let Some(head) = git.commit_of(&want.head_spec)? else {
+    let Some(head) = git.commit_of(head_spec)? else {
         return Ok(None);
     };
 
@@ -101,14 +118,19 @@ fn adopt<G: Ancestry>(
     let mut ahead: Option<(&str, String)> = None;
 
     for r in filed {
-        let Some(other) = r.opened_as.as_ref() else {
+        // A named session is never adopted: its reader has said what it is.
+        let Some(ReviewIdentity::Range {
+            base: other_base,
+            head_spec: other_spec,
+        }) = r.opened_as.as_ref()
+        else {
             continue;
         };
-        if other.base != want.base || other.head_spec == WORKTREE_SPEC {
+        if other_base != base_sha || other_spec == WORKTREE_SPEC {
             continue;
         }
         // A branch deleted since the review was filed cannot be placed.
-        let Some(other_head) = git.commit_of(&other.head_spec)? else {
+        let Some(other_head) = git.commit_of(other_spec)? else {
             continue;
         };
         if other_head == head {

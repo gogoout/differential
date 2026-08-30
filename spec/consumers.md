@@ -69,12 +69,14 @@ let out = run_pipeline(&repo, &src.base, &src.head, src.kind, &config,
   are separate because reviewing uncommitted work diffs against synthesized trees that churn
   on every edit while the review itself must survive (ADR 0017). `resolve_picked` builds the
   same type from the picker's answer.
-- `review_identity::resolve(catalogue, git, base_sha, head_spec)` says which review
-  directory that identity opens. The spelling is part of a review's name, so a spelling with
-  no review of its own adopts one filed on the same base whose head is reachable from this
-  one, and records the join (ADR 0026). Call it before `store::FsReviewStore::for_review`,
-  which now takes the id rather than deriving one — otherwise a consumer and the reviewer
-  can end up in two reviews of one range.
+- `review_identity::resolve(catalogue, git, &ReviewIdentity)` says which review directory an
+  identity opens. `ReviewIdentity::Range { base, head_spec }` is filed under its endpoints:
+  the spelling is part of a review's name, so a spelling with no review of its own adopts one
+  on the same base whose head is reachable from this one, and the join is recorded (ADR
+  0026). `ReviewIdentity::Named(name)` keys on the name alone — no endpoint, no scan, no git
+  call, and no adoption in either direction (ADR 0027). Call it before
+  `store::FsReviewStore::for_review`, which takes the id rather than deriving one —
+  otherwise a consumer and the reviewer can end up in two reviews of one range.
 - `run_pipeline` runs all invariants before emitting anything; on a violation there is no
   document, only the report saying what failed.
 - `run_grouped_pipeline(…, &GroupingOptions { backend, cache, artefacts, progress })`

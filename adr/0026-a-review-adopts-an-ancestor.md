@@ -98,6 +98,9 @@ was filed is a candidate that cannot be placed, not an error that refuses to ope
   adoptable from then on.
 - One directory per spelling used, holding a single `alias` file. `dfr clean` does not touch
   `reviews/` and must not start (ADR 0013).
+- **A rebase is not covered, and cannot be.** Rewriting commits breaks ancestry on both
+  endpoints at once, so nothing is adoptable. A reader who wants a session that outlives a
+  rebase names it ([ADR 0027](0027-a-named-review-session.md)).
 
 ## Alternatives rejected
 

@@ -61,7 +61,26 @@ With no range it opens a picker instead of failing. See [The picker](#the-picker
 
 | flag | meaning |
 |---|---|
+| `--name <name>` | File this session under `<name>` instead of under the range. |
 | `--no-cache` | Bypass the grouping cache. This forces a fresh LLM call. |
+
+**Which review you reopen.** A review is normally filed under its base sha and the head
+**as typed**, so `main..feature` stays one review while `feature` moves. A spelling with no
+review of its own adopts one on the same line of history, so `main..<sha>`, `main..HEAD`
+and a reopen after new commits all reach the same progress.
+
+A rebase is the case that cannot work: it rewrites both endpoints, so neither reaches its
+old self and there is nothing to adopt. Name the session and the name becomes the whole
+identity — no endpoint is in the key, it works from the picker, and it survives a rebase of
+either side:
+
+```sh
+# the branch name as the session name
+dfr review --name "$(git branch --show-current)" main..feature
+```
+
+Use the same name to resume it, and pass it to `dfr findings` to read the same review. A
+named session neither adopts nor is adopted: naming it is you saying which review this is.
 
 Full key list and behaviour:
 <https://github.com/gogoout/differential/blob/main/crates/tui/README.md>
@@ -107,6 +126,7 @@ review into other tooling.
 
 | flag | meaning |
 |---|---|
+| `--name <name>` | Read the named session, matching `dfr review --name`. |
 | `--no-cache` | Bypass the grouping cache. |
 
 Each record carries `{id, created, body, status, moved, plan_hash, anchor}`. The anchor

@@ -330,22 +330,23 @@ pub trait ArtefactStore {
     fn make_readable(&self, key: &str, json: &str) -> Result<PathBuf, EngineError>;
 }
 
-/// What a review was opened as. The id is a hash of these two strings, so the
-/// id alone cannot answer what its head spec means today.
+/// What a review was opened as. The id is a hash of this, so the id alone
+/// cannot answer what a review's endpoints mean today.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReviewIdentity {
-    /// The resolved base sha.
-    pub base: String,
-    /// The head endpoint as typed.
-    pub head_spec: String,
+pub enum ReviewIdentity {
+    /// A range: the resolved base sha, and the head endpoint as typed.
+    Range { base: String, head_spec: String },
+    /// A session the reader named. The name IS the identity, so neither
+    /// endpoint is in the key and rebasing either cannot strand it.
+    Named(String),
 }
 
 /// One review as the catalogue sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FiledReview {
     pub id: String,
-    /// `None` for a review filed before identities were written, and for a
-    /// review of uncommitted work. Both can be recognised, neither adopted.
+    /// `None` for a review filed before identities were written, and for one
+    /// of uncommitted work. Both can be recognised, neither adopted.
     pub opened_as: Option<ReviewIdentity>,
 }
 

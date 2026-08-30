@@ -314,6 +314,14 @@ after a commit resumes what you had rather than starting empty. Two branches off
 adopt nothing from each other. The join is silent, recorded and permanent; the status line
 says so on the open that adopts (ADR 0026).
 
+A rebase is outside adoption: it rewrites both endpoints at once, so neither reaches its old
+self. Name the session instead and the name is the whole identity, from the picker as well
+as from a range (ADR 0027):
+
+```sh
+dfr review --name "$(git branch --show-current)" main..feature
+```
+
 Reviewed marks key on the exact hunk digest (ADR 0025). `space` in the plan pane marks
 every hunk of the selected group or file; in the diff pane it marks the hunk under the
 cursor. Change one hunk of a class and the rest stay read. Two byte-identical hunks share

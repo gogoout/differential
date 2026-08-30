@@ -232,7 +232,7 @@ every mutation is on disk before the call returns.
 │   ├── plans/<content-hash>.json   every generated document, immutable
 │   ├── current                     the active plan's content hash
 │   ├── findings.jsonl              the findings store
-│   ├── identity.json               what this review was opened as
+│   ├── identity.json               a name, or the endpoints it was opened as
 │   └── state.json                  progress and view preferences
 └── cache/grouping/<classes-hash>.json
 ```
@@ -245,6 +245,11 @@ range opens. A spelling with no review of its own adopts one filed on the same b
 head is reachable from this one — the two spellings of a commit, and the commits added
 since. Two branches off one base adopt nothing from each other. The join is recorded as an
 `alias` file, so it is permanent and costs one file read (ADR 0026).
+
+Adoption rests on ancestry, and a rebase rewrites both endpoints, so nothing is adoptable
+after one. `dfr review --name <name>` files the session under `review_id_named(name)`
+instead: no endpoint is in the key, it works from the picker, and it neither adopts nor is
+adopted (ADR 0027).
 
 Documents are pure functions of `base..head`. Review state lives in the sidecar and
 re-anchors on every regeneration: exact hunk digest first, then a content match flagged

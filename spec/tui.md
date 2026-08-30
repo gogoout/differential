@@ -458,6 +458,10 @@ while `feature` moves. A spelling with no review of its own adopts one filed on 
 line of history, so `main..<sha>` and `main..HEAD` are one review and a new commit does not
 strand what you have read (ADR 0026); the status line says so on the open that adopts.
 
+A rebase is outside adoption: it rewrites both endpoints, so neither reaches its old self.
+`dfr review --name <name>` files the session under that name instead, and then no endpoint
+is in the key (ADR 0027).
+
 Reviewed marks key on the exact hunk digest (ADR 0025), so changing one hunk of a class
 leaves the rest read. Findings anchor on the same digests and re-anchor on every open
 (exact digest → content match flagged *moved* → orphaned, never dropped; orphans revive

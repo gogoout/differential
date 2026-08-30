@@ -31,6 +31,20 @@ pub fn review_id(base_sha: &str, head_spec: &str) -> String {
     short_hash(h)
 }
 
+/// A review the reader named. The name IS the identity, so neither endpoint
+/// is in the key: rebase the base or the head and the session survives, the
+/// way a pull request survives a force-push because it is an object rather
+/// than a range.
+///
+/// The leading tag byte keeps a name out of `review_id`'s space. That hash
+/// starts with a resolved sha — hex ASCII — so it can never begin with `0x01`.
+pub fn review_id_named(name: &str) -> String {
+    let mut h = Sha1::new();
+    h.update([1]);
+    h.update(name.as_bytes());
+    short_hash(h)
+}
+
 /// A plan document's content hash — its immutable identity, and what findings
 /// record so re-anchoring knows which document they were written against.
 pub fn plan_hash(json: &str) -> String {

@@ -9,7 +9,7 @@
 //! git can answer.
 
 use differential_engine::plan;
-use differential_engine::ports::{Ancestry, ReviewCatalogue};
+use differential_engine::ports::{Ancestry, ReviewCatalogue, ReviewIdentity};
 use differential_engine::review_identity::{WORKTREE_SPEC, resolve};
 use differential_engine::store::FsReviewCatalogue;
 use differential_testutil::TestRepo;
@@ -51,18 +51,26 @@ fn catalogue(l: &Line) -> FsReviewCatalogue {
     FsReviewCatalogue::at(l.r.root.join(".git"))
 }
 
+fn range(base: &str, head_spec: &str) -> ReviewIdentity {
+    ReviewIdentity::Range {
+        base: base.to_string(),
+        head_spec: head_spec.to_string(),
+    }
+}
+
 #[test]
 fn a_first_review_keeps_its_own_id_and_records_what_it_was_opened_as() {
     let l = line();
     let cat = catalogue(&l);
-    let id = resolve(&cat, &l.r.repo(), &l.base, &l.a).unwrap();
+    let id = resolve(&cat, &l.r.repo(), &range(&l.base, &l.a)).unwrap();
 
     assert_eq!(id, plan::review_id(&l.base, &l.a), "nothing to adopt yet");
     let filed = cat.filed_reviews().unwrap();
     assert_eq!(filed.len(), 1);
-    let opened = filed[0].opened_as.as_ref().expect("identity is recorded");
-    assert_eq!(opened.head_spec, l.a);
-    assert_eq!(opened.base, l.base);
+    assert_eq!(
+        filed[0].opened_as.as_ref().expect("identity is recorded"),
+        &range(&l.base, &l.a)
+    );
 }
 
 #[test]
@@ -72,12 +80,12 @@ fn two_spellings_of_one_commit_are_one_review() {
     let git = l.r.repo();
 
     // Reviewed as a full sha, reopened as HEAD — which IS that sha.
-    let first = resolve(&cat, &git, &l.base, &l.b).unwrap();
-    let second = resolve(&cat, &git, &l.base, "HEAD").unwrap();
+    let first = resolve(&cat, &git, &range(&l.base, &l.b)).unwrap();
+    let second = resolve(&cat, &git, &range(&l.base, "HEAD")).unwrap();
     assert_eq!(second, first, "same base, same commit, same review");
 
     // An abbreviated sha is a third spelling of the same thing.
-    let short = resolve(&cat, &git, &l.base, &l.b[..8]).unwrap();
+    let short = resolve(&cat, &git, &range(&l.base, &l.b[..8])).unwrap();
     assert_eq!(short, first);
 }
 
@@ -89,16 +97,19 @@ fn a_review_carries_forward_when_the_head_moves_on() {
 
     // Review at `a`, commit, then review at `b`. `a` is an ancestor of `b`,
     // so this is the same work read further along, not a new review.
-    let first = resolve(&cat, &git, &l.base, &l.a).unwrap();
-    let later = resolve(&cat, &git, &l.base, &l.b).unwrap();
+    let first = resolve(&cat, &git, &range(&l.base, &l.a)).unwrap();
+    let later = resolve(&cat, &git, &range(&l.base, &l.b)).unwrap();
     assert_eq!(later, first);
 
     // And backwards: an older sha reaches the same review.
     let l2 = line();
     let cat2 = catalogue(&l2);
     let git2 = l2.r.repo();
-    let newest = resolve(&cat2, &git2, &l2.base, &l2.b).unwrap();
-    assert_eq!(resolve(&cat2, &git2, &l2.base, &l2.a).unwrap(), newest);
+    let newest = resolve(&cat2, &git2, &range(&l2.base, &l2.b)).unwrap();
+    assert_eq!(
+        resolve(&cat2, &git2, &range(&l2.base, &l2.a)).unwrap(),
+        newest
+    );
 }
 
 #[test]
@@ -107,8 +118,8 @@ fn two_branches_off_one_base_stay_apart() {
     let cat = catalogue(&l);
     let git = l.r.repo();
 
-    let main = resolve(&cat, &git, &l.base, &l.b).unwrap();
-    let side = resolve(&cat, &git, &l.base, &l.side).unwrap();
+    let main = resolve(&cat, &git, &range(&l.base, &l.b)).unwrap();
+    let side = resolve(&cat, &git, &range(&l.base, &l.side)).unwrap();
     assert_ne!(
         side, main,
         "neither head reaches the other, so the findings must never collide"
@@ -121,8 +132,8 @@ fn a_different_base_is_a_different_review() {
     let cat = catalogue(&l);
     let git = l.r.repo();
 
-    let from_base = resolve(&cat, &git, &l.base, &l.b).unwrap();
-    let from_a = resolve(&cat, &git, &l.a, &l.b).unwrap();
+    let from_base = resolve(&cat, &git, &range(&l.base, &l.b)).unwrap();
+    let from_a = resolve(&cat, &git, &range(&l.a, &l.b)).unwrap();
     assert_ne!(from_a, from_base, "a different base is different work");
 }
 
@@ -132,17 +143,17 @@ fn uncommitted_work_never_adopts_and_is_never_adopted() {
     let cat = catalogue(&l);
     let git = l.r.repo();
 
-    let committed = resolve(&cat, &git, &l.base, &l.b).unwrap();
-    let worktree = resolve(&cat, &git, &l.base, WORKTREE_SPEC).unwrap();
+    let committed = resolve(&cat, &git, &range(&l.base, &l.b)).unwrap();
+    let worktree = resolve(&cat, &git, &range(&l.base, WORKTREE_SPEC)).unwrap();
     assert_eq!(worktree, plan::review_id(&l.base, WORKTREE_SPEC));
     assert_ne!(worktree, committed, "a tree endpoint has no ancestry");
 
     // It records no identity, so it cannot be adopted later either.
     assert!(
-        cat.filed_reviews().unwrap().iter().all(|r| r
-            .opened_as
-            .as_ref()
-            .is_none_or(|i| i.head_spec != WORKTREE_SPEC)),
+        !cat.filed_reviews()
+            .unwrap()
+            .iter()
+            .any(|r| r.opened_as == Some(range(&l.base, WORKTREE_SPEC))),
         "a worktree review must stay out of every scan"
     );
 }
@@ -153,9 +164,9 @@ fn an_adoption_is_recorded_and_answered_without_git() {
     let cat = catalogue(&l);
     let git = l.r.repo();
 
-    let first = resolve(&cat, &git, &l.base, &l.b).unwrap();
+    let first = resolve(&cat, &git, &range(&l.base, &l.b)).unwrap();
     let id = plan::review_id(&l.base, "HEAD");
-    assert_eq!(resolve(&cat, &git, &l.base, "HEAD").unwrap(), first);
+    assert_eq!(resolve(&cat, &git, &range(&l.base, "HEAD")).unwrap(), first);
 
     // The join is on disk, so the second open is one file read.
     assert_eq!(cat.alias_of(&id).unwrap().as_deref(), Some(first.as_str()));
@@ -170,11 +181,11 @@ fn a_candidate_whose_branch_is_gone_is_skipped_not_fatal() {
     let git = l.r.repo();
 
     l.r.git(&["branch", "gone", &l.a]);
-    let stale = resolve(&cat, &git, &l.base, "gone").unwrap();
+    let stale = resolve(&cat, &git, &range(&l.base, "gone")).unwrap();
     l.r.git(&["branch", "-D", "gone"]);
 
     // The stale candidate cannot be placed, so the scan passes over it.
-    let fresh = resolve(&cat, &git, &l.base, &l.b).unwrap();
+    let fresh = resolve(&cat, &git, &range(&l.base, &l.b)).unwrap();
     assert_ne!(fresh, stale);
     assert_eq!(fresh, plan::review_id(&l.base, &l.b));
 }
@@ -193,4 +204,62 @@ fn git_answers_ancestry_the_way_adoption_reads_it() {
         Some(l.b.as_str())
     );
     assert_eq!(git.commit_of("no-such-ref").unwrap(), None);
+}
+
+#[test]
+fn a_named_session_keys_on_the_name_and_nothing_else() {
+    let l = line();
+    let cat = catalogue(&l);
+    let git = l.r.repo();
+    let named = ReviewIdentity::Named("my-branch".into());
+
+    let id = resolve(&cat, &git, &named).unwrap();
+    assert_eq!(id, plan::review_id_named("my-branch"));
+
+    // Same name, any range, and from the picker: one review.
+    assert_eq!(resolve(&cat, &git, &named).unwrap(), id);
+    assert_ne!(id, resolve(&cat, &git, &range(&l.base, &l.b)).unwrap());
+    assert_ne!(
+        id,
+        resolve(&cat, &git, &ReviewIdentity::Named("other".into())).unwrap()
+    );
+}
+
+#[test]
+fn a_named_session_survives_a_rebase_of_either_endpoint() {
+    let l = line();
+    let cat = catalogue(&l);
+    let named = ReviewIdentity::Named("my-branch".into());
+    let before = resolve(&cat, &l.r.repo(), &named).unwrap();
+
+    // Rewrite both endpoints: main moves, and the branch rebases onto it.
+    l.r.git(&["checkout", "-q", "-b", "feature", &l.b]);
+    l.r.write("mine.txt", b"alpha_value = 2\n");
+    l.r.commit_all("feature work");
+    l.r.git(&["checkout", "-q", "main"]);
+    l.r.write("shared.txt", b"moved on\n");
+    l.r.commit_all("main moves");
+    l.r.git(&["checkout", "-q", "feature"]);
+    l.r.git(&["rebase", "-q", "main"]);
+
+    assert_eq!(
+        resolve(&cat, &l.r.repo(), &named).unwrap(),
+        before,
+        "the name is the identity, so neither endpoint can strand it"
+    );
+}
+
+#[test]
+fn a_named_session_neither_adopts_nor_is_adopted() {
+    let l = line();
+    let cat = catalogue(&l);
+    let git = l.r.repo();
+
+    // A named session first, then the range it was read over.
+    let named = resolve(&cat, &git, &ReviewIdentity::Named("mine".into())).unwrap();
+    let ranged = resolve(&cat, &git, &range(&l.base, &l.a)).unwrap();
+    assert_ne!(ranged, named, "a name is not a candidate for a range");
+
+    // And a later spelling adopts the RANGE review, never the named one.
+    assert_eq!(resolve(&cat, &git, &range(&l.base, &l.b)).unwrap(), ranged);
 }
