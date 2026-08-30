@@ -126,6 +126,65 @@ fn two_branches_off_one_base_stay_apart() {
     );
 }
 
+/// A merge head descends from BOTH branches, and neither reaches the other.
+/// There is no honest reason to prefer one review over the other, so neither
+/// is adopted — and the answer must not depend on the order the scan read them.
+#[test]
+fn a_merge_of_two_reviewed_branches_adopts_neither() {
+    let l = line();
+    let cat = catalogue(&l);
+    let git = l.r.repo();
+
+    // Two branches off `base`, each with its own review.
+    let a = resolve(&cat, &git, &range(&l.base, &l.b)).unwrap();
+    let b = resolve(&cat, &git, &range(&l.base, &l.side)).unwrap();
+    assert_ne!(a, b);
+
+    // Merge them. Both filed heads are ancestors of the merge; neither is an
+    // ancestor of the other.
+    l.r.git(&["checkout", "-q", "main"]);
+    l.r.git(&["merge", "-q", "--no-ff", "-m", "merge side", "side"]);
+    let merge = l.r.git(&["rev-parse", "HEAD"]);
+    assert!(git.is_ancestor(&l.b, &merge).unwrap());
+    assert!(git.is_ancestor(&l.side, &merge).unwrap());
+    assert!(!git.is_ancestor(&l.b, &l.side).unwrap());
+
+    let merged = resolve(&cat, &git, &range(&l.base, &merge)).unwrap();
+    assert_eq!(
+        merged,
+        plan::review_id(&l.base, &merge),
+        "an ambiguous answer is no answer: file a fresh review"
+    );
+    assert_ne!(merged, a);
+    assert_ne!(merged, b);
+}
+
+/// The ambiguity is only between candidates on DIFFERENT lines. A third review
+/// further along reaches both, so it is the unambiguous answer.
+#[test]
+fn a_review_that_reaches_every_other_candidate_is_still_adopted() {
+    let l = line();
+    let cat = catalogue(&l);
+    let git = l.r.repo();
+
+    resolve(&cat, &git, &range(&l.base, &l.b)).unwrap();
+    resolve(&cat, &git, &range(&l.base, &l.side)).unwrap();
+
+    l.r.git(&["checkout", "-q", "main"]);
+    l.r.git(&["merge", "-q", "--no-ff", "-m", "merge side", "side"]);
+    let merge = l.r.git(&["rev-parse", "HEAD"]);
+    let merged = resolve(&cat, &git, &range(&l.base, &merge)).unwrap();
+
+    // One more commit on top: the merge review reaches both branch reviews,
+    // so it dominates and the new spelling adopts it.
+    l.r.write("after.txt", b"later\n");
+    let later = l.r.commit_all("after the merge");
+    assert_eq!(
+        resolve(&cat, &git, &range(&l.base, &later)).unwrap(),
+        merged
+    );
+}
+
 #[test]
 fn a_different_base_is_a_different_review() {
     let l = line();

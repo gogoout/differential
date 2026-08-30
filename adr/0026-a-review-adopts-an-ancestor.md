@@ -42,6 +42,14 @@ re-anchor by digest.
 
 Two branches off one base adopt nothing from each other: neither head reaches the other.
 
+**An ambiguous answer is no answer.** The pick must reach every other candidate. A merge head
+descends from both branches it merges, so two filed reviews can each be its ancestor while
+neither is the other's — and there is no honest reason to prefer one. Adoption declines and
+the range files its own review. Nothing is lost: both reviews keep their marks under their
+own ids. Choosing by scan order would have been arbitrary and silent. The rule is only about
+candidates on different lines; a third review further along reaches both, so it dominates and
+is still adopted.
+
 Two files carry it, both in the review's own directory:
 
 - `identity.json` — `{ base, head_spec }`, what this review was opened as. The id is a hash,
@@ -80,6 +88,10 @@ pub trait ReviewCatalogue {
 
 `commit_of` returns `None` for a spec that names nothing — a branch deleted since the review
 was filed is a candidate that cannot be placed, not an error that refuses to open.
+
+`is_ancestor` reads exit 0 as yes and exit 1 as no, which are both answers; **any other exit
+is git failing to answer and surfaces as an error**. Reading a failure as "no" would let a
+review file itself twice, which is the thing this record exists to prevent.
 
 ## Consequences
 

@@ -110,12 +110,12 @@ fn adopt<G: Ancestry>(
         return Ok(None);
     };
 
+    // Where each filed review of this base sits relative to us: the same
+    // commit, behind us, or ahead of us. A review on another line of history
+    // is in none of them, which is what keeps two branches apart.
     let mut exact: Option<&str> = None;
-    // The newest candidate this head has moved past, and the oldest that has
-    // moved past it. Both are on one line of history with `head`, so "newest"
-    // and "oldest" are ancestry, not clock time.
-    let mut behind: Option<(&str, String)> = None;
-    let mut ahead: Option<(&str, String)> = None;
+    let mut behind: Vec<(&str, String)> = Vec::new();
+    let mut ahead: Vec<(&str, String)> = Vec::new();
 
     for r in filed {
         // A named session is never adopted: its reader has said what it is.
@@ -138,26 +138,70 @@ fn adopt<G: Ancestry>(
             break;
         }
         if git.is_ancestor(&other_head, &head)? {
-            let newer = match &behind {
-                Some((_, best)) => git.is_ancestor(best, &other_head)?,
-                None => true,
-            };
-            if newer {
-                behind = Some((&r.id, other_head));
-            }
+            behind.push((&r.id, other_head));
         } else if git.is_ancestor(&head, &other_head)? {
-            let older = match &ahead {
-                Some((_, best)) => git.is_ancestor(&other_head, best)?,
-                None => true,
-            };
-            if older {
-                ahead = Some((&r.id, other_head));
-            }
+            ahead.push((&r.id, other_head));
         }
     }
 
-    Ok(exact
-        .or(behind.map(|(id, _)| id))
-        .or(ahead.map(|(id, _)| id))
-        .map(str::to_string))
+    if let Some(id) = exact {
+        return Ok(Some(id.to_string()));
+    }
+    // The newest review we have moved past, then the oldest that has moved
+    // past us. The two sets cannot disagree: anything ahead of us is a
+    // descendant of everything behind us, so only one set's own members can.
+    if let Some(id) = extreme(git, &behind, Reach::Newest)? {
+        return Ok(Some(id));
+    }
+    extreme(git, &ahead, Reach::Oldest)
+}
+
+/// Which end of a line of history to take.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    Newest,
+    Oldest,
+}
+
+/// The one member of `set` that every other member reaches, or `None`.
+///
+/// **An ambiguous answer is no answer.** A merge head can descend from two
+/// filed reviews that are not each other's ancestor, and there is no honest
+/// reason to prefer one — so this declines and the caller files a fresh
+/// review. Nothing is lost either way: both reviews keep their own marks under
+/// their own ids. Choosing by scan order would have been arbitrary and silent.
+fn extreme<G: Ancestry>(
+    git: &G,
+    set: &[(&str, String)],
+    reach: Reach,
+) -> Result<Option<String>, EngineError> {
+    let Some((mut best, mut best_head)) = set.first().map(|(id, h)| (*id, h.as_str())) else {
+        return Ok(None);
+    };
+    let mut best_at = 0;
+    for (i, (id, head)) in set.iter().enumerate().skip(1) {
+        let further = match reach {
+            Reach::Newest => git.is_ancestor(best_head, head)?,
+            Reach::Oldest => git.is_ancestor(head, best_head)?,
+        };
+        if further {
+            (best, best_head, best_at) = (id, head, i);
+        }
+    }
+    // One pass finds a candidate; this one proves it. Without it, two members
+    // on different lines both survive the first pass and the answer depends on
+    // the order they were read in.
+    for (i, (_, head)) in set.iter().enumerate() {
+        if i == best_at {
+            continue;
+        }
+        let ordered = match reach {
+            Reach::Newest => git.is_ancestor(head, best_head)?,
+            Reach::Oldest => git.is_ancestor(best_head, head)?,
+        };
+        if !ordered {
+            return Ok(None);
+        }
+    }
+    Ok(Some(best.to_string()))
 }

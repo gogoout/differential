@@ -250,11 +250,20 @@ impl ports::Ancestry for Repo {
     }
 
     fn is_ancestor(&self, older: &str, newer: &str) -> Result<bool, EngineError> {
-        // Exit 1 means "no", which `run` reports as a failure. Only exit 0 is
-        // a yes, so anything else is treated as "cannot place these two".
-        Ok(self
-            .run(["merge-base", "--is-ancestor", older, newer], None)
-            .is_ok())
+        // Exit 0 is yes and exit 1 is no — both are answers, which is what
+        // `run_status` is for. Anything else is git failing to answer, and
+        // that must surface rather than read as "no": a review silently
+        // filing itself twice is exactly what this code exists to prevent.
+        let status = self.run_status(["merge-base", "--is-ancestor", older, newer])?;
+        match status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            other => Err(EngineError::GitCommand {
+                command: format!("merge-base --is-ancestor {older} {newer}"),
+                code: other,
+                stderr: String::new(),
+            }),
+        }
     }
 }
 
