@@ -157,10 +157,12 @@ code must change together — or the change is wrong.
   then find the reasoning, and nobody has to close the issue by hand and get it wrong.
   Use `Refs #NN` for a commit that advances an issue without finishing it.
 - **The PR title follows the same convention, because the PR title is what reaches the
-  changelog.** Main is merged by SQUASH, so a whole branch arrives as one commit. GitHub
-  takes that commit's subject from the PR title whenever the branch holds more than one
-  commit, and from the single commit's own subject when it holds exactly one — so both
-  have to carry the type, and a `[feat]` both have to name the crate.
+  changelog.** Main is merged by SQUASH, so a whole branch arrives as one commit, and the
+  repo is set to take that commit's subject from the PR title and its body from the
+  branch's commit messages (`squash_merge_commit_title: PR_TITLE`,
+  `squash_merge_commit_message: COMMIT_MESSAGES`). The title is therefore the ONE string
+  that reaches `main` and the release notes, on every PR — a one-commit branch included.
+  Title a PR exactly as you would its commit: a type, and a crate on a `[feat]`.
 
   Squash is not a preference here, it is the only method left. The `main` ruleset
   requires **linear history**, which rules out a merge commit, and **signed commits**,
