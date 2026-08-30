@@ -1,8 +1,21 @@
 # git-cliff configuration (https://git-cliff.org/docs/configuration)
 #
-# This repo does not use conventional commits; subjects carry a component
-# prefix ("engine: …", "tui: …"). Commits are grouped by that prefix; the
-# hidden <!-- N --> markers order the sections and are stripped on render.
+# This repo does not use conventional commits. A subject carries a bracketed
+# TYPE and, where it names one, a component prefix:
+#
+#     [feat] tui: soft wrap, one row at a time
+#     [fix] engine: a rename keeps its similarity
+#     [doc] the theme gallery collapses to one line
+#     [chore] bump ratatui to 0.30
+#
+# Commits are grouped by COMPONENT — a reader of the release notes wants the
+# part of the tool they use — and each line leads with its type. The hidden
+# <!-- N --> markers order the sections and are stripped on render.
+#
+# The subject is rewritten for display by the postprocessors below: the
+# component prefix is dropped (the section already says it) and the type
+# becomes bold. A type that only repeats its own section, as `[doc]` does under
+# Docs, is dropped instead of bolded.
 
 [changelog]
 trim = true
@@ -14,6 +27,14 @@ body = """
 {%- endfor %}
 {% endfor %}
 """
+# Run in order, over the rendered text. The first rule owns every line that has
+# both a type and a component; the second owns a type that would only repeat
+# its section; the third owns what is left.
+postprocessors = [
+  { pattern = '(?m)^- \[(\w+)\] (?:engine|symbols?|tui|cli|schema|llm)\s*[:\s-]\s*', replace = "- **${1}** " },
+  { pattern = '(?m)^- \[(?:docs?|ci|chore|tests?)\]\s*', replace = "- " },
+  { pattern = '(?m)^- \[(\w+)\]\s*', replace = "- **${1}** " },
+]
 
 [git]
 conventional_commits = false
@@ -21,9 +42,26 @@ filter_unconventional = false
 filter_commits = false
 tag_pattern = "v[0-9]*"
 sort_commits = "newest"
+# Ordered. A component wins over a bare type, so `[chore] tui: …` lands with
+# the TUI it is about rather than in a drawer of chores; `[chore] bump …`,
+# which names no component, falls through to that drawer.
+#
+# The unbracketed rules at the end are history: every commit written before
+# this convention still has to render.
 commit_parsers = [
   # Version-bump noise never lands in the changelog.
-  { message = "(?i)^release:", skip = true },
+  { message = "(?i)^(\\[release\\]|release:)", skip = true },
+  { message = "(?i)^\\[\\w+\\]\\s*engine\\s*[:\\s-]", group = "<!-- 0 -->Engine" },
+  { message = "(?i)^\\[\\w+\\]\\s*symbols?\\s*[:\\s-]", group = "<!-- 1 -->Symbols" },
+  { message = "(?i)^\\[\\w+\\]\\s*tui\\s*[:\\s-]", group = "<!-- 2 -->TUI" },
+  { message = "(?i)^\\[\\w+\\]\\s*cli\\s*[:\\s-]", group = "<!-- 3 -->CLI" },
+  { message = "(?i)^\\[\\w+\\]\\s*schema\\s*[:\\s-]", group = "<!-- 4 -->Schema" },
+  { message = "(?i)^\\[\\w+\\]\\s*llm\\s*[:\\s-]", group = "<!-- 5 -->LLM" },
+  { message = "(?i)^\\[tests?\\]", group = "<!-- 6 -->Tests" },
+  { message = "(?i)^\\[docs?\\]", group = "<!-- 7 -->Docs" },
+  { message = "(?i)^\\[ci\\]", group = "<!-- 8 -->CI" },
+  { message = "(?i)^\\[chore\\]", group = "<!-- 9 -->Chores" },
+  # Before the bracketed types: a bare component prefix.
   { message = "(?i)^engine[:\\s-]", group = "<!-- 0 -->Engine" },
   { message = "(?i)^symbols?[:\\s-]", group = "<!-- 1 -->Symbols" },
   { message = "(?i)^tui[:\\s-]", group = "<!-- 2 -->TUI" },
@@ -33,5 +71,5 @@ commit_parsers = [
   { message = "(?i)^tests?[:\\s]", group = "<!-- 6 -->Tests" },
   { message = "(?i)^(docs|adr|spec|readme|agents)[:\\s]", group = "<!-- 7 -->Docs" },
   { message = "(?i)^ci[:\\s]", group = "<!-- 8 -->CI" },
-  { message = ".*", group = "<!-- 9 -->Other" },
+  { message = ".*", group = "<!-- 10 -->Other" },
 ]
