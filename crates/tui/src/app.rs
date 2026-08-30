@@ -1585,8 +1585,8 @@ impl App {
     }
 
     /// Space marks reviewed. In the left pane that means the WHOLE selected
-    /// entry (a group, or a file's classes); in the diff pane it means the
-    /// class under the cursor.
+    /// entry (a group, or a file's hunks); in the diff pane it means the
+    /// hunk under the cursor.
     fn toggle_reviewed(&mut self) {
         let outcome = match self.focus {
             Focus::Groups => self.toggle_selected_entry(),
@@ -1603,19 +1603,23 @@ impl App {
         self.rebuild_rows();
     }
 
-    /// Mark every class of the selected entry, in one write. Set semantics:
+    /// Mark every hunk of the selected entry, in one write. Set semantics:
     /// a partly reviewed entry becomes fully reviewed rather than inverted.
     fn toggle_selected_entry(&mut self) -> Result<(), differential_engine::EngineError> {
         let keys: Vec<String> = match self.view_mode {
             ViewMode::Groups => match self.groups().get(self.selected_group) {
-                Some(g) => g.class_keys.clone(),
+                Some(g) => g
+                    .hunks
+                    .iter()
+                    .map(|h| self.session.hunk_key(h.index()).to_string())
+                    .collect(),
                 None => return Ok(()),
             },
             ViewMode::Files => self
                 .files_of_tree_row(self.selected_file)
                 .iter()
                 .flat_map(|i| self.files()[*i].hunks.iter())
-                .map(|h| self.session.hunk_class_key(h.index()).to_string())
+                .map(|h| self.session.hunk_key(h.index()).to_string())
                 .collect(),
         };
         if keys.is_empty() {
@@ -2349,8 +2353,10 @@ impl App {
         };
         let head_style = Style::default().fg(self.theme.gutter_fg);
         let tail_glyph = if idx >= lo && idx < hi { "│ " } else { "  " };
-        let done =
-            g.class_keys.iter().all(|k| self.session.is_reviewed(k)) && !g.class_keys.is_empty();
+        let done = !g.hunks.is_empty()
+            && g.hunks
+                .iter()
+                .all(|h| self.session.is_reviewed(self.session.hunk_key(h.index())));
         // "?" rather than a tier letter: the back-fill was never classified.
         let tier = if g.unclassified {
             "?"
@@ -3097,7 +3103,7 @@ impl App {
     }
 
     fn draw_status(&self, frame: &mut Frame, area: Rect) {
-        let total: usize = self.groups().iter().map(|g| g.class_keys.len()).sum();
+        let total: usize = self.groups().iter().map(|g| g.hunks.len()).sum();
         let done = self.session.reviewed_count().min(total);
         let open = self
             .session

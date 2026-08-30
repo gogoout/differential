@@ -242,6 +242,31 @@ impl ports::RangeResolver for Repo {
     }
 }
 
+impl ports::Ancestry for Repo {
+    fn commit_of(&self, spec: &str) -> Result<Option<String>, EngineError> {
+        // A spec that names nothing is a deleted branch, not a git failure:
+        // the caller skips that candidate rather than refusing to open.
+        Ok(self.rev_parse(spec).ok())
+    }
+
+    fn is_ancestor(&self, older: &str, newer: &str) -> Result<bool, EngineError> {
+        // Exit 0 is yes and exit 1 is no — both are answers, which is what
+        // `run_status` is for. Anything else is git failing to answer, and
+        // that must surface rather than read as "no": a review silently
+        // filing itself twice is exactly what this code exists to prevent.
+        let status = self.run_status(["merge-base", "--is-ancestor", older, newer])?;
+        match status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            other => Err(EngineError::GitCommand {
+                command: format!("merge-base --is-ancestor {older} {newer}"),
+                code: other,
+                stderr: String::new(),
+            }),
+        }
+    }
+}
+
 impl ports::TreeResolver for Repo {
     fn tree_of(&self, rev: &str) -> Result<String, EngineError> {
         self.rev_parse_raw(&format!("{rev}^{{tree}}"))

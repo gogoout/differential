@@ -202,7 +202,7 @@ fn navigation_group_switch_and_focus() {
 }
 
 #[test]
-fn space_toggles_class_reviewed_and_persists() {
+fn space_toggles_hunk_reviewed_and_persists() {
     let (r, mut app) = make_app();
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     app.handle_key(key(' '));
@@ -210,12 +210,12 @@ fn space_toggles_class_reviewed_and_persists() {
 
     // The renderer is stateless: the mark is already on disk.
     let store = FsReviewStore::at(r.root.join(".dfr-test-store")).unwrap();
-    assert_eq!(store.load_state().unwrap().reviewed_classes.len(), 1);
+    assert_eq!(store.load_state().unwrap().reviewed_hunks.len(), 1);
 
     // Toggling again clears it.
     app.handle_key(key(' '));
     assert_eq!(app.session.reviewed_count(), 0);
-    assert!(store.load_state().unwrap().reviewed_classes.is_empty());
+    assert!(store.load_state().unwrap().reviewed_hunks.is_empty());
 }
 
 #[test]
@@ -321,14 +321,19 @@ fn file_view_lists_all_files_and_shares_review_marks() {
             .any(|row| matches!(row.kind, RowKind::HunkHeader { .. }))
     );
 
-    // space in file view marks the class — visible back in group view too.
+    // space in file view marks the hunk — visible back in group view too.
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     app.handle_key(key(' '));
-    assert_eq!(app.session.reviewed_count(), 1);
+    let marked = app.session.reviewed_count();
+    assert!(marked >= 1);
     switch_left_pane(&mut app);
     assert_eq!(app.view_mode, ViewMode::Groups);
     assert!(!store.load_state().unwrap().file_view);
-    assert_eq!(app.session.reviewed_count(), 1);
+    assert_eq!(
+        app.session.reviewed_count(),
+        marked,
+        "the two views read one set of marks"
+    );
 }
 
 #[test]
@@ -638,19 +643,19 @@ fn reading_plan_shows_ids_and_flags_unsatisfiable_dependencies() {
 fn space_in_the_plan_pane_marks_the_whole_group() {
     let (_r, mut app) = make_app();
     assert_eq!(app.focus, Focus::Groups);
-    // Pick the group with the most classes so "whole group" is meaningful.
+    // Pick the group with the most hunks so "whole group" is meaningful.
     let target = app
         .groups()
         .iter()
         .enumerate()
-        .max_by_key(|(_, g)| g.class_keys.len())
+        .max_by_key(|(_, g)| g.hunks.len())
         .map(|(i, _)| i)
         .unwrap();
     while app.selected_group != target {
         app.handle_key(key('j'));
     }
-    let want = app.groups()[target].class_keys.len();
-    assert!(want >= 1);
+    let want = app.groups()[target].hunks.len();
+    assert!(want > 1);
 
     app.handle_key(key(' '));
     assert_eq!(
@@ -658,11 +663,25 @@ fn space_in_the_plan_pane_marks_the_whole_group() {
         want,
         "whole group should be marked"
     );
-    // Pressing again clears the whole group (set semantics, not per-class flip).
+    // Pressing again clears the whole group (set semantics, not per-hunk flip).
     app.handle_key(key(' '));
     assert_eq!(app.session.reviewed_count(), 0);
 
-    // In the diff pane, space still marks just the class under the cursor.
+    // In the diff pane, space marks the hunk under the cursor, not its group.
+    // Read that in the one-hunk group: the many-hunk group is three hunks of
+    // one shape, and a mark keys on content, so there the two are one answer.
+    let single = app
+        .groups()
+        .iter()
+        .position(|g| g.hunks.len() == 1)
+        .expect("the fixture has a one-hunk group");
+    while app.selected_group != single {
+        app.handle_key(key(if app.selected_group < single {
+            'j'
+        } else {
+            'k'
+        }));
+    }
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     app.handle_key(key(' '));
     assert_eq!(app.session.reviewed_count(), 1);

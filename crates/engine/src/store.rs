@@ -67,10 +67,12 @@ impl ports::GroupingCache for FsGroupingCache {
         let path = Self::entry_path(dir, key);
         match std::fs::read_to_string(&path) {
             Ok(text) => {
-                let entry: Entry = serde_json::from_str(&text).map_err(|e| EngineError::Cache {
-                    path: path.display().to_string(),
-                    source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-                })?;
+                let entry: Entry = serde_json::from_str(&text)
+                    .map_err(|e| EngineError::Cache {
+                        path: path.display().to_string(),
+                        source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+                    })
+                    .expect("identity serialises");
                 Ok(Some(entry.response))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -207,13 +209,13 @@ pub struct FsReviewStore {
 }
 
 impl FsReviewStore {
-    pub fn for_review<L: ports::RepoLayout>(
-        layout: &L,
-        base_sha: &str,
-        head_spec: &str,
-    ) -> Result<Self, EngineError> {
-        let dir = plan::review_dir(&layout.common_dir()?, &plan::review_id(base_sha, head_spec));
-        Self::at(dir)
+    /// Open the review with this id.
+    ///
+    /// The id is `review_identity::resolve`'s answer, not this adapter's: which
+    /// review a spelling opens is domain policy, and it can be another
+    /// spelling's review.
+    pub fn for_review<L: ports::RepoLayout>(layout: &L, id: &str) -> Result<Self, EngineError> {
+        Self::at(plan::review_dir(&layout.common_dir()?, id))
     }
 
     /// Test/tooling entry: open at an explicit directory.
@@ -268,10 +270,12 @@ impl ports::ReviewStore for FsReviewStore {
             if line.trim().is_empty() {
                 continue;
             }
-            let f: Finding = serde_json::from_str(line).map_err(|e| EngineError::Cache {
-                path: format!("{}:{}", path.display(), n + 1),
-                source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-            })?;
+            let f: Finding = serde_json::from_str(line)
+                .map_err(|e| EngineError::Cache {
+                    path: format!("{}:{}", path.display(), n + 1),
+                    source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+                })
+                .expect("identity serialises");
             out.push(f);
         }
         Ok(out)
@@ -320,5 +324,137 @@ impl ports::ConfigSource for OsConfigSource {
             path: path.display().to_string(),
             msg: e.to_string(),
         })
+    }
+}
+
+// --------------------------------------------------------- review catalogue
+
+/// The reviews directory, read as a catalogue.
+///
+/// Holds the common dir rather than a `RepoLayout`, so the one call that can
+/// fail happens at construction and every later read is infallible policy.
+pub struct FsReviewCatalogue {
+    common_dir: PathBuf,
+}
+
+/// The on-disk form of `ports::ReviewIdentity`. Additive by the same rule as
+/// the rest of the sidecar: every field defaults, so a file written by a later
+/// version still loads. A named session records `name` and no endpoints; a
+/// range records the endpoints and no name.
+#[derive(Serialize, Deserialize)]
+struct IdentityFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    head_spec: Option<String>,
+}
+
+impl IdentityFile {
+    fn read(&self) -> Option<ports::ReviewIdentity> {
+        match (&self.name, &self.base, &self.head_spec) {
+            (Some(name), _, _) => Some(ports::ReviewIdentity::Named(name.clone())),
+            (None, Some(base), Some(head_spec)) => Some(ports::ReviewIdentity::Range {
+                base: base.clone(),
+                head_spec: head_spec.clone(),
+            }),
+            // Half a record answers nothing: recognisable, not adoptable.
+            _ => None,
+        }
+    }
+
+    fn of(identity: &ports::ReviewIdentity) -> Self {
+        match identity {
+            ports::ReviewIdentity::Named(name) => IdentityFile {
+                name: Some(name.clone()),
+                base: None,
+                head_spec: None,
+            },
+            ports::ReviewIdentity::Range { base, head_spec } => IdentityFile {
+                name: None,
+                base: Some(base.clone()),
+                head_spec: Some(head_spec.clone()),
+            },
+        }
+    }
+}
+
+impl FsReviewCatalogue {
+    pub fn new<L: ports::RepoLayout>(layout: &L) -> Result<Self, EngineError> {
+        Ok(FsReviewCatalogue {
+            common_dir: layout.common_dir()?,
+        })
+    }
+
+    /// Test/tooling entry: the git common dir directly.
+    pub fn at(common_dir: PathBuf) -> Self {
+        FsReviewCatalogue { common_dir }
+    }
+}
+
+impl ports::ReviewCatalogue for FsReviewCatalogue {
+    fn filed_reviews(&self) -> Result<Vec<ports::FiledReview>, EngineError> {
+        let root = plan::reviews_dir(&self.common_dir);
+        // Never reviewed anything here yet. Not an error: an empty catalogue
+        // is the correct answer, and the directory appears on the first open.
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|e| io_err(&root, e))?;
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let Some(id) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            // A redirect is a pointer, not a review: listing it would let a
+            // third spelling adopt the pointer instead of its target.
+            if plan::alias_path(&self.common_dir, &id).exists() {
+                continue;
+            }
+            let opened_as = match std::fs::read(plan::identity_path(&self.common_dir, &id)) {
+                Ok(bytes) => serde_json::from_slice::<IdentityFile>(&bytes)
+                    .ok()
+                    .and_then(|f| f.read()),
+                Err(_) => None,
+            };
+            out.push(ports::FiledReview { id, opened_as });
+        }
+        // Stable order, so a scan that finds two equally good candidates
+        // cannot answer differently on two machines.
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(out)
+    }
+
+    fn alias_of(&self, id: &str) -> Result<Option<String>, EngineError> {
+        let path = plan::alias_path(&self.common_dir, id);
+        match std::fs::read_to_string(&path) {
+            Ok(s) => Ok(Some(s.trim().to_string()).filter(|s| !s.is_empty())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(io_err(&path, e)),
+        }
+    }
+
+    fn file_alias(&self, from: &str, to: &str) -> Result<(), EngineError> {
+        let dir = plan::review_dir(&self.common_dir, from);
+        std::fs::create_dir_all(&dir).map_err(|e| io_err(&dir, e))?;
+        let path = plan::alias_path(&self.common_dir, from);
+        std::fs::write(&path, to).map_err(|e| io_err(&path, e))
+    }
+
+    fn file_identity(
+        &self,
+        id: &str,
+        opened_as: &ports::ReviewIdentity,
+    ) -> Result<(), EngineError> {
+        let dir = plan::review_dir(&self.common_dir, id);
+        std::fs::create_dir_all(&dir).map_err(|e| io_err(&dir, e))?;
+        let path = plan::identity_path(&self.common_dir, id);
+        let body = serde_json::to_string_pretty(&IdentityFile::of(opened_as))
+            .expect("identity serialises");
+        std::fs::write(&path, body).map_err(|e| io_err(&path, e))
     }
 }

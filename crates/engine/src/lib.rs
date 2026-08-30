@@ -23,6 +23,7 @@ pub mod pipeline;
 pub mod plan;
 pub mod ports;
 pub mod rename_view;
+pub mod review_identity;
 pub mod review_session;
 pub mod review_state;
 pub mod schema;

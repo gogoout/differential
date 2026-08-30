@@ -18,6 +18,11 @@ fn short_hash(h: Sha1) -> String {
 /// The spec, not the resolved head: a branch name keeps one review alive as
 /// its tip moves, where a sha would file every commit as a new review and
 /// strand the reviewer's progress behind it.
+///
+/// The spelling is therefore part of the name, which is why one range typed
+/// two ways used to be two reviews. `review_identity::resolve` closes that:
+/// it adopts an existing review on the same line of history and records the
+/// join, so this stays a pure function of the two strings.
 pub fn review_id(base_sha: &str, head_spec: &str) -> String {
     let mut h = Sha1::new();
     h.update(base_sha.as_bytes());
@@ -26,19 +31,17 @@ pub fn review_id(base_sha: &str, head_spec: &str) -> String {
     short_hash(h)
 }
 
-/// Reviewed marks key on what a class IS, not what it is called.
+/// A review the reader named. The name IS the identity, so neither endpoint
+/// is in the key: rebase the base or the head and the session survives, the
+/// way a pull request survives a force-push because it is an object rather
+/// than a range.
 ///
-/// Sorted member digests, so the key survives regeneration reshuffling
-/// positional ids — the same set of hunks is the same class however it is
-/// numbered.
-pub fn class_content_key(member_digests: &[String]) -> String {
-    let mut sorted: Vec<&String> = member_digests.iter().collect();
-    sorted.sort_unstable();
+/// The leading tag byte keeps a name out of `review_id`'s space. That hash
+/// starts with a resolved sha — hex ASCII — so it can never begin with `0x01`.
+pub fn review_id_named(name: &str) -> String {
     let mut h = Sha1::new();
-    for d in sorted {
-        h.update(d.as_bytes());
-        h.update([0]);
-    }
+    h.update([1]);
+    h.update(name.as_bytes());
     short_hash(h)
 }
 
@@ -80,12 +83,31 @@ pub fn artefact_dir(common_dir: &Path) -> PathBuf {
     cache_dir(common_dir).join("document")
 }
 
+/// Where every review is filed. The directory is the catalogue: there is no
+/// list file beside it that could disagree with what is on disk.
+pub fn reviews_dir(common_dir: &Path) -> PathBuf {
+    common_dir.join("differential").join("reviews")
+}
+
 /// One review's sidecar directory, given the git common dir.
 pub fn review_dir(common_dir: &Path, review_id: &str) -> PathBuf {
-    common_dir
-        .join("differential")
-        .join("reviews")
-        .join(review_id)
+    reviews_dir(common_dir).join(review_id)
+}
+
+/// What a review was opened as: the base sha and the head spec as typed.
+///
+/// Adoption needs the spelling back to ask git what it means now, and the id
+/// is a hash, so the id cannot answer that. Written on open.
+pub fn identity_path(common_dir: &Path, review_id: &str) -> PathBuf {
+    review_dir(common_dir, review_id).join("identity.json")
+}
+
+/// A redirect: this id's progress lives under the id named inside.
+///
+/// Present only in a directory that adopted another review, and read before
+/// anything else, so the join costs one file read and no git call.
+pub fn alias_path(common_dir: &Path, review_id: &str) -> PathBuf {
+    review_dir(common_dir, review_id).join("alias")
 }
 
 #[cfg(test)]
@@ -95,16 +117,10 @@ mod tests {
     #[test]
     fn a_review_survives_its_head_moving_but_not_a_different_branch() {
         // The reason identity uses the spec rather than the resolved sha.
+        // Two spellings of one commit are joined by adoption, not here.
         assert_eq!(review_id("abc", "feature"), review_id("abc", "feature"));
         assert_ne!(review_id("abc", "feature"), review_id("abc", "other"));
         assert_ne!(review_id("abc", "feature"), review_id("def", "feature"));
-    }
-
-    #[test]
-    fn class_keys_ignore_member_order_but_not_membership() {
-        let a = class_content_key(&["d2".into(), "d1".into()]);
-        assert_eq!(a, class_content_key(&["d1".into(), "d2".into()]));
-        assert_ne!(a, class_content_key(&["d1".into()]));
     }
 
     #[test]

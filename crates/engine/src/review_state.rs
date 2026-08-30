@@ -1,9 +1,9 @@
 //! The review-state sidecar store (ADR 0013, spec/persistence.md).
 //!
 //! Regeneration is total; state is a sidecar. Plan documents are immutable and
-//! content-addressed; reviewed marks key on class CONTENT (sorted member
-//! digests), and findings anchor on exact hunk digests — so both survive the
-//! head moving and positional ids shifting. Re-anchoring never drops anything:
+//! content-addressed; reviewed marks and findings both key on the exact hunk
+//! digest — so both survive the head moving and positional ids shifting.
+//! Re-anchoring never drops anything:
 //! exact digest match → reattach; same-file content match → reattach flagged
 //! moved; otherwise the finding is orphaned and listed.
 
@@ -16,16 +16,25 @@ use crate::schema;
 
 use crate::model::DiffView;
 
-// Review identity and class keys are domain policy and live in `plan`; they
-// are re-exported here because this is where consumers of the store expect to
-// find them, and moving the names would break them for no gain.
-pub use crate::plan::{class_content_key, review_id};
+// Review identity is domain policy and lives in `plan`; it is re-exported
+// here because this is where consumers of the store expect to find it, and
+// moving the name would break them for no gain.
+pub use crate::plan::review_id;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReviewState {
-    /// Class content keys marked reviewed.
+    /// Hunk digests marked reviewed.
+    ///
+    /// One key per hunk, not one per class. A class key made every mark in a
+    /// class hostage to every other hunk in it: change one hunk of five and
+    /// the four nobody touched went unread again.
+    ///
+    /// A state file written before this field existed records
+    /// `reviewed_classes`, which no longer loads — those keys are class
+    /// hashes and cannot be read as hunk digests. The rest of the file
+    /// (cursor, layout) is unaffected.
     #[serde(default)]
-    pub reviewed_classes: BTreeSet<String>,
+    pub reviewed_hunks: BTreeSet<String>,
     /// Resume position: (group id or file path, row offset) in the last-open
     /// plan — a group id in the semantic view, a file path in the file view.
     #[serde(default)]
