@@ -127,6 +127,35 @@ code must change together — or the change is wrong.
   changelog, so anything in a message is published.
 - **Never push to main.** Every change: branch → PR. Branch protection enforces this
   (PR + the `test` check, admins included).
+- **Every commit subject carries a bracketed type, and a feature names its crate.**
+
+  ```
+  [feat] tui: soft wrap, one row at a time
+  [fix] engine: a rename keeps its similarity
+  [doc] the theme gallery collapses to one line
+  [chore] bump ratatui to 0.30
+  ```
+
+  The types are `[feat]`, `[fix]`, `[refactor]`, `[perf]`, `[test]`, `[doc]`, `[ci]`,
+  `[chore]` and `[release]`. The component prefix that follows is the existing one —
+  `engine`, `symbols`, `tui`, `cli`, `schema`, `llm` — and it is **required on
+  `[feat]`**: a feature the reader cannot place is a feature they cannot decide to care
+  about. Everything else keeps a component when it has one.
+
+  A subject reaches the changelog, so this is not bookkeeping. `cliff.toml` groups the
+  release notes by component and leads each line with its type, and it drops a type that
+  would only repeat its own section. Choose the type for what the commit DOES for a
+  reader of the release notes, not for how much code moved: a rename that fixes nothing
+  is `[refactor]`, and a spec change that alters no behaviour is `[doc]`.
+
+  Old commits have a bare `component:` prefix and no type. `cliff.toml` still renders
+  them, so history stays readable; new commits do not copy them.
+
+  **A commit that resolves an issue ends with `Closes #NN`**, on its own line, one per
+  issue. GitHub closes the issue when the PR merges, and the issue is where the problem
+  and the decisions behind the fix were written down — a reader who finds the commit can
+  then find the reasoning, and nobody has to close the issue by hand and get it wrong.
+  Use `Refs #NN` for a commit that advances an issue without finishing it.
 - **A change you can SEE needs eyes before it needs a PR.** If the change alters what the
   reviewer looks at — layout, colour, glyphs, what a row says, where a pane's content goes —
   show the author a rendering and get confirmation *before* opening the PR. A
@@ -143,8 +172,9 @@ code must change together — or the change is wrong.
   the internal path deps in `[workspace.dependencies]` in a PR, merge, then the
   author tags the merge commit (`git tag vX.Y.Z && git push origin vX.Y.Z`). The Release
   workflow (`.github/workflows/publish.yml`) then generates the changelog from commits
-  since the previous tag (git-cliff, config in `cliff.toml` — grouped by the
-  `component:` subject prefixes, so keep using them) into a GitHub Release, and runs
+  since the previous tag (git-cliff, config in `cliff.toml` — grouped by the component
+  prefix, with the bracketed type on each line, so keep writing both) into a GitHub
+  Release, and runs
   `cargo publish --workspace`. The tag must equal the workspace version or the publish
   fails. A tag ruleset restricts `v*` tags to repo admins; the `CARGO_REGISTRY_TOKEN`
   lives on the `crates-io` environment (deployments restricted to `v*` tags).
