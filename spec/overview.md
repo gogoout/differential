@@ -32,8 +32,10 @@ Coverage is structural; judgement is delegated.
 2. **LLM merges and labels class ids, never hunks.** The model cannot drop a hunk because it
    never names one. An omitted class id is detected against the known id set and back-filled
    into a trailing group that must be read.
-3. **Audits.** Byte-exact reconstruction, hunk accounting, a non-tautological tree assertion,
-   and an independent recount validate every document before it is emitted.
+3. **Audits.** Byte-exact reconstruction and hunk accounting validate every document before
+   it is emitted. A non-tautological tree assertion and an independent recount run in a
+   separate `verify` stage, because they build a tree and only a tree-building consumer is
+   protected by them (ADR 0028).
 
 The alternative — asking a model to assign hunks to groups — was measured and rejected: on
 large refactors it silently dropped up to ~73% of hunks while reporting success. See
@@ -49,6 +51,13 @@ large refactors it silently dropped up to ~73% of hunks while reporting success.
 | `classify` | shape classes, `pure_substitution`, generated-file hints, the class dependency graph (ADR 0022) | 1 |
 | `group` | LLM merge/label of class ids; coverage audit; back-fill ([grouping.md](grouping.md)) | 2 |
 | `order` | contract the class dependency graph onto groups, foundation-first topological sort, roles ([ordering.md](ordering.md)) | 3 |
+| `verify` | invariants 3 and 4: the tree assertion and the independent recount ([invariants.md](invariants.md)) | 1 |
+
+`verify` is the one stage a caller opts into. It writes — building a tree needs the blobs in
+the object database — and only a consumer that reconstructs a tree is protected by it. The
+shadow branch runs it; `dfr check` exists to run it. The reviewer does not. Read its absence
+from `generator.stages` as "did not run", never as a pass: `audit.tree_assertion` then reads
+`skipped` and `audit.recount` is `0`.
 
 ## Honest reporting
 

@@ -173,9 +173,13 @@ pub fn assemble(
         reading_plan: None,
         audit: schema::Audit {
             applier_exact: report.applier_exact(),
-            tree_assertion: if report.tree_ok { "pass" } else { "fail" }.to_string(),
+            // The tree half may not have run: it writes, so a caller that only
+            // reads never asks for it. "skipped" is a legal value for a frozen
+            // `String` field, and `generator.stages` is the authority a
+            // consumer must actually consult (spec/overview.md).
+            tree_assertion: tree_assertion(report),
             hunks_carried: report.hunks_total as u32,
-            recount: report.recount as u32,
+            recount: report.tree.as_ref().map_or(0, |t| t.recount) as u32,
             coverage: None,
             classes_missing: None,
             classes_duplicated: None,
@@ -184,6 +188,26 @@ pub fn assemble(
             skipped_hunks: None,
         },
     })
+}
+
+fn tree_assertion(report: &InvariantReport) -> String {
+    match &report.tree {
+        Some(t) => if t.tree_ok { "pass" } else { "fail" }.to_string(),
+        None => "skipped".to_string(),
+    }
+}
+
+/// Fold the verify stage's result into a document the core pipeline assembled.
+///
+/// Appends `"verify"` to `generator.stages`, which is what tells a consumer the
+/// two tree fields mean anything at all. Idempotent: running verify twice does
+/// not list the stage twice.
+pub fn apply_tree_audit(doc: &mut schema::PlanDocument, tree: &crate::invariants::TreeReport) {
+    doc.audit.tree_assertion = if tree.tree_ok { "pass" } else { "fail" }.to_string();
+    doc.audit.recount = tree.recount as u32;
+    if !doc.generator.stages.iter().any(|s| s == "verify") {
+        doc.generator.stages.push("verify".to_string());
+    }
 }
 
 fn path_str(path: &[u8]) -> Result<String, EngineError> {

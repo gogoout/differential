@@ -376,7 +376,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }
         Command::Check { json, .. } => {
             let source = resolved.expect("range checked above");
-            let out = run_pipeline(
+            let mut out = run_pipeline(
                 &repo,
                 &source.base,
                 &source.head,
@@ -386,6 +386,9 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 &symbols,
             )
             .context("pipeline failed")?;
+            // Running invariants 3 and 4 is this command's entire job, so it
+            // always asks for them. They write to the odb; nothing else does.
+            differential_engine::verify(&repo, &mut out).context("verify failed")?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&out.report)?);
             } else {

@@ -88,7 +88,7 @@ fn full_pipeline_passes_invariants_over_synthesized_trees() {
         (head.as_str(), index.as_str(), SourceKind::Staged),
         (index.as_str(), wt.as_str(), SourceKind::Worktree),
     ] {
-        let out = run_pipeline(
+        let mut out = run_pipeline(
             &repo,
             base,
             head_rev,
@@ -98,6 +98,9 @@ fn full_pipeline_passes_invariants_over_synthesized_trees() {
             &differential_testutil::stub_readers(),
         )
         .unwrap();
+        // Invariants 3 and 4 over a synthesized tree are the point of this
+        // test, so it asks for the verify stage explicitly.
+        differential_engine::verify(&repo, &mut out).unwrap();
         assert_all_ok(&out);
         let doc = out.document.unwrap();
         assert_eq!(doc.source.kind, kind);

@@ -33,7 +33,7 @@ pub mod tree;
 pub mod worktree;
 
 pub use grouping::GroupingOptions;
-pub use pipeline::{PipelineOutput, resolve_range, run_grouped_pipeline, run_pipeline};
+pub use pipeline::{PipelineOutput, resolve_range, run_grouped_pipeline, run_pipeline, verify};
 pub use review_session::ReviewSession;
 
 /// The production session: a review over the on-disk sidecar. Renderers name
