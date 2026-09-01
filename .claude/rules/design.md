@@ -73,3 +73,29 @@ How to decide what to build, and what to refuse. Linked from
    area, refactor properly rather than patching around the edges to keep the diff small.
    A narrow patch that leaves the design wrong is more expensive than the wide diff that
    fixes it. (This tool exists precisely because wide, honest diffs are reviewable.)
+
+7. **Name the contradiction; do not hide behind it.** When a request contradicts a spec, an
+   ADR, or a decision recorded as frozen, say so plainly, say what that decision was
+   protecting, and say what reversing it would cost. Then evaluate the request on its
+   merits.
+
+   "The spec says otherwise" is a fact to put on the table. It is never an argument on its
+   own. Everything in `spec/` and `adr/` is a record of past reasoning by the author, and
+   the author is entitled to overturn any of it. Refusing on the strength of the record
+   alone hands them back their own words instead of an answer.
+
+   What a flag owes the reader: which document, what it decided, what it was guarding
+   against, and what would have to change alongside. A reversal lands with the docs in the
+   same change (the line at the top of [`AGENTS.md`](../../AGENTS.md)), and a superseded ADR
+   gets a successor that says why it was wrong.
+
+   The tell that you got this wrong: your objection restates the rule and adds no fact to
+   it.
+
+   The worked example is the request to make the pipeline read-only. `spec/invariants.md`
+   said all four invariants run before any document is emitted, and the schema is frozen at
+   version 3. Both were true and neither was a reason. The real question was which consumers
+   invariants 3 and 4 actually protect — and answering it made the split correct, while
+   turning up an invariant (1b) that had been implemented and never written down. An
+   objection that stopped at "the spec says all four run" would have cost the change and
+   found nothing.
