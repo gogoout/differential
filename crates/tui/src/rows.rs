@@ -16,7 +16,7 @@ use std::ops::Range;
 
 use differential_engine::gitio::Repo;
 use differential_engine::plan::{
-    Deferral, FileView, Fold, GroupView, HunkId, PlanIndex, ReviewView, reading_split, role_name,
+    Deferral, FileView, Fold, GroupView, HunkId, ReviewView, reading_split, role_name,
 };
 use differential_engine::ports::ObjectReader;
 use differential_engine::review_state::Finding;
@@ -116,15 +116,6 @@ pub enum BoxStyle {
     Foreign,
 }
 
-impl BoxStyle {
-    pub const fn vertical(self) -> char {
-        match self {
-            BoxStyle::Own => '│',
-            BoxStyle::Foreign => '╎',
-        }
-    }
-}
-
 /// A row's edge marking which hunk it belongs to.
 ///
 /// An EDGE, not a box: closing the top and bottom with horizontal rules cut
@@ -148,8 +139,15 @@ pub struct Border {
 
 impl Border {
     /// The glyph this row puts in the pane's left border column.
+    ///
+    /// The match lived on `BoxStyle` behind a `vertical()` that this method
+    /// was the only caller of, and this method has one caller of its own. Two
+    /// names for one answer is one name too many.
     pub fn glyph(&self) -> char {
-        self.box_style.vertical()
+        match self.box_style {
+            BoxStyle::Own => '│',
+            BoxStyle::Foreign => '╎',
+        }
     }
 }
 
@@ -162,17 +160,6 @@ pub enum Fill {
     /// This side has no line here at all. Hatched rather than blank, so an
     /// absent line is visibly absent instead of looking like empty code.
     Hatch,
-    /// Rule out to the pane edge. What makes a row that is ABOUT the whole
-    /// file — a boundary, a hunk header — read as spanning both columns
-    /// instead of stopping mid-pane and leaving the split separator broken.
-    ///
-    /// A short dotted rule either side of centred content.
-    ///
-    /// Only a context boundary uses this. It divides rather than labels, so it
-    /// is centred — but it is a note about what is missing, not a chapter
-    /// break, so the rule is a stub on each side rather than a line drawn the
-    /// whole way across the screen.
-    Rule(Style),
 }
 
 /// The line-number cell: its text, the block it wears, and the brighter block
@@ -640,10 +627,9 @@ pub struct RowsContext<'a> {
 /// The group view's extras on top of the shared core.
 pub struct GroupContext<'a> {
     pub core: RowsContext<'a>,
-    pub index: &'a PlanIndex<'a>,
-    pub group: &'a schema::Group,
-    /// The projected group, carrying resolved dependency edges and the
-    /// back-fill flag the header renders.
+    /// The projected group — and the ONLY handle on it. This carried three:
+    /// the raw `schema::Group`, its projection, and a `PlanIndex` that existed
+    /// to answer two questions the projection now answers itself.
     pub view: &'a GroupView,
     pub fold: Fold,
 }
@@ -653,7 +639,7 @@ pub fn build_group_rows(factory: &mut RowFactory, ctx: &GroupContext) -> Vec<Row
     let mut rows = Vec::new();
     header_rows(ctx, &mut rows);
 
-    let split = reading_split(ctx.index, ctx.group, ctx.fold);
+    let split = reading_split(ctx.core.plan, ctx.view, ctx.fold);
     let shown: Vec<usize> = split.shown.iter().map(|h| h.index()).collect();
     hunk_list_rows(factory, &ctx.core, shown, &mut rows);
 
@@ -701,6 +687,11 @@ fn hunk_list_rows(
         .iter()
         .map(|f| (f.path.as_str(), f))
         .collect();
+    // The same, over the document's own entries. The header row and the
+    // binary/submodule test each found theirs by scanning `doc.files`, once
+    // per file — so laying out N files cost N scans of N.
+    let entry_by_path: HashMap<&str, &schema::FileEntry> =
+        ctx.doc.files.iter().map(|f| (f.path.as_str(), f)).collect();
 
     // Every file at once, before any of them is drawn: one `git` call for the
     // group rather than two spawns per file.
@@ -708,6 +699,10 @@ fn hunk_list_rows(
         .iter()
         .map(|&h| ctx.doc.hunks[h].file.as_str())
         .collect();
+    // `dedup` removes CONSECUTIVE duplicates only, which is enough because the
+    // caller hands hunks in file order — the same fact the loop below relies on
+    // when it takes a file's run as one slice. If that order ever stops being
+    // by file, this silently prefetches a file twice.
     paths.dedup();
     factory.prefetch(&paths);
 
@@ -718,11 +713,13 @@ fn hunk_list_rows(
             .iter()
             .position(|&h| ctx.doc.hunks[h].file != path)
             .map_or(hunks.len(), |n| i + n);
-        rows.push(file_header_row(ctx.theme, ctx.doc, path));
+        let entry = entry_by_path.get(path).copied();
+        rows.push(file_header_row(ctx.theme, entry, path));
         file_rows(
             factory,
             ctx,
             path,
+            entry,
             by_path.get(path).copied(),
             &hunks[i..end],
             rows,
@@ -762,8 +759,10 @@ pub fn build_file_rows(
 ) -> Vec<Row> {
     let mut rows = Vec::new();
     if hunks.is_empty() {
-        // Binary / submodule / mode-only changes carry no text hunks.
-        rows.push(file_header_row(ctx.theme, ctx.doc, path));
+        // Binary / submodule / mode-only changes carry no text hunks. One
+        // file, so one lookup — no index to build for it.
+        let entry = ctx.doc.files.iter().find(|f| f.path == path);
+        rows.push(file_header_row(ctx.theme, entry, path));
         rows.push(Row::full(
             RowKind::Blank,
             Line::from(Span::styled(
@@ -778,7 +777,7 @@ pub fn build_file_rows(
 }
 
 fn header_rows(ctx: &GroupContext, rows: &mut Vec<Row>) {
-    let g = ctx.group;
+    let g = ctx.view;
     // The back-fill group is must-read for a different reason from an ordinary
     // focus group — the model never classified it at all — and the stack has
     // always said so. One source for the label, so both renderers agree.
@@ -840,8 +839,9 @@ fn header_rows(ctx: &GroupContext, rows: &mut Vec<Row>) {
     rows.push(Row::full(RowKind::Blank, Line::default()));
 }
 
-fn file_header_row(theme: &Theme, doc: &schema::PlanDocument, path: &str) -> Row {
-    let entry = doc.files.iter().find(|f| f.path == path);
+/// Takes the entry rather than finding it: the caller that draws many files
+/// has an index, and the one that draws a single file has one lookup to do.
+fn file_header_row(theme: &Theme, entry: Option<&schema::FileEntry>, path: &str) -> Row {
     let mut text = path.to_string();
     if let Some(f) = entry {
         if let Some(old) = &f.old_path {
@@ -1157,12 +1157,12 @@ fn file_rows(
     factory: &mut RowFactory,
     ctx: &RowsContext,
     path: &str,
+    file_entry: Option<&schema::FileEntry>,
     view: Option<&FileView>,
     shown: &[usize],
     rows: &mut Vec<Row>,
 ) {
     // Binary / submodule files carry no reconstructable text rows.
-    let file_entry = ctx.doc.files.iter().find(|f| f.path == path);
     if file_entry.is_some_and(|f| f.binary || f.submodule.is_some()) {
         for &hi in shown {
             hunk_header_rows(ctx, hi, false, rows);
@@ -1190,11 +1190,12 @@ fn file_rows(
         None => shown.to_vec(),
     };
     all.sort_by_key(|&h| ctx.doc.hunks[h].new_start);
+    let shown_set: std::collections::HashSet<usize> = shown.iter().copied().collect();
     let candidates: Vec<window::Candidate> = all
         .iter()
         .map(|&h| window::Candidate {
             index: h,
-            shown: shown.contains(&h),
+            shown: shown_set.contains(&h),
             entry: &ctx.doc.hunks[h],
         })
         .collect();
