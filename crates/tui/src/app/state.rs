@@ -163,86 +163,95 @@ impl App {
         // for its own copy three more times, and each one walked every hunk
         // digest in the document to build a set it then threw away.
         self.reviewed = self.session.reviewed_hunks();
-        match self.view_mode {
-            ViewMode::Groups => {
-                let Some(groups) = self.session.doc().groups.as_ref() else {
-                    self.rows = Vec::new();
-                    return;
-                };
-                if groups.is_empty() {
-                    self.rows = Self::empty_rows();
-                    return;
+        // The three degenerate cases `break` rather than `return`, so the
+        // overviews at the tail are rebuilt from whatever rows this call
+        // produced — including none. They used to return, which left three
+        // cached walks describing rows that no longer existed. No document
+        // reaches those branches with a non-empty overview today, so nothing
+        // was wrong; the invariant holding it up was just nowhere written.
+        'rows: {
+            match self.view_mode {
+                ViewMode::Groups => {
+                    let Some(groups) = self.session.doc().groups.as_ref() else {
+                        self.rows = Vec::new();
+                        break 'rows;
+                    };
+                    if groups.is_empty() {
+                        self.rows = Self::empty_rows();
+                        break 'rows;
+                    }
+                    // The document's ids were validated once, when the session
+                    // opened and projected it. This used to rebuild a `PlanIndex`
+                    // here — revalidating every id in the document on every
+                    // keypress — because that was the only way to reach a class's
+                    // exemplar and members. The projection carries both now.
+                    let view =
+                        &self.session.plan().groups[self.selected_group.min(groups.len() - 1)];
+                    // Spelled out, not built by a method, and it has to be: a
+                    // method borrows the whole of `self`, and the row builders
+                    // below need `&mut self.factory` while this holds the rest.
+                    // Only a literal gives the compiler the field-level borrows.
+                    let ctx = GroupContext {
+                        core: RowsContext {
+                            theme: &self.theme,
+                            doc: self.session.doc(),
+                            plan: self.session.plan(),
+                            findings: self.session.findings(),
+                            reviewed: &self.reviewed,
+                            mode: self.diff_mode(),
+                            show_group_labels: false,
+                            context: self.opts.context,
+                            context_step: self.opts.context_step,
+                            expansion: &self.expanded,
+                        },
+                        view,
+                        fold: if self.folds_open.contains(&view.id) {
+                            Fold::Unfolded
+                        } else {
+                            Fold::Folded
+                        },
+                    };
+                    self.rows = build_group_rows(&mut self.factory, &ctx);
                 }
-                // The document's ids were validated once, when the session
-                // opened and projected it. This used to rebuild a `PlanIndex`
-                // here — revalidating every id in the document on every
-                // keypress — because that was the only way to reach a class's
-                // exemplar and members. The projection carries both now.
-                let view = &self.session.plan().groups[self.selected_group.min(groups.len() - 1)];
-                // Spelled out, not built by a method, and it has to be: a
-                // method borrows the whole of `self`, and the row builders
-                // below need `&mut self.factory` while this holds the rest.
-                // Only a literal gives the compiler the field-level borrows.
-                let ctx = GroupContext {
-                    core: RowsContext {
+                ViewMode::Files => {
+                    if self.tree.is_empty() {
+                        self.rows = Self::empty_rows();
+                        break 'rows;
+                    }
+                    let row = self.selected_file.min(self.tree.len() - 1);
+                    let targets = self.files_of_tree_row(row);
+                    // A literal for the same reason as the group arm above.
+                    let ctx = RowsContext {
                         theme: &self.theme,
                         doc: self.session.doc(),
                         plan: self.session.plan(),
                         findings: self.session.findings(),
                         reviewed: &self.reviewed,
                         mode: self.diff_mode(),
-                        show_group_labels: false,
+                        show_group_labels: true,
                         context: self.opts.context,
                         context_step: self.opts.context_step,
                         expansion: &self.expanded,
-                    },
-                    view,
-                    fold: if self.folds_open.contains(&view.id) {
-                        Fold::Unfolded
-                    } else {
-                        Fold::Folded
-                    },
-                };
-                self.rows = build_group_rows(&mut self.factory, &ctx);
-            }
-            ViewMode::Files => {
-                if self.tree.is_empty() {
-                    self.rows = Self::empty_rows();
-                    return;
+                    };
+                    self.rows = match targets.as_slice() {
+                        // A single file keeps its dedicated builder (it renders a
+                        // placeholder for zero-hunk binary/submodule changes).
+                        [only] => {
+                            let f = &self.session.plan().files[*only];
+                            let (path, hunks) =
+                                (f.path.clone(), f.hunks.iter().map(|h| h.index()).collect());
+                            build_file_rows(&mut self.factory, &ctx, &path, hunks)
+                        }
+                        // A directory: every hunk beneath it, file headers and all.
+                        many => {
+                            let hunks: Vec<usize> = many
+                                .iter()
+                                .flat_map(|i| self.files()[*i].hunks.iter().map(|h| h.index()))
+                                .collect();
+                            build_dir_rows(&mut self.factory, &ctx, hunks)
+                        }
+                    };
                 }
-                let row = self.selected_file.min(self.tree.len() - 1);
-                let targets = self.files_of_tree_row(row);
-                // A literal for the same reason as the group arm above.
-                let ctx = RowsContext {
-                    theme: &self.theme,
-                    doc: self.session.doc(),
-                    plan: self.session.plan(),
-                    findings: self.session.findings(),
-                    reviewed: &self.reviewed,
-                    mode: self.diff_mode(),
-                    show_group_labels: true,
-                    context: self.opts.context,
-                    context_step: self.opts.context_step,
-                    expansion: &self.expanded,
-                };
-                self.rows = match targets.as_slice() {
-                    // A single file keeps its dedicated builder (it renders a
-                    // placeholder for zero-hunk binary/submodule changes).
-                    [only] => {
-                        let f = &self.session.plan().files[*only];
-                        let (path, hunks) =
-                            (f.path.clone(), f.hunks.iter().map(|h| h.index()).collect());
-                        build_file_rows(&mut self.factory, &ctx, &path, hunks)
-                    }
-                    // A directory: every hunk beneath it, file headers and all.
-                    many => {
-                        let hunks: Vec<usize> = many
-                            .iter()
-                            .flat_map(|i| self.files()[*i].hunks.iter().map(|h| h.index()))
-                            .collect();
-                        build_dir_rows(&mut self.factory, &ctx, hunks)
-                    }
-                };
             }
         }
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
