@@ -566,7 +566,6 @@ impl ports::RepoLayout for Repo {
     }
 }
 
-/// `rev-list --no-commit-header --format=%H%x00%h%x00%s%x00%an` output: one
 /// One NUL-separated record, split into its fields.
 ///
 /// Both `--format` readers below want the same thing from a line, and both
@@ -579,6 +578,7 @@ fn nul_fields(line: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// `rev-list --no-commit-header --format=%H%x00%h%x00%s%x00%an` output: one
 /// record per line, fields NUL-separated (subjects are single-line by
 /// definition, so the line split is safe; bytes decode lossily).
 fn parse_rev_list(bytes: &[u8]) -> Vec<ports::CommitSummary> {

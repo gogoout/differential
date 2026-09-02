@@ -435,10 +435,6 @@ fn print_range(base: &str, head: &str) {
     );
 }
 
-/// The on-disk grouping cache, unless bypassed.
-///
-/// `--no-cache` is a state of the cache rather than an absent one, so the
-/// grouping stage never grows a branch for it.
 /// `dfr clean [--dry-run]`: report the regenerable cache, and unless asked not
 /// to, delete it.
 ///
@@ -495,6 +491,10 @@ fn human_bytes(n: u64) -> String {
     }
 }
 
+/// The on-disk grouping cache, unless bypassed.
+///
+/// `--no-cache` is a state of the cache rather than an absent one, so the
+/// grouping stage never grows a branch for it.
 fn grouping_cache(repo: &Repo, no_cache: bool) -> anyhow::Result<FsGroupingCache> {
     Ok(if no_cache {
         FsGroupingCache::disabled()

@@ -285,13 +285,6 @@ pub fn ids_in_prompt(prompt: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// One group object as the model would answer it.
-///
-/// Deliberately still `format!` rather than `serde_json::json!`. The text this
-/// produces is a FIXTURE's model response, and `golden.rs` pins the cache
-/// entry that holds it byte for byte — so building it a tidier way would churn
-/// a test whose whole job is to notice when bytes move. No fixture label
-/// contains a quote, and the day one does, that is the day to change this.
 /// The workspace's standard two-class fixture.
 ///
 /// One 3-member class — the same identifier swap in three files — plus one
@@ -323,6 +316,13 @@ pub fn two_class_repo() -> (TestRepo, String, String) {
     (r, base, head)
 }
 
+/// One group object as the model would answer it.
+///
+/// Deliberately still `format!` rather than `serde_json::json!`. The text this
+/// produces is a FIXTURE's model response, and `golden.rs` pins the cache
+/// entry that holds it byte for byte — so building it a tidier way would churn
+/// a test whose whole job is to notice when bytes move. No fixture label
+/// contains a quote, and the day one does, that is the day to change this.
 pub fn json_group(label: &str, effort: &str, classes: &[&str]) -> String {
     format!(
         r#"{{"label": "{label}", "description": "d", "classes": [{}], "effort": "{effort}", "reason": "r"}}"#,
