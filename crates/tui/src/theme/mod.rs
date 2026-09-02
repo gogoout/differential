@@ -85,6 +85,12 @@ fn deepen(c: Rgb, bg: Rgb, by: f32) -> Rgb {
     out.into_format()
 }
 
+/// How light a colour is, on Oklab's scale. Zero is black, one is white.
+fn lightness(c: Rgb) -> f32 {
+    let lab: Oklab = c.into_format::<f32>().into_color();
+    lab.l
+}
+
 /// WCAG 2.1 contrast ratio, 1.0 (identical) to 21.0 (black on white).
 pub fn contrast(a: Rgb, b: Rgb) -> f32 {
     a.into_format::<f32>()
@@ -169,6 +175,21 @@ pub struct Theme {
     pub fg: Color,
     pub added_bg: Color,
     pub deleted_bg: Color,
+    /// The same tint on a row inside a line selection, and on the row the
+    /// cursor is on.
+    ///
+    /// Neither can be a line-level colour here: a changed line paints every
+    /// span with its own background, and a span background wins. So the row's
+    /// OWN colour steps instead — a deletion stays red and an addition green,
+    /// and the row is lit edge to edge rather than on whichever half happened
+    /// to have no colour to defend.
+    ///
+    /// Two rungs, because the cursor is one end of a selection and has to stay
+    /// the brighter end of it.
+    pub added_sel_bg: Color,
+    pub deleted_sel_bg: Color,
+    pub added_cursor_bg: Color,
+    pub deleted_cursor_bg: Color,
     /// The line-number block. Stronger than the tint over the code, which is
     /// what makes the gutter read as an edge rather than as more of the line.
     pub added_gutter_bg: Color,
@@ -184,6 +205,13 @@ pub struct Theme {
     pub cursor_gutter_fg: Color,
     pub added_word_bg: Color,
     pub deleted_word_bg: Color,
+    /// Word emphasis on a selected row, and on the cursor's. It sits on top of
+    /// the stepped line tint, so it takes the same step — otherwise a lit line
+    /// loses its word marks.
+    pub added_word_sel_bg: Color,
+    pub deleted_word_sel_bg: Color,
+    pub added_word_cursor_bg: Color,
+    pub deleted_word_cursor_bg: Color,
     /// Diagonal fill for the side of a split row that has no line at all.
     pub hatch_fg: Color,
     /// A pill's own text — a hunk's class, a group's role, the footer's
@@ -326,6 +354,47 @@ impl Theme {
         out
     }
 
+    /// Re-ink one span of a row that is lit — under the cursor, or inside a
+    /// line selection.
+    ///
+    /// Both used to be a `Line`-level background, which a changed line never
+    /// showed: every one of its spans carries `added_bg`/`deleted_bg`, and a
+    /// span background wins over a line style. The row's own colour steps
+    /// instead — the same trick `lit_band` plays for a boundary band, with the
+    /// change colours as its subjects.
+    ///
+    /// A split row made the old compromise visible: the absent half is hatched
+    /// and has no colour to defend, so it took the line style while the half
+    /// with the change kept its idle green. Half a row lit is not a cursor.
+    ///
+    /// Keyed by colour, like `gutter_cursor` and `lit_band`, so this stays the
+    /// one place that knows the palette's change inks. A syntax span carries a
+    /// foreground only and passes through untouched, which is why one pass
+    /// over a whole row moves the tint and leaves the code's own colours
+    /// alone. A context line has no colour of its own here; the line-level
+    /// `cursor_bg`/`selected_bg` is what covers it, and this leaves it be.
+    ///
+    /// The cursor's rung is the further one. It is one end of a selection, and
+    /// a run whose moving end was the quieter of the two reads backwards.
+    pub fn step_band(&self, style: Style, cursor: bool) -> Style {
+        let Some(bg) = style.bg else {
+            return style;
+        };
+        let pick = |sel, cur| if cursor { cur } else { sel };
+        let swapped = if bg == self.added_bg {
+            pick(self.added_sel_bg, self.added_cursor_bg)
+        } else if bg == self.deleted_bg {
+            pick(self.deleted_sel_bg, self.deleted_cursor_bg)
+        } else if bg == self.added_word_bg {
+            pick(self.added_word_sel_bg, self.added_word_cursor_bg)
+        } else if bg == self.deleted_word_bg {
+            pick(self.deleted_word_sel_bg, self.deleted_word_cursor_bg)
+        } else {
+            return style;
+        };
+        style.bg(swapped)
+    }
+
     pub fn effort_style(&self, effort: differential_engine::schema::Effort) -> Style {
         let fg = match effort {
             differential_engine::schema::Effort::Focus => self.focus_fg,
@@ -399,6 +468,27 @@ fn derive(seed: &Seed, syntect: syntect::highlighting::Theme) -> Theme {
     let m = |c: Rgb, t: f32| color(mix(c, bg, t * headroom));
     let (add, del, accent) = (seed.add, seed.del, seed.accent);
 
+    // Kept as `Rgb` because a selected row's colours are a step off THESE,
+    // not a second mix from the seed.
+    let (add_tint, del_tint) = (mix(add, bg, 0.90), mix(del, bg, 0.90));
+    let (add_block, del_block) = (mix(add, bg, 0.78), mix(del, bg, 0.78));
+    let (add_word, del_word) = (mix(add, bg, 0.58), mix(del, bg, 0.58));
+
+    // How far a selected row's colours move away from the ground: HALF the way
+    // from a line's tint to its own gutter block.
+    //
+    // A number of its own was the wrong shape — 0.06 read well and landed the
+    // selected tint on top of the block beside it, which cost the gutter the
+    // edge it exists to draw. Measuring the step from the two colours it has
+    // to sit between makes that impossible by construction, and it moves with
+    // either of them if either is ever retuned.
+    // Two rungs of it: a selection takes half, the cursor's row takes the
+    // whole distance. The cursor therefore lands on the lightness the gutter
+    // block wears on an idle row — and its OWN block has moved much further
+    // by then, so the gutter goes on reading as an edge under it.
+    let step = |tint: Rgb, block: Rgb| (lightness(block) - lightness(tint)).abs();
+    let (add_step, del_step) = (step(add_tint, add_block), step(del_tint, del_block));
+
     // One ink for all three cursor blocks, so the line number does not change
     // colour as the cursor moves between an addition, a deletion and a plain
     // line. Chosen by whichever of the palette's own extremes reads WORST on
@@ -433,17 +523,35 @@ fn derive(seed: &Seed, syntect: syntect::highlighting::Theme) -> Theme {
         bg: color(bg),
         fg: color(fg),
         // A tint you read code through, and the stronger block beside it.
-        added_bg: q(add, 0.90),
-        deleted_bg: q(del, 0.90),
-        added_gutter_bg: q(add, 0.78),
-        deleted_gutter_bg: q(del, 0.78),
+        added_bg: color(add_tint),
+        deleted_bg: color(del_tint),
+        // A selected row: the tint it already wears, one step further from the
+        // ground. Derived from that tint rather than mixed again from the
+        // seed, so retuning `added_bg` carries its selected twin with it —
+        // a second mix fraction would be a number somebody has to remember to
+        // move. Lightness only, as `reviewed_fg` does: the hue and the chroma
+        // are what say addition, and a selection is not a different fact about
+        // the line. `step` above is what keeps it clear of the block beside
+        // it.
+        added_sel_bg: color(deepen(add_tint, bg, add_step / 2.0)),
+        deleted_sel_bg: color(deepen(del_tint, bg, del_step / 2.0)),
+        added_cursor_bg: color(deepen(add_tint, bg, add_step)),
+        deleted_cursor_bg: color(deepen(del_tint, bg, del_step)),
+        added_gutter_bg: color(add_block),
+        deleted_gutter_bg: color(del_block),
         added_gutter_cursor_bg: q(add, 0.52),
         deleted_gutter_cursor_bg: q(del, 0.52),
         cursor_gutter_fg: color(cursor_gutter_fg),
         // Word emphasis sits on top of the line tint, so it has to be a clear
         // step past it without becoming the gutter block.
-        added_word_bg: q(add, 0.58),
-        deleted_word_bg: q(del, 0.58),
+        added_word_bg: color(add_word),
+        deleted_word_bg: color(del_word),
+        // The same step, so the gap between a word mark and the line under it
+        // is the one thing a selection does NOT change.
+        added_word_sel_bg: color(deepen(add_word, bg, add_step / 2.0)),
+        deleted_word_sel_bg: color(deepen(del_word, bg, del_step / 2.0)),
+        added_word_cursor_bg: color(deepen(add_word, bg, add_step)),
+        deleted_word_cursor_bg: color(deepen(del_word, bg, del_step)),
         hatch_fg: m(fg, 0.80),
         button_fg: m(fg, 0.26),
         button_bg: q(fg, 0.82),
@@ -520,6 +628,10 @@ mod tests {
             ("fg", t.fg),
             ("added_bg", t.added_bg),
             ("deleted_bg", t.deleted_bg),
+            ("added_sel_bg", t.added_sel_bg),
+            ("deleted_sel_bg", t.deleted_sel_bg),
+            ("added_cursor_bg", t.added_cursor_bg),
+            ("deleted_cursor_bg", t.deleted_cursor_bg),
             ("added_gutter_bg", t.added_gutter_bg),
             ("deleted_gutter_bg", t.deleted_gutter_bg),
             ("added_gutter_cursor_bg", t.added_gutter_cursor_bg),
@@ -527,6 +639,10 @@ mod tests {
             ("cursor_gutter_fg", t.cursor_gutter_fg),
             ("added_word_bg", t.added_word_bg),
             ("deleted_word_bg", t.deleted_word_bg),
+            ("added_word_sel_bg", t.added_word_sel_bg),
+            ("deleted_word_sel_bg", t.deleted_word_sel_bg),
+            ("added_word_cursor_bg", t.added_word_cursor_bg),
+            ("deleted_word_cursor_bg", t.deleted_word_cursor_bg),
             ("hatch_fg", t.hatch_fg),
             ("button_fg", t.button_fg),
             ("button_bg", t.button_bg),
@@ -575,7 +691,7 @@ mod tests {
         }
     }
 
-    /// `gutter_cursor` and `lit_band` dispatch by COMPARING colour values, so
+    /// `gutter_cursor`, `lit_band` and `step_band` dispatch by COMPARING colour values, so
     /// two fields that derive to the same colour silently collapse into one: a
     /// deletion's cursor block would light green, or a boundary band would stop
     /// lighting at all. Neither shows up as a failure anywhere else.
@@ -603,6 +719,74 @@ mod tests {
             ];
             for (what, a, b) in pairs {
                 assert_ne!(a, b, "{name:?}: {what} derived to one colour");
+            }
+
+            // `step_band` compares against all four of these in one chain, so
+            // any two of them colliding sends a span down the wrong arm — a
+            // deleted word would light green on a selected row. Pairwise,
+            // because the chain is not a two-way choice like the ones above.
+            let inks = [
+                ("added_bg", t.added_bg),
+                ("deleted_bg", t.deleted_bg),
+                ("added_word_bg", t.added_word_bg),
+                ("deleted_word_bg", t.deleted_word_bg),
+            ];
+            for (i, (a, ac)) in inks.iter().enumerate() {
+                for (b, bc) in &inks[i + 1..] {
+                    assert_ne!(ac, bc, "{name:?}: {a} and {b} derived to one colour");
+                }
+            }
+        }
+    }
+
+    /// The two lit rungs sit in order, between the tint they replace and the
+    /// gutter block beside them.
+    ///
+    /// Every end of that matters. Land on the tint and a lit row says nothing.
+    /// Land past the idle block and the cursor's row starts arguing with a
+    /// column it is supposed to sit under. Put the cursor below the selection
+    /// and a run reads backwards, because the moving end is the quiet one. A
+    /// fixed step got the second of those wrong on every palette, which is why
+    /// the step is measured rather than chosen.
+    #[test]
+    fn a_lit_row_steps_in_order_between_its_tint_and_its_gutter_block() {
+        for name in ALL {
+            let t = Theme::named(name);
+            let l = |c: Color| lightness(must_rgb(c));
+            for (what, tint, sel, cur, block) in [
+                (
+                    "addition",
+                    t.added_bg,
+                    t.added_sel_bg,
+                    t.added_cursor_bg,
+                    t.added_gutter_bg,
+                ),
+                (
+                    "deletion",
+                    t.deleted_bg,
+                    t.deleted_sel_bg,
+                    t.deleted_cursor_bg,
+                    t.deleted_gutter_bg,
+                ),
+            ] {
+                // Away from the ground in whichever direction the ground is,
+                // so the run is measured rather than compared.
+                let away = |c: Color| (l(c) - l(tint)).abs();
+                assert!(
+                    away(sel) > 0.0,
+                    "{name:?}: the {what} selection tint does not move"
+                );
+                assert!(
+                    away(cur) > away(sel),
+                    "{name:?}: the {what} cursor tint must be the further rung"
+                );
+                // The cursor's rung is the block's own lightness by
+                // construction, so the only slack allowed here is the
+                // rounding an 8-bit channel forces on the way back.
+                assert!(
+                    away(cur) <= away(block) + 0.01,
+                    "{name:?}: the {what} cursor tint passes its own gutter block"
+                );
             }
         }
     }

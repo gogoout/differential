@@ -146,13 +146,30 @@ colour, which is what makes the gutter read as an edge. In split mode a row that
 only one side has its other half filled with `╱` — an absent line is visibly absent rather
 than looking like an empty one.
 
-**The cursor is that block, brighter — and a bar beside the frame.** A row-wide colour
-cannot carry it: a changed line already has one, and a line style sits under span styles.
-So the cursor lights the line-number cell — the brighter twin of the block it wears
-anyway, which keeps a deleted line red and an added one green while making the cursor the
-strongest cell in the column. An unchanged line has no block of its own and takes the
-plain cursor grey. The cell never changes width, so moving the cursor never shifts the
-pane sideways.
+**A lit row steps its own colour.** The cursor's row and a selected one have the same
+problem, and it took a split row to make it visible. Both were drawn as a colour over the
+whole row, and a changed line paints every one of its spans with its change colour, which
+a line style sits under. So on a changed line the colour was simply not seen — and on a
+split row where the line exists on one side only, the hatched half has no colour to
+defend, took the tint, and left the half carrying the change looking idle. Half a row lit
+is not a cursor.
+
+What a lit row wears instead is its **own** tint, moved away from the ground: a deletion
+stays red and an addition green, and the row reads edge to edge. The step is measured, not
+chosen — the distance from a line's tint to its own gutter block, which a selection takes
+half of and the cursor's row takes whole. So a selection can never reach the block beside
+it, the cursor can never pass it, and the cursor is always the further of the two: it is
+one end of a selection, and a run whose moving end is the quieter reads backwards. The
+word-emphasis colours move by the same step, so lighting a row changes nothing about which
+words changed. A line with no colour of its own — a context line, and the hatched half of
+a split row — takes the plain cursor or selection tint, which is what it always took.
+
+**The cursor is also that block, brighter — and a bar beside the frame.** The line-number
+cell takes the brighter twin of the block it wears anyway, which keeps a deleted line red
+and an added one green while making the cursor the strongest cell in the column. An
+unchanged line has no block of its own and takes the plain cursor grey. The cell never
+changes width, so moving the cursor never shifts the pane sideways. The block is what
+separates the cursor's row from the rest of a selection, since both now carry a colour.
 
 Only a diff row has a line number, though, and `space`, `c` and `z` all act on rows that
 do not: a hunk header, a fold, a context boundary. On those the cursor was a faint tint

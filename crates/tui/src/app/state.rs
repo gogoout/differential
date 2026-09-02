@@ -10,7 +10,7 @@ use ratatui::text::Line;
 use crate::rows::{Row, RowKind, RowsContext};
 use crate::window::Side;
 
-use super::draw::{Marker, compose_row_lines};
+use super::draw::{Paint, compose_row_lines};
 use super::*;
 
 impl App {
@@ -730,10 +730,7 @@ impl App {
                 &self.theme,
                 &r.content,
                 self.viewport.detail_cols,
-                false,
-                Marker::None,
-                None,
-                self.wraps(r),
+                Paint::plain(self.wraps(r)),
             )
             .len()
         })

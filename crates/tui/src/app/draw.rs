@@ -1048,14 +1048,21 @@ impl App {
             };
             // How to work this row, on the one row it can be worked from.
             let hint = on.then_some(r.hint.as_ref()).flatten();
+            // The cursor's row is inside the run too — it is one end of it —
+            // so its code takes the selected tint like the rest, and what
+            // keeps it the brighter end is the gutter block and the bar.
+            let selected = selection.is_some_and(|(lo, hi)| (lo..=hi).contains(&i));
             let composed: Vec<Line> = compose_row_lines(
                 &self.theme,
                 &r.content,
                 inner_w,
-                on,
-                marker,
-                hint,
-                self.wraps(r),
+                Paint {
+                    cursor: on,
+                    selected,
+                    marker,
+                    hint,
+                    wrap: self.wraps(r),
+                },
             )
             .into_iter()
             .map(|mut line| {
@@ -1065,10 +1072,11 @@ impl App {
                     // of their own — on the rest, the brightened gutter
                     // block carries it.
                     line = line.style(Style::default().bg(self.theme.cursor_bg));
-                } else if selection.is_some_and(|(lo, hi)| (lo..=hi).contains(&i)) {
-                    // The rest of a line selection, in the plan pane's own
-                    // selection colour: quieter than the cursor's row,
-                    // which is still one end of it.
+                } else if selected {
+                    // The same job for a selected row with no colour of its
+                    // own: a context line, and the hatched half of a split
+                    // row. Where the row IS coloured, `step_band` has already
+                    // stepped it — a line style would never have been seen.
                     line = line.style(Style::default().bg(self.theme.selected_bg));
                 }
                 line
@@ -1094,10 +1102,7 @@ impl App {
                 &self.theme,
                 &self.rows[header].content,
                 inner_w,
-                false,
-                Marker::None,
-                None,
-                false,
+                Paint::plain(false),
             )
             .swap_remove(0)
             .style(Style::default().bg(self.theme.sticky_bg));
@@ -1296,6 +1301,41 @@ impl App {
 /// Every diff row pads HERE rather than at build time: a background that runs
 /// to the pane edge is a width question, and row counts must stay independent
 /// of width or each resize would rebuild them.
+/// What drawing knows about a row that building it could not.
+///
+/// Every field here turns on where the cursor is or what the reader has
+/// toggled, and rows are built once and drawn on every key — so none of it can
+/// live on the row. It is the argument list `compose_row_lines` already had,
+/// named: five of them travel together through three functions, and a sixth
+/// pushed the list past what clippy will accept.
+#[derive(Clone, Copy)]
+pub(super) struct Paint<'a> {
+    /// The row the cursor is on.
+    pub cursor: bool,
+    /// A row inside the open line selection — the cursor's row included, since
+    /// it is one end of the run.
+    pub selected: bool,
+    pub marker: Marker<'a>,
+    pub hint: Option<&'a (Style, String)>,
+    pub wrap: bool,
+}
+
+impl Paint<'_> {
+    /// A row drawn as it was built: no cursor, no selection, no pill, no hint.
+    ///
+    /// The pinned file header and the height measurement both want exactly
+    /// this, and both used to spell out six arguments to say it.
+    pub(super) fn plain(wrap: bool) -> Self {
+        Paint {
+            cursor: false,
+            selected: false,
+            marker: Marker::None,
+            hint: None,
+            wrap,
+        }
+    }
+}
+
 /// A row, as the screen lines it takes.
 ///
 /// One line unless `wrap` is on and the content is wider than the pane. A
@@ -1306,11 +1346,11 @@ pub(super) fn compose_row_lines(
     theme: &Theme,
     content: &RowContent,
     width: usize,
-    cursor: bool,
-    marker: Marker<'_>,
-    hint: Option<&(Style, String)>,
-    wrap: bool,
+    paint: Paint<'_>,
 ) -> Vec<Line<'static>> {
+    // Only the header's pill and its hint are read here; the rest travels on
+    // into the halves, which is where a colour is chosen.
+    let Paint { marker, hint, .. } = paint;
     match content {
         RowContent::Full(line) => vec![line.clone()],
         RowContent::Unified(half) => {
@@ -1361,7 +1401,7 @@ pub(super) fn compose_row_lines(
             } else {
                 half
             };
-            compose_half_lines(theme, half, width, cursor, wrap)
+            compose_half_lines(theme, half, width, paint)
                 .into_iter()
                 .map(Line::from)
                 .collect()
@@ -1371,17 +1411,17 @@ pub(super) fn compose_row_lines(
             let rw = width.saturating_sub(1).saturating_sub(lw);
             // Both gutters light: a split row IS one row, and a cursor that
             // showed on one side only read as a cursor on that side's line.
-            let mut left = compose_half_lines(theme, old, lw, cursor, wrap);
-            let mut right = compose_half_lines(theme, new, rw, cursor, wrap);
+            let mut left = compose_half_lines(theme, old, lw, paint);
+            let mut right = compose_half_lines(theme, new, rw, paint);
             // A row is as tall as its taller half, and the shorter one pads —
             // the rule the `╱` fill already follows across a row, applied down
             // one.
             let h = left.len().max(right.len());
             while left.len() < h {
-                left.push(compose_half(theme, &continued(old), lw, cursor));
+                left.push(compose_half(theme, &continued(old), lw, paint));
             }
             while right.len() < h {
-                right.push(compose_half(theme, &continued(new), rw, cursor));
+                right.push(compose_half(theme, &continued(new), rw, paint));
             }
             left.into_iter()
                 .zip(right)
@@ -1423,12 +1463,11 @@ pub(super) fn compose_half_lines(
     theme: &Theme,
     half: &Half,
     width: usize,
-    cursor: bool,
-    wrap: bool,
+    paint: Paint<'_>,
 ) -> Vec<Vec<Span<'static>>> {
     let rest = width.saturating_sub(UnicodeWidthStr::width(half.gutter.text.as_str()));
-    if !wrap {
-        return vec![compose_half(theme, half, width, cursor)];
+    if !paint.wrap {
+        return vec![compose_half(theme, half, width, paint)];
     }
     let blank = blank_gutter(&half.gutter);
     wrap_indented(&half.pairs, rest)
@@ -1444,7 +1483,7 @@ pub(super) fn compose_half_lines(
                 pairs,
                 fill: half.fill,
             };
-            compose_half(theme, &half, width, cursor)
+            compose_half(theme, &half, width, paint)
         })
         .collect()
 }
@@ -1493,7 +1532,7 @@ pub(super) fn compose_half(
     theme: &Theme,
     half: &Half,
     width: usize,
-    cursor: bool,
+    paint: Paint<'_>,
 ) -> Vec<Span<'static>> {
     let gutter = half.gutter.text.clone();
     let used = UnicodeWidthStr::width(gutter.as_str());
@@ -1501,7 +1540,11 @@ pub(super) fn compose_half(
     // The cursor IS the line-number block, brightened. There is no marker glyph
     // to make room for, so the cell never changes width and the pane never
     // shifts sideways as the cursor moves.
-    let style = if cursor {
+    //
+    // A selected row leaves this cell alone. The gutter column belongs to the
+    // cursor, and it is what keeps the cursor the brighter end of a run whose
+    // code now carries a colour of its own.
+    let style = if paint.cursor {
         half.gutter.cursor
     } else {
         half.gutter.style
@@ -1511,23 +1554,39 @@ pub(super) fn compose_half(
     if !gutter.is_empty() {
         spans.push(Span::styled(gutter, style));
     }
+    // Two re-inks, both keyed by colour, both leaving syntax alone.
+    //
     // A boundary band carries its own colour the whole way across, so the row
-    // tint that marks the cursor everywhere else never showed through it. One
-    // pass re-inks the band and leaves change colours and syntax alone.
-    let pairs: Vec<(Style, String)> = if cursor {
+    // tint that marks a lit row everywhere else never showed through it.
+    //
+    // A cursor's row and a selected row are the same problem: a changed line
+    // paints every span with `added_bg`/`deleted_bg`, and a span background
+    // beats the line style both used to be drawn with. So the row was lit and
+    // said nothing where it mattered — and on a split row it said it on the
+    // hatched half alone, which read as a cursor on the side with no line.
+    // `step_band` moves the change colour itself, the cursor one rung further
+    // than a selection.
+    let ink = |st: Style| {
+        let st = if paint.cursor { theme.lit_band(st) } else { st };
+        if paint.cursor || paint.selected {
+            theme.step_band(st, paint.cursor)
+        } else {
+            st
+        }
+    };
+    let pairs: Vec<(Style, String)> = if paint.cursor || paint.selected {
         half.pairs
             .iter()
-            .map(|(st, t)| (theme.lit_band(*st), t.clone()))
+            .map(|(st, t)| (ink(*st), t.clone()))
             .collect()
     } else {
         half.pairs.clone()
     };
     match half.fill {
-        Fill::Bg(bg) => spans.extend(truncate_or_pad_spans(
-            &pairs,
-            rest,
-            if cursor { theme.lit_band(bg) } else { bg },
-        )),
+        // The padding out to the pane edge goes through the same ink: a
+        // selected line whose colour stopped at its last character would read
+        // as a shorter line, not a selected one.
+        Fill::Bg(bg) => spans.extend(truncate_or_pad_spans(&pairs, rest, ink(bg))),
         // Hatched, not blank. On the absent side of a split row that says a
         // line does not exist here rather than that it is empty; on a hunk's
         // header it stops the pill's fill from reading as a bar that happens
