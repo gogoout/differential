@@ -35,6 +35,11 @@ pub struct Dependency {
 pub struct GroupView {
     pub id: String,
     pub label: String,
+    /// The model's prose, carried so a renderer needs no second handle on the
+    /// raw group. Both renderers print both of these and nothing else of the
+    /// document's text.
+    pub description: String,
+    pub reason: String,
     pub effort: schema::Effort,
     pub role: Option<schema::Role>,
     pub class_ids: Vec<String>,
@@ -69,6 +74,20 @@ pub struct ReviewView {
     group_of_hunk: HashMap<HunkId, usize>,
     hunk_by_digest: HashMap<String, HunkId>,
     digest_of_hunk: HashMap<HunkId, String>,
+    classes: HashMap<String, ClassMembers>,
+}
+
+/// One shape class, resolved: which hunk stands for it and which it holds.
+///
+/// Carried by the projection so a renderer never needs `PlanIndex`. The TUI
+/// rebuilt one on every keypress to answer exactly these two questions, and a
+/// `PlanIndex` borrows the document — which is why it could not be kept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassMembers {
+    /// The hunk a skim reader is shown for this class.
+    pub exemplar: HunkId,
+    /// Every member, in document order.
+    pub hunks: Vec<HunkId>,
 }
 
 impl ReviewView {
@@ -106,6 +125,8 @@ impl ReviewView {
                 GroupView {
                     id: g.id.clone(),
                     label: g.label.clone(),
+                    description: g.description.clone(),
+                    reason: g.reason.clone(),
                     effort: g.effort,
                     role: g.role,
                     class_ids: g.class_ids.clone(),
@@ -170,12 +191,27 @@ impl ReviewView {
             .map(|(i, h)| (HunkId::from_index(i), h.digest.clone()))
             .collect();
 
+        let classes = doc
+            .classes
+            .iter()
+            .map(|c| {
+                (
+                    c.id.clone(),
+                    ClassMembers {
+                        exemplar: index.exemplar(&c.id),
+                        hunks: index.class_hunks(&c.id),
+                    },
+                )
+            })
+            .collect();
+
         Ok(ReviewView {
             groups: projected,
             files,
             group_of_hunk,
             hunk_by_digest,
             digest_of_hunk,
+            classes,
         })
     }
 
@@ -215,11 +251,35 @@ impl ReviewView {
         &self,
         marked: impl Fn(&str) -> bool + 'k,
     ) -> std::collections::HashSet<HunkId> {
+        self.each_marked(marked).collect()
+    }
+
+    /// How many hunks of THIS document are marked.
+    ///
+    /// A count, not a set. The status bar prints this number every frame, and
+    /// reaching it through `hunks_marked` allocated a whole `HashSet` to ask
+    /// for its length — twice over, because the caller then rebuilt it as a
+    /// set of indices.
+    pub fn count_marked<'k>(&self, marked: impl Fn(&str) -> bool + 'k) -> usize {
+        self.each_marked(marked).count()
+    }
+
+    fn each_marked<'a, 'k: 'a>(
+        &'a self,
+        marked: impl Fn(&str) -> bool + 'k,
+    ) -> impl Iterator<Item = HunkId> + 'a {
         self.digest_of_hunk
             .iter()
-            .filter(|(_, digest)| marked(digest))
+            .filter(move |(_, digest)| marked(digest))
             .map(|(h, _)| *h)
-            .collect()
+    }
+
+    /// One class's exemplar and members.
+    ///
+    /// Total for any id a group names: `PlanIndex::build` proved every one of
+    /// them resolves before this projection was made.
+    pub fn class(&self, id: &str) -> &ClassMembers {
+        &self.classes[id]
     }
 
     /// The tier's domain name, or `unclassified` for the audit back-fill.

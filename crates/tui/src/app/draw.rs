@@ -309,14 +309,23 @@ impl App {
         // Entries render as blocks of lines, so scrolling counts ROWS, not
         // entries; keep the whole selected block in view.
         let mut blocks: Vec<Vec<Line>> = match self.view_mode {
-            ViewMode::Groups => (0..self.groups().len())
-                .map(|i| self.group_lines(i, i == selected, inner_w))
-                .collect(),
+            ViewMode::Groups => {
+                // Both hoisted out of the loop. `edge_span` takes no argument
+                // and depends only on the selection, so it gave every group
+                // the same answer while costing a scan of every group to do
+                // it. The marks are one set, read once, instead of a map
+                // lookup and a set lookup per hunk of every group per frame.
+                let span = self.edge_span();
+                let reviewed = &self.reviewed;
+                (0..self.groups().len())
+                    .map(|i| self.group_lines(i, i == selected, inner_w, span, reviewed))
+                    .collect()
+            }
             ViewMode::Files => {
-                let reviewed = self.session.reviewed_hunks();
+                let reviewed = &self.reviewed;
                 let guides = tree_guides(&self.tree);
                 (0..self.tree.len())
-                    .map(|i| self.tree_lines(i, i == selected, &reviewed, &guides[i]))
+                    .map(|i| self.tree_lines(i, i == selected, reviewed, &guides[i]))
                     .collect()
             }
         };
@@ -412,10 +421,11 @@ impl App {
         idx: usize,
         selected: bool,
         width: usize,
+        (lo, hi): (usize, usize),
+        reviewed: &HashSet<usize>,
     ) -> Vec<Line<'static>> {
         let g = &self.groups()[idx];
         let relation = self.relation_to_selected(idx);
-        let (lo, hi) = self.edge_span();
         // The connector: a line from the selected group to each group it
         // follows, so what must be read first is visible without reading ids.
         //
@@ -436,10 +446,7 @@ impl App {
         };
         let head_style = Style::default().fg(self.theme.gutter_fg);
         let tail_glyph = if idx >= lo && idx < hi { "│ " } else { "  " };
-        let done = !g.hunks.is_empty()
-            && g.hunks
-                .iter()
-                .all(|h| self.session.is_reviewed(self.session.hunk_key(h.index())));
+        let done = !g.hunks.is_empty() && g.hunks.iter().all(|h| reviewed.contains(&h.index()));
         // "?" rather than a tier letter: the back-fill was never classified.
         let tier = if g.unclassified {
             "?"
@@ -662,7 +669,7 @@ impl App {
     }
 
     pub(super) fn draw_file_list_in(&self, frame: &mut Frame, area: Rect) {
-        let reviewed = self.session.reviewed_hunks();
+        let reviewed = &self.reviewed;
         let here = self.file_at_cursor();
         let files = &self.listed_files;
         let inner_w = area.width.saturating_sub(2) as usize;
@@ -737,7 +744,11 @@ impl App {
             .count()
             .min(6) as u16;
         let top = detail.y + 1 + header;
-        let rows = self.map_rows();
+        // Read, not recomputed. This walked the whole tree on every frame:
+        // an ancestor pass over every row above each live file, and a scan
+        // forward per folded directory. It depends on `tree` and `map_files`
+        // and nothing else, both of which `rebuild_overviews` already owns.
+        let rows = &self.map_rows;
         let area = Rect {
             x: detail.x + 1,
             y: top,
@@ -876,7 +887,9 @@ impl App {
     ///
     /// Reads `self.tree` and never writes it: the file view's left pane and
     /// its cursor are the same rows.
-    pub(super) fn map_rows(&self) -> Vec<MapRow> {
+    /// The computation behind the `map_rows` field. Called only from
+    /// `rebuild_overviews`, because it reads nothing a frame can change.
+    pub(super) fn compute_map_rows(&self) -> Vec<MapRow> {
         let tree = &self.tree;
         let mine = &self.map_files;
         let n = tree.len();
@@ -1007,7 +1020,13 @@ impl App {
         //
         // A row is never cut at its TOP, so one taller than the pane pins
         // there and loses its tail.
-        let mut placed: Vec<(usize, u16, Vec<Line>)> = Vec::new();
+        // `placed` carries HEIGHTS, not lines. The composed text moves
+        // straight into `lines`; the two passes below only ever asked how tall
+        // each row was, and cloning the whole visible pane — every `Line` a
+        // vector of `Cow` spans — to answer that was the most expensive thing
+        // a repaint did.
+        let mut placed: Vec<(usize, u16, usize)> = Vec::new();
+        let mut lines: Vec<Line> = Vec::new();
         let mut y = 0usize;
         for i in self.scroll..self.rows.len() {
             if y >= inner_h {
@@ -1055,13 +1074,10 @@ impl App {
             })
             .collect();
             y += composed.len();
-            placed.push((i, (y - composed.len()) as u16, composed));
+            placed.push((i, (y - composed.len()) as u16, composed.len()));
+            lines.extend(composed);
         }
-        let mut lines: Vec<Line> = placed
-            .iter()
-            .flat_map(|(_, _, l)| l.iter().cloned())
-            .take(inner_h)
-            .collect();
+        lines.truncate(inner_h);
 
         // Scrolled past a file's header, pin it to the top row. It costs a row
         // only while the filename would otherwise be off-screen, which is
@@ -1098,8 +1114,7 @@ impl App {
         // a cell away from the first. Drawn over the block, so it comes after.
         let buf = frame.buffer_mut();
         let on_cursor = |i: usize| i == self.cursor && self.focus == Focus::Detail;
-        for (i, top, composed) in &placed {
-            let (i, top, height) = (*i, *top, composed.len());
+        for &(i, top, height) in &placed {
             let row = &self.rows[i];
             // Every line of the row, not just its first: a hunk's edge is a
             // continuous run down the pane, and a gap in it would read as the
@@ -1164,10 +1179,10 @@ impl App {
         // and a bar against its first line only would read as the cursor being
         // on that line rather than on the whole of it.
         if self.focus == Focus::Detail
-            && let Some((_, top, height)) = placed
+            && let Some((top, height)) = placed
                 .iter()
                 .find(|(i, _, _)| *i == self.cursor)
-                .map(|(i, top, l)| (i, *top, l.len()))
+                .map(|&(_, top, height)| (top, height))
             && self.rows.get(self.cursor).is_some_and(|r| {
                 r.kind.selectable() && !matches!(r.kind, RowKind::HunkHeader { .. })
             })

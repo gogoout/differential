@@ -94,7 +94,8 @@ impl<S: ReviewStore> ReviewSession<S> {
     /// comes back, so counting the stored set would count hunks the reader
     /// cannot see — and could outrun the total the renderer draws it against.
     pub fn reviewed_count(&self) -> usize {
-        self.reviewed_hunks().len()
+        self.plan
+            .count_marked(|digest| self.state.reviewed_hunks.contains(digest))
     }
 
     /// Canonical hunk indices marked reviewed (owned — safe to hold while

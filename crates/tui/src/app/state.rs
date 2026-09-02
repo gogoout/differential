@@ -4,7 +4,7 @@
 //! with the model consistent: `rebuild_rows` is what the rest of the app calls
 //! after any change that could move a row.
 
-use differential_engine::plan::{Fold, PlanIndex};
+use differential_engine::plan::Fold;
 use ratatui::text::Line;
 
 use crate::rows::{Row, RowKind, RowsContext};
@@ -62,11 +62,25 @@ impl App {
             }
         }
         self.tree = tree;
+        // Answered once per rebuild, not once per row per frame. Drawing the
+        // file pane asks this for EVERY visible row, and the directory arm
+        // allocated a prefix, scanned every file and sorted the result — so a
+        // repaint cost O(rows x files log files) to redraw a tree that had
+        // not changed.
+        self.tree_files = (0..self.tree.len()).map(|r| self.files_under(r)).collect();
     }
 
     /// File indices covered by a tree row: one file, or every file under a
     /// directory (including collapsed ones).
+    ///
+    /// Reads the answer `rebuild_tree` computed. Panicking on an unknown row
+    /// is not possible: the vector is rebuilt with the tree, in the same call.
     pub(super) fn files_of_tree_row(&self, row: usize) -> Vec<usize> {
+        self.tree_files.get(row).cloned().unwrap_or_default()
+    }
+
+    /// The computation behind `tree_files`. Called only from `rebuild_tree`.
+    fn files_under(&self, row: usize) -> Vec<usize> {
         match self.tree.get(row).map(|e| &e.kind) {
             Some(TreeKind::File { file_idx }) => vec![*file_idx],
             Some(TreeKind::Dir { path }) => {
@@ -137,7 +151,11 @@ impl App {
     }
 
     pub fn rebuild_rows(&mut self) {
-        let reviewed = self.session.reviewed_hunks();
+        // One read of the marks, kept for the frame to use too. Drawing asked
+        // for its own copy three more times, and each one walked every hunk
+        // digest in the document to build a set it then threw away.
+        self.reviewed = self.session.reviewed_hunks();
+        let reviewed = &self.reviewed;
         match self.view_mode {
             ViewMode::Groups => {
                 let Some(groups) = self.session.doc().groups.as_ref() else {
@@ -151,34 +169,27 @@ impl App {
                     )];
                     return;
                 }
-                // A document whose ids contradict each other can only come from
-                // a corrupt store; say so on screen rather than rendering a
-                // silently short group.
-                let index = match PlanIndex::build(self.session.doc()) {
-                    Ok(index) => index,
-                    Err(e) => {
-                        self.rows = vec![Row::full(RowKind::Blank, Line::from(format!("{e}")))];
-                        return;
-                    }
-                };
-                let g = &groups[self.selected_group.min(groups.len() - 1)];
+                // The document's ids were validated once, when the session
+                // opened and projected it. This used to rebuild a `PlanIndex`
+                // here — revalidating every id in the document on every
+                // keypress — because that was the only way to reach a class's
+                // exemplar and members. The projection carries both now.
+                let view = &self.session.plan().groups[self.selected_group.min(groups.len() - 1)];
                 let ctx = GroupContext {
                     core: RowsContext {
                         theme: &self.theme,
                         doc: self.session.doc(),
                         plan: self.session.plan(),
                         findings: self.session.findings(),
-                        reviewed: &reviewed,
+                        reviewed,
                         mode: self.diff_mode(),
                         show_group_labels: false,
                         context: self.opts.context,
                         context_step: self.opts.context_step,
                         expansion: &self.expanded,
                     },
-                    index: &index,
-                    group: g,
-                    view: &self.session.plan().groups[self.selected_group.min(groups.len() - 1)],
-                    fold: if self.folds_open.contains(&g.id) {
+                    view,
+                    fold: if self.folds_open.contains(&view.id) {
                         Fold::Unfolded
                     } else {
                         Fold::Folded
@@ -201,7 +212,7 @@ impl App {
                     doc: self.session.doc(),
                     plan: self.session.plan(),
                     findings: self.session.findings(),
-                    reviewed: &reviewed,
+                    reviewed,
                     mode: self.diff_mode(),
                     show_group_labels: true,
                     context: self.opts.context,
@@ -595,11 +606,15 @@ impl App {
     /// as well as from drawing — one answer, so the two cannot disagree about
     /// how much room the list needs.
     pub(super) fn file_list(&self) -> Vec<usize> {
+        // A set beside the vector, because the vector's ORDER is the answer —
+        // the order the rows present the files — and `contains` on it made
+        // this O(rows x files) twice over.
+        let mut seen = HashSet::new();
         let mut out: Vec<usize> = Vec::new();
         for row in &self.rows {
             if let RowKind::FileHeader(path) = &row.kind
-                && let Some(i) = self.files().iter().position(|f| f.path == *path)
-                && !out.contains(&i)
+                && let Some(&i) = self.file_index.get(path.as_str())
+                && seen.insert(i)
             {
                 out.push(i);
             }
@@ -613,6 +628,9 @@ impl App {
     pub(super) fn rebuild_overviews(&mut self) {
         self.listed_files = self.file_list();
         self.map_files = self.files_of_selected_group();
+        // Third of the three, and the one that was left in `draw`. It reads
+        // the two above and the tree, so this is the moment it can change.
+        self.map_rows = self.compute_map_rows();
     }
 
     /// The row index of the file header the cursor is under.
@@ -636,7 +654,7 @@ impl App {
         let RowKind::FileHeader(path) = &self.rows[row].kind else {
             return None;
         };
-        self.files().iter().position(|f| f.path == *path)
+        self.file_index.get(path.as_str()).copied()
     }
 
     pub(super) fn current_hunk(&self) -> Option<usize> {

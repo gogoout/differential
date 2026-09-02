@@ -321,6 +321,9 @@ pub struct App {
 
     /// Visible rows of the file tree (rebuilt when a directory folds).
     pub tree: Vec<TreeEntry>,
+    /// Which files each tree row covers, by row. Rebuilt with `tree`, because
+    /// it is a pure function of it and the file list.
+    tree_files: Vec<Vec<usize>>,
     /// Directory paths currently collapsed.
     collapsed: HashSet<String>,
 
@@ -357,7 +360,15 @@ pub struct App {
     /// derived inside `draw`, which meant an O(hunks) scan with a string
     /// compare per hunk on EVERY frame — enough to make a large review feel
     /// stuck on each keypress.
+    /// Where each file sits in the document, by path. Built once: the
+    /// document does not change while a session is open.
+    file_index: HashMap<String, usize>,
+    /// Hunk indices marked reviewed, in THIS document. Refreshed by
+    /// `rebuild_rows`, which every path that changes a mark ends with.
+    reviewed: HashSet<usize>,
     map_files: HashSet<usize>,
+    /// The group map's rows, derived from `tree` and `map_files`.
+    map_rows: Vec<MapRow>,
     listed_files: Vec<usize>,
     /// Measured geometry. An input to update, never a draw-time output.
     viewport: Viewport,
@@ -401,6 +412,7 @@ impl App {
             factory,
             theme,
             tree: Vec::new(),
+            tree_files: Vec::new(),
             collapsed: HashSet::new(),
             focus: Focus::Groups,
             mode: Mode::Normal,
@@ -416,11 +428,22 @@ impl App {
             expanded: HashMap::new(),
             opts,
             status: String::new(),
+            file_index: HashMap::new(),
+            reviewed: HashSet::new(),
             map_files: HashSet::new(),
+            map_rows: Vec::new(),
             listed_files: Vec::new(),
             viewport: Viewport::default(),
             pending_d: false,
         };
+        // The document is fixed for the session's life, so this is built once
+        // rather than found by scanning the file list per row.
+        app.file_index = app
+            .files()
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (f.path.clone(), i))
+            .collect();
         app.rebuild_tree();
         // The persisted cursor names a path; reveal it in the tree.
         if app.view_mode == ViewMode::Files
