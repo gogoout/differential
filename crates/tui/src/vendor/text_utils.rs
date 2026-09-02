@@ -128,6 +128,57 @@ pub fn wrap_pairs(pairs: &[(Style, String)], width: usize) -> Vec<Vec<(Style, St
     cut
 }
 
+/// The pairs with their first `cols` DISPLAY columns dropped, styles kept.
+///
+/// What a horizontal shift needs, and why `slice_pairs` next door cannot do
+/// it: that one cuts at BYTE offsets, because `textwrap` answers in them. A
+/// shift is a question about columns on a screen.
+///
+/// A cut that lands inside a wide character emits one space in its place, so
+/// the text after it still starts in the column the caller asked for. Dropping
+/// the whole character instead would slide every following line by one, and a
+/// pane that shifts by a different amount per row is worse than one that
+/// shifts too far.
+pub fn drop_columns(pairs: &[(Style, String)], cols: usize) -> Vec<(Style, String)> {
+    if cols == 0 {
+        return pairs.to_vec();
+    }
+    let mut out: Vec<(Style, String)> = Vec::new();
+    // Columns still to be dropped. Once it reaches zero everything is kept.
+    let mut left = cols;
+    for (style, text) in pairs {
+        if left == 0 {
+            out.push((*style, text.clone()));
+            continue;
+        }
+        let w = text.width();
+        if w <= left {
+            left -= w;
+            continue;
+        }
+        let mut kept = String::new();
+        for c in text.chars() {
+            if left == 0 {
+                kept.push(c);
+                continue;
+            }
+            let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+            if cw <= left {
+                left -= cw;
+            } else {
+                // The cut fell inside this character. It cannot be drawn in
+                // part, so a space holds its remaining columns.
+                kept.push_str(&" ".repeat(cw - left));
+                left = 0;
+            }
+        }
+        if !kept.is_empty() {
+            out.push((*style, kept));
+        }
+    }
+    out
+}
+
 /// The pairs covering `start..end` of the concatenated text, styles kept.
 pub fn slice_pairs(pairs: &[(Style, String)], start: usize, end: usize) -> Vec<(Style, String)> {
     let mut out = Vec::new();
@@ -309,5 +360,44 @@ mod tests {
         // then
         assert_eq!(lines.len(), 1);
         assert_eq!(text(&lines[0]), "");
+    }
+
+    #[test]
+    fn dropping_columns_cuts_from_the_left_and_keeps_every_style() {
+        let st = |n: u8| Style::default().fg(ratatui::style::Color::Indexed(n));
+        let pairs = vec![(st(1), "let ".to_string()), (st(2), "x = 1;".to_string())];
+
+        // Nothing to drop.
+        assert_eq!(drop_columns(&pairs, 0), pairs);
+
+        // Inside the first pair: the rest of it survives, with its own style.
+        assert_eq!(
+            drop_columns(&pairs, 2),
+            vec![(st(1), "t ".to_string()), (st(2), "x = 1;".to_string())]
+        );
+
+        // Past the first pair: it goes entirely, the second is cut.
+        assert_eq!(drop_columns(&pairs, 6), vec![(st(2), "= 1;".to_string())]);
+
+        // Past everything.
+        assert!(drop_columns(&pairs, 40).is_empty());
+    }
+
+    /// A cut inside a wide character must still leave the text starting where
+    /// the caller asked, or every row shifts by a different amount.
+    #[test]
+    fn dropping_columns_pads_a_wide_character_it_cuts_through() {
+        let st = Style::default();
+        let pairs = vec![(st, "\u{3042}\u{3044}ok".to_string())];
+        // Two columns each: dropping one lands inside the first.
+        let out = drop_columns(&pairs, 1);
+        let plain: String = out.iter().map(|(_, t)| t.as_str()).collect();
+        assert_eq!(plain, " \u{3044}ok");
+        assert_eq!(plain.width(), 5, "the row must lose exactly one column");
+
+        // A clean boundary drops the character outright.
+        let out = drop_columns(&pairs, 2);
+        let plain: String = out.iter().map(|(_, t)| t.as_str()).collect();
+        assert_eq!(plain, "\u{3044}ok");
     }
 }

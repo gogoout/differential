@@ -11,6 +11,13 @@ use crate::rows::RowKind;
 use super::text::{basename, file_list_rows, findings_rows, step_list};
 use super::*;
 
+/// Columns one press of `h`/`l` moves the diff pane.
+///
+/// One indent step. A single column is what vim moves and it is eighty
+/// presses to reach column eighty; a half pane overshoots the word the reader
+/// was following.
+const SHIFT_STEP: isize = 8;
+
 impl App {
     /// Text pasted into the terminal.
     ///
@@ -275,6 +282,26 @@ impl App {
             (KeyCode::Char('N'), _) => self.jump_hunk(-1),
             (KeyCode::Char('s'), KeyModifiers::NONE) => self.toggle_split(),
             (KeyCode::Char('w'), KeyModifiers::NONE) => self.toggle_wrap(),
+            // Sideways, in the pane you are in. A line wider than its column
+            // is cut in either layout and twice as often in split, where the
+            // column is half a pane; `w` is the other answer and the two are
+            // exclusive, which `shift_pane` says out loud.
+            //
+            // Eight columns is one indent step, so a press moves a distance
+            // worth pressing a key for. `0` is the way back, in one.
+            (KeyCode::Char('l'), KeyModifiers::NONE) | (KeyCode::Right, _)
+                if self.focus == Focus::Detail =>
+            {
+                self.shift_pane(Some(SHIFT_STEP));
+            }
+            (KeyCode::Char('h'), KeyModifiers::NONE) | (KeyCode::Left, _)
+                if self.focus == Focus::Detail =>
+            {
+                self.shift_pane(Some(-SHIFT_STEP));
+            }
+            (KeyCode::Char('0'), KeyModifiers::NONE) if self.focus == Focus::Detail => {
+                self.shift_pane(None);
+            }
             // One key for files, acting on the pane it is pressed in. In the
             // left pane that is which list of files you are reading — the
             // plan or the tree; in the diff pane it is which file you want to

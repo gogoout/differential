@@ -123,6 +123,23 @@ anyway.
 **Diff pane.** Unified layout by default, `s` toggles a side-by-side split (the layout
 choice persists per review); syntax highlighting and word-level change emphasis.
 
+**The pane also moves sideways.** `h` and `l` shift the file content eight columns at a
+time and `0` returns it to the left edge. A line wider than the pane is cut with an
+ellipsis, and in split the column is half a pane, so it happens twice as often there —
+`w` was the only way to reach the end of one, and wrapping code is often unwanted. Only
+**file content** moves: a hunk header, a context boundary, a fold, a finding and a group
+header are chrome and prose, already fitted to the pane, and a `╱` band slid sideways says
+nothing. The **line-number cell never moves**, because it is what the cursor's block lands
+in. In split **both halves shift together**, from their own left edges, or the two columns
+stop being comparable, which is the reason to read a diff side by side at all.
+
+`w` and the shift answer the same question and only one of them can be right at a time, so
+a wrapped pane refuses the key and says why rather than doing nothing: a press that
+changes nothing reads as a key that does not work. The shift stops at the widest line's
+overflow, so the pane can never be walked into blank space. It is **transient**, like an
+open fold and a hunk's expansion — where along a line a reader is looking is a reading
+position for this sitting, not a preference, so nothing about it reaches the sidecar.
+
 **The palette is chosen, and painted.** `[review].theme` in the user config names one of
 eleven: `dark` (the default), `one-dark`, `one-light`, `gruvbox-dark`, `gruvbox-light`,
 `solarized-dark`, `solarized-light`, `catppuccin-mocha`, `catppuccin-latte`, `dracula`,
@@ -333,6 +350,10 @@ review, the same as a group's role and a hunk's class, and they wore a run of gr
 that read as chrome. Each takes its own colour once it has something to say: green when
 every class is read, magenta when anything is filed. A transient message follows them.
 
+**So does a shifted pane**, ` +40 cols `, for exactly as long as the shift lasts. A reader
+who shifted right and then moved to a short file otherwise sees an empty pane and nothing
+that says why, and the way back is a key they would have to go and look for.
+
 **A selection gets a pill too**, ahead of the tallies: ` selecting 3 lines `, present for
 exactly as long as the mode is. Being mid-selection is a fact about the thing in front of
 the reader, which is what a pill says here — and the count is the point, because a
@@ -363,6 +384,7 @@ list belongs; the footer's job is to point at it.
 | `z` | show what is being withheld, in the pane you are in — diff pane: on a `──` context boundary row, more of the file, or the hunk it names · elsewhere, the skim remainder or noise group · plan pane, file view: a directory |
 | `s` | toggle side-by-side / unified diff layout (persisted) |
 | `w` | soft wrap long lines (persisted) |
+| `h`/`l`, `0` | shift the diff pane eight columns sideways · back to the left edge. Diff pane only; refused while `w` is on |
 | `f` | files, in the pane you are in — plan pane: toggle reading plan ↔ file tree (persisted) · diff pane: the file-list modal (`enter` jumps to the file) |
 | `space` | mark reviewed — the whole selected group/file in the left pane, the **hunk** under the cursor in the diff pane |
 | `v` | start a line selection at the cursor · `j`/`k` extend it · `v` or `esc` drops it · `c` writes a finding over it |

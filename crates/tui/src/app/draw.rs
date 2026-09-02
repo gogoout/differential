@@ -15,7 +15,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::rows::{Border, Fill, Gutter, Half, RowKind};
 use crate::theme::Theme;
-use crate::vendor::text_utils::{slice_pairs, truncate_or_pad_spans, wrap_pairs};
+use crate::vendor::text_utils::{drop_columns, slice_pairs, truncate_or_pad_spans, wrap_pairs};
 
 use super::text::{
     basename, counts_columns, elide_head, file_list_rows, findings_rows, pad_to_width,
@@ -90,7 +90,7 @@ impl App {
                 );
             }
             Mode::Help => {
-                let area = centered_rect(panes.body, 62, 22);
+                let area = centered_rect(panes.body, 62, 23);
                 clear_to_ground(frame, &self.theme, area);
                 frame.render_widget(help_paragraph(&self.theme), area);
             }
@@ -1062,6 +1062,7 @@ impl App {
                     marker,
                     hint,
                     wrap: self.wraps(r),
+                    hscroll: self.shift(r),
                 },
             )
             .into_iter()
@@ -1249,6 +1250,21 @@ impl App {
             );
             left.push(Span::styled(" ", bar));
         }
+        // Where along the line the pane is standing. Without it a reader who
+        // shifted right and then moved to a short file sees an empty pane and
+        // nothing that says why — and the way back is a key they would have to
+        // go and look for.
+        if self.hscroll > 0 {
+            left.extend(
+                pill(
+                    vec![(self.theme.header_fg, format!("+{} cols", self.hscroll))],
+                    fill,
+                )
+                .into_iter()
+                .map(|(st, t)| Span::styled(t, st)),
+            );
+            left.push(Span::styled(" ", bar));
+        }
         left.extend(tally(
             total > 0 && done == total,
             self.theme.reviewed_fg,
@@ -1318,6 +1334,17 @@ pub(super) struct Paint<'a> {
     pub marker: Marker<'a>,
     pub hint: Option<&'a (Style, String)>,
     pub wrap: bool,
+    /// How far the row's CONTENT is shifted left, in columns.
+    ///
+    /// Applied per half, from each half's own left edge, so a split row's two
+    /// columns stay comparable. The line-number cell never moves: it is what
+    /// the cursor block lands in, and the spec's rule is that the cell keeps
+    /// its width and its column.
+    ///
+    /// A wrapped row ignores it. There is nothing off the edge to reach, and
+    /// shifting a row that already shows all of itself is a row with a hole at
+    /// the front.
+    pub hscroll: usize,
 }
 
 impl Paint<'_> {
@@ -1332,6 +1359,7 @@ impl Paint<'_> {
             marker: Marker::None,
             hint: None,
             wrap,
+            hscroll: 0,
         }
     }
 }
@@ -1407,8 +1435,7 @@ pub(super) fn compose_row_lines(
                 .collect()
         }
         RowContent::Split { old, new } => {
-            let lw = width.saturating_sub(1) / 2;
-            let rw = width.saturating_sub(1).saturating_sub(lw);
+            let (lw, rw) = half_widths(width);
             // Both gutters light: a split row IS one row, and a cursor that
             // showed on one side only read as a cursor on that side's line.
             let mut left = compose_half_lines(theme, old, lw, paint);
@@ -1431,6 +1458,41 @@ pub(super) fn compose_row_lines(
                     Line::from(spans)
                 })
                 .collect()
+        }
+    }
+}
+
+/// The two column widths a split row lays out in, either side of the `│`.
+///
+/// One copy, because the overflow a horizontal shift is bounded by has to be
+/// measured against the width the content is actually drawn at. Two copies of
+/// this arithmetic would let the pane shift past its own longest line, or stop
+/// short of it.
+pub(super) fn half_widths(width: usize) -> (usize, usize) {
+    let lw = width.saturating_sub(1) / 2;
+    (lw, width.saturating_sub(1).saturating_sub(lw))
+}
+
+/// How many columns of a row's content fall off the right edge at `width`.
+///
+/// Zero for a row that fits. What bounds the horizontal shift: past the widest
+/// row's overflow there is nothing left to reveal.
+pub(super) fn overflow(content: &RowContent, width: usize) -> usize {
+    let over = |h: &Half, w: usize| {
+        let rest = w.saturating_sub(UnicodeWidthStr::width(h.gutter.text.as_str()));
+        h.pairs
+            .iter()
+            .map(|(_, t)| t.width())
+            .sum::<usize>()
+            .saturating_sub(rest)
+    };
+    match content {
+        // A banner is built to the pane it is drawn in.
+        RowContent::Full(_) => 0,
+        RowContent::Unified(half) => over(half, width),
+        RowContent::Split { old, new } => {
+            let (lw, rw) = half_widths(width);
+            over(old, lw).max(over(new, rw))
         }
     }
 }
@@ -1554,6 +1616,20 @@ pub(super) fn compose_half(
     if !gutter.is_empty() {
         spans.push(Span::styled(gutter, style));
     }
+    // The shift, applied after the gutter and before anything is measured
+    // against the pane: the line-number cell keeps its column, and the cut
+    // tail still gets its ellipsis from the width that is left.
+    let shifted;
+    let half = if paint.hscroll > 0 && !paint.wrap {
+        shifted = Half {
+            gutter: half.gutter.clone(),
+            pairs: drop_columns(&half.pairs, paint.hscroll),
+            fill: half.fill,
+        };
+        &shifted
+    } else {
+        half
+    };
     // Two re-inks, both keyed by colour, both leaving syntax alone.
     //
     // A boundary band carries its own colour the whole way across, so the row
@@ -1747,6 +1823,10 @@ pub(super) fn help_paragraph(theme: &Theme) -> Paragraph<'static> {
         row("", "elsewhere: unfold skim remainder / noise"),
         row("s", "unified / split diff"),
         row("w", "soft wrap long lines"),
+        row(
+            "h/l  ·  0",
+            "shift the diff sideways · back to the left edge",
+        ),
         row("f", "plan pane: reading plan / file tree"),
         row("", "diff pane: file list (enter jumps)"),
         row("space", "mark the hunk's class reviewed"),
