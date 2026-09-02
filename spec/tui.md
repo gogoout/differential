@@ -165,6 +165,22 @@ read as a cursor on that side's line. The absent side keeps a blank line-number 
 the same width, so the block lands in the same column on a row that exists on one side
 only — where a marker glyph used to vanish into the `╱` fill.
 
+**A selection steps the row's own colour.** The same problem as the cursor's, one further
+on. A selection was drawn as a colour over the whole row, and a changed line paints every
+one of its spans with its change colour — so the row was selected and said nothing, in
+either layout. What a selected row does instead is wear its **own** tint, moved one step
+away from the ground: a deletion stays red and an addition green, and the run reads as one
+block rather than as rows that happen to be adjacent. The step is measured, not chosen —
+half the way from a line's tint to its own gutter block — so a selection can never land on
+the block beside it and cost the gutter the edge it exists to draw. The word-emphasis
+colour moves by the same amount, so a selection changes nothing about which words changed.
+A line with no colour of its own — a context line, and the hatched half of a split row —
+takes the plain selection tint, which is what it always took.
+
+The **cursor's row is in the run**, and takes the same tint: it is one end of the
+selection, and a hole at the moving end would read as a break in it. What keeps it the
+brighter end is the gutter block and the bar, which is what the cursor has always been.
+
 **A hunk is a pill and an edge.** Its header is a band of `╱` hatch, and a pill appears on
 it only for the hunk the cursor is in — ` +25 −3 · C31 `, the size of the change and then
 the shape class — rather than a `@@ -479,0 +480,25 @@` line: every row

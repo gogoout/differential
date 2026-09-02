@@ -1630,6 +1630,75 @@ fn the_cursor_is_a_brighter_gutter_block_on_a_changed_row() {
     panic!("the cursor's gutter must wear the brighter block of its change colour");
 }
 
+/// A changed line's every span carries `added_bg`/`deleted_bg`, and a span
+/// background beats a line style. The selection used to BE a line style, so
+/// selecting the lines inside a hunk — which is what selecting means here —
+/// changed nothing on screen. Nothing guarded it.
+#[test]
+fn a_selection_shows_on_a_changed_line() {
+    let (_r, mut app) = app_with_a_long_file();
+    let changed = |c: &ratatui::style::Color| *c == theme().added_bg || *c == theme().deleted_bg;
+    let selected =
+        |c: &ratatui::style::Color| *c == theme().added_sel_bg || *c == theme().deleted_sel_bg;
+
+    put_cursor_on(&mut app, |k| matches!(k, RowKind::Diff(_)));
+    for _ in 0..30 {
+        let y = cursor_screen_row(&app);
+        if !row_backgrounds(&mut app, y).iter().any(changed) {
+            app.handle_key(key('j'));
+            continue;
+        }
+        // when - the row is selected. `v` alone selects the cursor's row, and
+        // the cursor's row is one end of the run like any other.
+        app.handle_key(key('v'));
+        let after = row_backgrounds(&mut app, y);
+
+        // then - the row's own colour has stepped, edge to edge.
+        assert!(
+            after.iter().any(selected),
+            "a selected changed row must wear its selected tint: {after:?}"
+        );
+        assert!(
+            !after.iter().any(changed),
+            "no cell may keep the unselected tint: {after:?}"
+        );
+        return;
+    }
+    panic!("no changed row within reach of the cursor");
+}
+
+/// The line-style path still does its job. A context line has no colour of its
+/// own, so `selected_bg` is the only thing that can mark it — and the fix must
+/// not take that away.
+#[test]
+fn a_selection_still_shows_on_a_context_line() {
+    let (_r, mut app) = app_with_a_long_file();
+    let changed = |c: &ratatui::style::Color| *c == theme().added_bg || *c == theme().deleted_bg;
+
+    put_cursor_on(&mut app, |k| matches!(k, RowKind::Diff(_)));
+    for _ in 0..30 {
+        let y = cursor_screen_row(&app);
+        if row_backgrounds(&mut app, y).iter().any(changed) {
+            app.handle_key(key('j'));
+            continue;
+        }
+        // when - the anchor is this row and the cursor moves off it, so the
+        // anchor takes the selection's colour rather than the cursor's.
+        app.handle_key(key('v'));
+        app.handle_key(key('j'));
+        let anchor = app.visual.expect("a selection is open");
+        let y = (anchor - app.scroll()) as u16 + 1;
+
+        // then
+        assert!(
+            row_backgrounds(&mut app, y).contains(&theme().selected_bg),
+            "a selected context row must wear the selection tint"
+        );
+        return;
+    }
+    panic!("no context row within reach of the cursor");
+}
+
 #[test]
 fn the_cursor_lights_the_gutter_on_both_sides_of_a_split_row() {
     let (_r, mut app) = app_with_a_long_file();
@@ -4250,6 +4319,35 @@ fn render_dump() {
         }
         println!("\n=== diff: {mode} ===");
         println!("{}", ansi_dump(&mut app, 120, 26));
+        app.handle_key(key('s'));
+    }
+}
+
+/// The one thing a still picture has to settle for #68: whether a selected
+/// changed line reads as selected without drowning the change colour it wears.
+///
+/// `cargo test -p differential-tui --test tui -- --ignored --nocapture render_dump_selection`
+#[test]
+#[ignore = "prints the pane for a human to look at"]
+fn render_dump_selection() {
+    let (_r, mut app) = app_with_a_long_file();
+    app.focus = Focus::Detail;
+    for mode in ["unified", "split"] {
+        // A run over CHANGED lines, which is the case the fix is about. The
+        // row indices differ between the two layouts, so the walk repeats.
+        put_cursor_on(&mut app, |k| matches!(k, RowKind::Diff(_)));
+        for _ in 0..20 {
+            let y = cursor_screen_row(&app);
+            if row_backgrounds(&mut app, y).iter().any(is_cursor_block) {
+                break;
+            }
+            app.handle_key(key('j'));
+        }
+        app.handle_key(key('v'));
+        app.handle_key(key('j'));
+        println!("\n=== selection over changed lines, {mode} ===");
+        println!("{}", ansi_dump(&mut app, 120, 26));
+        app.handle_key(key('v'));
         app.handle_key(key('s'));
     }
 }
