@@ -26,9 +26,21 @@ fn focus_all_backend() -> FakeBackend {
     })
 }
 
+/// The id is a function of BOTH the base and the head spec, and of nothing
+/// else — which is what lets one review survive its branch tip moving.
+///
+/// The `assert_eq!(review_id(a, b), review_id(a, b))` this used to open with
+/// is gone: it called one pure function twice with identical arguments, so it
+/// could only have failed if a sha1 stopped being a sha1. The pinned digest
+/// below is the real stability check — it catches the key composition changing
+/// under existing reviews, which is what `spec/persistence.md` freezes.
 #[test]
 fn review_id_is_stable_and_spec_sensitive() {
-    assert_eq!(review_id("abc", "feature"), review_id("abc", "feature"));
+    assert_eq!(
+        review_id("abc", "feature"),
+        "36f67cd62473e2ee",
+        "the key composition changed; every filed review just became unreachable"
+    );
     assert_ne!(review_id("abc", "feature"), review_id("abc", "other"));
     assert_ne!(review_id("abc", "feature"), review_id("def", "feature"));
 }
@@ -477,7 +489,8 @@ fn clear_findings_empties_the_store_in_one_write() {
     r.write("f.txt", b"alpha_value = 2\n");
     let head = r.commit_all("head");
 
-    let dir = r.root.join(".dfr-clear");
+    let dir_path = r.root.join(".dfr-clear");
+    let dir = dir_path.clone();
     let store = FsReviewStore::at(dir.clone()).unwrap();
     let (doc, view) = doc_and_view(&r, &base, &head);
     let mut session = ReviewSession::open(store, doc, view).unwrap();
@@ -496,8 +509,16 @@ fn clear_findings_empties_the_store_in_one_write() {
     let reread = FsReviewStore::at(dir).unwrap();
     assert!(reread.load_findings().unwrap().is_empty());
 
-    // And clearing nothing is not an error, nor a write.
+    // And clearing nothing is not an error, NOR A WRITE — which the file
+    // itself has to say, because a second `save_findings` would rewrite it to
+    // the same empty bytes and leave no other trace. Removing it is the only
+    // way to see whether anything writes it back.
+    std::fs::remove_file(dir_path.join("findings.jsonl")).unwrap();
     assert_eq!(session.clear_findings().unwrap(), 0);
+    assert!(
+        !dir_path.join("findings.jsonl").exists(),
+        "clearing an empty store must not write the file back"
+    );
 }
 
 /// A reader can annotate a CONTEXT line, and context sits on both sides of a
@@ -718,21 +739,109 @@ fn a_corrupt_cache_entry_errors_rather_than_panicking() {
     assert!(format!("{err:#}").contains("k.json"), "{err:#}");
 }
 
-/// A write lands whole or not at all: the file a reader opens is never a
-/// prefix of the one being written.
+/// A hunk side that starts at line 0 still anchors from line 1.
 ///
-/// Proved by what is left beside it — an atomic write publishes by rename, so
-/// the destination directory holds exactly the finished files and no partial
-/// one under the real name.
+/// git writes `@@ -0,0 +1,N @@` for a file the head adds: the OLD side of that
+/// hunk begins nowhere. `add_finding` already clamps its start to 1 when it
+/// records an offset, so `hunk_start` has to clamp the same way when it spends
+/// that offset again — otherwise the two disagree by one and a re-anchored
+/// note walks up the file every time the plan is regenerated.
+///
+/// Remove the `.max(1)` in `Anchor::hunk_start` and this fails. Before this
+/// test, nothing did.
 #[test]
-fn a_saved_file_is_published_by_rename() {
+fn a_side_that_starts_at_zero_still_anchors_from_line_one() {
+    let r = TestRepo::new();
+    r.write("kept.txt", b"unchanged = 1\n");
+    let base = r.commit_all("base");
+    // A file the head ADDS, so its hunk's old side is `-0,0`.
+    r.write(
+        "added.txt",
+        b"one = 1\ntwo = 2\nthree = 3\nfour = 4\nfive = 5\n",
+    );
+    let head = r.commit_all("head");
+    let (doc, view) = doc_and_view(&r, &base, &head);
+
+    let h = doc
+        .hunks
+        .iter()
+        .find(|h| h.file == "added.txt")
+        .expect("the added file has a hunk");
+    assert_eq!(h.old_start, 0, "a pure addition's old side starts nowhere");
+
+    // A note four lines into that side. `add_finding` records an offset
+    // against a start of 1, so re-anchoring has to spend it against 1 too.
+    let mut findings = vec![Finding::new(
+        FIXED_TIME,
+        "on the old side".into(),
+        "an older plan".into(),
+        Anchor {
+            file: "added.txt".into(),
+            side: "old".into(),
+            line: 5,
+            end_line: 5,
+            offset: 4,
+            span: 0,
+            hunk_digest: h.digest.clone(),
+            line_text: String::new(),
+            end_line_text: String::new(),
+        },
+    )];
+
+    reanchor(&mut findings, &doc, &view, "this plan");
+
+    assert_eq!(
+        findings[0].anchor.line, 5,
+        "the offset is spent against line 1, not line 0"
+    );
+    assert_eq!(findings[0].status, FindingStatus::Open);
+}
+
+/// A write lands whole or not at all: a reader holding the old file keeps a
+/// COMPLETE old file, never a prefix of the new one.
+///
+/// Observed through a hard link, which is exactly a reader's view. An atomic
+/// write replaces the directory entry, so the linked inode still holds the
+/// previous content untouched. A plain whole-file write truncates that same
+/// inode in place, and the link would see the new bytes — and, for the instant
+/// between truncate and write, none at all.
+///
+/// That distinction is the whole of `write_atomic`. Swap it for
+/// `std::fs::write` and this test fails; the directory listing it used to
+/// check passed either way.
+#[test]
+fn a_reader_holding_the_old_file_never_sees_a_torn_one() {
     let tmp = tempfile::TempDir::new().unwrap();
     let dir = tmp.path().join("rev");
     let store = FsReviewStore::at(dir.clone()).unwrap();
+    let findings_path = dir.join("findings.jsonl");
 
-    let f = Finding::new(
+    store.save_findings(&[note("the first")]).unwrap();
+    let first = std::fs::read_to_string(&findings_path).unwrap();
+
+    // The reader: another name for the inode the first save produced.
+    let witness = dir.join("witness.jsonl");
+    std::fs::hard_link(&findings_path, &witness).unwrap();
+
+    store
+        .save_findings(&[note("the first"), note("and the second")])
+        .unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(&witness).unwrap(),
+        first,
+        "the second save must not have touched the file the reader holds"
+    );
+    let now = std::fs::read_to_string(&findings_path).unwrap();
+    assert_eq!(now.lines().count(), 2, "the new file has both notes");
+    assert_eq!(store.load_findings().unwrap().len(), 2);
+}
+
+/// One finding, with everything but its body fixed.
+fn note(body: &str) -> Finding {
+    Finding::new(
         FIXED_TIME,
-        "a note".into(),
+        body.into(),
         "plan".into(),
         Anchor {
             file: "src/a.rs".into(),
@@ -745,17 +854,5 @@ fn a_saved_file_is_published_by_rename() {
             line_text: "x".into(),
             end_line_text: "x".into(),
         },
-    );
-    store.save_findings(&[f]).unwrap();
-    store.save_state(&Default::default()).unwrap();
-
-    let names: Vec<String> = std::fs::read_dir(&dir)
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|n| n != "plans")
-        .collect();
-    let mut names = names;
-    names.sort();
-    assert_eq!(names, vec!["findings.jsonl", "state.json"]);
-    assert_eq!(store.load_findings().unwrap().len(), 1);
+    )
 }

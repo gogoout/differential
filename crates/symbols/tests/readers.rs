@@ -194,7 +194,34 @@ fn the_tuned_reader_outranks_the_field_reader_and_they_never_overlap() {
         assert!(tuned.priority(path).is_none(), "both claimed {path:?}");
         assert!(fields.priority(path).is_some());
     }
-    assert!(tuned.priority(b"src/lib.rs") > fields.priority(b"Main.java"));
+    // The ranking, on the ONE path where it could ever be consulted. This used
+    // to compare the two readers over two different files — a contest the
+    // loops above prove can never happen, so it reduced to comparing two
+    // unrelated constants. `SymbolReaders::of_file` only ranks readers that
+    // both claim the SAME path, and today no path is claimed twice.
+    let both: Vec<&[u8]> = [
+        b"src/lib.rs".as_slice(),
+        b"Main.kt",
+        b"app.ts",
+        b"main.go",
+        b"Main.java",
+        b"a.c",
+        b"a.cpp",
+        b"a.cs",
+        b"a.js",
+    ]
+    .into_iter()
+    .filter(|p| tuned.priority(p).is_some() && fields.priority(p).is_some())
+    .collect();
+    assert!(
+        both.is_empty(),
+        "these paths are claimed twice, so the ranking now decides them: {both:?}"
+    );
+    // And when a language does gain a query, the tuned reader must win it.
+    assert!(
+        AstSymbols::new().priority(b"x.kt") > AstTier2Symbols::new().priority(b"x.kt").or(Some(0)),
+        "a tuned reader must outrank the field reader wherever both could claim"
+    );
 }
 
 /// Deep nesting must cost neither stack nor quadratic time.
@@ -203,12 +230,13 @@ fn the_tuned_reader_outranks_the_field_reader_and_they_never_overlap() {
 /// or a generated literal makes AST depth track nesting. Two separate hazards
 /// live there, and this one test catches both:
 ///
-/// - **Stack.** A recursive walk takes a frame per node. 50,000 levels is far
+/// - **Stack.** A recursive walk takes a frame per node. 20,000 levels is far
 ///   past what a 2 MiB test thread survives, so a return to recursion aborts
 ///   rather than merely slowing down.
 /// - **Time.** `Node::parent` walks down from the root every call, so asking
 ///   each node for its parent costs depth per node. Writing it that way made
-///   this test exceed two minutes; carrying the parent's kind down on the
+///   this test exceed two minutes at this depth; carrying the parent's kind
+///   down on the
 ///   walk's own stack makes it finish in milliseconds.
 ///
 /// **An identifier at every level, not just the deepest one.** Nesting bare
@@ -232,9 +260,25 @@ fn deep_nesting_costs_neither_stack_nor_quadratic_time() {
     }
     src.push_str(";\n");
 
+    // The "nor quadratic time" half of the name, measured. Without a clock
+    // this test only proved the stack held: a reintroduced per-token ancestor
+    // walk took minutes and still passed green, because the Rust harness
+    // imposes no timeout of its own.
+    //
+    // The budget is deliberately loose — thirty seconds on a machine that
+    // does this in milliseconds. It is a trip-wire for a quadratic walk, not
+    // a benchmark, so an unloaded laptop and a busy CI runner both clear it.
+    let started = std::time::Instant::now();
     let symbols = AstTier2Symbols::new()
         .file_symbols(b"bundle.js", src.as_bytes())
         .expect("the reader claimed this file and must answer");
+    let took = started.elapsed();
+    assert!(
+        took < std::time::Duration::from_secs(30),
+        "reading {DEPTH} levels took {took:?}: something walks from a token to \
+         the root, which is quadratic in the depth"
+    );
+
     // The innermost call is still found, so the walk reached the bottom rather
     // than stopping part way.
     let references = flatten(&symbols.references);

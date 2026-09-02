@@ -71,11 +71,13 @@ fn measuring_does_not_remove_and_agrees_with_what_a_clear_reports() {
     assert!(plan::grouping_cache_dir(&common).join("aaa.json").exists());
 
     let removed = clear_cache(&r.repo()).unwrap();
-    assert_eq!(
-        (removed.groupings, removed.documents, removed.bytes),
-        (usage.groupings, usage.documents, usage.bytes),
-        "the CLI's --dry-run is this pair, so they must agree on one state"
-    );
+    // Deliberately NOT `removed == usage`: `clear_cache` opens by calling
+    // `cache_usage` and hands that value straight back, so comparing the two
+    // compares one call with another and holds however either behaves. The
+    // numbers are pinned against the fixture instead, which is what makes the
+    // CLI's `--dry-run` and its real run answerable to the same facts.
+    assert_eq!((removed.groupings, removed.documents), (2, 1));
+    assert_eq!(removed.bytes, 35);
 }
 
 #[test]
