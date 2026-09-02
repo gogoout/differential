@@ -732,33 +732,36 @@ impl App {
     /// with the selected group's files lit, so what a group spans is one look
     /// rather than a walk through its hunks.
     ///
+    /// It floats over the FOOT of the detail pane at full pane width — the same
+    /// shape as the file list at the foot of the plan pane, so one focus reads
+    /// like the other. The diff carries on above it as a preview of what
+    /// entering the group will show.
+    ///
     /// Deliberately not interactive. It is a map; a second cursor in a second
     /// pane is a thing to explain and to get wrong.
     pub(super) fn draw_group_map(&self, frame: &mut Frame, detail: Rect) {
-        // Below the group's header block, so its full label and description —
-        // which the 40-column plan pane truncates — stay readable, and the diff
-        // carries on beneath the float.
+        // The group's header block is what the height is capped against, so its
+        // full label and description — which the 40-column plan pane truncates —
+        // stay readable however many files the group touches.
         let header = self
             .rows
             .iter()
             .take_while(|r| matches!(r.kind, RowKind::GroupHeader | RowKind::Blank))
             .count()
             .min(6) as u16;
-        let top = detail.y + 1 + header;
         // Read, not recomputed. This walked the whole tree on every frame:
         // an ancestor pass over every row above each live file, and a scan
         // forward per folded directory. It depends on `tree` and `map_files`
         // and nothing else, both of which `rebuild_overviews` already owns.
         let rows = &self.map_rows;
+        let h = (rows.len() as u16 + 2)
+            .min(detail.height.saturating_sub(header + 2))
+            .max(3);
         let area = Rect {
-            x: detail.x + 1,
-            y: top,
-            width: detail.width.saturating_sub(2),
-            height: detail
-                .height
-                .saturating_sub(header + 2)
-                .min(rows.len() as u16 + 2)
-                .max(3),
+            x: detail.x,
+            y: detail.y + detail.height.saturating_sub(h),
+            width: detail.width,
+            height: h,
         };
         clear_to_ground(frame, &self.theme, area);
         let inner_h = area.height.saturating_sub(2) as usize;
