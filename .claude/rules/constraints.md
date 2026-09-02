@@ -1,6 +1,10 @@
 # Non-negotiable constraints
 
-Each of these was a decision, and each has a way of quietly reversing itself.
+Each of these was a decision, and each erodes in practice unless it is re-read — not
+because anyone overturns it, but because the shortcut past it always looks local and small.
+That is what this file is for. **A line here yields only to the author saying so, in the
+conversation where it comes up** (design rule 7); an argument earns that conversation, never
+the change. Privacy and enumeration's totality yield to nothing.
 Linked from [`AGENTS.md`](../../AGENTS.md), which carries the one-line form.
 
 - **Privacy.** The validation corpus is a private employer repo. Nothing committed — code,

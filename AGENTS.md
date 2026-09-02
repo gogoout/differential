@@ -4,8 +4,8 @@ A reading plan for a diff: it groups a branch's hunks by what they do, orders th
 reviews them in a terminal. Read [`README.md`](README.md) for what it is.
 
 `spec/` is normative — what the program does. `adr/` records why (0001–0028). **When your
-change contradicts a spec or an ADR, the docs and the code change together, or the change
-is wrong.**
+change contradicts a spec, an ADR or a constraint, the docs and the code change together,
+or the change is wrong.**
 
 ## Rules
 
