@@ -92,7 +92,9 @@ walk through its hunks. It sits at the **foot of the detail pane** at full pane 
 same shape the file list takes at the foot of the plan pane, so one focus reads like the
 other. Its height is **capped against the group's header block**, leaving the full label
 and description readable where the 40-column plan pane truncates them, and the diff carries
-on above it as a preview of what entering the group will show. The tree is drawn with
+on above it as a preview of what entering the group will show. **A pane too short for both
+the header block and a box yields the box**: the map lifts entirely rather than land on the
+label the cap exists to protect. The tree is drawn with
 connector guides and marks a lit file beside its name rather than out in a column of its
 own. Deliberately not interactive: it is a map, and a second cursor in a second pane is a
 thing to explain and to get wrong.

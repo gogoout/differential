@@ -754,9 +754,14 @@ impl App {
         // forward per folded directory. It depends on `tree` and `map_files`
         // and nothing else, both of which `rebuild_overviews` already owns.
         let rows = &self.map_rows;
-        let h = (rows.len() as u16 + 2)
-            .min(detail.height.saturating_sub(header + 2))
-            .max(3);
+        // A pane too short to hold the header block AND a box yields the BOX. A
+        // floor that beat the cap would cover the very label the cap exists to
+        // protect, which is the one thing the reader cannot do without.
+        let cap = detail.height.saturating_sub(header + 2);
+        if cap < 3 {
+            return;
+        }
+        let h = (rows.len() as u16 + 2).max(3).min(cap);
         let area = Rect {
             x: detail.x,
             y: detail.y + detail.height.saturating_sub(h),

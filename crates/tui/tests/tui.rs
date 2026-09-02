@@ -2722,6 +2722,34 @@ fn the_group_map_never_covers_the_groups_header() {
         "the group's title should be on screen: {}",
         row_text(1)
     );
+
+    // Shorter still: too short for the header block AND a box. The box is what
+    // gives way. A floor of three rows that beat the cap would land on the
+    // description and cover the very label the cap exists to protect.
+    let backend = ratatui::backend::TestBackend::new(100, 6);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let short_row = |y: u16| {
+        (40..100u16)
+            .map(|x| buf[(x, y)].symbol())
+            .collect::<String>()
+    };
+    let text: String = buf.content().iter().map(|c| c.symbol()).collect();
+    assert!(
+        !text.contains("files in g"),
+        "the float should lift rather than cover the header: {text}"
+    );
+    assert!(
+        short_row(1).contains("[focus] Everything"),
+        "the group's title must survive any pane height: {}",
+        short_row(1)
+    );
+    assert!(
+        short_row(2).trim_matches(|c| c == '│' || c == ' ') == "d",
+        "the description must survive with it: {}",
+        short_row(2)
+    );
 }
 
 /// Reading the detail, a list of the files in view floats over the foot of the
