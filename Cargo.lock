@@ -501,6 +501,8 @@ dependencies = [
  "etcetera",
  "globset",
  "hex",
+ "memchr",
+ "petgraph",
  "regex",
  "serde",
  "serde_json",

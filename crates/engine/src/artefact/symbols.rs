@@ -95,10 +95,6 @@ impl SymbolReaders {
         self.readers.push(reader);
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.readers.is_empty()
-    }
-
     /// The best claimant's answer, falling to the next best on failure.
     pub fn of_file(&self, path: &[u8], content: &[u8]) -> Option<FileSymbols> {
         let mut ranked: Vec<(u8, &dyn SymbolSource)> = self

@@ -33,10 +33,17 @@ struct RawConfig {
     #[serde(default)]
     grouping: Option<toml::Table>,
     // Reserved for later milestones; accepted so the file format is stable.
-    #[serde(default)]
-    ordering: toml::Table,
-    #[serde(default)]
-    stack: toml::Table,
+    // `IgnoredAny` says exactly that — the table is parsed and discarded,
+    // where a `toml::Table` was allocated in full and then discarded, with a
+    // `let _ =` further down whose only job was to quiet the compiler about
+    // a field nothing reads.
+    //
+    // Named with a leading underscore because nothing reads them and nothing
+    // should: the `#[serde(rename)]` keeps the file's own spelling.
+    #[serde(default, rename = "ordering")]
+    _ordering: serde::de::IgnoredAny,
+    #[serde(default, rename = "stack")]
+    _stack: serde::de::IgnoredAny,
 }
 
 /// The user-level file: `[grouping]` and `[review]`.
@@ -275,9 +282,7 @@ impl Config {
             Some((text, origin)) => Self::parse(&text, &origin)?,
             None => Config::default(),
         };
-        let user_default = src
-            .user_config_dir()
-            .map(|d| d.join(USER_CONFIG_DIR).join(USER_CONFIG_FILE_NAME));
+        let user_default = user_config_path(src);
         if let Some((text, origin)) = resolve(src, user_override, user_default)? {
             let user = Self::parse_user(&text, &origin)?;
             config.grouping = user.grouping;
@@ -302,7 +307,6 @@ impl Config {
                     .to_string(),
             });
         }
-        let _ = (&raw.ordering, &raw.stack); // reserved
         Ok(Config {
             generated: build_globs(&raw.classify.generated, origin)?,
             not_generated: build_globs(&raw.classify.not_generated, origin)?,

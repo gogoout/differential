@@ -286,37 +286,37 @@ impl LlmBackend for CommandBackend {
             buf
         });
 
-        // Watchdog: poll for exit until the deadline, then kill.
+        // Watchdog: poll for exit until the deadline, then kill. The poll is
+        // not just the deadline's — the cancel flag has to be read too, which
+        // is why this is a loop and not a `wait` with a timeout.
         let deadline = std::time::Instant::now() + self.timeout;
         let status = loop {
-            match child.try_wait().map_err(|source| LlmError::Io {
+            // Decide first, tear down once. The two ways out used to carry a
+            // copy each of the same five-line teardown, so a sixth thing to
+            // clean up would have had to be remembered twice.
+            let give_up = match child.try_wait().map_err(|source| LlmError::Io {
                 command: self.command.clone(),
                 source,
             })? {
                 Some(status) => break status,
-                None if self.cancelled() => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = writer.join();
-                    let _ = stdout_reader.join();
-                    let _ = stderr_reader.join();
-                    return Err(LlmError::Cancelled {
-                        command: self.command.clone(),
-                    });
-                }
-                None if std::time::Instant::now() >= deadline => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = writer.join();
-                    let _ = stdout_reader.join();
-                    let _ = stderr_reader.join();
-                    return Err(LlmError::Timeout {
-                        command: self.command.clone(),
-                        timeout: self.timeout,
-                    });
-                }
-                None => std::thread::sleep(Duration::from_millis(25)),
+                None if self.cancelled() => Some(LlmError::Cancelled {
+                    command: self.command.clone(),
+                }),
+                None if std::time::Instant::now() >= deadline => Some(LlmError::Timeout {
+                    command: self.command.clone(),
+                    timeout: self.timeout,
+                }),
+                None => None,
+            };
+            if let Some(err) = give_up {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = writer.join();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(err);
             }
+            std::thread::sleep(Duration::from_millis(25));
         };
         let _ = writer.join();
 

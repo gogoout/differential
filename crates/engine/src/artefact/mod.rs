@@ -22,6 +22,8 @@
 pub mod graph;
 pub mod symbols;
 
+use std::collections::{HashMap, HashSet};
+
 use crate::plan::HunkId;
 use crate::schema;
 
@@ -65,33 +67,41 @@ impl ClassView<'_> {
 /// than every class that happens to be entirely generated. The noise tier still
 /// folds rather than hides: `git diff` reaches any path at all.
 pub fn index(doc: &schema::PlanDocument) -> Vec<ClassView<'_>> {
-    all(doc)
-        .into_iter()
-        .filter(|v| !crate::plan::class_is_generated(doc, v.class))
+    let generated = crate::plan::generated_files(doc);
+    // Both prepared once. Every class asks the same two questions of the same
+    // file list, and answering each by scanning it made listing a 196-class
+    // document quadratic in the thing it was listing.
+    let disposition: HashMap<&str, schema::Disposition> = doc
+        .files
+        .iter()
+        .map(|f| (f.path.as_str(), f.disposition))
+        .collect();
+    doc.classes
+        .iter()
+        .filter_map(|c| view(doc, &disposition, c))
+        .filter(|v| !crate::plan::class_is_generated(doc, &generated, v.class))
         .collect()
 }
 
-fn all(doc: &schema::PlanDocument) -> Vec<ClassView<'_>> {
-    doc.classes.iter().filter_map(|c| view(doc, c)).collect()
-}
-
-fn view<'d>(doc: &'d schema::PlanDocument, class: &'d schema::ClassEntry) -> Option<ClassView<'d>> {
+fn view<'d>(
+    doc: &'d schema::PlanDocument,
+    disposition: &HashMap<&'d str, schema::Disposition>,
+    class: &'d schema::ClassEntry,
+) -> Option<ClassView<'d>> {
     let members = hunks_of(doc, &class.hunk_ids);
     let exemplar = doc
         .hunks
         .get(HunkId::parse(&class.exemplar).ok()?.index())?;
-    let mut files: Vec<&str> = Vec::new();
-    for m in &members {
-        if !files.contains(&m.file.as_str()) {
-            files.push(&m.file);
-        }
-    }
+    // Distinct paths, first-seen order. The order is what the prompt prints,
+    // so it stays; only the membership test stopped being a linear scan.
+    let mut seen: HashSet<&str> = HashSet::new();
+    let files: Vec<&str> = members
+        .iter()
+        .map(|m| m.file.as_str())
+        .filter(|p| seen.insert(p))
+        .collect();
     Some(ClassView {
-        kind: doc
-            .files
-            .iter()
-            .find(|f| f.path == exemplar.file)
-            .map(|f| f.disposition)?,
+        kind: *disposition.get(exemplar.file.as_str())?,
         class,
         members,
         exemplar,

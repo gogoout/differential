@@ -285,6 +285,44 @@ pub fn ids_in_prompt(prompt: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The workspace's standard two-class fixture.
+///
+/// One 3-member class — the same identifier swap in three files — plus one
+/// singleton behavioural class. That is enough to exercise class ordering, the
+/// multi-file annotation, both payload sides, a focus/skim split and the
+/// grouping cache key, which is why four test crates each had a byte-identical
+/// copy of it under four different doc comments.
+///
+/// The bytes are load-bearing: `golden.rs` pins the grouping cache key this
+/// fixture produces. Changing what it writes changes that key.
+pub fn two_class_repo() -> (TestRepo, String, String) {
+    let r = TestRepo::new();
+    for name in ["a", "b", "c"] {
+        r.write(
+            &format!("src/{name}.txt"),
+            b"use old_helper_name;\nother content\n",
+        );
+    }
+    r.write("src/main.txt", b"fn main() { run_slowly() }\n");
+    let base = r.commit_all("base");
+    for name in ["a", "b", "c"] {
+        r.write(
+            &format!("src/{name}.txt"),
+            b"use new_helper_name;\nother content\n",
+        );
+    }
+    r.write("src/main.txt", b"fn main() { run_with_retries(3) }\n");
+    let head = r.commit_all("head");
+    (r, base, head)
+}
+
+/// One group object as the model would answer it.
+///
+/// Deliberately still `format!` rather than `serde_json::json!`. The text this
+/// produces is a FIXTURE's model response, and `golden.rs` pins the cache
+/// entry that holds it byte for byte — so building it a tidier way would churn
+/// a test whose whole job is to notice when bytes move. No fixture label
+/// contains a quote, and the day one does, that is the day to change this.
 pub fn json_group(label: &str, effort: &str, classes: &[&str]) -> String {
     format!(
         r#"{{"label": "{label}", "description": "d", "classes": [{}], "effort": "{effort}", "reason": "r"}}"#,

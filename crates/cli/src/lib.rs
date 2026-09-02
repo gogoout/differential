@@ -183,13 +183,9 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         _ => None,
     };
 
-    let dir = common
-        .repo
-        .clone()
-        .unwrap_or_else(|| std::env::current_dir().expect("cwd"));
-    let repo = match Repo::open(&dir) {
+    let repo = match open_repo(common.repo.as_deref()) {
         Ok(r) => r,
-        Err(e) => return usage_error(&e.to_string()),
+        Err(e) => return usage_error(&e),
     };
     let config = match Config::load(
         &OsConfigSource,
@@ -328,15 +324,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     },
                 )
                 .context("grouped pipeline failed")?;
-                // A name is the whole identity; without one the review is
-                // filed under its endpoints (ADR 0026, ADR 0027).
-                let identity = match session_name {
-                    Some(name) => ReviewIdentity::Named(name),
-                    None => ReviewIdentity::Range {
-                        base: source.identity_base.unwrap_or_else(|| out.base.clone()),
-                        head_spec: source.head_spec,
-                    },
-                };
+                let identity = review_identity_of(&source, session_name, &out.base);
                 Ok(differential_tui::Prepared { out, identity })
             })?;
             Ok(ExitCode::SUCCESS)
@@ -349,18 +337,9 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             let doc = out
                 .document
                 .context("invariants failed; no plan available")?;
-            // The same resolution the reviewer's session made, so `findings`
+            // The same resolution the reviewer's session makes, so `findings`
             // reads the review they are looking at and not an empty namesake.
-            let identity = match session_name {
-                Some(name) => ReviewIdentity::Named(name),
-                None => ReviewIdentity::Range {
-                    base: source
-                        .identity_base
-                        .clone()
-                        .unwrap_or_else(|| out.base.clone()),
-                    head_spec: source.head_spec.clone(),
-                },
-            };
+            let identity = review_identity_of(&source, session_name, &out.base);
             let id = review_identity::resolve(&FsReviewCatalogue::new(&repo)?, &repo, &identity)?;
             let store = FsReviewStore::for_review(&repo, &id)?;
             let session = differential_engine::ReviewSession::open(store, doc, out.view)?;
@@ -404,6 +383,42 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     }
 }
 
+/// The repository a command runs against: the one named, or the one holding
+/// the working directory.
+///
+/// Returns the message rather than the error, because both callers turn it
+/// into the same usage exit and neither has anything to add to it.
+fn open_repo(named: Option<&Path>) -> Result<Repo, String> {
+    let dir = named
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::current_dir().expect("cwd"));
+    Repo::open(&dir).map_err(|e| e.to_string())
+}
+
+/// Which review this run opens: the name if one was given, otherwise the
+/// endpoints (ADR 0026, ADR 0027).
+///
+/// One function because `review` and `findings` must answer identically — a
+/// `findings` that resolved differently would print an empty namesake of the
+/// review the reader is looking at. It was written out twice, and the two
+/// copies already differed in whether they cloned.
+fn review_identity_of(
+    source: &plan::ReviewSource,
+    name: Option<String>,
+    resolved_base: &str,
+) -> ReviewIdentity {
+    match name {
+        Some(name) => ReviewIdentity::Named(name),
+        None => ReviewIdentity::Range {
+            base: source
+                .identity_base
+                .clone()
+                .unwrap_or_else(|| resolved_base.to_string()),
+            head_spec: source.head_spec.clone(),
+        },
+    }
+}
+
 fn usage_error(msg: &str) -> anyhow::Result<ExitCode> {
     eprintln!("error: {msg}");
     Ok(ExitCode::from(2))
@@ -420,22 +435,15 @@ fn print_range(base: &str, head: &str) {
     );
 }
 
-/// The on-disk grouping cache, unless bypassed.
-///
-/// `--no-cache` is a state of the cache rather than an absent one, so the
-/// grouping stage never grows a branch for it.
 /// `dfr clean [--dry-run]`: report the regenerable cache, and unless asked not
 /// to, delete it.
 ///
 /// The count is taken before the delete either way, so the two modes report the
 /// same thing about the same state.
 fn clean(repo_dir: Option<&Path>, dry_run: bool) -> anyhow::Result<ExitCode> {
-    let dir = repo_dir
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| std::env::current_dir().expect("cwd"));
-    let repo = match Repo::open(&dir) {
+    let repo = match open_repo(repo_dir) {
         Ok(r) => r,
-        Err(e) => return usage_error(&e.to_string()),
+        Err(e) => return usage_error(&e),
     };
     let usage = if dry_run {
         store::cache_usage(&repo)?
@@ -483,6 +491,10 @@ fn human_bytes(n: u64) -> String {
     }
 }
 
+/// The on-disk grouping cache, unless bypassed.
+///
+/// `--no-cache` is a state of the cache rather than an absent one, so the
+/// grouping stage never grows a branch for it.
 fn grouping_cache(repo: &Repo, no_cache: bool) -> anyhow::Result<FsGroupingCache> {
     Ok(if no_cache {
         FsGroupingCache::disabled()

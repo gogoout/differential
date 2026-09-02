@@ -242,10 +242,6 @@ impl FsReviewStore {
         std::fs::create_dir_all(dir.join("plans")).map_err(|e| io_err(&dir, e))?;
         Ok(FsReviewStore { dir })
     }
-
-    pub fn dir(&self) -> &Path {
-        &self.dir
-    }
 }
 
 impl ports::ReviewStore for FsReviewStore {

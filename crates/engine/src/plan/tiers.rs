@@ -8,6 +8,8 @@
 
 use crate::plan::HunkId;
 use crate::plan::ids::PlanIndex;
+use std::collections::HashSet;
+
 use crate::schema;
 
 /// Whether the deferrable half of a group is currently hidden.
@@ -50,20 +52,33 @@ pub enum Deferral {
 /// both a lockfile and a source file was one class, which answered "no" here
 /// and went to the model, taking its lockfile hunk into whatever group the
 /// model chose.
-pub fn class_is_generated(doc: &schema::PlanDocument, class: &schema::ClassEntry) -> bool {
+pub fn class_is_generated(
+    doc: &schema::PlanDocument,
+    generated: &HashSet<&str>,
+    class: &schema::ClassEntry,
+) -> bool {
     class
         .hunk_ids
         .iter()
         .filter_map(|hid| HunkId::parse(hid).ok())
         .filter_map(|h| doc.hunks.get(h.index()))
-        .all(|h| file_is_generated(doc, &h.file))
+        .all(|h| generated.contains(h.file.as_str()))
 }
 
-fn file_is_generated(doc: &schema::PlanDocument, path: &str) -> bool {
+/// The paths `doc` marks generated, prepared once for `class_is_generated`.
+///
+/// Passed in rather than found per hunk: the test above asks about every
+/// member of every class, and it used to answer each one by scanning
+/// `doc.files` for the path. That is O(classes x members x files) for a
+/// question with O(files) worth of input, on the two paths — the grouping
+/// stage and `dfr agent` — that ask it about a whole document at once. Both
+/// already built a path index and neither could hand it over.
+pub fn generated_files(doc: &schema::PlanDocument) -> HashSet<&str> {
     doc.files
         .iter()
-        .find(|f| f.path == path)
-        .is_some_and(|f| f.generated)
+        .filter(|f| f.generated)
+        .map(|f| f.path.as_str())
+        .collect()
 }
 
 /// One group split into what to read and what to defer.

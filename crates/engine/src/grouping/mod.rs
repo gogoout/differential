@@ -280,6 +280,7 @@ fn apply_relocation_gate(groups: &mut Vec<WorkGroup>, infos: &[ClassInfo]) {
 fn class_infos(doc: &schema::PlanDocument) -> Vec<ClassInfo> {
     let file_by_path: HashMap<&str, &schema::FileEntry> =
         doc.files.iter().map(|f| (f.path.as_str(), f)).collect();
+    let generated = crate::plan::generated_files(doc);
     let hunk_by_id: HashMap<&str, (usize, &schema::HunkEntry)> = doc
         .hunks
         .iter()
@@ -304,7 +305,7 @@ fn class_infos(doc: &schema::PlanDocument) -> Vec<ClassInfo> {
             // The one definition of the noise tier, shared with what the model
             // is served when it asks without naming ids. Two copies of this
             // rule would be two rules, and they would drift.
-            let all_generated = crate::plan::class_is_generated(doc, c);
+            let all_generated = crate::plan::class_is_generated(doc, &generated, c);
             let rename_gated = entries.iter().any(|f| {
                 f.rename_similarity
                     .is_some_and(|s| s < RELOCATION_THRESHOLD)

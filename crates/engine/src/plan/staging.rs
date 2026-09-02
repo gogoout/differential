@@ -103,14 +103,45 @@ pub fn cumulative_state(f: &FileChange, applied: usize) -> Result<Staged<'_>, En
         .new_mode
         .as_deref()
         .or(f.old_mode.as_deref())
-        .ok_or_else(|| {
-            EngineError::Invariant(format!(
-                "no mode recorded for {}",
-                String::from_utf8_lossy(&f.path)
-            ))
-        })?;
+        .ok_or_else(|| missing_mode(f))?;
 
     Ok(Staged::Apply { mode })
+}
+
+/// A file with NO hunks: what it contributes to a tree.
+///
+/// Binary content, a submodule bump and a mode-only change all arrive with
+/// zero hunks, so there is nothing to apply and the recorded oid is the only
+/// content there is. **Never returns `Staged::Apply`.**
+///
+/// Deliberately a third rule rather than a flag on `final_state`, for the same
+/// reason `cumulative_state` is: the rules genuinely differ. `final_state`
+/// answers `Apply` for a mode-only text change, and applying zero hunks would
+/// rewrite a blob whose bytes are already correct — work, and a second oid for
+/// content git already has.
+pub fn zero_hunk_state(f: &FileChange) -> Result<Staged<'_>, EngineError> {
+    if f.disposition == Disposition::Deleted {
+        return Ok(Staged::Remove);
+    }
+
+    let mode = f.new_mode.as_deref().ok_or_else(|| missing_mode(f))?;
+    let oid = f.new_oid.as_deref().ok_or_else(|| {
+        EngineError::Invariant(format!(
+            "zero-hunk file {} has no recorded oid",
+            String::from_utf8_lossy(&f.path)
+        ))
+    })?;
+    Ok(Staged::Recorded { mode, oid })
+}
+
+/// The one wording for "this file records no mode", shared by every rule above
+/// and by the renderers. It was copied character for character into
+/// `crates/stack`, where a reader could not tell it was the same failure.
+pub fn missing_mode(f: &FileChange) -> EngineError {
+    EngineError::Invariant(format!(
+        "no mode recorded for {}",
+        String::from_utf8_lossy(&f.path)
+    ))
 }
 
 #[cfg(test)]
@@ -191,6 +222,45 @@ mod tests {
                 oid: "new"
             }
         );
+    }
+
+    /// A zero-hunk file stages what the diff recorded, and never rebuilds.
+    ///
+    /// This is the rule the stack's meta-commit loop used to state in its own
+    /// words. `final_state` is NOT the same answer, which is why it is a third
+    /// rule: it says `Apply` here, and applying no hunks would write a second
+    /// oid for bytes git already has.
+    #[test]
+    fn a_zero_hunk_file_stages_its_recorded_oid_and_never_applies() {
+        let mut f = file(Disposition::Modified);
+        f.hunks.clear();
+        f.new_oid = Some("cafe".into());
+
+        assert_eq!(
+            zero_hunk_state(&f).unwrap(),
+            Staged::Recorded {
+                mode: "100644",
+                oid: "cafe"
+            }
+        );
+        // The rule the renderer must not reach for: same file, different answer.
+        assert_eq!(final_state(&f).unwrap(), Staged::Apply { mode: "100644" });
+
+        f.disposition = Disposition::Deleted;
+        assert_eq!(zero_hunk_state(&f).unwrap(), Staged::Remove);
+    }
+
+    #[test]
+    fn a_zero_hunk_file_without_an_oid_or_a_mode_names_which_is_missing() {
+        let mut f = file(Disposition::Modified);
+        f.hunks.clear();
+        let err = zero_hunk_state(&f).unwrap_err().to_string();
+        assert!(err.contains("zero-hunk file"), "{err}");
+        assert!(err.contains("src/a.rs"), "{err}");
+
+        f.new_mode = None;
+        let err = zero_hunk_state(&f).unwrap_err().to_string();
+        assert!(err.contains("no mode recorded"), "{err}");
     }
 
     /// The difference between the two rules that actually matters: a deletion

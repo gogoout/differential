@@ -9,7 +9,7 @@ use differential_engine::plan::ReviewSource;
 use differential_engine::store::{FsArtefactStore, FsGroupingCache};
 use differential_stack::run_stack_pipeline;
 use differential_stack::{StackOptions, StackResult};
-use differential_testutil::{FakeBackend, TestRepo, json_group};
+use differential_testutil::{FakeBackend, TestRepo, json_group, two_class_repo};
 
 fn stacked(r: &TestRepo, base: &str, head: &str, backend: &dyn LlmBackend) -> StackResult {
     let out = run_stack_pipeline(
@@ -29,28 +29,6 @@ fn stacked(r: &TestRepo, base: &str, head: &str, backend: &dyn LlmBackend) -> St
     )
     .unwrap();
     out.stack.expect("stack built")
-}
-
-/// Two files with the same edit shape ×3 + one behavioural change.
-fn two_class_repo() -> (TestRepo, String, String) {
-    let r = TestRepo::new();
-    for name in ["a", "b", "c"] {
-        r.write(
-            &format!("src/{name}.txt"),
-            b"use old_helper_name;\nother content\n",
-        );
-    }
-    r.write("src/main.txt", b"fn main() { run_slowly() }\n");
-    let base = r.commit_all("base");
-    for name in ["a", "b", "c"] {
-        r.write(
-            &format!("src/{name}.txt"),
-            b"use new_helper_name;\nother content\n",
-        );
-    }
-    r.write("src/main.txt", b"fn main() { run_with_retries(3) }\n");
-    let head = r.commit_all("head");
-    (r, base, head)
 }
 
 fn focus_skim_backend() -> FakeBackend {

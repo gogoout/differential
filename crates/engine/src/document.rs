@@ -9,6 +9,7 @@ use crate::artefact::graph::ClassGraph;
 use crate::config::Config;
 use crate::invariants::InvariantReport;
 use crate::model::{DiffView, Disposition, GeneratedBy};
+use crate::plan::HunkId;
 use crate::shape::{Partition, hunk_digest};
 
 /// Built-in generated-artefact detection: lockfiles and minified/snapshot
@@ -100,7 +101,11 @@ pub fn assemble(
                     GeneratedBy::Attr => schema::GeneratedBy::Attr,
                     GeneratedBy::Config => schema::GeneratedBy::Config,
                 }),
-                hunk_ids: f.hunks.iter().map(|i| format!("h{i}")).collect(),
+                hunk_ids: f
+                    .hunks
+                    .iter()
+                    .map(|&i| HunkId::from_index(i).to_string())
+                    .collect(),
             })
         })
         .collect::<Result<Vec<_>, EngineError>>()?;
@@ -111,7 +116,7 @@ pub fn assemble(
         .enumerate()
         .map(|(i, h)| {
             Ok(schema::HunkEntry {
-                id: format!("h{i}"),
+                id: HunkId::from_index(i).to_string(),
                 file: path_str(&view.file_of(h).path)?,
                 old_start: h.old_start,
                 old_count: h.old_count,
@@ -138,8 +143,11 @@ pub fn assemble(
         .enumerate()
         .map(|(ci, members)| schema::ClassEntry {
             id: format!("C{ci}"),
-            hunk_ids: members.iter().map(|i| format!("h{i}")).collect(),
-            exemplar: format!("h{}", members[0]),
+            hunk_ids: members
+                .iter()
+                .map(|&i| HunkId::from_index(i).to_string())
+                .collect(),
+            exemplar: HunkId::from_index(members[0]).to_string(),
             pure_substitution: partition.pure[ci],
             defines: std::mem::take(&mut graph.defines[ci]),
             depends_on: std::mem::take(&mut graph.depends_on[ci]),
