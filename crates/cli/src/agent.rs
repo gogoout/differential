@@ -21,6 +21,7 @@
 //! every line starts with the id it is about. Nothing is truncated and nothing
 //! is capped: the answer is the answer.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Context;
@@ -46,13 +47,42 @@ pub fn run(doc_path: &Path) -> anyhow::Result<String> {
     if offered.is_empty() {
         return Ok("no classes\n".to_string());
     }
-    Ok(offered.iter().map(|v| detail(&doc, v)).collect())
+    // Two lookups the whole listing shares, built once. Each was a scan of a
+    // list every class asks about, so printing N classes cost N scans of N.
+    let mut used_by: HashMap<&str, Vec<&str>> = HashMap::new();
+    for c in &doc.classes {
+        for e in &c.depends_on {
+            used_by
+                .entry(e.on.as_str())
+                .or_default()
+                .push(c.id.as_str());
+        }
+    }
+    let renames: HashMap<&str, String> = doc
+        .files
+        .iter()
+        .filter_map(|f| {
+            let (old, sim) = (f.old_path.as_deref()?, f.rename_similarity?);
+            Some((
+                f.path.as_str(),
+                format!("  (renamed from {old}, {sim}% similar)"),
+            ))
+        })
+        .collect();
+    Ok(offered
+        .iter()
+        .map(|v| detail(&used_by, &renames, v))
+        .collect())
 }
 
-fn detail(doc: &PlanDocument, v: &ClassView<'_>) -> String {
+fn detail(
+    used_by: &HashMap<&str, Vec<&str>>,
+    renames: &HashMap<&str, String>,
+    v: &ClassView<'_>,
+) -> String {
     let mut out = header(v);
     out.push('\n');
-    for line in relations(doc, v) {
+    for line in relations(used_by, v) {
         out.push_str(&line);
         out.push('\n');
     }
@@ -78,13 +108,7 @@ fn detail(doc: &PlanDocument, v: &ClassView<'_>) -> String {
     for path in &v.files {
         // The rename note is what the relocation rule turns on, so it travels
         // with the file rather than being something to go and look up.
-        let note = doc
-            .files
-            .iter()
-            .find(|f| &f.path == path)
-            .and_then(|f| Some((f.old_path.as_deref()?, f.rename_similarity?)))
-            .map(|(old, sim)| format!("  (renamed from {old}, {sim}% similar)"))
-            .unwrap_or_default();
+        let note = renames.get(path).map(String::as_str).unwrap_or_default();
         out.push_str(&format!("  {path}{note}\n"));
     }
     out
@@ -108,10 +132,12 @@ fn header(v: &ClassView<'_>) -> String {
 
 /// What the class introduces, what it consumes, and who consumes it.
 ///
-/// The reverse edges are printed too. They cost a scan of a list the caller
-/// already has, and "who needs this" is the half of a dependency a reader
-/// cannot work out from their own entry.
-fn relations(doc: &PlanDocument, v: &ClassView<'_>) -> Vec<String> {
+/// The reverse edges are printed too: "who needs this" is the half of a
+/// dependency a reader cannot work out from their own entry. They are read
+/// from an index the caller built in one pass, because finding them by
+/// scanning every class for every class is the same answer at N times the
+/// cost.
+fn relations(used_by: &HashMap<&str, Vec<&str>>, v: &ClassView<'_>) -> Vec<String> {
     let mut out = Vec::new();
     if !v.class.defines.is_empty() {
         out.push(format!("defines: {}", v.class.defines.join(", ")));
@@ -125,14 +151,8 @@ fn relations(doc: &PlanDocument, v: &ClassView<'_>) -> Vec<String> {
             .collect();
         out.push(format!("uses: {}", uses.join(", ")));
     }
-    let used_by: Vec<&str> = doc
-        .classes
-        .iter()
-        .filter(|c| c.depends_on.iter().any(|e| e.on == v.class.id))
-        .map(|c| c.id.as_str())
-        .collect();
-    if !used_by.is_empty() {
-        out.push(format!("used by: {}", used_by.join(", ")));
+    if let Some(users) = used_by.get(v.class.id.as_str()) {
+        out.push(format!("used by: {}", users.join(", ")));
     }
     out
 }

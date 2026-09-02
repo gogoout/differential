@@ -199,6 +199,24 @@ pub fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
+/// Fix a finding onto the hunk that now carries it: refresh its line from the
+/// hunk's start, record the plan it was re-read against, and revive it.
+///
+/// Both match paths in `reanchor` end here, and they differed in one bit —
+/// whether the note MOVED to a different hunk — so they were written out
+/// twice, five lines each. A note that reattaches always comes back from
+/// `Orphaned`: it was orphaned because nothing carried it, and something does
+/// now.
+fn reattach(f: &mut Finding, old_start: u32, new_start: u32, plan_hash: &str, moved: bool) {
+    let start = f.anchor.hunk_start(old_start, new_start);
+    f.anchor.resolve(start);
+    f.plan_hash = plan_hash.to_string();
+    f.moved = moved;
+    if f.status == FindingStatus::Orphaned {
+        f.status = FindingStatus::Open;
+    }
+}
+
 /// Re-anchor findings onto a (possibly regenerated) plan. Never drops:
 /// exact digest → reattach (position refreshed); same-file content match →
 /// reattach flagged `moved`; otherwise `orphaned` (revived automatically if a
@@ -217,13 +235,7 @@ pub fn reanchor(
         //    only the hunk's position in the file has to be re-read.
         if let Some(h) = doc.hunks.iter().find(|h| h.digest == f.anchor.hunk_digest) {
             f.anchor.file = h.file.clone();
-            let start = f.anchor.hunk_start(h.old_start, h.new_start);
-            f.anchor.resolve(start);
-            f.plan_hash = plan_hash.to_string();
-            f.moved = false;
-            if f.status == FindingStatus::Orphaned {
-                f.status = FindingStatus::Open;
-            }
+            reattach(f, h.old_start, h.new_start, plan_hash, false);
             continue;
         }
         // 2. Same-file content match on the anchored line text. The hunk is
@@ -258,13 +270,7 @@ pub fn reanchor(
             let (side, offset) = found.unwrap_or((own, 0));
             f.anchor.side = side.to_string();
             f.anchor.offset = offset as i32;
-            let start = f.anchor.hunk_start(h.old_start, h.new_start);
-            f.anchor.resolve(start);
-            f.plan_hash = plan_hash.to_string();
-            f.moved = true;
-            if f.status == FindingStatus::Orphaned {
-                f.status = FindingStatus::Open;
-            }
+            reattach(f, h.old_start, h.new_start, plan_hash, true);
         } else {
             f.status = FindingStatus::Orphaned;
         }

@@ -567,6 +567,18 @@ impl ports::RepoLayout for Repo {
 }
 
 /// `rev-list --no-commit-header --format=%H%x00%h%x00%s%x00%an` output: one
+/// One NUL-separated record, split into its fields.
+///
+/// Both `--format` readers below want the same thing from a line, and both
+/// wrote out the same three-line split to get it. Lossy on purpose: these are
+/// subjects, author names and ref names on their way to a screen, and the
+/// byte-exact paths never come through here.
+fn nul_fields(line: &[u8]) -> Vec<String> {
+    line.split(|&b| b == 0)
+        .map(|f| String::from_utf8_lossy(f).into_owned())
+        .collect()
+}
+
 /// record per line, fields NUL-separated (subjects are single-line by
 /// definition, so the line split is safe; bytes decode lossily).
 fn parse_rev_list(bytes: &[u8]) -> Vec<ports::CommitSummary> {
@@ -574,10 +586,7 @@ fn parse_rev_list(bytes: &[u8]) -> Vec<ports::CommitSummary> {
         .split(|&b| b == b'\n')
         .filter(|l| !l.is_empty())
         .filter_map(|line| {
-            let fields: Vec<String> = line
-                .split(|&b| b == 0)
-                .map(|f| String::from_utf8_lossy(f).into_owned())
-                .collect();
+            let fields = nul_fields(line);
             match fields.as_slice() {
                 [sha, short, subject, author] => Some(ports::CommitSummary {
                     sha: sha.clone(),
@@ -601,10 +610,7 @@ fn parse_rev_list(bytes: &[u8]) -> Vec<ports::CommitSummary> {
 fn parse_refs(bytes: &[u8]) -> HashMap<String, Vec<String>> {
     let mut out: HashMap<String, Vec<String>> = HashMap::new();
     for line in bytes.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
-        let fields: Vec<String> = line
-            .split(|&b| b == 0)
-            .map(|f| String::from_utf8_lossy(f).into_owned())
-            .collect();
+        let fields = nul_fields(line);
         let [oid, peeled, name] = fields.as_slice() else {
             continue;
         };
