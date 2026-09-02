@@ -65,14 +65,11 @@ impl ClassView<'_> {
 /// than every class that happens to be entirely generated. The noise tier still
 /// folds rather than hides: `git diff` reaches any path at all.
 pub fn index(doc: &schema::PlanDocument) -> Vec<ClassView<'_>> {
-    all(doc)
-        .into_iter()
+    doc.classes
+        .iter()
+        .filter_map(|c| view(doc, c))
         .filter(|v| !crate::plan::class_is_generated(doc, v.class))
         .collect()
-}
-
-fn all(doc: &schema::PlanDocument) -> Vec<ClassView<'_>> {
-    doc.classes.iter().filter_map(|c| view(doc, c)).collect()
 }
 
 fn view<'d>(doc: &'d schema::PlanDocument, class: &'d schema::ClassEntry) -> Option<ClassView<'d>> {

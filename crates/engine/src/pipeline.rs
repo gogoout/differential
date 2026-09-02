@@ -112,7 +112,7 @@ pub fn run_pipeline<G>(
 where
     G: RangeResolver + DiffSource + AttributeSource + ObjectReader,
 {
-    run_core(git, base_rev, head_rev, kind, config, langs, symbols)
+    run_core_with_progress(git, base_rev, head_rev, kind, config, langs, symbols, None)
 }
 
 /// Core pipeline + the grouping stage (stages: enumerate, classify, group).
@@ -201,21 +201,6 @@ where
     }
     out.report.tree = Some(tree);
     Ok(())
-}
-
-fn run_core<G>(
-    git: &G,
-    base_rev: &str,
-    head_rev: &str,
-    kind: schema::SourceKind,
-    config: &Config,
-    langs: &LanguageRegistry,
-    symbols: &SymbolReaders,
-) -> Result<PipelineOutput, EngineError>
-where
-    G: RangeResolver + DiffSource + AttributeSource + ObjectReader,
-{
-    run_core_with_progress(git, base_rev, head_rev, kind, config, langs, symbols, None)
 }
 
 // The parameter list is the point, exactly as a bound list is: each entry is a

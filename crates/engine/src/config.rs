@@ -275,9 +275,7 @@ impl Config {
             Some((text, origin)) => Self::parse(&text, &origin)?,
             None => Config::default(),
         };
-        let user_default = src
-            .user_config_dir()
-            .map(|d| d.join(USER_CONFIG_DIR).join(USER_CONFIG_FILE_NAME));
+        let user_default = user_config_path(src);
         if let Some((text, origin)) = resolve(src, user_override, user_default)? {
             let user = Self::parse_user(&text, &origin)?;
             config.grouping = user.grouping;

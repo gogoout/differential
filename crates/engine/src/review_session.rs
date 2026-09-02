@@ -65,13 +65,6 @@ impl<S: ReviewStore> ReviewSession<S> {
         &self.doc
     }
 
-    /// The canonical diff's CONTENT — hunk bytes. `plan()` is the document's
-    /// arithmetic; the two are one letter apart in the type names and quite
-    /// different things.
-    pub fn view(&self) -> &DiffView {
-        &self.view
-    }
-
     /// The document's projection: groups, files, counts, dependency edges and
     /// reviewed-mark keys. Renderers read this instead of re-deriving it.
     pub fn plan(&self) -> &plan::ReviewView {
