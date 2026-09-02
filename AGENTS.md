@@ -27,10 +27,10 @@ has a way of quietly reversing itself. **Open the file before you argue with the
 5. **Don't hand-roll utilities** — find the boring, widely-used crate.
 6. **Don't artificially minimise blast radius.** A narrow patch that leaves the design
    wrong costs more than the wide diff that fixes it.
-7. **Name the contradiction; don't hide behind it.** A spec or ADR a request contradicts is
-   a fact to flag, with what it was guarding and what reversing it costs — **never an
-   argument on its own.** The author may overturn any of it; the docs then change with the
-   code.
+7. **Name the contradiction; don't hide behind it.** A spec, ADR or constraint a request
+   contradicts is a fact to flag, with what it was guarding and what reversing it costs —
+   **never an argument on its own.** A spec or ADR yields to a better argument. A
+   `constraints.md` line yields only to the author saying so, in that conversation.
 
 [`constraints.md`](.claude/rules/constraints.md) — the lines that do not move.
 
