@@ -14,6 +14,36 @@ use super::*;
 ///
 /// Each column is as wide as the widest number IN IT, so the paths line up
 /// down the list. Four digits is the floor, which is where both used to be
+/// Move a modal list's selection one step, and keep it in the window.
+///
+/// The two modal lists wrote these four lines out each, differing only in
+/// which arm matched them. A list that scrolls one way in one modal and
+/// another way in the other is exactly the kind of difference nobody notices
+/// until they are annoyed by it.
+pub(super) fn step_list(
+    selected: &mut usize,
+    scroll: &mut usize,
+    len: usize,
+    rows: usize,
+    down: bool,
+) {
+    *selected = if down {
+        (*selected + 1).min(len.saturating_sub(1))
+    } else {
+        selected.saturating_sub(1)
+    };
+    *scroll = follow(*selected, *scroll, rows);
+}
+
+/// A path's last segment.
+///
+/// Written out six times as `rsplit('/').next().unwrap_or(path)`, which is
+/// correct but says nothing about what it is for. The `unwrap_or` is the case
+/// that matters: a path with no separator IS its own basename.
+pub(super) fn basename(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
 /// fixed — one file over 9999 lines then pushed its OWN path right while every
 /// other row's stayed put, and the column the eye scans stopped being one.
 pub(super) fn counts_columns(entries: &[FileListEntry]) -> (usize, usize, usize) {

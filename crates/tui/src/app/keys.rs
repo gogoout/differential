@@ -8,7 +8,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::rows::RowKind;
 
-use super::text::{file_list_rows, findings_rows, follow};
+use super::text::{basename, file_list_rows, findings_rows, step_list};
 use super::*;
 
 impl App {
@@ -51,12 +51,10 @@ impl App {
                 let rows = file_list_rows(entries.len(), self.viewport.body_rows);
                 match key.code {
                     KeyCode::Char('j') | KeyCode::Down => {
-                        *selected = (*selected + 1).min(entries.len().saturating_sub(1));
-                        *scroll = follow(*selected, *scroll, rows);
+                        step_list(selected, scroll, entries.len(), rows, true);
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
-                        *selected = selected.saturating_sub(1);
-                        *scroll = follow(*selected, *scroll, rows);
+                        step_list(selected, scroll, entries.len(), rows, false);
                     }
                     KeyCode::Enter => {
                         let row = entries[*selected].row_idx;
@@ -98,12 +96,10 @@ impl App {
                 let rows = findings_rows(entries.len(), ruled, self.viewport.body_rows);
                 match (key.code, key.modifiers) {
                     (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
-                        *selected = (*selected + 1).min(entries.len().saturating_sub(1));
-                        *scroll = follow(*selected, *scroll, rows);
+                        step_list(selected, scroll, entries.len(), rows, true);
                     }
                     (KeyCode::Char('k'), _) | (KeyCode::Up, _) => {
-                        *selected = selected.saturating_sub(1);
-                        *scroll = follow(*selected, *scroll, rows);
+                        step_list(selected, scroll, entries.len(), rows, false);
                     }
                     (KeyCode::Char('D'), _) => *confirming = true,
                     (KeyCode::Char('d'), KeyModifiers::NONE) => {
@@ -337,7 +333,7 @@ impl App {
                     // cannot see is a note you have to trust yourself to have
                     // written carefully.
                     let hunk = &self.session.doc().hunks[h];
-                    let file = hunk.file.rsplit('/').next().unwrap_or(&hunk.file);
+                    let file = basename(&hunk.file);
                     let at = match (&existing, &lines) {
                         // A note's own anchor, which may not be the row the
                         // cursor is on — it can have re-anchored to the hunk.

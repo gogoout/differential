@@ -150,12 +150,19 @@ impl App {
         true
     }
 
+    /// The row a document with no groups shows instead of nothing.
+    fn empty_rows() -> Vec<Row> {
+        vec![Row::full(
+            RowKind::Blank,
+            Line::from("nothing to review — empty diff"),
+        )]
+    }
+
     pub fn rebuild_rows(&mut self) {
         // One read of the marks, kept for the frame to use too. Drawing asked
         // for its own copy three more times, and each one walked every hunk
         // digest in the document to build a set it then threw away.
         self.reviewed = self.session.reviewed_hunks();
-        let reviewed = &self.reviewed;
         match self.view_mode {
             ViewMode::Groups => {
                 let Some(groups) = self.session.doc().groups.as_ref() else {
@@ -163,10 +170,7 @@ impl App {
                     return;
                 };
                 if groups.is_empty() {
-                    self.rows = vec![Row::full(
-                        RowKind::Blank,
-                        Line::from("nothing to review — empty diff"),
-                    )];
+                    self.rows = Self::empty_rows();
                     return;
                 }
                 // The document's ids were validated once, when the session
@@ -175,13 +179,17 @@ impl App {
                 // keypress — because that was the only way to reach a class's
                 // exemplar and members. The projection carries both now.
                 let view = &self.session.plan().groups[self.selected_group.min(groups.len() - 1)];
+                // Spelled out, not built by a method, and it has to be: a
+                // method borrows the whole of `self`, and the row builders
+                // below need `&mut self.factory` while this holds the rest.
+                // Only a literal gives the compiler the field-level borrows.
                 let ctx = GroupContext {
                     core: RowsContext {
                         theme: &self.theme,
                         doc: self.session.doc(),
                         plan: self.session.plan(),
                         findings: self.session.findings(),
-                        reviewed,
+                        reviewed: &self.reviewed,
                         mode: self.diff_mode(),
                         show_group_labels: false,
                         context: self.opts.context,
@@ -199,20 +207,18 @@ impl App {
             }
             ViewMode::Files => {
                 if self.tree.is_empty() {
-                    self.rows = vec![Row::full(
-                        RowKind::Blank,
-                        Line::from("nothing to review — empty diff"),
-                    )];
+                    self.rows = Self::empty_rows();
                     return;
                 }
                 let row = self.selected_file.min(self.tree.len() - 1);
                 let targets = self.files_of_tree_row(row);
+                // A literal for the same reason as the group arm above.
                 let ctx = RowsContext {
                     theme: &self.theme,
                     doc: self.session.doc(),
                     plan: self.session.plan(),
                     findings: self.session.findings(),
-                    reviewed,
+                    reviewed: &self.reviewed,
                     mode: self.diff_mode(),
                     show_group_labels: true,
                     context: self.opts.context,

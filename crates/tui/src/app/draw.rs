@@ -18,7 +18,8 @@ use crate::theme::Theme;
 use crate::vendor::text_utils::{slice_pairs, truncate_or_pad_spans, wrap_pairs};
 
 use super::text::{
-    counts_columns, elide_head, file_list_rows, findings_rows, pad_to_width, truncate_width,
+    basename, counts_columns, elide_head, file_list_rows, findings_rows, pad_to_width,
+    truncate_width,
 };
 use super::*;
 
@@ -601,7 +602,7 @@ impl App {
                 } else {
                     "▾"
                 };
-                let name = path.rsplit('/').next().unwrap_or(path).to_string();
+                let name = basename(path).to_string();
                 vec![Line::from(vec![
                     Span::styled(format!("{mark}{indent}{glyph} "), dim),
                     Span::styled(
@@ -624,7 +625,7 @@ impl App {
             }
             TreeKind::File { file_idx } => {
                 let f = &self.files()[*file_idx];
-                let name = f.path.rsplit('/').next().unwrap_or(&f.path).to_string();
+                let name = basename(&f.path).to_string();
                 let mut spans = vec![
                     Span::styled(format!("{mark}{indent}"), dim),
                     Span::styled(name, name_style),
@@ -697,7 +698,7 @@ impl App {
                 } else {
                     base
                 };
-                let name = f.path.rsplit('/').next().unwrap_or(&f.path);
+                let name = basename(&f.path);
                 // No marker glyph: the row the reader is on is the one lit
                 // edge to edge, which says it in the one place they are
                 // already looking.
@@ -796,7 +797,7 @@ impl App {
                     // the counts are unconditional.
                     MapRow::File { file_idx, .. } => {
                         let f = &self.files()[*file_idx];
-                        let name = f.path.rsplit('/').next().unwrap_or(&f.path);
+                        let name = basename(&f.path);
                         let style = Style::default()
                             .fg(self.theme.context_fg)
                             .add_modifier(Modifier::BOLD);
@@ -929,7 +930,7 @@ impl App {
                 TreeKind::Dir { path } => path.as_str(),
                 TreeKind::File { .. } => return String::new(),
             };
-            path.rsplit('/').next().unwrap_or(path).to_string()
+            basename(path).to_string()
         };
 
         let mut out = Vec::new();
