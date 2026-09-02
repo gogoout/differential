@@ -21,7 +21,7 @@ use differential_engine::schema;
 use differential_engine::EngineError;
 use differential_engine::apply::apply_hunks;
 use differential_engine::invariants::dumb_hunk_count;
-use differential_engine::model::{DiffView, Disposition};
+use differential_engine::model::DiffView;
 use differential_engine::plan::{self, Deferral, Fold, HunkId, PlanIndex, reading_split};
 use differential_engine::ports::{
     AttributeSource, CommitIdentity, CommitWriter, DiffSource, IndexEntry, IndexSession,
@@ -188,37 +188,36 @@ fn commit_plan(doc: &schema::PlanDocument) -> Result<Vec<PlannedCommit>, EngineE
         ));
     };
     let index = PlanIndex::build(doc)?;
-
-    // The audit's back-fill group is assembled last and the ordering stage
-    // keeps it trailing, so its position identifies it.
-    let backfilled = doc.audit.classes_missing.unwrap_or(0) > 0;
+    // Which group is the audit's back-fill, and what token names a tier, are
+    // both domain answers. They used to be re-derived here — the back-fill
+    // test character for character, the token by composing `effort_name`
+    // itself — which is exactly the drift `plan::ReviewView` exists to stop.
+    let review = plan::ReviewView::project(doc)?;
     let mut plan = Vec::new();
 
-    for (gi, g) in groups.iter().enumerate() {
+    for (g, gv) in groups.iter().zip(&review.groups) {
         // Always folded: the stack's way of unfolding a skim group is the
         // [skim 2/2] commit that follows it.
         let split = reading_split(&index, g, Fold::Folded);
         let body = format!("{}\n\n{}", g.description, g.reason);
-        let is_backfill = backfilled && gi == groups.len() - 1;
+        // `unclassified` for the back-fill, the tier's own name otherwise.
+        let tier = review.tier_name(gv);
 
         match split.deferral {
-            Deferral::None if is_backfill => plan.push(PlannedCommit {
-                subject: format!(
-                    "[unclassified] {} hunks carried by no group",
-                    split.shown.len()
-                ),
+            Deferral::None if gv.unclassified => plan.push(PlannedCommit {
+                subject: format!("[{tier}] {} hunks carried by no group", split.shown.len()),
                 body,
                 hunks: split.shown,
                 meta_files: Vec::new(),
             }),
             Deferral::None if g.effort == schema::Effort::Skim => plan.push(PlannedCommit {
-                subject: format!("[skim] {} — {} exemplars", g.label, split.shown.len()),
+                subject: format!("[{tier}] {} — {} exemplars", g.label, split.shown.len()),
                 body: format!("{body}\n\nEvery shape class in this group is a singleton."),
                 hunks: split.shown,
                 meta_files: Vec::new(),
             }),
             Deferral::None => plan.push(PlannedCommit {
-                subject: format!("[{}] {}", plan::effort_name(g.effort), g.label),
+                subject: format!("[{tier}] {}", g.label),
                 body,
                 hunks: split.shown,
                 meta_files: Vec::new(),
@@ -307,23 +306,26 @@ where
             entries.push(stage_file(git, base, view, fi, &applied, &mut base_blobs)?);
         }
         for &fi in &c.meta_files {
+            // What a zero-hunk file contributes is a domain rule, and this
+            // loop used to state it again in its own words — deletion, then
+            // the recorded mode and oid, then the same two error strings.
             let f = &view.files[fi];
-            entries.push(if f.disposition == Disposition::Deleted {
-                IndexEntry::Remove {
+            entries.push(match plan::zero_hunk_state(f)? {
+                plan::Staged::Remove => IndexEntry::Remove {
                     path: f.path.clone(),
-                }
-            } else {
-                let mode = f.new_mode.as_deref().ok_or_else(|| missing_mode(f))?;
-                let oid = f.new_oid.as_deref().ok_or_else(|| {
-                    EngineError::Invariant(format!(
-                        "zero-hunk file {} has no recorded oid",
-                        String::from_utf8_lossy(&f.path)
-                    ))
-                })?;
-                IndexEntry::Set {
+                },
+                plan::Staged::Recorded { mode, oid } => IndexEntry::Set {
                     mode: mode.to_string(),
                     oid: oid.to_string(),
                     path: f.path.clone(),
+                },
+                // The rule never answers this, and an error says so where a
+                // panic would only assert it.
+                plan::Staged::Apply { .. } => {
+                    return Err(EngineError::Invariant(format!(
+                        "zero-hunk file {} was asked to apply hunks it has none of",
+                        String::from_utf8_lossy(&f.path)
+                    )));
                 }
             });
         }
@@ -386,13 +388,6 @@ where
             })
         }
     }
-}
-
-fn missing_mode(f: &differential_engine::model::FileChange) -> EngineError {
-    EngineError::Invariant(format!(
-        "no mode recorded for {}",
-        String::from_utf8_lossy(&f.path)
-    ))
 }
 
 /// Output of the full stack pipeline.
