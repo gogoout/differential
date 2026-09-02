@@ -72,7 +72,7 @@ fn real_corpus_graph() {
         let repo_path = shellexpand_home(&fx.repo_path);
         let repo = Repo::open(Path::new(&repo_path))
             .unwrap_or_else(|e| panic!("fixture {i}: cannot open {repo_path}: {e}"));
-        let out = run_pipeline(
+        let mut out = run_pipeline(
             &repo,
             &fx.base,
             &fx.head,
@@ -82,6 +82,13 @@ fn real_corpus_graph() {
             &differential_symbols::readers(),
         )
         .unwrap_or_else(|e| panic!("fixture {i}: pipeline failed: {e}"));
+        // Invariants 3 and 4 build a tree, so they write and the pipeline no
+        // longer runs them (ADR 0028). This test asserts `all_ok`, which is
+        // never true without them — so it has to ask, exactly as `dfr check`
+        // does. Without this the corpus gate silently stopped checking the two
+        // invariants it exists to check on real data.
+        differential_engine::verify(&repo, &mut out)
+            .unwrap_or_else(|e| panic!("fixture {i}: verify failed: {e}"));
 
         assert!(
             out.report.all_ok(),

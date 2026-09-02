@@ -81,9 +81,12 @@ fn store_roundtrips_state_plans_and_findings() {
     assert_eq!(loaded[0].status, FindingStatus::Open);
 }
 
-/// The core persistence promise: a finding anchored to a hunk survives new
 /// The plan document AND the diff view for a range — `reanchor` needs both,
-/// and `grouped` hands back only the document.
+/// and `testutil::grouped` hands back only the document.
+///
+/// Every test here that regenerates a plan goes through this. Three of them
+/// used to spell the whole fifteen-line call out again, and a fourth spelling
+/// would have been a fourth chance to disagree about the fixture.
 fn doc_and_view(
     r: &TestRepo,
     base: &str,
@@ -341,26 +344,9 @@ fn findings_reanchor_across_regeneration() {
     r.write("a.txt", b"inserted_above = 1\nstable_line = new_value\n");
     r.write("b.txt", b"other_content = reworked_completely\n");
     let head2 = r.commit_all("head2");
-    let out2 = run_grouped_pipeline(
-        &r.repo(),
-        &base,
-        &head2,
-        SourceKind::Range,
-        &Config::default(),
-        &LanguageRegistry::builtin(),
-        &differential_testutil::stub_readers(),
-        &differential_engine::grouping::GroupingOptions {
-            backend: &focus_all_backend(),
-            cache: &FsGroupingCache::disabled(),
-            artefacts: &FsArtefactStore::disabled(),
-            fetch: "dfr",
-            progress: None,
-        },
-    )
-    .unwrap();
-    let doc2 = out2.document.unwrap();
+    let (doc2, view2) = doc_and_view(&r, &base, &head2);
 
-    reanchor(&mut findings, &doc2, &out2.view, "plan2hash");
+    reanchor(&mut findings, &doc2, &view2, "plan2hash");
 
     // a.txt: the added line text still exists in a hunk → reattached (the
     // hunk content changed because the insertion merged into it under -U0,
@@ -381,29 +367,8 @@ fn findings_reanchor_across_regeneration() {
     // A third regeneration that restores b's line revives the orphan.
     r.write("b.txt", b"other_content = new_thing\n");
     let head3 = r.commit_all("head3");
-    let out3 = run_grouped_pipeline(
-        &r.repo(),
-        &base,
-        &head3,
-        SourceKind::Range,
-        &Config::default(),
-        &LanguageRegistry::builtin(),
-        &differential_testutil::stub_readers(),
-        &differential_engine::grouping::GroupingOptions {
-            backend: &focus_all_backend(),
-            cache: &FsGroupingCache::disabled(),
-            artefacts: &FsArtefactStore::disabled(),
-            fetch: "dfr",
-            progress: None,
-        },
-    )
-    .unwrap();
-    reanchor(
-        &mut findings,
-        out3.document.as_ref().unwrap(),
-        &out3.view,
-        "plan3hash",
-    );
+    let (doc3, view3) = doc_and_view(&r, &base, &head3);
+    reanchor(&mut findings, &doc3, &view3, "plan3hash");
     assert_eq!(findings[1].status, FindingStatus::Open);
     // Restored content is byte-identical to the original hunk, so revival
     // happens on the EXACT digest path — not even flagged as moved.
@@ -419,29 +384,12 @@ fn session_persists_every_mutation() {
     let base = r.commit_all("base");
     r.write("f.txt", b"alpha_value = 2\n");
     let head = r.commit_all("head");
-    let out = run_grouped_pipeline(
-        &r.repo(),
-        &base,
-        &head,
-        SourceKind::Range,
-        &Config::default(),
-        &LanguageRegistry::builtin(),
-        &differential_testutil::stub_readers(),
-        &differential_engine::grouping::GroupingOptions {
-            backend: &focus_all_backend(),
-            cache: &FsGroupingCache::disabled(),
-            artefacts: &FsArtefactStore::disabled(),
-            fetch: "dfr",
-            progress: None,
-        },
-    )
-    .unwrap();
-    let doc = out.document.unwrap();
+    let (doc, view) = doc_and_view(&r, &base, &head);
 
     let tmp = tempfile::TempDir::new().unwrap();
     let dir = tmp.path().join("rev1");
     let mut session =
-        ReviewSession::open(FsReviewStore::at(dir.clone()).unwrap(), doc, out.view).unwrap();
+        ReviewSession::open(FsReviewStore::at(dir.clone()).unwrap(), doc, view).unwrap();
     let reread = || FsReviewStore::at(dir.clone()).unwrap();
 
     // The plan is persisted on open, `current` pointing at it.

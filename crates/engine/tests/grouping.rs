@@ -3,30 +3,8 @@
 use differential_engine::schema::{Effort, PlanDocument, ReadAction};
 use differential_engine::store::FsGroupingCache;
 use differential_testutil::{
-    FakeBackend, TestRepo, grouped, grouped_with_cache, ids_in_prompt, json_group,
+    FakeBackend, TestRepo, grouped, grouped_with_cache, ids_in_prompt, json_group, two_class_repo,
 };
-
-/// Standard fixture: one 3-hunk rename-shaped class + one behavioural class.
-fn two_class_repo() -> (TestRepo, String, String) {
-    let r = TestRepo::new();
-    for name in ["a", "b", "c"] {
-        r.write(
-            &format!("src/{name}.txt"),
-            b"use old_helper_name;\nother content\n",
-        );
-    }
-    r.write("src/main.txt", b"fn main() { run_slowly() }\n");
-    let base = r.commit_all("base");
-    for name in ["a", "b", "c"] {
-        r.write(
-            &format!("src/{name}.txt"),
-            b"use new_helper_name;\nother content\n",
-        );
-    }
-    r.write("src/main.txt", b"fn main() { run_with_retries(3) }\n");
-    let head = r.commit_all("head");
-    (r, base, head)
-}
 
 #[test]
 fn happy_path_fills_groups_plan_and_audit() {

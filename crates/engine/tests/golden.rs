@@ -29,31 +29,7 @@ use differential_engine::pipeline::run_grouped_pipeline;
 use differential_engine::schema::SourceKind;
 use differential_engine::store::{FsArtefactStore, FsGroupingCache, FsReviewStore};
 use differential_engine::{ReviewSession, review_state};
-use differential_testutil::{FakeBackend, TestRepo, grouped_with_cache, json_group};
-
-/// One 3-member class (an identifier swap repeated across three files) plus one
-/// singleton behavioural class — enough to exercise class ordering, the
-/// multi-file `(in: …)` annotation and both payload sides.
-fn two_class_repo() -> (TestRepo, String, String) {
-    let r = TestRepo::new();
-    for name in ["a", "b", "c"] {
-        r.write(
-            &format!("src/{name}.txt"),
-            b"use old_helper_name;\nother content\n",
-        );
-    }
-    r.write("src/main.txt", b"fn main() { run_slowly() }\n");
-    let base = r.commit_all("base");
-    for name in ["a", "b", "c"] {
-        r.write(
-            &format!("src/{name}.txt"),
-            b"use new_helper_name;\nother content\n",
-        );
-    }
-    r.write("src/main.txt", b"fn main() { run_with_retries(3) }\n");
-    let head = r.commit_all("head");
-    (r, base, head)
-}
+use differential_testutil::{FakeBackend, grouped_with_cache, json_group, two_class_repo};
 
 fn one_group_backend(name: &str) -> FakeBackend {
     FakeBackend::new(name, |ids| {
