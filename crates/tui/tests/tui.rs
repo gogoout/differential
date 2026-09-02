@@ -5234,6 +5234,205 @@ fn render_dump_summary_footer() {
     }
 }
 
+/// A long line is cut at the pane edge and `w` is not always the answer — in
+/// split the column is half a pane, which is what #74 is about.
+#[test]
+fn l_shifts_the_diff_pane_and_h_brings_it_back() {
+    let (_r, mut app) = app_with_a_long_line();
+    let head = "Soft wrap exists because";
+    let tail = "runs off the right edge";
+    let before = wrapped_pane(&mut app);
+    assert!(
+        before.iter().any(|r| r.contains(head)),
+        "the line starts at the left edge: {before:#?}"
+    );
+
+    // when - the pane shifts right far enough to reach the middle of the line
+    for _ in 0..6 {
+        app.handle_key(key('l'));
+    }
+    let after = wrapped_pane(&mut app);
+
+    // then - what was off the edge is on screen, and the head has gone
+    assert!(
+        after.iter().any(|r| r.contains(tail)),
+        "the middle of the line should be readable: {after:#?}"
+    );
+    assert!(!after.iter().any(|r| r.contains(head)));
+
+    // and - `h` walks back, `0` goes home in one
+    app.handle_key(key('h'));
+    assert!(!wrapped_pane(&mut app).iter().any(|r| r.contains(head)));
+    app.handle_key(key('0'));
+    assert_eq!(wrapped_pane(&mut app), before, "0 restores the left edge");
+}
+
+/// The line-number cell is what the cursor block lands in, so it never moves.
+#[test]
+fn the_line_numbers_do_not_move_when_the_pane_shifts() {
+    let (_r, mut app) = app_with_a_long_line();
+    // The footer is not the pane: it grows a pill as the pane shifts, which
+    // is the point of the pill.
+    let gutters = |app: &mut App| -> Vec<String> {
+        let rows = wrapped_pane(app);
+        rows[..rows.len() - 1]
+            .iter()
+            .map(|r| r.chars().take(11).collect())
+            .collect()
+    };
+    let before = gutters(&mut app);
+    for _ in 0..4 {
+        app.handle_key(key('l'));
+    }
+    assert_eq!(gutters(&mut app), before, "the gutter is pinned");
+}
+
+/// Past the widest line there is nothing left to reveal, so the pane stops
+/// rather than walking into blank space.
+#[test]
+fn the_shift_stops_at_the_widest_line() {
+    let (_r, mut app) = app_with_a_long_line();
+    // Draw once so the pane's width is measured before any key is handled,
+    // and so the keys land in the pane they act on.
+    wrapped_pane(&mut app);
+    for _ in 0..60 {
+        app.handle_key(key('l'));
+    }
+    let pane = wrapped_pane(&mut app);
+    assert!(
+        pane.iter().any(|r| r.contains("not there to read.")),
+        "the end of the line must still be on screen: {pane:#?}"
+    );
+}
+
+/// `w` and the shift answer the same question, and only one of them can be
+/// right at a time. A press that silently did nothing would read as a key
+/// that does not work.
+#[test]
+fn soft_wrap_and_the_shift_do_not_both_apply() {
+    let (_r, mut app) = app_with_a_long_line();
+    app.handle_key(key('w'));
+    let wrapped = wrapped_pane(&mut app);
+
+    app.handle_key(key('l'));
+
+    // The footer carries the refusal, so compare the pane and not the bar.
+    let after = wrapped_pane(&mut app);
+    assert_eq!(after[..after.len() - 1], wrapped[..wrapped.len() - 1]);
+    assert!(app.status.contains("soft wrap is on"), "{}", app.status);
+}
+
+/// The other order. `w` while shifted homed the pane, because a wrapped row
+/// reads no offset — but the offset stayed in the model, so the footer went on
+/// claiming a shift that was not happening.
+#[test]
+fn turning_wrap_on_drops_the_shift() {
+    let (_r, mut app) = app_with_a_long_line();
+    wrapped_pane(&mut app);
+    for _ in 0..3 {
+        app.handle_key(key('l'));
+    }
+    // The pill leads the footer, which `wrapped_pane` slices away.
+    let footer = |app: &mut App| drawn_rows(app).last().cloned().unwrap_or_default();
+    let shifted = footer(&mut app);
+    assert!(
+        shifted.contains("cols"),
+        "the footer should say where the pane stands: {shifted:?}"
+    );
+
+    // when
+    app.handle_key(key('w'));
+
+    // then - the pill goes with the shift it described
+    let after = footer(&mut app);
+    assert!(
+        !after.contains("cols"),
+        "the pill must go when the shift does: {after:?}"
+    );
+    // and - turning wrap off again leaves the pane at the left edge
+    app.handle_key(key('w'));
+    let off = wrapped_pane(&mut app);
+    assert!(
+        off.iter().any(|r| r.contains("Soft wrap exists because")),
+        "the pane should be home, not where it was: {off:#?}"
+    );
+}
+
+/// Both columns move together, or the two sides stop being comparable — which
+/// is the whole reason to read a diff side by side.
+#[test]
+fn a_split_row_shifts_both_halves() {
+    let (_r, mut app) = app_with_a_long_line();
+    wrapped_pane(&mut app);
+    app.handle_key(key('s')); // that helper opens unified, so switch to split
+    // 58 columns of content, so the separator sits at 28 and the halves are
+    // everything either side of it.
+    let halves = |app: &mut App| -> Vec<(String, String)> {
+        let rows = wrapped_pane(app);
+        rows[..rows.len() - 1]
+            .iter()
+            .map(|r| {
+                let c: Vec<char> = r.chars().collect();
+                (c[..28].iter().collect(), c[29..].iter().collect())
+            })
+            .collect()
+    };
+    let before = halves(&mut app);
+    app.handle_key(key('l'));
+    let after = halves(&mut app);
+    assert_ne!(after, before, "the pane must move at all");
+
+    // Every row that moved moved on BOTH sides, or on neither.
+    for (b, a) in before.iter().zip(&after) {
+        assert_eq!(
+            b.0 == a.0,
+            b.1 == a.1,
+            "one half moved without the other: {b:?} -> {a:?}"
+        );
+    }
+}
+
+/// The bound moves when the rows do. A split column is half a pane, so it
+/// reaches further along a line than a unified one; coming back to unified
+/// with the shift left where it was would leave the pane blank.
+#[test]
+fn the_shift_comes_back_inside_a_wider_layout() {
+    let (_r, mut app) = app_with_a_long_line();
+    wrapped_pane(&mut app);
+    app.handle_key(key('s'));
+    for _ in 0..60 {
+        app.handle_key(key('l'));
+    }
+    app.handle_key(key('s'));
+    let pane = wrapped_pane(&mut app);
+    assert!(
+        pane.iter().any(|r| r.contains("not there to read.")),
+        "the end of the line must still be on screen after s: {pane:#?}"
+    );
+}
+
+/// The one thing a still picture cannot settle for #74: where the pane lands,
+/// and what the cursor does on the way.
+///
+/// `cargo test -p differential-tui --test tui -- --ignored --nocapture render_dump_hscroll`
+#[test]
+#[ignore = "prints the pane for a human to look at"]
+fn render_dump_hscroll() {
+    let (_r, mut app) = app_with_a_long_line();
+    app.focus = Focus::Detail;
+    for mode in ["unified", "split"] {
+        for cols in [0usize, 8, 32] {
+            app.handle_key(key('0'));
+            for _ in 0..cols / 8 {
+                app.handle_key(key('l'));
+            }
+            println!("\n=== {mode}, shifted {cols} columns ===");
+            println!("{}", ansi_dump(&mut app, 120, 20));
+        }
+        app.handle_key(key('s'));
+    }
+}
+
 /// The pane at a known width, as rows of text.
 fn wrapped_pane(app: &mut App) -> Vec<String> {
     app.focus = Focus::Detail;

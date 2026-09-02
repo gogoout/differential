@@ -10,7 +10,7 @@ use ratatui::text::Line;
 use crate::rows::{Row, RowKind, RowsContext};
 use crate::window::Side;
 
-use super::draw::{Paint, compose_row_lines};
+use super::draw::{Paint, compose_row_lines, overflow};
 use super::*;
 
 impl App {
@@ -262,6 +262,7 @@ impl App {
         {
             self.cursor = self.next_selectable(0, 1).unwrap_or(0);
         }
+        self.clamp_hscroll();
         self.rebuild_overviews();
     }
 
@@ -294,6 +295,7 @@ impl App {
         self.viewport = viewport;
         self.follow_cursor();
         self.follow_plan_scroll();
+        self.clamp_hscroll();
     }
 
     /// Diff-pane scroll offset. Decided in update, never at draw time — which
@@ -714,6 +716,70 @@ impl App {
         }
     }
 
+    /// How far this row's content is shifted right now.
+    ///
+    /// Only file content moves. A hunk header, a context boundary, a fold, a
+    /// finding and a group header are chrome and prose: they are already
+    /// fitted to the pane, and a `╱` band slid sideways says nothing. So the
+    /// rows that shift are exactly the rows `wraps` calls the reader's call.
+    ///
+    /// Zero while the row wraps, because a wrapped row has no tail off the
+    /// edge to reach.
+    pub(super) fn shift(&self, row: &Row) -> usize {
+        match row.kind {
+            RowKind::Diff(_) if !self.wraps(row) => self.hscroll,
+            _ => 0,
+        }
+    }
+
+    /// How far the pane can shift before the widest line runs out.
+    ///
+    /// The widest overflow any file row has at the pane's current width. Past
+    /// that there is nothing left to reveal, so `l` stops rather than walking
+    /// the pane into blank space. `overflow` measures against the columns a
+    /// row is actually drawn in, so the split layout needs no rule of its own.
+    ///
+    /// Measured on the keypress, not on every frame: shifting is rare and
+    /// drawing is not.
+    pub(super) fn max_hscroll(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|r| matches!(r.kind, RowKind::Diff(_)))
+            .map(|r| overflow(&r.content, self.viewport.detail_cols))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Bring the shift back inside what the pane can now reach.
+    ///
+    /// The bound moves when the rows do — a narrower terminal, `s`, another
+    /// group, a hunk pulled open — and a shift left past it would leave the
+    /// pane blank until the reader pressed something. Called from the two
+    /// places that change it, rather than measured on every frame: the scan is
+    /// O(rows) and drawing is not the place for one.
+    pub(super) fn clamp_hscroll(&mut self) {
+        self.hscroll = self.hscroll.min(self.max_hscroll());
+    }
+
+    /// Shift the diff pane sideways by `by` columns, or home it when `by` is
+    /// `None`.
+    ///
+    /// Refuses while soft wrap is on rather than doing nothing quietly: with
+    /// `w` on there is no tail off the edge, so a press that changed nothing
+    /// would look like a key that does not work. A refusal is not a mode, so
+    /// it takes the footer's passing message.
+    pub(super) fn shift_pane(&mut self, by: Option<isize>) {
+        if self.wrap_on() {
+            self.status = "soft wrap is on · w turns it off".into();
+            return;
+        }
+        self.hscroll = match by {
+            None => 0,
+            Some(by) => (self.hscroll as isize + by).max(0) as usize,
+        }
+        .min(self.max_hscroll());
+    }
+
     /// Screen lines one row takes.
     ///
     /// The scroll budget and the drawing both read this, so they cannot
@@ -743,6 +809,14 @@ impl App {
         if let Err(e) = self.session.set_wrap(on) {
             self.status = format!("save failed: {e:#}");
             return;
+        }
+        // Only one of the two can be right at a time, and `shift_pane` says so
+        // in the other direction. Wrapping while shifted left the offset in the
+        // model where nothing could act on it — `shift` returns zero for a
+        // wrapped row — so the pane came home and the footer went on claiming a
+        // shift that was not happening.
+        if on {
+            self.hscroll = 0;
         }
         self.follow_cursor();
     }

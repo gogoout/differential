@@ -341,6 +341,13 @@ pub struct App {
     /// the model without adding one to the key table.
     pub visual: Option<usize>,
     scroll: usize,
+    /// How far the diff pane's CONTENT is shifted left, in columns.
+    ///
+    /// Transient, like `folds_open` and `expanded`: where along a line the
+    /// reader is looking is a reading position for this sitting, which is what
+    /// `scroll` already is. `s` and `w` are recorded against a review because
+    /// they are layout choices; a column is not one.
+    hscroll: usize,
     group_scroll: usize,
     /// Group ids whose fold is open.
     pub folds_open: HashSet<String>,
@@ -423,6 +430,7 @@ impl App {
             cursor: 0,
             visual: None,
             scroll: 0,
+            hscroll: 0,
             group_scroll: 0,
             folds_open: HashSet::new(),
             expanded: HashMap::new(),
