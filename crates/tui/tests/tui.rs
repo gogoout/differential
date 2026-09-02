@@ -588,11 +588,20 @@ fn draw_smoke_test_renders_group_label() {
 
 #[test]
 fn reading_plan_shows_ids_and_flags_unsatisfiable_dependencies() {
-    let (_r, app) = make_app();
+    // NOT `make_app`: that fixture has no dependency edge, so the loop below
+    // used to iterate nothing and the test passed on its rendering half alone.
+    // The comment above `app_with_dependency_edge` already says this happened
+    // once to the gutter test; it had happened here too.
+    let (_r, app) = app_with_dependency_edge();
 
     // Every dependency names a real group id — the id column makes them
     // resolvable, which is the whole point of showing it.
     let ids: Vec<&str> = app.groups().iter().map(|g| g.id.as_str()).collect();
+    let edges: usize = app.groups().iter().map(|g| g.depends_on.len()).sum();
+    assert!(
+        edges > 0,
+        "the fixture must carry an edge, or this test asserts nothing"
+    );
     for g in app.groups() {
         for d in &g.depends_on {
             assert!(
@@ -617,19 +626,35 @@ fn reading_plan_shows_ids_and_flags_unsatisfiable_dependencies() {
     let backend = ratatui::backend::TestBackend::new(100, 40);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|f| app.draw(f)).unwrap();
-    let content: String = terminal
-        .backend()
-        .buffer()
-        .content()
-        .iter()
-        .map(|c| c.symbol())
+    let buffer = terminal.backend().buffer().clone();
+    // The PLAN pane only. `content` used to be the whole 100x40 screen, and
+    // the detail pane draws both "files" (its box title) and "−" (its hunk
+    // header counts) — so those two assertions held with the plan pane's own
+    // counts deleted.
+    let plan: String = (1..39u16)
+        .flat_map(|y| (1..39u16).map(move |x| (x, y)))
+        .map(|(x, y)| buffer[(x, y)].symbol())
         .collect();
     assert!(
-        content.contains(&app.groups()[0].id),
-        "group id missing from the plan"
+        plan.contains(&app.groups()[0].id),
+        "group id missing from the plan: {plan}"
     );
-    assert!(content.contains("files"), "per-group file count missing");
-    assert!(content.contains("−"), "removed-line count missing");
+    // The group's OWN numbers, not just the words around them. A bare
+    // `contains("files")` matched the detail pane's box title, and a bare
+    // `contains("−")` survived the `+` span being deleted.
+    let g = &app.groups()[0];
+    assert!(
+        plan.contains(&format!("{} files", g.n_files)),
+        "per-group file count missing: {plan}"
+    );
+    assert!(
+        plan.contains(&format!("+{}", g.counts.adds)),
+        "added-line count missing: {plan}"
+    );
+    assert!(
+        plan.contains(&format!("−{}", g.counts.dels)),
+        "removed-line count missing: {plan}"
+    );
 }
 
 #[test]
@@ -955,15 +980,32 @@ fn the_selected_plan_row_is_highlighted_edge_to_edge() {
     // last inner column is 38. Find the selected row by its background, then
     // assert that background runs to the pane edge rather than stopping at
     // the end of the label.
+    // `draw` paints the theme's ground over every cell first, so "has a
+    // background" and "two neighbours agree" are true of EVERY row. This used
+    // to find its row on those two tests and then compare ground with ground,
+    // which held with the highlight deleted. The selection's own colour is the
+    // only thing that identifies its row.
     let bg_of = |x: u16, y: u16| buf[(x, y)].style().bg;
+    let selected = Some(theme().selected_bg);
     let selected_row = (1..39u16)
-        .find(|&y| bg_of(2, y).is_some() && bg_of(2, y) == bg_of(3, y))
-        .expect("a highlighted row");
-    let bg = bg_of(2, selected_row);
+        .find(|&y| bg_of(38, y) == selected)
+        .expect("a row wearing the selection colour");
+
+    // Column 2 is the connector, which keeps its own styling; the highlight
+    // starts at the label and runs UNBROKEN to the last inner column.
+    let lit: Vec<u16> = (3..=38u16)
+        .filter(|&x| bg_of(x, selected_row) == selected)
+        .collect();
     assert_eq!(
-        bg_of(38, selected_row),
-        bg,
-        "selection stops short of the pane edge"
+        lit,
+        (3..=38u16).collect::<Vec<_>>(),
+        "the selection must run to the pane edge without a gap"
+    );
+    // One row, not the pane: the row after the selected block wears ground.
+    assert_ne!(
+        bg_of(38, selected_row + 2),
+        selected,
+        "only the selected group's own rows are highlighted"
     );
 }
 
@@ -2556,12 +2598,28 @@ fn focus_never_changes_a_pane_height() {
         plan_rows: 30,
         body_rows: 30 + 2,
     });
-    let before = app.viewport();
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     assert_eq!(app.focus, Focus::Detail);
+
+    // The claim is about the DRAWN panes, not about a field. `viewport` is
+    // only ever written by `set_viewport`, which `handle_key` never calls —
+    // so asserting it against the value this test set proved nothing. Both
+    // panes have to keep their geometry across a focus change.
+    let widths = |app: &App| {
+        let buf = buffer_of(app);
+        let border_row = 0u16;
+        (0..100u16)
+            .filter(|&x| {
+                buf[(x, border_row)].symbol() == "┐" || buf[(x, border_row)].symbol() == "┌"
+            })
+            .collect::<Vec<_>>()
+    };
+    let after = widths(&app);
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(app.focus, Focus::Groups);
     assert_eq!(
-        app.viewport(),
-        before,
+        widths(&app),
+        after,
         "a float must not take room from the pane it covers"
     );
 }
@@ -2621,17 +2679,53 @@ fn a_file_header_sticks_while_scrolled_past_it() {
     );
 }
 
-/// Colour on the counts, in the two places that were still grey.
+/// The file modal's counts carry the added and removed colours.
+///
+/// Two things this used to get wrong. It opened the modal on a fixture whose
+/// group holds ONE file, where the counted box never appears at all — and it
+/// then swept the whole 100x40 screen for `add_fg`/`del_fg`, which the plan
+/// pane inks for every group on every frame. So it passed with the modal's
+/// counts left grey, and with no modal on screen.
+///
+/// The name also used to promise "and the role is a pill". Nothing here ever
+/// checked a role or a pill; `the_role_pill_hangs_off_the_plan_panes_right_edge`
+/// does that.
 #[test]
-fn counts_are_coloured_in_the_file_modal_and_the_role_is_a_pill() {
-    let (_r, mut app) = app_with_a_long_file();
-    app.focus = Focus::Detail;
+fn counts_are_coloured_in_the_file_modal() {
+    let (_r, mut app) = make_app();
+    app.handle_key(key('j')); // the group with three files
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     app.handle_key(key('f'));
-    let buf = buffer_of(&app);
-    let inks: Vec<_> = buf.content().iter().filter_map(|c| c.style().fg).collect();
     assert!(
-        inks.contains(&theme().add_fg) && inks.contains(&theme().del_fg),
-        "the file modal's counts should say added and removed"
+        matches!(app.mode, Mode::FileList { .. }),
+        "`f` must open the file list"
+    );
+    let buf = buffer_of(&app);
+
+    // Inside the modal's own box, which is a float over both panes.
+    let rows: Vec<String> = (0..40u16)
+        .map(|y| (0..100u16).map(|x| buf[(x, y)].symbol()).collect())
+        .collect();
+    let top = rows
+        .iter()
+        .position(|r| r.contains("files — enter jump"))
+        .expect("the file modal's title row");
+    let counted = (top + 1..rows.len())
+        .find(|&y| rows[y].contains('+') && rows[y].contains('−'))
+        .expect("a modal row carrying counts");
+
+    let inks: Vec<_> = (0..100u16)
+        .filter_map(|x| buf[(x, counted as u16)].style().fg)
+        .collect();
+    assert!(
+        inks.contains(&theme().add_fg),
+        "the modal's added count is grey: {}",
+        rows[counted]
+    );
+    assert!(
+        inks.contains(&theme().del_fg),
+        "the modal's removed count is grey: {}",
+        rows[counted]
     );
 }
 
@@ -4218,6 +4312,8 @@ fn ansi_dump(app: &mut App, w: u16, h: u16) -> String {
 
 /// The group map float, folded, over a document with more files than the
 /// selected group touches.
+///
+/// `cargo test -p differential-tui --test tui render_dump_map -- --ignored --nocapture`
 #[test]
 #[ignore = "prints the pane for a human to look at"]
 fn render_dump_map() {
@@ -4501,6 +4597,8 @@ fn a_context_boundary_band_lightens_under_the_cursor() {
 
 /// A split diff over a pure insertion: one side is hatched, and the cursor's
 /// block still lands in the same column on both.
+///
+/// `cargo test -p differential-tui --test tui render_dump_hatch -- --ignored --nocapture`
 #[test]
 #[ignore = "prints the pane for a human to look at"]
 fn render_dump_hatch() {
@@ -4527,6 +4625,8 @@ fn render_dump_hatch() {
 }
 
 /// The plan pane's connector, with a group that follows two others.
+///
+/// `cargo test -p differential-tui --test tui render_dump_plan -- --ignored --nocapture`
 #[test]
 #[ignore = "prints the pane for a human to look at"]
 fn render_dump_plan() {
@@ -4955,9 +5055,12 @@ fn y_carries_the_same_summary_the_cli_prints() {
     let effects = app.handle_key(key('y'));
     match effects.first() {
         Some(Effect::CopySummary(text)) => {
-            assert!(text.contains("off by one"));
-            // One projection, one owner: the session's.
-            assert_eq!(*text, app.session.findings_summary());
+            // Pinned against the FORMAT, not against the call that produced
+            // it. `Effect::CopySummary` carries `session.findings_summary()`,
+            // so comparing the two compared one call with another and held
+            // whatever either printed. `dfr findings --summary` prints these
+            // same bytes, which is the parity this test is named for.
+            assert_eq!(*text, "- src/main.txt:1: off by one\n", "{text:?}");
         }
         other => panic!("expected a copied summary, got {other:?}"),
     }

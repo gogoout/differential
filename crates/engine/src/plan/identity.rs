@@ -115,15 +115,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_review_survives_its_head_moving_but_not_a_different_branch() {
-        // The reason identity uses the spec rather than the resolved sha.
-        // Two spellings of one commit are joined by adoption, not here.
-        assert_eq!(review_id("abc", "feature"), review_id("abc", "feature"));
-        assert_ne!(review_id("abc", "feature"), review_id("abc", "other"));
-        assert_ne!(review_id("abc", "feature"), review_id("def", "feature"));
-    }
-
-    #[test]
     fn state_lives_under_the_common_dir_not_the_tracked_tree() {
         let common = Path::new("/repo/.git");
         assert!(

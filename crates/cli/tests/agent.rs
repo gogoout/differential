@@ -91,18 +91,54 @@ fn one_call_prints_every_class_with_its_graph() {
     );
 }
 
+/// A change whose SAME edit lands in three files, so one shape class holds
+/// three hunks.
+///
+/// The two-class fixture cannot serve this: every class there has exactly one
+/// hunk, so every member is its own exemplar and printing only exemplars would
+/// look identical. That is the case this test exists for.
+fn document_with_a_three_member_class() -> (TestRepo, TempDir, std::path::PathBuf) {
+    let r = TestRepo::new();
+    for name in ["a", "b", "c"] {
+        r.write(&format!("src/{name}.txt"), b"use old_helper_name;\n");
+    }
+    let base = r.commit_all("base");
+    for name in ["a", "b", "c"] {
+        r.write(&format!("src/{name}.txt"), b"use new_helper_name;\n");
+    }
+    let head = r.commit_all("head");
+    let (dir, path) = write_doc(&r, &base, &head);
+    (r, dir, path)
+}
+
 #[test]
 fn every_member_gets_a_location_not_just_the_exemplar() {
-    let (_r, _dir, doc) = document();
+    let (_r, _dir, doc) = document_with_a_three_member_class();
     let text = agent(&doc);
-    assert!(text.contains("(exemplar)"), "{text}");
+
+    // One class, three hunks: exactly one line is marked, and the other two
+    // are the ones that would vanish if this printed only exemplars.
+    assert_eq!(
+        text.matches("(exemplar)").count(),
+        1,
+        "one class, so one exemplar\n{text}"
+    );
 
     // The claim this output has to support: a class of N hunks is a claim about
     // N hunks, and the model can only check it by reading all N. So every
     // member gets a file and a line range — the two things a `git diff`
     // invocation needs.
     let members: Vec<&str> = text.lines().filter(|l| l.starts_with("  h")).collect();
-    assert_eq!(members.len(), 2, "one line per hunk in the change\n{text}");
+    assert_eq!(
+        members.len(),
+        3,
+        "one line per hunk, not one per class\n{text}"
+    );
+    let unmarked = members.iter().filter(|l| !l.contains("(exemplar)")).count();
+    assert_eq!(
+        unmarked, 2,
+        "the two members that are not the exemplar\n{text}"
+    );
     for line in &members {
         assert!(line.contains(".txt"), "every member names its file\n{line}");
         assert!(line.contains("@@ -"), "and its line range\n{line}");

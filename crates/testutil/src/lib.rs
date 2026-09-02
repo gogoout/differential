@@ -18,6 +18,9 @@ pub struct TestRepo {
     pub root: PathBuf,
 }
 
+/// Present for `clippy::new_without_default`, which fires on any `new()` that
+/// takes no arguments. Nothing calls it — every fixture says `TestRepo::new()`
+/// — so it is here for the lint rather than for a caller.
 impl Default for TestRepo {
     fn default() -> Self {
         Self::new()
@@ -219,7 +222,7 @@ use differential_engine::pipeline::run_grouped_pipeline;
 use differential_engine::schema::PlanDocument;
 use differential_engine::store::{FsArtefactStore, FsGroupingCache};
 
-pub type Responder = Box<dyn Fn(&[String]) -> String + Send + Sync>;
+type Responder = Box<dyn Fn(&[String]) -> String + Send + Sync>;
 
 /// Programmable backend: captures prompts, counts calls, and builds its
 /// response from the class ids it actually sees (so tests never hardcode
