@@ -810,6 +810,14 @@ impl App {
             self.status = format!("save failed: {e:#}");
             return;
         }
+        // Only one of the two can be right at a time, and `shift_pane` says so
+        // in the other direction. Wrapping while shifted left the offset in the
+        // model where nothing could act on it — `shift` returns zero for a
+        // wrapped row — so the pane came home and the footer went on claiming a
+        // shift that was not happening.
+        if on {
+            self.hscroll = 0;
+        }
         self.follow_cursor();
     }
 

@@ -133,9 +133,12 @@ nothing. The **line-number cell never moves**, because it is what the cursor's b
 in. In split **both halves shift together**, from their own left edges, or the two columns
 stop being comparable, which is the reason to read a diff side by side at all.
 
-`w` and the shift answer the same question and only one of them can be right at a time, so
-a wrapped pane refuses the key and says why rather than doing nothing: a press that
-changes nothing reads as a key that does not work. The shift stops at the widest line's
+`w` and the shift answer the same question and only one of them can be right at a time, in
+both directions. A wrapped pane refuses `h` and `l` and says why rather than doing nothing:
+a press that changes nothing reads as a key that does not work. Turning `w` **on** drops the
+shift rather than remembering it — a wrapped row reads no offset, so an offset left behind
+is one nothing on screen can act on, and the footer would go on naming a shift that is not
+happening. The shift stops at the widest line's
 overflow, so the pane can never be walked into blank space. It is **transient**, like an
 open fold and a hunk's expansion — where along a line a reader is looking is a reading
 position for this sitting, not a preference, so nothing about it reaches the sidecar.

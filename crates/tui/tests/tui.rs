@@ -5322,6 +5322,42 @@ fn soft_wrap_and_the_shift_do_not_both_apply() {
     assert!(app.status.contains("soft wrap is on"), "{}", app.status);
 }
 
+/// The other order. `w` while shifted homed the pane, because a wrapped row
+/// reads no offset — but the offset stayed in the model, so the footer went on
+/// claiming a shift that was not happening.
+#[test]
+fn turning_wrap_on_drops_the_shift() {
+    let (_r, mut app) = app_with_a_long_line();
+    wrapped_pane(&mut app);
+    for _ in 0..3 {
+        app.handle_key(key('l'));
+    }
+    // The pill leads the footer, which `wrapped_pane` slices away.
+    let footer = |app: &mut App| drawn_rows(app).last().cloned().unwrap_or_default();
+    let shifted = footer(&mut app);
+    assert!(
+        shifted.contains("cols"),
+        "the footer should say where the pane stands: {shifted:?}"
+    );
+
+    // when
+    app.handle_key(key('w'));
+
+    // then - the pill goes with the shift it described
+    let after = footer(&mut app);
+    assert!(
+        !after.contains("cols"),
+        "the pill must go when the shift does: {after:?}"
+    );
+    // and - turning wrap off again leaves the pane at the left edge
+    app.handle_key(key('w'));
+    let off = wrapped_pane(&mut app);
+    assert!(
+        off.iter().any(|r| r.contains("Soft wrap exists because")),
+        "the pane should be home, not where it was: {off:#?}"
+    );
+}
+
 /// Both columns move together, or the two sides stop being comparable — which
 /// is the whole reason to read a diff side by side.
 #[test]
