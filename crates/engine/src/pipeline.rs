@@ -27,6 +27,7 @@ use crate::ports::{
     AttributeSource, DiffSource, ObjectReader, ObjectWriter, RangeResolver, RecountSource,
     TreeBuilder, TreeResolver, WorkingCopy,
 };
+use crate::review_identity::WORKTREE_SPEC;
 
 pub struct PipelineOutput {
     pub base: String,
@@ -90,10 +91,14 @@ where
     })
 }
 
-/// Identity literals for picked sources (ADR 0017). Not endpoints — they name
-/// what the review is *of* while its synthesized endpoints move.
+/// The identity literal for a picked `HEAD` source (ADR 0017). Not an endpoint
+/// — it names what the review is *of* while its synthesized endpoints move.
+///
+/// Its worktree counterpart is `review_identity::WORKTREE_SPEC`, imported
+/// rather than repeated: that module compares against the literal this one
+/// writes, and two copies of it could drift into a review that is filed as
+/// uncommitted work and then scanned as if it were a commit.
 const HEAD_SPEC: &str = "HEAD";
-const WORKTREE_SPEC: &str = "WORKTREE";
 
 /// Run the core pipeline (stages: enumerate, classify) over `base..head`.
 ///
