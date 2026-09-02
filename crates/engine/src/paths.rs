@@ -6,6 +6,8 @@
 //! half. C-quoted paths (git quotes bytes outside the printable range even with
 //! core.quotepath=false) are unquoted first.
 
+use memchr::memmem;
+
 /// Parse the remainder of a `diff --git ` line into the (single) path.
 /// `rest` is everything after `"diff --git "`. Returns `None` if the line cannot
 /// be understood — callers treat that as a parse error, never a skip.
@@ -22,14 +24,14 @@ pub fn parse_diff_git_path(rest: &[u8]) -> Option<Vec<u8>> {
         return strip_ab(&a, &b);
     }
     // Second side quoted only.
-    if let Some(pos) = find_sub(rest, b" \"b/") {
+    if let Some(pos) = memmem::find(rest, b" \"b/") {
         let a = &rest[..pos];
         let (b, _) = unquote_c(&rest[pos + 1..])?;
         return strip_ab(a, &b);
     }
     // Unquoted: try every ` b/` boundary until both halves agree.
     let mut idx = 0;
-    while let Some(off) = find_sub(&rest[idx..], b" b/") {
+    while let Some(off) = memmem::find(&rest[idx..], b" b/") {
         let pos = idx + off;
         if let Some(p) = strip_ab(&rest[..pos], &rest[pos + 1..]) {
             return Some(p);
@@ -97,13 +99,6 @@ pub fn unquote_c(s: &[u8]) -> Option<(Vec<u8>, &[u8])> {
         }
     }
     None // unterminated
-}
-
-pub fn find_sub(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return None;
-    }
-    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 #[cfg(test)]

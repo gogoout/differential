@@ -14,6 +14,9 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use petgraph::algo::is_cyclic_directed;
+use petgraph::graph::{DiGraph, NodeIndex};
+
 use crate::schema;
 
 /// Reorder the focus section foundation-first, fill `depends_on`, `role` and
@@ -300,30 +303,36 @@ fn break_cycle(
         }
     }
     let inside: HashSet<usize> = owner.keys().copied().collect();
+    let mut ids: Vec<usize> = inside.iter().copied().collect();
+    ids.sort_unstable();
 
-    // Kahn over the classes still in play; ties by class index, which is
-    // descending member count already.
-    let mut pending: Vec<usize> = {
-        let mut v: Vec<usize> = inside.iter().copied().collect();
-        v.sort_unstable();
-        v
-    };
-    let mut emitted: HashSet<usize> = HashSet::new();
-    let mut first: Option<usize> = None;
-    while !pending.is_empty() {
-        let Some(&ready) = pending.iter().find(|&&ci| {
-            class_deps[ci]
-                .iter()
-                .all(|d| !inside.contains(d) || emitted.contains(d))
-        }) else {
-            // The classes deadlock too: a real mutual dependency.
-            return (None, schema::Cycle::Mutual);
-        };
-        first.get_or_insert(owner[&ready]);
-        pending.retain(|&ci| ci != ready);
-        emitted.insert(ready);
+    // Do the classes deadlock too? This was a Kahn walk that rescanned every
+    // remaining class on every step to find out — O(n^2) to answer a yes/no
+    // question about a graph. `is_cyclic_directed` is the same answer: a Kahn
+    // walk runs out of ready nodes exactly when a cycle is left.
+    let mut graph = DiGraph::<(), ()>::new();
+    let nodes: HashMap<usize, NodeIndex> = ids.iter().map(|&ci| (ci, graph.add_node(()))).collect();
+    for &ci in &ids {
+        for d in &class_deps[ci] {
+            if let Some(&to) = nodes.get(d) {
+                graph.add_edge(nodes[&ci], to, ());
+            }
+        }
     }
-    (first, schema::Cycle::Artefact)
+    if is_cyclic_directed(&graph) {
+        // A real mutual dependency, in the change rather than in the grouping.
+        return (None, schema::Cycle::Mutual);
+    }
+
+    // Which group to emit: the owner of the lowest-numbered class nothing in
+    // play blocks. The walk assigned this on its FIRST step and never again,
+    // so every later step only ever decided the verdict above. Ties by class
+    // index, which is descending member count already.
+    let first = ids
+        .iter()
+        .copied()
+        .find(|&ci| class_deps[ci].iter().all(|d| !inside.contains(d)));
+    (first.map(|ci| owner[&ci]), schema::Cycle::Artefact)
 }
 
 /// What to do when the group sort deadlocks: which group to emit first, and why

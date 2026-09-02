@@ -285,6 +285,13 @@ pub fn ids_in_prompt(prompt: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// One group object as the model would answer it.
+///
+/// Deliberately still `format!` rather than `serde_json::json!`. The text this
+/// produces is a FIXTURE's model response, and `golden.rs` pins the cache
+/// entry that holds it byte for byte — so building it a tidier way would churn
+/// a test whose whole job is to notice when bytes move. No fixture label
+/// contains a quote, and the day one does, that is the day to change this.
 pub fn json_group(label: &str, effort: &str, classes: &[&str]) -> String {
     format!(
         r#"{{"label": "{label}", "description": "d", "classes": [{}], "effort": "{effort}", "reason": "r"}}"#,
@@ -294,6 +301,14 @@ pub fn json_group(label: &str, effort: &str, classes: &[&str]) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     )
+}
+
+/// A whole model answer: `{"groups": [ ... ]}`.
+///
+/// Every caller of `json_group` wrapped it by hand in the same eleven
+/// characters, about twenty times.
+pub fn json_groups(groups: &[String]) -> String {
+    format!("{{\"groups\": [{}]}}", groups.join(", "))
 }
 
 pub fn grouped(r: &TestRepo, base: &str, head: &str, backend: &dyn LlmBackend) -> PlanDocument {
