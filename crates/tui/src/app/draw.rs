@@ -1075,7 +1075,7 @@ impl App {
                 } else if selected {
                     // The same job for a selected row with no colour of its
                     // own: a context line, and the hatched half of a split
-                    // row. Where the row IS coloured, `sel_band` has already
+                    // row. Where the row IS coloured, `step_band` has already
                     // stepped it — a line style would never have been seen.
                     line = line.style(Style::default().bg(self.theme.selected_bg));
                 }
@@ -1557,16 +1557,19 @@ pub(super) fn compose_half(
     // Two re-inks, both keyed by colour, both leaving syntax alone.
     //
     // A boundary band carries its own colour the whole way across, so the row
-    // tint that marks the cursor everywhere else never showed through it.
+    // tint that marks a lit row everywhere else never showed through it.
     //
-    // A selection is the same problem one step further: a changed line paints
-    // every span with `added_bg`/`deleted_bg`, and a span background beats the
-    // line style a selection used to be drawn with — so the row was selected
-    // and said nothing. `sel_band` steps the change colour itself.
+    // A cursor's row and a selected row are the same problem: a changed line
+    // paints every span with `added_bg`/`deleted_bg`, and a span background
+    // beats the line style both used to be drawn with. So the row was lit and
+    // said nothing where it mattered — and on a split row it said it on the
+    // hatched half alone, which read as a cursor on the side with no line.
+    // `step_band` moves the change colour itself, the cursor one rung further
+    // than a selection.
     let ink = |st: Style| {
         let st = if paint.cursor { theme.lit_band(st) } else { st };
-        if paint.selected {
-            theme.sel_band(st)
+        if paint.cursor || paint.selected {
+            theme.step_band(st, paint.cursor)
         } else {
             st
         }

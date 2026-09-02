@@ -1641,17 +1641,23 @@ fn a_selection_shows_on_a_changed_line() {
     let selected =
         |c: &ratatui::style::Color| *c == theme().added_sel_bg || *c == theme().deleted_sel_bg;
 
+    // The cursor's own row no longer keeps the idle tint, so the walk looks
+    // for the gutter block instead: that is what says the cursor is standing
+    // on a changed line.
     put_cursor_on(&mut app, |k| matches!(k, RowKind::Diff(_)));
     for _ in 0..30 {
         let y = cursor_screen_row(&app);
-        if !row_backgrounds(&mut app, y).iter().any(changed) {
+        if !row_backgrounds(&mut app, y).iter().any(is_cursor_block) {
             app.handle_key(key('j'));
             continue;
         }
-        // when - the row is selected. `v` alone selects the cursor's row, and
-        // the cursor's row is one end of the run like any other.
+        // when - the anchor is this row and the cursor moves off it, so what
+        // shows here is the selection's rung rather than the cursor's.
         app.handle_key(key('v'));
-        let after = row_backgrounds(&mut app, y);
+        app.handle_key(key('j'));
+        let anchor = app.visual.expect("a selection is open");
+        let at = (anchor - app.scroll()) as u16 + 1;
+        let after = row_backgrounds(&mut app, at);
 
         // then - the row's own colour has stepped, edge to edge.
         assert!(
@@ -1661,6 +1667,39 @@ fn a_selection_shows_on_a_changed_line() {
         assert!(
             !after.iter().any(changed),
             "no cell may keep the unselected tint: {after:?}"
+        );
+        return;
+    }
+    panic!("no changed row within reach of the cursor");
+}
+
+/// The cursor had the same defect and one symptom worse. On a split row the
+/// absent half is hatched and has no colour to defend, so it took the cursor's
+/// line style while the half carrying the change kept its idle green — a
+/// cursor on the side with no line.
+#[test]
+fn the_cursor_lights_a_changed_row_edge_to_edge() {
+    let (_r, mut app) = app_with_a_long_file();
+    let changed = |c: &ratatui::style::Color| *c == theme().added_bg || *c == theme().deleted_bg;
+    let under_cursor = |c: &ratatui::style::Color| {
+        *c == theme().added_cursor_bg || *c == theme().deleted_cursor_bg
+    };
+
+    put_cursor_on(&mut app, |k| matches!(k, RowKind::Diff(_)));
+    for _ in 0..30 {
+        let y = cursor_screen_row(&app);
+        let row = row_backgrounds(&mut app, y);
+        if !row.iter().any(is_cursor_block) {
+            app.handle_key(key('j'));
+            continue;
+        }
+        assert!(
+            row.iter().any(under_cursor),
+            "the cursor's row must step its change colour: {row:?}"
+        );
+        assert!(
+            !row.iter().any(changed),
+            "no cell may keep the idle tint: {row:?}"
         );
         return;
     }
