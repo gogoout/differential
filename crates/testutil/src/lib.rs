@@ -73,11 +73,34 @@ impl TestRepo {
         Repo::open(Path::new(&self.root)).unwrap()
     }
 
+    /// The core pipeline **plus** the verify stage.
+    ///
+    /// Invariants 3 and 4 do not run in the pipeline any more — they write, and
+    /// only a tree-building consumer is protected by them. The synthetic suite
+    /// is where they still have to hold for every edge case, so this helper
+    /// asks for them explicitly. Use [`Self::pipeline_read_only`] to assert on
+    /// the pipeline alone.
     pub fn pipeline(&self, base: &str, head: &str) -> PipelineOutput {
         self.pipeline_with(base, head, &Config::default())
     }
 
     pub fn pipeline_with(&self, base: &str, head: &str, config: &Config) -> PipelineOutput {
+        let mut out = self.pipeline_read_only_with(base, head, config);
+        differential_engine::verify(&self.repo(), &mut out).unwrap();
+        out
+    }
+
+    /// The core pipeline alone: enumerate, classify, invariants 1 and 2.
+    pub fn pipeline_read_only(&self, base: &str, head: &str) -> PipelineOutput {
+        self.pipeline_read_only_with(base, head, &Config::default())
+    }
+
+    pub fn pipeline_read_only_with(
+        &self,
+        base: &str,
+        head: &str,
+        config: &Config,
+    ) -> PipelineOutput {
         run_pipeline(
             &self.repo(),
             base,
@@ -88,6 +111,16 @@ impl TestRepo {
             &stub_readers(),
         )
         .unwrap()
+    }
+
+    /// Loose objects in this repository's odb. The verify stage writes some;
+    /// the core pipeline must write none.
+    pub fn loose_object_count(&self) -> usize {
+        let out = self.git(&["count-objects", "-v"]);
+        out.lines()
+            .find_map(|l| l.strip_prefix("count: "))
+            .and_then(|n| n.trim().parse().ok())
+            .expect("count-objects reports a count")
     }
 }
 

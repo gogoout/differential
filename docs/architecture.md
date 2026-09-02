@@ -142,8 +142,13 @@ separately. Only the second number is time saved.
 
 ## The pipeline
 
-`enumerate → classify → group → order`. The document records which stages ran, in
-`generator.stages`. See [spec/overview.md](../spec/overview.md).
+`enumerate → classify → group → order`, then an optional `verify`. The document records
+which stages ran, in `generator.stages`. See [spec/overview.md](../spec/overview.md).
+
+The pipeline is **read-only**: its bound list carries no write port, so it cannot write.
+Invariants 1b, 1 and 2 run inside it and gate the document. Invariants 3 and 4 build a tree,
+so they write, and they live in `verify` — which `dfr check` and `dfr stack` run, and the
+reviewer does not (ADR 0028).
 
 The product is **one JSON document** ([spec/json-contract.md](../spec/json-contract.md)).
 Renderers are views over it:

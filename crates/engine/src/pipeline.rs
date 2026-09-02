@@ -1,4 +1,16 @@
-//! End-to-end core pipeline: enumerate → annotate → classify → verify → emit.
+//! The core pipeline: enumerate → annotate → classify → emit. **Read-only.**
+//!
+//! Its bound list carries no write port, and that is the point: the pipeline
+//! cannot write, and a reader can see so without opening the body.
+//!
+//! Invariants 1 and 2 run here, and no document is emitted when either fails.
+//! Invariant 1b runs earlier still, in `rename_view::merge_raw`. Those three
+//! are what protect a renderer from a bad parse, a dropped file or broken
+//! accounting.
+//!
+//! Invariants 3 and 4 build a tree, so they write. They live in [`verify`],
+//! which a caller runs when it wants them — only a consumer that reconstructs
+//! a tree is protected by them.
 
 use std::collections::HashSet;
 
@@ -7,8 +19,8 @@ use crate::schema;
 use crate::EngineError;
 use crate::artefact::symbols::SymbolReaders;
 use crate::config::Config;
-use crate::document::{SourceInfo, assemble};
-use crate::invariants::{InvariantReport, check_all};
+use crate::document::{SourceInfo, apply_tree_audit, assemble};
+use crate::invariants::{InvariantReport, check_fidelity, check_tree};
 use crate::lang::LanguageRegistry;
 use crate::plan;
 use crate::ports::{
@@ -98,14 +110,7 @@ pub fn run_pipeline<G>(
     symbols: &SymbolReaders,
 ) -> Result<PipelineOutput, EngineError>
 where
-    G: RangeResolver
-        + DiffSource
-        + AttributeSource
-        + ObjectReader
-        + ObjectWriter
-        + TreeResolver
-        + TreeBuilder
-        + RecountSource,
+    G: RangeResolver + DiffSource + AttributeSource + ObjectReader,
 {
     run_core(git, base_rev, head_rev, kind, config, langs, symbols)
 }
@@ -135,14 +140,7 @@ pub fn run_grouped_pipeline<G, C, A>(
 where
     C: crate::ports::GroupingCache,
     A: crate::ports::ArtefactStore,
-    G: RangeResolver
-        + DiffSource
-        + AttributeSource
-        + ObjectReader
-        + ObjectWriter
-        + TreeResolver
-        + TreeBuilder
-        + RecountSource,
+    G: RangeResolver + DiffSource + AttributeSource + ObjectReader,
 {
     let mut out = run_core_with_progress(
         git,
@@ -179,6 +177,32 @@ where
     Ok(out)
 }
 
+/// Invariants 3 and 4 over a pipeline's output. **This writes.**
+///
+/// Building a tree from the hunks is the only non-tautological way to prove
+/// every hunk was carried, and `write-tree` needs the blobs in the odb. They
+/// land unreferenced and `git gc` collects them.
+///
+/// Run it when the caller reconstructs a tree — `dfr check`, whose whole job
+/// this is, and the shadow-branch builder, whose commits are trees built from
+/// exactly these hunks. A reviewer that only reads a diff is protected by
+/// invariants 1b, 1 and 2, which have already run.
+///
+/// The result lands in `out.report.tree` and in the document's audit block,
+/// with `"verify"` appended to `generator.stages`. Absence of that stage is how
+/// a consumer tells "did not run" from "ran and passed".
+pub fn verify<G>(git: &G, out: &mut PipelineOutput) -> Result<(), EngineError>
+where
+    G: ObjectReader + ObjectWriter + TreeResolver + TreeBuilder + RecountSource,
+{
+    let tree = check_tree(git, &out.base, &out.head, &out.view, &out.report)?;
+    if let Some(doc) = &mut out.document {
+        apply_tree_audit(doc, &tree);
+    }
+    out.report.tree = Some(tree);
+    Ok(())
+}
+
 fn run_core<G>(
     git: &G,
     base_rev: &str,
@@ -189,14 +213,7 @@ fn run_core<G>(
     symbols: &SymbolReaders,
 ) -> Result<PipelineOutput, EngineError>
 where
-    G: RangeResolver
-        + DiffSource
-        + AttributeSource
-        + ObjectReader
-        + ObjectWriter
-        + TreeResolver
-        + TreeBuilder
-        + RecountSource,
+    G: RangeResolver + DiffSource + AttributeSource + ObjectReader,
 {
     run_core_with_progress(git, base_rev, head_rev, kind, config, langs, symbols, None)
 }
@@ -217,14 +234,7 @@ fn run_core_with_progress<G>(
     progress: Option<&(dyn Fn(crate::grouping::Progress) + Send + Sync)>,
 ) -> Result<PipelineOutput, EngineError>
 where
-    G: RangeResolver
-        + DiffSource
-        + AttributeSource
-        + ObjectReader
-        + ObjectWriter
-        + TreeResolver
-        + TreeBuilder
-        + RecountSource,
+    G: RangeResolver + DiffSource + AttributeSource + ObjectReader,
 {
     if let Some(f) = progress {
         f(crate::grouping::Progress::Enumerating);
@@ -260,9 +270,10 @@ where
     // (ADR 0022).
     let graph = crate::artefact::graph::build(git, &head, &view, &part, symbols)?;
 
-    // Invariants 1–4; no document on violation.
-    let report = check_all(git, &base, &head, &view)?;
-    let document = if report.all_ok() {
+    // Invariants 1 and 2, read-only; no document on violation. The tree half
+    // is `verify`'s, and a caller that never builds a tree never needs it.
+    let report = check_fidelity(git, &base, &head, &view)?;
+    let document = if report.fidelity_ok() {
         Some(assemble(
             &view,
             &part,

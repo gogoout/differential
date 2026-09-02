@@ -427,7 +427,7 @@ where
     C: differential_engine::ports::GroupingCache,
     A: differential_engine::ports::ArtefactStore,
 {
-    let out = differential_engine::run_grouped_pipeline(
+    let mut out = differential_engine::run_grouped_pipeline(
         git,
         &source.base,
         &source.head,
@@ -437,6 +437,17 @@ where
         symbols,
         grouping,
     )?;
+    // Invariants 3 and 4. This renderer is the reason they exist: its commits
+    // are trees built from these hunks, so the tree assertion is about exactly
+    // the path taken below. The engine's pipeline no longer runs them, because
+    // a consumer that never builds a tree is not protected by them.
+    differential_engine::verify(git, &mut out)?;
+    if !out.report.all_ok() {
+        return Ok(StackOutput {
+            pipeline: out,
+            stack: None,
+        });
+    }
     let Some(doc) = &out.document else {
         return Ok(StackOutput {
             pipeline: out,

@@ -1,5 +1,16 @@
-//! Invariants 1–4 (spec/invariants.md). All of them run before any document is
-//! emitted; every one caught a real bug during prototype validation.
+//! Invariants 1–4 (spec/invariants.md); every one caught a real bug during
+//! prototype validation.
+//!
+//! They fall into two halves, and the split is the write boundary.
+//!
+//! **Invariants 1 and 2 are read-only and core.** They run inside the pipeline,
+//! and no document is emitted when either fails. Invariant 1b — the enumeration
+//! hole — is read-only too, and lives earlier still, in `rename_view::merge_raw`.
+//!
+//! **Invariants 3 and 4 build a tree, so they write.** Only a consumer that
+//! reconstructs a tree is protected by them, which is the shadow-branch builder
+//! alone. They run in `pipeline::verify`, which the caller invokes when it wants
+//! them, and they land in the report as `Some(TreeReport)`.
 
 use crate::EngineError;
 use crate::model::{DiffView, Disposition, Hunk};
@@ -17,6 +28,14 @@ pub struct InvariantReport {
     pub binary_oid_checked: usize,
     pub hunks_total: usize,
     pub accounting_ok: bool,
+    /// Invariants 3 and 4. `None` means `pipeline::verify` did not run — not
+    /// that it ran and passed. Consumers must not read absence as success.
+    pub tree: Option<TreeReport>,
+}
+
+/// Invariants 3 and 4: the half that needs a built tree, and so a write.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TreeReport {
     pub built_tree: Option<String>,
     pub head_tree: String,
     pub tree_ok: bool,
@@ -25,12 +44,26 @@ pub struct InvariantReport {
 }
 
 impl InvariantReport {
-    pub fn all_ok(&self) -> bool {
+    /// Invariants 1 and 2 — everything the read-only pipeline can assert.
+    ///
+    /// This is the gate on emitting a document at all: a bad parse, a dropped
+    /// hunk or broken accounting all fail here, and all three would make a
+    /// renderer show the wrong thing.
+    pub fn fidelity_ok(&self) -> bool {
         self.applier_mismatches.is_empty()
             && self.applier_ok == self.applier_total
             && self.accounting_ok
-            && self.tree_ok
-            && self.recount_ok
+    }
+
+    /// Invariants 1 to 4. **False when the tree half never ran**, which is
+    /// correct rather than a bug: a caller that wants the weaker claim asks
+    /// `fidelity_ok`.
+    pub fn all_ok(&self) -> bool {
+        self.fidelity_ok()
+            && self
+                .tree
+                .as_ref()
+                .is_some_and(|t| t.tree_ok && t.recount_ok)
     }
 
     /// "n/n" for the audit block.
@@ -63,19 +96,24 @@ impl std::fmt::Display for InvariantReport {
             writeln!(f, "           mismatch: {m}")?;
         }
         writeln!(f, "inv2 hunk accounting    {}", verdict(self.accounting_ok))?;
+        let Some(t) = &self.tree else {
+            // Say it did not run. A blank here would read as a pass.
+            writeln!(f, "inv3 tree assertion     NOT RUN")?;
+            return write!(f, "inv4 independent recount NOT RUN");
+        };
         writeln!(
             f,
             "inv3 tree assertion     {}  built {} head {}",
-            verdict(self.tree_ok),
-            self.built_tree.as_deref().unwrap_or("(not built)"),
-            self.head_tree
+            verdict(t.tree_ok),
+            t.built_tree.as_deref().unwrap_or("(not built)"),
+            t.head_tree
         )?;
         writeln!(
             f,
             "inv4 independent recount {} of {}  {}",
-            self.recount,
+            t.recount,
             self.hunks_total,
-            verdict(self.recount_ok)
+            verdict(t.recount_ok)
         )?;
         write!(
             f,
@@ -84,16 +122,16 @@ impl std::fmt::Display for InvariantReport {
     }
 }
 
-/// Run invariants 1–4. Invariant 1 (applier fidelity) is asserted BEFORE the
-/// tree is built; if it fails, nothing is built on top of it.
-pub fn check_all<G>(
+/// Invariants 1 and 2. **Read-only**: the bound list is one port, and that is
+/// the whole proof that the core pipeline cannot write.
+pub fn check_fidelity<G>(
     git: &G,
     base: &str,
     head: &str,
     view: &DiffView,
 ) -> Result<InvariantReport, EngineError>
 where
-    G: ObjectReader + ObjectWriter + TreeResolver + TreeBuilder + RecountSource,
+    G: ObjectReader,
 {
     // ---- Invariant 1: applier fidelity ------------------------------------
     let mut applier_total = 0usize;
@@ -140,11 +178,38 @@ where
     // ---- Invariant 2: hunk accounting --------------------------------------
     let accounting_ok = check_accounting(view);
 
+    Ok(InvariantReport {
+        files_total: view.files.len(),
+        applier_total,
+        applier_ok,
+        applier_mismatches: mismatches,
+        binary_oid_checked: binary_checked,
+        hunks_total: view.hunks.len(),
+        accounting_ok,
+        tree: None,
+    })
+}
+
+/// Invariants 3 and 4. **Writes**: it builds a tree from the hunks, which puts
+/// unreferenced loose objects in the odb.
+///
+/// `fidelity` is the report from `check_fidelity`, and it is read for one
+/// reason: never build a tree on a broken applier, or the tree assertion is
+/// made on top of a failure it cannot see (the prototype's rule).
+pub fn check_tree<G>(
+    git: &G,
+    base: &str,
+    head: &str,
+    view: &DiffView,
+    fidelity: &InvariantReport,
+) -> Result<TreeReport, EngineError>
+where
+    G: ObjectReader + ObjectWriter + TreeResolver + TreeBuilder + RecountSource,
+{
     let head_tree = git.tree_of(head)?;
 
     // ---- Invariant 3: non-tautological tree assertion ----------------------
-    // Refuse to build on a broken applier (the prototype's rule).
-    let (built_tree, tree_ok) = if may_build_tree(applier_total, applier_ok, &mismatches) {
+    let (built_tree, tree_ok) = if may_build_tree(fidelity) {
         let built = build_tree(git, base, view)?;
         let ok = built == head_tree;
         (Some(built), ok)
@@ -166,14 +231,7 @@ where
         None => (0, false),
     };
 
-    Ok(InvariantReport {
-        files_total: view.files.len(),
-        applier_total,
-        applier_ok,
-        applier_mismatches: mismatches,
-        binary_oid_checked: binary_checked,
-        hunks_total: view.hunks.len(),
-        accounting_ok,
+    Ok(TreeReport {
         built_tree,
         head_tree,
         tree_ok,
@@ -232,8 +290,11 @@ fn check_accounting(view: &DiffView) -> bool {
 
 /// Whether invariant 3 may run: never build a tree on a broken applier, or the
 /// tree assertion is being made on top of a failure it cannot see.
-fn may_build_tree(applier_total: usize, applier_ok: usize, mismatches: &[String]) -> bool {
-    mismatches.is_empty() && applier_ok == applier_total
+///
+/// Accounting is deliberately not consulted. Invariant 2 is about the view's
+/// bookkeeping; the applier is what the tree is built from.
+fn may_build_tree(fidelity: &InvariantReport) -> bool {
+    fidelity.applier_mismatches.is_empty() && fidelity.applier_ok == fidelity.applier_total
 }
 
 /// The deliberately dumb `@@` counter. Must never share code with `parse.rs` —
@@ -247,7 +308,10 @@ pub fn dumb_hunk_count(patch: &[u8]) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{Fidelity, check_accounting, dumb_hunk_count, fidelity, may_build_tree};
+    use super::{
+        Fidelity, InvariantReport, TreeReport, check_accounting, dumb_hunk_count, fidelity,
+        may_build_tree,
+    };
     use crate::model::{DiffView, Disposition, FileChange, Hunk};
 
     fn hunk(file: usize) -> Hunk {
@@ -347,13 +411,55 @@ mod tests {
         assert_eq!(fidelity(&f), Fidelity::Skip);
     }
 
+    fn report(applier_total: usize, applier_ok: usize, mismatches: Vec<String>) -> InvariantReport {
+        InvariantReport {
+            files_total: applier_total,
+            applier_total,
+            applier_ok,
+            applier_mismatches: mismatches,
+            binary_oid_checked: 0,
+            hunks_total: 0,
+            accounting_ok: true,
+            tree: None,
+        }
+    }
+
     /// The prototype's rule: a tree built on a broken applier would assert
     /// nothing, so invariant 3 does not run at all.
     #[test]
     fn a_broken_applier_stops_the_tree_from_being_built() {
-        assert!(may_build_tree(3, 3, &[]));
-        assert!(!may_build_tree(3, 2, &[]));
-        assert!(!may_build_tree(3, 3, &["f: mismatch".to_string()]));
+        assert!(may_build_tree(&report(3, 3, vec![])));
+        assert!(!may_build_tree(&report(3, 2, vec![])));
+        assert!(!may_build_tree(&report(
+            3,
+            3,
+            vec!["f: mismatch".to_string()]
+        )));
+    }
+
+    /// `all_ok` must not read a missing tree half as a pass. This is the whole
+    /// hazard the split introduces, so it is asserted directly.
+    #[test]
+    fn an_unverified_report_is_not_all_ok() {
+        let r = report(3, 3, vec![]);
+        assert!(r.fidelity_ok(), "invariants 1 and 2 passed");
+        assert!(!r.all_ok(), "invariants 3 and 4 never ran");
+    }
+
+    #[test]
+    fn a_verified_report_is_all_ok_only_when_both_halves_pass() {
+        let mut r = report(3, 3, vec![]);
+        r.tree = Some(TreeReport {
+            built_tree: Some("t".into()),
+            head_tree: "t".into(),
+            tree_ok: true,
+            recount: 0,
+            recount_ok: true,
+        });
+        assert!(r.all_ok());
+        r.tree.as_mut().unwrap().recount_ok = false;
+        assert!(!r.all_ok(), "invariant 4 failed");
+        assert!(r.fidelity_ok(), "but 1 and 2 still hold");
     }
 
     #[test]
