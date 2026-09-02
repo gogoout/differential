@@ -1528,26 +1528,6 @@ pub(super) fn compose_half(
                 ));
             }
         }
-        // A rule carries the row across the whole pane, separator column and
-        // all — the row is about the file, not about one side of it.
-        Fill::Rule(style) => {
-            let used: usize = pairs.iter().map(|(_, t)| t.width()).sum();
-            let ruled = used + 2 * RULE_ARM;
-            if ruled >= rest {
-                spans.extend(truncate_or_pad_spans(&pairs, rest, style));
-            } else {
-                // Dotted, and only a stub either side; the rest is left blank
-                // so the row does not draw a line across the whole screen.
-                let lead = (rest - ruled) / 2;
-                let blank = |n: usize| Span::styled(" ".repeat(n), Style::default());
-                let dots = Span::styled("┈".repeat(RULE_ARM), style);
-                spans.push(blank(lead));
-                spans.push(dots.clone());
-                spans.extend(pairs.iter().map(|(s, t)| Span::styled(t.clone(), *s)));
-                spans.push(dots);
-                spans.push(blank(rest - ruled - lead));
-            }
-        }
     }
     spans
 }

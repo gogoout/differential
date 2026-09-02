@@ -41,13 +41,6 @@ use crate::window::Expansion;
 
 const SCROLL_MARGIN: usize = 3;
 
-/// How far a context boundary's rule reaches either side of its label.
-///
-/// A stub, not a line across the screen: the row is a note about what is
-/// missing, and a full-width rule read as a chapter break in a file that has
-/// not ended.
-const RULE_ARM: usize = 10;
-
 /// Presentation settings the application layer reads from config and hands to
 /// the renderer. Not review state: nothing here is persisted in the sidecar.
 #[derive(Debug, Clone)]

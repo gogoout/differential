@@ -116,15 +116,6 @@ pub enum BoxStyle {
     Foreign,
 }
 
-impl BoxStyle {
-    pub const fn vertical(self) -> char {
-        match self {
-            BoxStyle::Own => '│',
-            BoxStyle::Foreign => '╎',
-        }
-    }
-}
-
 /// A row's edge marking which hunk it belongs to.
 ///
 /// An EDGE, not a box: closing the top and bottom with horizontal rules cut
@@ -148,8 +139,15 @@ pub struct Border {
 
 impl Border {
     /// The glyph this row puts in the pane's left border column.
+    ///
+    /// The match lived on `BoxStyle` behind a `vertical()` that this method
+    /// was the only caller of, and this method has one caller of its own. Two
+    /// names for one answer is one name too many.
     pub fn glyph(&self) -> char {
-        self.box_style.vertical()
+        match self.box_style {
+            BoxStyle::Own => '│',
+            BoxStyle::Foreign => '╎',
+        }
     }
 }
 
@@ -162,17 +160,6 @@ pub enum Fill {
     /// This side has no line here at all. Hatched rather than blank, so an
     /// absent line is visibly absent instead of looking like empty code.
     Hatch,
-    /// Rule out to the pane edge. What makes a row that is ABOUT the whole
-    /// file — a boundary, a hunk header — read as spanning both columns
-    /// instead of stopping mid-pane and leaving the split separator broken.
-    ///
-    /// A short dotted rule either side of centred content.
-    ///
-    /// Only a context boundary uses this. It divides rather than labels, so it
-    /// is centred — but it is a note about what is missing, not a chapter
-    /// break, so the rule is a stub on each side rather than a line drawn the
-    /// whole way across the screen.
-    Rule(Style),
 }
 
 /// The line-number cell: its text, the block it wears, and the brighter block
