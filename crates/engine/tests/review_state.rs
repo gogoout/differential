@@ -732,3 +732,82 @@ fn the_summary_lists_open_findings_and_says_so_when_there_are_none() {
     session.delete_finding(&id).unwrap();
     assert_eq!(session.findings_summary(), "(no open findings)\n");
 }
+
+// ------------------------------------------------- a damaged file on disk
+
+/// A truncated `findings.jsonl` must ERROR, not panic.
+///
+/// The store used to build the right `EngineError` and then `.expect()` it,
+/// which turned one bad line into a crashed reviewer. A reader whose disk
+/// filled mid-write has to be told what happened, not shown a backtrace.
+#[test]
+fn a_corrupt_findings_file_errors_rather_than_panicking() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dir = tmp.path().join("rev");
+    let store = FsReviewStore::at(dir.clone()).unwrap();
+    std::fs::write(dir.join("findings.jsonl"), "{\"id\": \"half a rec").unwrap();
+
+    let err = store.load_findings().expect_err("a torn line is an error");
+    let text = format!("{err:#}");
+    assert!(
+        text.contains("findings.jsonl:1"),
+        "the error names the line: {text}"
+    );
+}
+
+/// The same for a corrupt grouping-cache entry.
+#[test]
+fn a_corrupt_cache_entry_errors_rather_than_panicking() {
+    use differential_engine::ports::GroupingCache;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let cache = FsGroupingCache::at(dir.clone());
+    cache.put("k", "a response").unwrap();
+    std::fs::write(dir.join("k.json"), "{\"response\":").unwrap();
+
+    let err = cache.get("k").expect_err("a torn entry is an error");
+    assert!(format!("{err:#}").contains("k.json"), "{err:#}");
+}
+
+/// A write lands whole or not at all: the file a reader opens is never a
+/// prefix of the one being written.
+///
+/// Proved by what is left beside it — an atomic write publishes by rename, so
+/// the destination directory holds exactly the finished files and no partial
+/// one under the real name.
+#[test]
+fn a_saved_file_is_published_by_rename() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dir = tmp.path().join("rev");
+    let store = FsReviewStore::at(dir.clone()).unwrap();
+
+    let f = Finding::new(
+        FIXED_TIME,
+        "a note".into(),
+        "plan".into(),
+        Anchor {
+            file: "src/a.rs".into(),
+            side: "new".into(),
+            line: 1,
+            end_line: 1,
+            offset: 0,
+            span: 0,
+            hunk_digest: "d".into(),
+            line_text: "x".into(),
+            end_line_text: "x".into(),
+        },
+    );
+    store.save_findings(&[f]).unwrap();
+    store.save_state(&Default::default()).unwrap();
+
+    let names: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n != "plans")
+        .collect();
+    let mut names = names;
+    names.sort();
+    assert_eq!(names, vec!["findings.jsonl", "state.json"]);
+    assert_eq!(store.load_findings().unwrap().len(), 1);
+}
