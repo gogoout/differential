@@ -36,8 +36,9 @@ pub struct GroupView {
     pub id: String,
     pub label: String,
     /// The model's prose, carried so a renderer needs no second handle on the
-    /// raw group. Both renderers print both of these and nothing else of the
-    /// document's text.
+    /// raw group. Between them the two renderers print these and nothing else
+    /// of the document's text: the stack's commit body is both, the TUI's
+    /// group header is the description alone.
     pub description: String,
     pub reason: String,
     pub effort: schema::Effort,
