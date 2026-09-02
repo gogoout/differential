@@ -2615,10 +2615,11 @@ fn the_group_map_folds_what_the_group_does_not_touch() {
     );
 }
 
-/// Reading the plan, a map of the selected group FLOATS over the detail pane —
-/// below the group's header, so its full label survives the plan pane's 40
-/// columns, and above the diff, which carries on underneath as a preview of
-/// what entering the group will show.
+/// Reading the plan, a map of the selected group FLOATS over the FOOT of the
+/// detail pane at full pane width — the shape the file list takes at the foot
+/// of the plan pane. Its height is capped against the group's header, so the
+/// full label survives the plan pane's 40 columns, and the diff carries on
+/// above it as a preview of what entering the group will show.
 #[test]
 fn the_group_map_floats_over_the_diff_when_the_plan_is_focused() {
     let (_r, mut app) = app_with_two_groups_in_one_file();
@@ -2640,14 +2641,41 @@ fn the_group_map_floats_over_the_diff_when_the_plan_is_focused() {
         "no tree guides: {text}"
     );
 
-    // The group's header is above the float, and the diff below it.
+    // The group's header is above the float, and the diff above it too.
     assert!(
         text.contains("[focus] Group 0"),
         "the group's title should be uncovered: {text}"
     );
     assert!(
         text.contains("let filler"),
-        "the diff should carry on underneath the float: {text}"
+        "the diff should carry on above the float: {text}"
+    );
+
+    // Geometry, not just content: the box starts on the detail pane's own left
+    // border column and sits in the pane's lower half. A 100x40 terminal makes
+    // the detail pane x 40..100 over a 39-row body.
+    let buf = buffer_of(&app);
+    let top = (0..39u16)
+        .find(|&y| {
+            (40..100u16)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .contains("files in g")
+        })
+        .expect("the float's title row");
+    assert_eq!(
+        buf[(40, top)].symbol(),
+        "┌",
+        "the float should span the detail pane, border to border"
+    );
+    assert!(
+        top >= 39 / 2,
+        "the float should sit at the pane's foot, not its head: row {top}"
+    );
+    assert_eq!(
+        buf[(40, 38)].symbol(),
+        "└",
+        "the float's foot should land on the pane's bottom border row"
     );
 
     // Tab and the float is gone.
@@ -2658,6 +2686,70 @@ fn the_group_map_floats_over_the_diff_when_the_plan_is_focused() {
         "the float should lift: {text}"
     );
     assert!(text.contains("let filler"));
+}
+
+/// The float grows upward from the foot, and the group's header block is what
+/// stops it. A short pane and a group touching every file is the case that
+/// would swallow the label the 40-column plan pane already truncates.
+#[test]
+fn the_group_map_never_covers_the_groups_header() {
+    let (_r, mut app) = app_with_many_files();
+    app.focus = Focus::Groups;
+
+    // Short on purpose: 13 body rows against a map of nine. Without the cap the
+    // float would start at the pane's second content row and swallow the
+    // description under the title.
+    let backend = ratatui::backend::TestBackend::new(100, 14);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let row_text = |y: u16| {
+        (40..100u16)
+            .map(|x| buf[(x, y)].symbol())
+            .collect::<String>()
+    };
+
+    let top = (0..13u16)
+        .find(|&y| row_text(y).contains("files in g"))
+        .expect("the float should still be drawn");
+    // The header block is the title, its description and the blank under them.
+    assert!(
+        top >= 3,
+        "the cap must leave the group's header block uncovered: the float starts at row {top}"
+    );
+    assert!(
+        row_text(1).contains("[focus] Everything"),
+        "the group's title should be on screen: {}",
+        row_text(1)
+    );
+
+    // Shorter still: too short for the header block AND a box. The box is what
+    // gives way. A floor of three rows that beat the cap would land on the
+    // description and cover the very label the cap exists to protect.
+    let backend = ratatui::backend::TestBackend::new(100, 6);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let short_row = |y: u16| {
+        (40..100u16)
+            .map(|x| buf[(x, y)].symbol())
+            .collect::<String>()
+    };
+    let text: String = buf.content().iter().map(|c| c.symbol()).collect();
+    assert!(
+        !text.contains("files in g"),
+        "the float should lift rather than cover the header: {text}"
+    );
+    assert!(
+        short_row(1).contains("[focus] Everything"),
+        "the group's title must survive any pane height: {}",
+        short_row(1)
+    );
+    assert!(
+        short_row(2).trim_matches(|c| c == '│' || c == ' ') == "d",
+        "the description must survive with it: {}",
+        short_row(2)
+    );
 }
 
 /// Reading the detail, a list of the files in view floats over the foot of the
