@@ -5,6 +5,7 @@
 //! environment (ADR 0020). Path *policy* — where a cache or a review lives —
 //! is domain and stays in `plan`; this module only reads and writes there.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,26 @@ fn io_err(path: &Path, source: std::io::Error) -> EngineError {
         path: path.display().to_string(),
         source,
     }
+}
+
+/// Write `body` to `path` so a reader never sees half of it.
+///
+/// Every write in this module goes through here, because `ports::ReviewStore`
+/// promises that a torn write costs at most the last action. A plain
+/// whole-file write does not keep that promise: `save_findings` rewrites the
+/// entire file, so an interrupted write loses EVERY note rather than the newest
+/// one, and the truncated file it leaves is what the next open has to parse.
+///
+/// The temporary file is created in the destination's own directory, so the
+/// rename that publishes it is atomic. `sync_all` runs first: without it the
+/// rename can land ahead of the bytes and publish a file of zeroes.
+fn write_atomic(path: &Path, body: &[u8]) -> Result<(), EngineError> {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(|e| io_err(dir, e))?;
+    tmp.write_all(body).map_err(|e| io_err(path, e))?;
+    tmp.as_file().sync_all().map_err(|e| io_err(path, e))?;
+    tmp.persist(path).map_err(|e| io_err(path, e.error))?;
+    Ok(())
 }
 
 // ------------------------------------------------------------ grouping cache
@@ -67,12 +88,10 @@ impl ports::GroupingCache for FsGroupingCache {
         let path = Self::entry_path(dir, key);
         match std::fs::read_to_string(&path) {
             Ok(text) => {
-                let entry: Entry = serde_json::from_str(&text)
-                    .map_err(|e| EngineError::Cache {
-                        path: path.display().to_string(),
-                        source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-                    })
-                    .expect("identity serialises");
+                let entry: Entry = serde_json::from_str(&text).map_err(|e| EngineError::Cache {
+                    path: path.display().to_string(),
+                    source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+                })?;
                 Ok(Some(entry.response))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -90,7 +109,7 @@ impl ports::GroupingCache for FsGroupingCache {
         })
         .expect("string serialises");
         let path = Self::entry_path(dir, key);
-        std::fs::write(&path, body).map_err(|e| io_err(&path, e))
+        write_atomic(&path, body.as_bytes())
     }
 }
 
@@ -196,7 +215,7 @@ impl ports::ArtefactStore for FsArtefactStore {
             .unwrap_or_else(|| std::env::temp_dir().join("differential"));
         std::fs::create_dir_all(&dir).map_err(|e| io_err(&dir, e))?;
         let path = dir.join(format!("{key}.json"));
-        std::fs::write(&path, json).map_err(|e| io_err(&path, e))?;
+        write_atomic(&path, json.as_bytes())?;
         Ok(path)
     }
 }
@@ -230,10 +249,10 @@ impl ports::ReviewStore for FsReviewStore {
         let path = self.dir.join("plans").join(format!("{hash}.json"));
         // Content-addressed and immutable: re-saving the same hash is a no-op.
         if !path.exists() {
-            std::fs::write(&path, json).map_err(|e| io_err(&path, e))?;
+            write_atomic(&path, json.as_bytes())?;
         }
         let current = self.dir.join("current");
-        std::fs::write(&current, hash).map_err(|e| io_err(&current, e))
+        write_atomic(&current, hash.as_bytes())
     }
 
     fn load_state(&self) -> Result<ReviewState, EngineError> {
@@ -251,7 +270,7 @@ impl ports::ReviewStore for FsReviewStore {
     fn save_state(&self, state: &ReviewState) -> Result<(), EngineError> {
         let path = self.dir.join("state.json");
         let text = serde_json::to_string_pretty(state).expect("state serialises");
-        std::fs::write(&path, text).map_err(|e| io_err(&path, e))
+        write_atomic(&path, text.as_bytes())
     }
 
     fn load_findings(&self) -> Result<Vec<Finding>, EngineError> {
@@ -266,12 +285,10 @@ impl ports::ReviewStore for FsReviewStore {
             if line.trim().is_empty() {
                 continue;
             }
-            let f: Finding = serde_json::from_str(line)
-                .map_err(|e| EngineError::Cache {
-                    path: format!("{}:{}", path.display(), n + 1),
-                    source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-                })
-                .expect("identity serialises");
+            let f: Finding = serde_json::from_str(line).map_err(|e| EngineError::Cache {
+                path: format!("{}:{}", path.display(), n + 1),
+                source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+            })?;
             out.push(f);
         }
         Ok(out)
@@ -284,7 +301,7 @@ impl ports::ReviewStore for FsReviewStore {
             text.push_str(&serde_json::to_string(f).expect("serialises"));
             text.push('\n');
         }
-        std::fs::write(&path, text).map_err(|e| io_err(&path, e))
+        write_atomic(&path, text.as_bytes())
     }
 }
 
@@ -438,7 +455,7 @@ impl ports::ReviewCatalogue for FsReviewCatalogue {
         let dir = plan::review_dir(&self.common_dir, from);
         std::fs::create_dir_all(&dir).map_err(|e| io_err(&dir, e))?;
         let path = plan::alias_path(&self.common_dir, from);
-        std::fs::write(&path, to).map_err(|e| io_err(&path, e))
+        write_atomic(&path, to.as_bytes())
     }
 
     fn file_identity(
@@ -451,6 +468,6 @@ impl ports::ReviewCatalogue for FsReviewCatalogue {
         let path = plan::identity_path(&self.common_dir, id);
         let body = serde_json::to_string_pretty(&IdentityFile::of(opened_as))
             .expect("identity serialises");
-        std::fs::write(&path, body).map_err(|e| io_err(&path, e))
+        write_atomic(&path, body.as_bytes())
     }
 }

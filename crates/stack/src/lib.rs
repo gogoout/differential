@@ -22,7 +22,7 @@ use differential_engine::EngineError;
 use differential_engine::apply::apply_hunks;
 use differential_engine::invariants::dumb_hunk_count;
 use differential_engine::model::DiffView;
-use differential_engine::plan::{self, Deferral, Fold, HunkId, PlanIndex, reading_split};
+use differential_engine::plan::{self, Deferral, Fold, HunkId, reading_split};
 use differential_engine::ports::{
     AttributeSource, CommitIdentity, CommitWriter, DiffSource, IndexEntry, IndexSession,
     ObjectReader, ObjectWriter, RangeResolver, RecountSource, RefWriter, TreeBuilder, TreeResolver,
@@ -182,29 +182,31 @@ where
 /// One commit per group in rank order; skim groups split into exemplars (one
 /// hunk per shape class) and a remainder skippable on its subject line.
 fn commit_plan(doc: &schema::PlanDocument) -> Result<Vec<PlannedCommit>, EngineError> {
-    let Some(groups) = &doc.groups else {
+    if doc.groups.is_none() {
         return Err(EngineError::Invariant(
             "stack rendering needs a grouped document (groups is null)".into(),
         ));
-    };
-    let index = PlanIndex::build(doc)?;
+    }
     // Which group is the audit's back-fill, and what token names a tier, are
     // both domain answers. They used to be re-derived here — the back-fill
     // test character for character, the token by composing `effort_name`
     // itself — which is exactly the drift `plan::ReviewView` exists to stop.
+    //
+    // The projection is now the ONLY handle: it carries the prose too, so the
+    // raw `schema::Group` and the `PlanIndex` beside it are both gone.
     let review = plan::ReviewView::project(doc)?;
     let mut plan = Vec::new();
 
-    for (g, gv) in groups.iter().zip(&review.groups) {
+    for g in &review.groups {
         // Always folded: the stack's way of unfolding a skim group is the
         // [skim 2/2] commit that follows it.
-        let split = reading_split(&index, g, Fold::Folded);
+        let split = reading_split(&review, g, Fold::Folded);
         let body = format!("{}\n\n{}", g.description, g.reason);
         // `unclassified` for the back-fill, the tier's own name otherwise.
-        let tier = review.tier_name(gv);
+        let tier = review.tier_name(g);
 
         match split.deferral {
-            Deferral::None if gv.unclassified => plan.push(PlannedCommit {
+            Deferral::None if g.unclassified => plan.push(PlannedCommit {
                 subject: format!("[{tier}] {} hunks carried by no group", split.shown.len()),
                 body,
                 hunks: split.shown,

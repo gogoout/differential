@@ -7,7 +7,7 @@
 //! how they treat a back-filled group.
 
 use crate::plan::HunkId;
-use crate::plan::ids::PlanIndex;
+use crate::plan::view::{GroupView, ReviewView};
 use std::collections::HashSet;
 
 use crate::schema;
@@ -111,9 +111,13 @@ impl ReadingSplit {
 ///   verifying the exemplar verifies the shape.
 /// - noise, folded: nothing is read.
 /// - anything unfolded: everything is read.
-pub fn reading_split(index: &PlanIndex, group: &schema::Group, fold: Fold) -> ReadingSplit {
+///
+/// Takes the PROJECTION, not a `PlanIndex`. Both renderers already hold one,
+/// and a `PlanIndex` borrows the document — so the TUI was building a fresh
+/// one on every keypress purely to reach the two class questions below.
+pub fn reading_split(view: &ReviewView, group: &GroupView, fold: Fold) -> ReadingSplit {
     let everything = || ReadingSplit {
-        shown: index.group_hunks(group),
+        shown: group.hunks.clone(),
         deferred: Vec::new(),
         deferral: Deferral::None,
     };
@@ -127,21 +131,23 @@ pub fn reading_split(index: &PlanIndex, group: &schema::Group, fold: Fold) -> Re
 
         schema::Effort::Noise => ReadingSplit {
             shown: Vec::new(),
-            deferred: index.group_hunks(group),
+            deferred: group.hunks.clone(),
             deferral: Deferral::FoldedNoise,
         },
 
         schema::Effort::Skim => {
-            let shown: Vec<HunkId> = group.class_ids.iter().map(|c| index.exemplar(c)).collect();
+            let shown: Vec<HunkId> = group
+                .class_ids
+                .iter()
+                .map(|c| view.class(c).exemplar)
+                .collect();
             let deferred: Vec<HunkId> = group
                 .class_ids
                 .iter()
                 .flat_map(|c| {
-                    let exemplar = index.exemplar(c);
-                    index
-                        .class_hunks(c)
-                        .into_iter()
-                        .filter(move |h| *h != exemplar)
+                    let class = view.class(c);
+                    let exemplar = class.exemplar;
+                    class.hunks.iter().copied().filter(move |h| *h != exemplar)
                 })
                 .collect();
             // Singleton classes leave nothing to defer, and a renderer must
@@ -176,9 +182,8 @@ mod tests {
     fn split(effort: schema::Effort, fold: Fold) -> ReadingSplit {
         let mut doc = two_classes();
         doc.groups = Some(vec![group("g0", effort, &["C0", "C1"])]);
-        let index = PlanIndex::build(&doc).unwrap();
-        let groups = index.groups();
-        reading_split(&index, &groups[0], fold)
+        let view = ReviewView::project(&doc).unwrap();
+        reading_split(&view, &view.groups[0], fold)
     }
 
     #[test]
@@ -222,8 +227,8 @@ mod tests {
     fn a_skim_group_of_singletons_defers_nothing() {
         let mut doc = doc_with(&[("C0", &["h0"], "h0"), ("C1", &["h1"], "h1")], &[]);
         doc.groups = Some(vec![group("g0", schema::Effort::Skim, &["C0", "C1"])]);
-        let index = PlanIndex::build(&doc).unwrap();
-        let s = reading_split(&index, &index.groups()[0], Fold::Folded);
+        let view = ReviewView::project(&doc).unwrap();
+        let s = reading_split(&view, &view.groups[0], Fold::Folded);
 
         assert_eq!(hunk_ids(&s.shown), ["h0", "h1"]);
         assert!(s.deferred.is_empty());
