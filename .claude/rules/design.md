@@ -75,9 +75,9 @@ How to decide what to build, and what to refuse. Linked from
    fixes it. (This tool exists precisely because wide, honest diffs are reviewable.)
 
 7. **Name the contradiction; do not hide behind it.** When a request contradicts a spec, an
-   ADR, or a decision recorded as frozen, say so plainly, say what that decision was
-   protecting, and say what reversing it would cost. Then evaluate the request on its
-   merits.
+   ADR, or a line in [`constraints.md`](constraints.md), say so plainly, say what that
+   decision was protecting, and say what reversing it would cost. Then evaluate the request
+   on its merits.
 
    "The spec says otherwise" is a fact to put on the table. It is never an argument on its
    own. Everything in `spec/` and `adr/` is a record of past reasoning by the author, and
@@ -89,13 +89,27 @@ How to decide what to build, and what to refuse. Linked from
    same change (the line at the top of [`AGENTS.md`](../../AGENTS.md)), and a superseded ADR
    gets a successor that says why it was wrong.
 
-   The tell that you got this wrong: your objection restates the rule and adds no fact to
-   it.
+   **The flag is owed everywhere. What clears it differs.** A spec or an ADR is past
+   reasoning, and a better argument clears it — you may proceed once you have one and have
+   said so. A `constraints.md` line clears only on the author's explicit say-so **in that
+   conversation**; a good argument earns you the conversation, never the change. That file
+   is titled "the lines that do not move" and means it. Two of its lines cannot be cleared
+   at all, because they are not the author's to trade: privacy, and enumeration's totality
+   — every invariant below rests on the second.
 
-   The worked example is the request to make the pipeline read-only. `spec/invariants.md`
-   said all four invariants run before any document is emitted, and the schema is frozen at
-   version 3. Both were true and neither was a reason. The real question was which consumers
-   invariants 3 and 4 actually protect — and answering it made the split correct, while
-   turning up an invariant (1b) that had been implemented and never written down. An
-   objection that stopped at "the spec says all four run" would have cost the change and
-   found nothing.
+   The tell that you got this wrong in the refusing direction: your objection restates the
+   rule and adds no fact to it. The tell in the other direction: you changed something
+   `constraints.md` names and told the author afterwards.
+
+   The worked example is the request to make the pipeline read-only, and it hits both tiers
+   at once. `spec/invariants.md` said all four invariants run before any document is
+   emitted, and the schema is frozen at version 3 — a `constraints.md` line. Both were true
+   and neither was a reason to stop.
+
+   The two then resolved differently, which is the point. The spec was **overturned**: the
+   real question was which consumers invariants 3 and 4 protect, and answering it made the
+   split correct, while turning up an invariant (1b) that had been implemented and never
+   written down. The schema freeze was **respected**: naming it forced the search that found
+   `generator.stages`, which already carried exactly this — so the change shipped with no
+   version bump. Neither answer came from the record. Both came from asking what the record
+   was for.
