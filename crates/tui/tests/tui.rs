@@ -92,38 +92,31 @@ fn open_app_with_opts(
     App::new(session, factory, opts, theme().clone())
 }
 
+/// A backend that answers with ONE focus group per class.
+///
+/// Four fixtures built this same closure, three of them word for word. Every
+/// class staying its own group is what keeps the dependency graph's nodes
+/// apart, so a fixture that quietly merged two would test the wrong thing.
+fn one_group_per_class() -> FakeBackend {
+    FakeBackend::new("fake", |ids| {
+        let groups: Vec<String> = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| json_group(&format!("Group {i}"), "focus", &[id.as_str()]))
+            .collect();
+        format!(r#"{{"groups": [{}]}}"#, groups.join(", "))
+    })
+}
+
 /// Open an App over HEAD~1..HEAD of `r`, with the review store inside the
 /// repo dir — reopening yields a resumed session over the same store.
 fn open_app(r: &TestRepo) -> App {
-    let repo = Repo::open(Path::new(&r.root)).unwrap();
-    let base = r.git(&["rev-parse", "HEAD~1"]);
-    let head = r.git(&["rev-parse", "HEAD"]);
-    let backend = skim_first_backend();
-    let out = run_grouped_pipeline(
-        &repo,
-        &base,
-        &head,
-        SourceKind::Range,
-        &Config::default(),
-        &LanguageRegistry::builtin(),
-        &differential_testutil::stub_readers(),
-        &differential_engine::grouping::GroupingOptions {
-            backend: &backend,
-            cache: &FsGroupingCache::disabled(),
-            artefacts: &FsArtefactStore::disabled(),
-            fetch: "dfr",
-            progress: None,
-        },
+    open_app_with_opts(
+        r,
+        &skim_first_backend(),
+        ".dfr-test-store",
+        ReviewOptions::default(),
     )
-    .unwrap();
-    let factory = RowFactory::new(repo, out.base.clone(), out.head.clone());
-    let session = ReviewSession::open(
-        FsReviewStore::at(r.root.join(".dfr-test-store")).unwrap(),
-        out.document.unwrap(),
-        out.view,
-    )
-    .unwrap();
-    App::new(session, factory, ReviewOptions::default(), theme().clone())
 }
 
 /// Repo with one behavioural change + a 3-file repeated edit (skim material).
@@ -787,14 +780,7 @@ fn app_with_dependency_edge() -> (TestRepo, App) {
     r.commit_all("head");
 
     // One focus group per class, so each stays its own node in the dependency graph.
-    let backend = FakeBackend::new("fake", |ids| {
-        let groups: Vec<String> = ids
-            .iter()
-            .enumerate()
-            .map(|(i, id)| json_group(&format!("Group {i}"), "focus", &[id.as_str()]))
-            .collect();
-        format!(r#"{{"groups": [{}]}}"#, groups.join(", "))
-    });
+    let backend = one_group_per_class();
     let app = open_app_with(&r, &backend, ".dfr-edge-store");
     (r, app)
 }
@@ -1842,14 +1828,7 @@ fn app_with_two_groups_in_one_file() -> (TestRepo, App) {
     r.commit_all("head");
 
     // One class per group, so the two hunks cannot share one.
-    let backend = FakeBackend::new("fake", |ids| {
-        let groups: Vec<String> = ids
-            .iter()
-            .enumerate()
-            .map(|(n, id)| json_group(&format!("Group {n}"), "focus", &[id.as_str()]))
-            .collect();
-        format!(r#"{{"groups": [{}]}}"#, groups.join(", "))
-    });
+    let backend = one_group_per_class();
     let app = open_app_with(&r, &backend, ".dfr-cross-store");
     (r, app)
 }
@@ -2447,14 +2426,7 @@ fn the_group_map_folds_what_the_group_does_not_touch() {
     r.commit_all("head");
 
     // One class per group, so the selected group touches exactly one file.
-    let backend = FakeBackend::new("fake", |ids| {
-        let groups: Vec<String> = ids
-            .iter()
-            .enumerate()
-            .map(|(n, id)| json_group(&format!("Group {n}"), "focus", &[id.as_str()]))
-            .collect();
-        format!(r#"{{"groups": [{}]}}"#, groups.join(", "))
-    });
+    let backend = one_group_per_class();
     let mut app = open_app_with(&r, &backend, ".dfr-map-fold-store");
     app.focus = Focus::Groups;
 
@@ -4276,14 +4248,7 @@ fn render_dump_map() {
         r.write(path, after.as_bytes());
     }
     r.commit_all("head");
-    let backend = FakeBackend::new("fake", |ids| {
-        let groups: Vec<String> = ids
-            .iter()
-            .enumerate()
-            .map(|(n, id)| json_group(&format!("Group {n}"), "focus", &[id.as_str()]))
-            .collect();
-        format!(r#"{{"groups": [{}]}}"#, groups.join(", "))
-    });
+    let backend = one_group_per_class();
     let mut app = open_app_with(&r, &backend, ".dfr-map-dump-store");
     app.focus = Focus::Groups;
     for _ in 0..files.len() {
