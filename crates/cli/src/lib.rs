@@ -307,9 +307,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 };
                 let out = differential_engine::run_grouped_pipeline(
                     &worker_repo,
-                    &source.base,
-                    &source.head,
-                    source.kind,
+                    &source,
                     &config,
                     &langs,
                     &symbols,
@@ -355,16 +353,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }
         Command::Check { json, .. } => {
             let source = resolved.expect("range checked above");
-            let mut out = run_pipeline(
-                &repo,
-                &source.base,
-                &source.head,
-                source.kind,
-                &config,
-                &langs,
-                &symbols,
-            )
-            .context("pipeline failed")?;
+            let mut out = run_pipeline(&repo, &source, &config, &langs, &symbols)
+                .context("pipeline failed")?;
             // Running invariants 3 and 4 is this command's entire job, so it
             // always asks for them. They write to the odb; nothing else does.
             differential_engine::verify(&repo, &mut out).context("verify failed")?;
@@ -578,9 +568,7 @@ fn grouped(
     let backend = backend_from(&config.grouping, repo.root(), None);
     differential_engine::run_grouped_pipeline(
         repo,
-        &source.base,
-        &source.head,
-        source.kind,
+        source,
         config,
         langs,
         symbols,

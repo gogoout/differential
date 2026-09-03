@@ -610,10 +610,11 @@ was being dropped, which read as the box being broken.
 
 `dfr findings <range>` re-anchors and prints the findings as JSON — each record carries
 `{id, created, body, status, moved, plan_hash, anchor: {file, side, line, end_line, offset,
-span, hunk_digest, line_text, end_line_text}}`. `line`/`end_line` are the resolved numbers
+span, hunk_digest, line_text, end_line_text}, reply_to, upstream}` (the last two are the
+forge consumer's, [forge.md](forge.md)). `line`/`end_line` are the resolved numbers
 for a consumer that only reads; `offset`/`span` are what survive a regeneration. All five
-are additive with defaults, so an older `findings.jsonl` loads unchanged. `hunk_digest` keys back into the plan document's `hunks[].digest` and from
-there to `forge_position`, which is how agent tooling and the future forge consumer act on
-them. The `y` clipboard summary is the human-readable projection: one markdown bullet per
-open finding, `file:lines: note`. No group: a group is how this reviewer chose to READ the
+are additive with defaults, so an older `findings.jsonl` loads unchanged. `hunk_digest` keys back into the plan document's `hunks[].digest`, which is how agent
+tooling acts on them; the forge consumer posts from the anchor itself. The `y` clipboard
+summary is the human-readable projection: one markdown bullet per open finding not yet on
+the request, `file:lines: note`. No group: a group is how this reviewer chose to READ the
 branch, and the summary is pasted somewhere that has no idea what `g7` was.

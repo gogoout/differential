@@ -424,16 +424,8 @@ where
     C: differential_engine::ports::GroupingCache,
     A: differential_engine::ports::ArtefactStore,
 {
-    let mut out = differential_engine::run_grouped_pipeline(
-        git,
-        &source.base,
-        &source.head,
-        source.kind,
-        config,
-        langs,
-        symbols,
-        grouping,
-    )?;
+    let mut out =
+        differential_engine::run_grouped_pipeline(git, source, config, langs, symbols, grouping)?;
     // Invariants 3 and 4. This renderer is the reason they exist: its commits
     // are trees built from these hunks, so the tree assertion is about exactly
     // the path taken below. The engine's pipeline no longer runs them, because

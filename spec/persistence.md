@@ -21,7 +21,8 @@ private, per-clone, worktree-safe, never committable.
 ├── reviews/<review-id>/
 │   ├── plans/<content-hash>.json   # every generated document, immutable
 │   ├── current                     # the active plan's content hash
-│   ├── findings.jsonl              # the comment store
+│   ├── findings.jsonl              # the reader's notes; the forge never writes here
+│   ├── comments.jsonl              # a cache of the forge's threads (forge.md)
 │   ├── identity.json               # a name, or the endpoints it was opened as
 │   └── state.json                  # review progress
 ├── reviews/<review-id>/
@@ -110,8 +111,16 @@ Comment record:
               "line": 47, "end_line": 52,
               "offset": 3, "span": 5,
               "hunk_digest": "<hunks[].digest>",
-              "line_text": "...", "end_line_text": "..." } }
+              "line_text": "...", "end_line_text": "..." },
+  "reply_to": "<forge thread id>" | null,
+  "upstream": { "thread": "...", "comment": "..." } | null }
 ```
+
+`reply_to` and `upstream` belong to the forge consumer ([forge.md](forge.md)): a reply
+drafted under a fetched thread, and where a published finding landed. Both default to
+`null`, so a store written before them loads unchanged. A finding with an `upstream` is on
+the request: the `y` summary and `dfr findings --summary` leave it out, and a publish never
+sends it twice.
 
 Comments anchor to a hunk's **digest** (exact content hash, stable across regenerations),
 never to its positional id — and to an **offset inside it**, never to a line number. The
@@ -171,4 +180,5 @@ Implemented in `engine::review_state` (primitives: store, types, re-anchoring) a
 renderer opens a `ReviewSession` and reads/mutates through it — every mutation
 (reviewed mark, finding, cursor) is on disk before the call returns, and renderers hold
 no review state of their own. The TUI ([tui.md](tui.md)) and `dfr findings` are both
-session consumers; the forge consumer will publish from the same store.
+session consumers; the forge consumer ([forge.md](forge.md)) publishes from the same
+store, and caches the forge's own threads in `comments.jsonl` beside it.

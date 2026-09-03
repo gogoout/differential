@@ -17,7 +17,7 @@ use differential_engine::config::Config;
 use differential_engine::gitio::Repo;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::run_pipeline;
-use differential_engine::schema::SourceKind;
+use differential_engine::plan::ReviewSource;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -64,9 +64,7 @@ fn real_corpus_parity() {
             .unwrap_or_else(|e| panic!("fixture {i}: cannot open {repo_path}: {e}"));
         let mut out = run_pipeline(
             &repo,
-            &fx.base,
-            &fx.head,
-            SourceKind::Range,
+            &ReviewSource::range(fx.base.clone(), fx.head.clone(), fx.head.clone()),
             &Config::default(),
             &LanguageRegistry::builtin(),
             &differential_testutil::stub_readers(),

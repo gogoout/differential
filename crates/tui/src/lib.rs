@@ -147,7 +147,7 @@ where
     // this range are the one thing that would otherwise arrive unexplained.
     let adopted = match &prepared.identity {
         ReviewIdentity::Range { base, head_spec } => id != plan::review_id(base, head_spec),
-        ReviewIdentity::Named(_) => false,
+        ReviewIdentity::Named(_) | ReviewIdentity::Remote(_) => false,
     };
     let store = FsReviewStore::for_review(repo, &id)?;
     let session = ReviewSession::open(store, doc, prepared.out.view)?;

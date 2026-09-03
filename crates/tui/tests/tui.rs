@@ -9,8 +9,8 @@ use differential_engine::config::Config;
 use differential_engine::gitio::Repo;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::run_grouped_pipeline;
+use differential_engine::plan::ReviewSource;
 use differential_engine::ports::ReviewStore;
-use differential_engine::schema::SourceKind;
 use differential_engine::store::{FsArtefactStore, FsGroupingCache, FsReviewStore};
 use differential_testutil::{FakeBackend, TestRepo, json_group};
 use differential_tui::app::{App, Effect, Focus, Mode, ReviewOptions, ViewMode, Viewport};
@@ -67,9 +67,7 @@ fn open_app_with_opts(
     let head = r.git(&["rev-parse", "HEAD"]);
     let out = run_grouped_pipeline(
         &repo,
-        &base,
-        &head,
-        SourceKind::Range,
+        &ReviewSource::range(base.clone(), head.clone(), head.clone()),
         &Config::default(),
         &LanguageRegistry::builtin(),
         &differential_testutil::stub_readers(),
@@ -1443,9 +1441,7 @@ fn highlighting_is_windowed_not_whole_file() {
     let backend = skim_first_backend();
     let out = run_grouped_pipeline(
         &repo,
-        &base,
-        &head,
-        SourceKind::Range,
+        &ReviewSource::range(base.clone(), head.clone(), head.clone()),
         &Config::default(),
         &LanguageRegistry::builtin(),
         &differential_testutil::stub_readers(),

@@ -10,6 +10,7 @@ pub mod apply;
 pub mod artefact;
 pub mod config;
 pub mod document;
+pub mod forge;
 pub mod gitio;
 pub mod grouping;
 pub mod invariants;
@@ -92,4 +93,7 @@ pub enum EngineError {
 
     #[error("schema error: {0}")]
     Schema(#[from] crate::schema::SchemaError),
+
+    #[error("forge: {0}")]
+    Forge(#[from] crate::forge::ForgeError),
 }

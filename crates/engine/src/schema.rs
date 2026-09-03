@@ -72,7 +72,7 @@ pub enum SourceKind {
     Worktree,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Remote {
     pub forge: String,
     pub project: String,
