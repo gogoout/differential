@@ -5731,6 +5731,21 @@ mod forge_threads {
     struct FakeForge {
         threads: Mutex<Vec<RemoteThread>>,
         resolved: Mutex<Vec<(String, bool)>>,
+        /// What `request` reports as the head. The review's own by default;
+        /// a test moves it to stand for a push since the review was built.
+        head: Mutex<String>,
+        published: Mutex<Vec<Batch>>,
+    }
+
+    impl FakeForge {
+        fn new(threads: Vec<RemoteThread>, head: &str) -> Arc<Self> {
+            Arc::new(FakeForge {
+                threads: Mutex::new(threads),
+                resolved: Mutex::new(Vec::new()),
+                head: Mutex::new(head.to_string()),
+                published: Mutex::new(Vec::new()),
+            })
+        }
     }
 
     impl Forge for FakeForge {
@@ -5738,13 +5753,55 @@ mod forge_threads {
             ForgeKind::Github
         }
         fn request(&self, _id: Option<&str>) -> Result<Request, ForgeError> {
-            Ok(request())
+            Ok(Request {
+                head: self.head.lock().unwrap().clone(),
+                ..request()
+            })
         }
         fn threads(&self, _req: &Request) -> Result<Vec<RemoteThread>, ForgeError> {
             Ok(self.threads.lock().unwrap().clone())
         }
-        fn publish(&self, _req: &Request, _batch: &Batch) -> Result<Vec<Published>, ForgeError> {
-            Ok(Vec::new())
+        /// Takes everything: each new comment becomes a thread of its own on
+        /// the same line, each reply a comment in its thread — what the real
+        /// forge's refetch would then show.
+        fn publish(&self, _req: &Request, batch: &Batch) -> Result<Vec<Published>, ForgeError> {
+            self.published.lock().unwrap().push(batch.clone());
+            let mut out = Vec::new();
+            let mut threads = self.threads.lock().unwrap();
+            for c in &batch.comments {
+                let (tid, cid) = (format!("T-{}", c.finding), format!("C-{}", c.finding));
+                let mut t = thread(&tid, &cid);
+                t.comments.truncate(1);
+                t.comments[0].body = c.body.clone();
+                t.comments[0].author = "me".into();
+                t.line = Some(c.line);
+                threads.push(t);
+                out.push(Published {
+                    finding: c.finding.clone(),
+                    thread: tid,
+                    comment: cid,
+                    url: None,
+                });
+            }
+            for r in &batch.replies {
+                let cid = format!("C-{}", r.finding);
+                if let Some(t) = threads.iter_mut().find(|t| t.id == r.thread) {
+                    t.comments.push(RemoteComment {
+                        id: cid.clone(),
+                        author: "me".into(),
+                        created: "2026-09-04T09:00:00Z".into(),
+                        body: r.body.clone(),
+                        reply_to: t.comments.first().map(|c| c.id.clone()),
+                    });
+                }
+                out.push(Published {
+                    finding: r.finding.clone(),
+                    thread: r.thread.clone(),
+                    comment: cid,
+                    url: None,
+                });
+            }
+            Ok(out)
         }
         fn set_resolved(
             &self,
@@ -5819,10 +5876,7 @@ mod forge_threads {
     /// the group that holds `src/main.txt`.
     fn app_with_threads(threads: Vec<RemoteThread>) -> (TestRepo, App, Arc<FakeForge>) {
         let (r, mut app) = make_app();
-        let fake = Arc::new(FakeForge {
-            threads: Mutex::new(threads),
-            resolved: Mutex::new(Vec::new()),
-        });
+        let fake = FakeForge::new(threads, &app.session.doc().source.head);
         app.link_forge(ForgeLink {
             forge: Arc::clone(&fake) as Arc<dyn Forge>,
             request: request(),
@@ -6017,10 +6071,7 @@ mod forge_threads {
                 .any(|r| matches!(&r.kind, RowKind::Finding(f, _) if f == &id))
         );
 
-        let fake = Arc::new(FakeForge {
-            threads: Mutex::new(vec![thread("T1", "C1")]),
-            resolved: Mutex::new(Vec::new()),
-        });
+        let fake = FakeForge::new(vec![thread("T1", "C1")], &app.session.doc().source.head);
         app.link_forge(ForgeLink {
             forge: fake as Arc<dyn Forge>,
             request: request(),
@@ -6077,6 +6128,230 @@ mod forge_threads {
         settle(&mut app);
         app.cursor = app.rows.iter().position(|r| r.line.is_some()).unwrap();
         println!("\n=== resolved; cursor elsewhere ===");
+        println!("{}", ansi_dump(&mut app, 120, 24));
+    }
+
+    // ---------------------------------------------------------------- publish
+
+    /// Write a note on the changed line and a reply under the thread.
+    fn draft_two(app: &mut App) {
+        app.cursor = app
+            .rows
+            .iter()
+            .position(|r| r.line.as_ref().is_some_and(|l| l.holds("new", 1)))
+            .unwrap();
+        app.handle_key(key('c'));
+        app.handle_paste("three is a magic number");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.cursor = thread_rows(app, "T1")[0];
+        app.handle_key(key('c'));
+        app.handle_paste("agreed");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn p_shows_the_plan_and_only_y_sends_it() {
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        draft_two(&mut app);
+        assert_eq!(app.session.unpublished().count(), 2);
+
+        app.handle_key(key('P'));
+        let Mode::Publish { plan } = &app.mode else {
+            panic!("P opens the publish modal");
+        };
+        assert_eq!(
+            (plan.batch.comments.len(), plan.batch.replies.len()),
+            (1, 1)
+        );
+        assert!(plan.excluded.is_empty());
+        // Any other key keeps it all local.
+        app.handle_key(key('n'));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.status, "nothing published");
+        assert!(fake.published.lock().unwrap().is_empty());
+        assert!(!app.syncing());
+
+        app.handle_key(key('P'));
+        app.handle_key(key('y'));
+        assert!(app.syncing(), "the send is a worker call");
+        assert!(app.status.starts_with("publishing 2"), "{}", app.status);
+        settle(&mut app);
+        assert_eq!(fake.published.lock().unwrap().len(), 1);
+        assert_eq!(app.status, "published 2 comments");
+        // Both findings carry their upstream address; neither is open work.
+        assert_eq!(app.session.unpublished().count(), 0);
+        assert!(app.session.findings().iter().all(|f| f.upstream.is_some()));
+        assert_eq!(app.findings_summary().trim(), "(no open findings)");
+        // The refetch shows the twins: the note is a thread now, and the
+        // reply is the thread's third comment.
+        assert!(
+            !app.rows
+                .iter()
+                .any(|r| matches!(r.kind, RowKind::Finding(..)))
+        );
+        assert_eq!(app.session.threads().len(), 2);
+        assert_eq!(app.session.thread("T1").unwrap().comments.len(), 3);
+        // A second P has nothing left to send.
+        app.handle_key(key('P'));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(
+            app.status.starts_with("nothing to publish"),
+            "{}",
+            app.status
+        );
+    }
+
+    #[test]
+    fn a_moved_head_refuses_the_whole_publish() {
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        draft_two(&mut app);
+        *fake.head.lock().unwrap() = "f".repeat(40);
+        app.handle_key(key('P'));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        assert!(
+            fake.published.lock().unwrap().is_empty(),
+            "nothing was sent"
+        );
+        assert!(
+            app.status
+                .starts_with("nothing published: the pull request moved to ffffffffffff"),
+            "{}",
+            app.status
+        );
+        assert_eq!(
+            app.session.unpublished().count(),
+            2,
+            "still the reader's to send"
+        );
+    }
+
+    #[test]
+    fn a_note_the_diff_cannot_hold_stays_local_and_is_named() {
+        let (_r, mut app, fake) = app_with_threads(vec![]);
+        // Far from any change: line 40 of a one-line file.
+        let h = app
+            .session
+            .doc()
+            .hunks
+            .iter()
+            .position(|h| h.file == "src/main.txt")
+            .unwrap();
+        app.session
+            .add_finding(
+                h,
+                Some(differential_engine::review_state::Lines {
+                    side: "new".into(),
+                    start: 40,
+                    end: 40,
+                    start_text: String::new(),
+                    end_text: String::new(),
+                }),
+                "far away".into(),
+            )
+            .unwrap();
+        app.rebuild_rows();
+        app.handle_key(key('P'));
+        assert!(
+            matches!(app.mode, Mode::Normal),
+            "nothing sendable: no modal"
+        );
+        assert!(app.status.contains("cannot hold"), "{}", app.status);
+
+        // With one sendable note beside it, the modal lists the one that stays.
+        draft_two_without_thread(&mut app);
+        app.handle_key(key('P'));
+        let Mode::Publish { plan } = &app.mode else {
+            panic!("P opens the publish modal");
+        };
+        assert_eq!(plan.batch.len(), 1);
+        assert_eq!(plan.excluded.len(), 1);
+        assert_eq!(plan.excluded[0].lines, "40");
+        let backend = ratatui::backend::TestBackend::new(120, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let screen: Vec<String> = (0..30u16)
+            .map(|y| (0..120u16).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        assert!(
+            screen
+                .iter()
+                .any(|l| l.contains("1 new comment go to the pull request")),
+            "{screen:#?}"
+        );
+        assert!(
+            screen.iter().any(|l| l.contains("1 stay local")),
+            "{screen:#?}"
+        );
+        assert!(
+            screen.iter().any(|l| l.contains("src/main.txt:40")),
+            "{screen:#?}"
+        );
+        app.handle_key(key('y'));
+        settle(&mut app);
+        assert_eq!(fake.published.lock().unwrap()[0].comments.len(), 1);
+        assert_eq!(
+            app.session.unpublished().count(),
+            1,
+            "the far note is still open"
+        );
+    }
+
+    fn draft_two_without_thread(app: &mut App) {
+        app.cursor = app
+            .rows
+            .iter()
+            .position(|r| r.line.as_ref().is_some_and(|l| l.holds("new", 1)))
+            .unwrap();
+        app.handle_key(key('c'));
+        app.handle_paste("on the change");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn p_off_a_request_review_says_so() {
+        let (_r, mut app) = make_app();
+        app.handle_key(key('P'));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.status, "this review is not of a pull request");
+    }
+
+    /// The publish modal with one comment, one reply and one note that stays.
+    ///
+    /// `cargo test -p differential-tui --test tui render_dump_publish -- --ignored --nocapture`
+    #[test]
+    #[ignore = "prints the pane for a human to look at"]
+    fn render_dump_publish() {
+        let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        draft_two(&mut app);
+        let h = app
+            .session
+            .doc()
+            .hunks
+            .iter()
+            .position(|h| h.file == "src/main.txt")
+            .unwrap();
+        app.session
+            .add_finding(
+                h,
+                Some(differential_engine::review_state::Lines {
+                    side: "new".into(),
+                    start: 40,
+                    end: 41,
+                    start_text: String::new(),
+                    end_text: String::new(),
+                }),
+                "far away".into(),
+            )
+            .unwrap();
+        app.rebuild_rows();
+        app.handle_key(key('P'));
+        println!("\n=== P: the publish modal ===");
+        println!("{}", ansi_dump(&mut app, 120, 24));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        println!("\n=== after y: the twins, and the footer ===");
         println!("{}", ansi_dump(&mut app, 120, 24));
     }
 }

@@ -277,6 +277,11 @@ pub enum ForgeError {
     Parse { command: String, msg: String },
     #[error("{0}")]
     NoRequest(String),
+    /// The request's head is not the one this review was built on: someone
+    /// pushed. Both forges refuse a comment against another commit, so
+    /// nothing was sent.
+    #[error("the {noun} moved to {at} since this review was built; open it again")]
+    HeadMoved { noun: &'static str, at: String },
 }
 
 /// The forge, as the domain needs it. `dyn`: which forge a repository is on
@@ -549,4 +554,36 @@ pub fn source_for<G: Ancestry + RangeResolver>(
 /// thing a publish checks and the batch is not built when it fails.
 pub fn head_matches(req: &Request, review_head: &str) -> bool {
     req.head == review_head
+}
+
+/// What one publish brings back: the forge's record of each finding it
+/// took, and the threads fetched afterwards so the twins can be shown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishOutcome {
+    pub published: Vec<Published>,
+    pub threads: Vec<RemoteThread>,
+}
+
+/// The whole publish, forge side: ask the forge where the request is now,
+/// refuse if it moved, send the batch, fetch the threads again.
+///
+/// One function so the reviewer and `dfr findings --post` cannot order these
+/// differently. It runs on whichever thread the caller chooses; it touches
+/// nothing of the review's.
+pub fn publish(
+    forge: &dyn Forge,
+    req: &Request,
+    review_head: &str,
+    batch: &Batch,
+) -> Result<PublishOutcome, ForgeError> {
+    let fresh = forge.request(Some(&req.id))?;
+    if !head_matches(&fresh, review_head) {
+        return Err(ForgeError::HeadMoved {
+            noun: req.kind.noun(),
+            at: fresh.head.get(..12).unwrap_or(&fresh.head).to_string(),
+        });
+    }
+    let published = forge.publish(req, batch)?;
+    let threads = forge.threads(req)?;
+    Ok(PublishOutcome { published, threads })
 }

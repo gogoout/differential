@@ -120,12 +120,12 @@ reaches the forge.
 
 ## Publishing
 
-`P` collects every finding with `status: open` and no `upstream`, reports the count, and
-asks. On yes:
+`P` collects every finding with `status: open` and no `upstream`, shows what would go and
+what would stay and why, and asks. On `y`, on a worker thread:
 
-1. **The head check.** The forge's current head must equal the review's head. If it does
-   not — someone pushed since the review opened — nothing is sent, and the status line says
-   which commit the request is at now.
+1. **The head check.** The forge is asked where the request is now; its head must equal
+   the review's head. If it does not — someone pushed since the review opened — nothing is
+   sent, and the status line says which commit the request is at now.
 2. **The diff check.** A finding whose line the request's diff does not show is excluded
    and reported by file and line. On GitHub a request diff carries three lines of context
    around each hunk; the check is against the plan's hunks on the anchor's side, widened by

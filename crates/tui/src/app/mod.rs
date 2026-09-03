@@ -215,6 +215,11 @@ pub enum Mode {
         /// `D` was pressed and the next key answers.
         confirming: bool,
     },
+    /// `P` was pressed: what a publish would send and what it would leave,
+    /// shown before anything leaves the machine. `y` sends (ADR 0029).
+    Publish {
+        plan: differential_engine::forge::PublishPlan,
+    },
 }
 
 pub struct FindingEntry {

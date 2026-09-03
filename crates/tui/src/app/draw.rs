@@ -100,6 +100,62 @@ impl App {
                     area,
                 );
             }
+            Mode::Publish { plan } => {
+                // What leaves, what stays, and why — before anything leaves.
+                // The one outward act in this reviewer, so it reads its whole
+                // consequence back before asking (ADR 0029).
+                let key = Style::default().fg(self.theme.header_fg);
+                let text = Style::default().fg(self.theme.context_fg);
+                let dim = Style::default().fg(self.theme.gutter_fg);
+                let (comments, replies) = (plan.batch.comments.len(), plan.batch.replies.len());
+                let mut lines = vec![Line::from("")];
+                let mut what = Vec::new();
+                if comments > 0 {
+                    what.push(format!(
+                        "{comments} new comment{}",
+                        if comments == 1 { "" } else { "s" }
+                    ));
+                }
+                if replies > 0 {
+                    what.push(format!(
+                        "{replies} repl{}",
+                        if replies == 1 { "y" } else { "ies" }
+                    ));
+                }
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  {} go to the pull request as one review",
+                        what.join(" and ")
+                    ),
+                    text,
+                )));
+                if !plan.excluded.is_empty() {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        format!("  {} stay local:", plan.excluded.len()),
+                        text,
+                    )));
+                    for ex in &plan.excluded {
+                        lines.push(Line::from(vec![
+                            Span::styled(format!("    {}:{}  ", ex.file, ex.lines), key),
+                            Span::styled(ex.reason.clone(), dim),
+                        ]));
+                    }
+                }
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![
+                    Span::styled("  y", key),
+                    Span::styled(" publishes  ·  any other key keeps them local", dim),
+                ]));
+                let width = panes.body.width.saturating_sub(6).min(90);
+                let height = (lines.len() as u16 + 2).min(panes.body.height);
+                let area = centered_rect(panes.body, width, height);
+                clear_to_ground(frame, &self.theme, area);
+                frame.render_widget(
+                    Paragraph::new(lines).block(pane(&self.theme, " publish ".to_string(), true)),
+                    area,
+                );
+            }
             Mode::Findings {
                 entries,
                 selected,
@@ -1224,12 +1280,9 @@ impl App {
     pub(super) fn draw_status(&self, frame: &mut Frame, area: Rect) {
         let total: usize = self.groups().iter().map(|g| g.hunks.len()).sum();
         let done = self.session.reviewed_count().min(total);
-        let open = self
-            .session
-            .findings()
-            .iter()
-            .filter(|f| f.status == FindingStatus::Open)
-            .count();
+        // Open and not yet on the request: what `y` copies and `P` sends. A
+        // published note is the forge's now and is counted among its threads.
+        let open = self.session.unpublished().count();
 
         let bar = Style::default().bg(self.theme.status_bg);
         let (ink, fill) = self.theme.pill();
@@ -1867,6 +1920,10 @@ pub(super) fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         row(
             "x  ·  R",
             "resolve / reopen the thread · refetch review threads",
+        ),
+        row(
+            "P",
+            "publish the open findings to the pull request (asks first)",
         ),
         row("F", "every finding, in one list"),
         row("y  ·  q", "copy findings · quit (state is saved)"),

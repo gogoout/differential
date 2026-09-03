@@ -968,10 +968,13 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
         .as_ref()
         .map(|id| format!(" · {id}"))
         .unwrap_or_default();
+    // A published note whose fetched twin is here is a thread now, and is
+    // not counted twice.
     let n_findings = ctx
         .findings
         .iter()
         .filter(|f| f.anchor.hunk_digest == hunk.digest)
+        .filter(|f| !ctx.threads.iter().any(|t| t.is_twin_of(f)))
         .count();
     // A band across the pane rather than a `@@ -a,b +c,d @@` line. Those
     // coordinates were the only way to know where you were when the gutter

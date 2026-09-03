@@ -402,6 +402,7 @@ list belongs; the footer's job is to point at it.
 | `c` on a review thread | draft a reply under it — a finding carrying the thread's id until `P` publishes it ([forge.md](forge.md)) |
 | `x` | resolve or reopen the review thread under the cursor, on the forge, at once |
 | `R` | fetch the request's review threads again |
+| `P` | publish the open findings to the request as one review — a float first says what goes and what stays and why; `y` sends, any other key keeps them local |
 | `?` | help — the keys, as one uninterrupted table |
 | `q` | quit — state is saved on every change, quitting never loses anything |
 
@@ -634,6 +635,16 @@ thread's id; it is drawn straight after the thread it answers, stepped in like a
 the note's own look, so what is on the request and what is not yet are told apart at a
 glance. A published finding whose fetched twin is present is not drawn at all: the thread
 is it now, and `y` leaves it out for the same reason.
+
+**`P` publishes, and asks first.** It is the one outward act in this reviewer, so the float
+reads its whole consequence back before the question: how many new comments and replies go
+to the request as one review, and which notes stay local and why — a line the request's
+diff does not show, a reply whose thread is gone. Only a bare `y` sends; any other key
+leaves everything where it was, with `nothing published` in the footer. The send is a
+worker call like every other: the footer says `publishing N comments…`, then `published N
+comments` when the forge has answered and the refetched threads have replaced the notes.
+If the request's head moved since the review was built, nothing is sent and the footer
+says where it moved to; the review has to be opened again on the new head.
 
 ## Findings contract
 

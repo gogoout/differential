@@ -13,7 +13,7 @@
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-use differential_engine::forge::{Forge, ForgeError, RemoteThread, Request};
+use differential_engine::forge::{self, Forge, ForgeError, PublishOutcome, RemoteThread, Request};
 
 use crate::rows::RowKind;
 
@@ -32,6 +32,12 @@ pub(super) enum Inflight {
         thread: String,
         resolved: bool,
         rx: Receiver<Result<(), ForgeError>>,
+    },
+    Publish {
+        /// How many the batch carried, so the answer can say what the forge
+        /// did not confirm.
+        sent: usize,
+        rx: Receiver<Result<PublishOutcome, ForgeError>>,
     },
 }
 
@@ -90,6 +96,11 @@ impl App {
                 Err(TryRecvError::Empty) => return false,
                 Err(TryRecvError::Disconnected) => Answer::Lost,
             },
+            Inflight::Publish { sent, rx } => match rx.try_recv() {
+                Ok(result) => Answer::Published(*sent, result),
+                Err(TryRecvError::Empty) => return false,
+                Err(TryRecvError::Disconnected) => Answer::Lost,
+            },
         };
         self.inflight = None;
         match answer {
@@ -138,9 +149,66 @@ impl App {
             Answer::Resolved(_, _, Err(e)) => {
                 self.status = format!("could not resolve the thread: {e}");
             }
+            Answer::Published(sent, Ok(outcome)) => {
+                let landed = outcome.published.len();
+                let marked = self.session.mark_published(&outcome.published);
+                let cached = self.session.set_threads(outcome.threads);
+                self.status = match (marked, cached) {
+                    (Err(e), _) | (_, Err(e)) => format!("save failed: {e:#}"),
+                    _ if landed < sent => format!(
+                        "published {landed} of {sent} · {} not confirmed by the forge, P again to retry",
+                        sent - landed
+                    ),
+                    _ => format!("published {landed} comment{}", plural(landed)),
+                };
+                self.rebuild_rows();
+            }
+            Answer::Published(_, Err(e)) => {
+                self.status = format!("nothing published: {e}");
+            }
             Answer::Lost => self.status = "the forge call was lost".into(),
         }
         true
+    }
+
+    /// `P`: show what would go and what would stay, and wait for `y`.
+    pub(super) fn offer_publish(&mut self) {
+        if self.forge.is_none() {
+            self.status = "this review is not of a pull request".into();
+            return;
+        }
+        if self.inflight.is_some() {
+            self.status = "still syncing with the forge".into();
+            return;
+        }
+        let plan = self.session.publish_plan();
+        if plan.batch.is_empty() {
+            self.status = match plan.excluded.len() {
+                0 => "nothing to publish: every open finding is on the request".into(),
+                n => format!(
+                    "nothing to publish · {n} finding{} the request's diff cannot hold",
+                    plural(n)
+                ),
+            };
+            return;
+        }
+        self.mode = Mode::Publish { plan };
+    }
+
+    /// `y` in the publish modal: send the batch on a worker thread.
+    pub(super) fn start_publish(&mut self, plan: forge::PublishPlan) {
+        let Some(link) = &self.forge else {
+            return;
+        };
+        let (forge, req) = (Arc::clone(&link.forge), link.request.clone());
+        let head = self.session.doc().source.head.clone();
+        let sent = plan.batch.len();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(forge::publish(forge.as_ref(), &req, &head, &plan.batch));
+        });
+        self.inflight = Some(Inflight::Publish { sent, rx });
+        self.status = format!("publishing {sent} comment{}…", plural(sent));
     }
 
     /// The thread whose rows the cursor is in, if any.
@@ -193,6 +261,7 @@ impl App {
 enum Answer {
     Fetched(Result<Vec<RemoteThread>, ForgeError>),
     Resolved(String, bool, Result<(), ForgeError>),
+    Published(usize, Result<PublishOutcome, ForgeError>),
     Lost,
 }
 
