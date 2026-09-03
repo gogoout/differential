@@ -15,7 +15,7 @@ result as a terminal reviewer or as a stack of synthetic git commits.
 Enumeration is total: every hunk in the range is assigned to exactly one group, and the
 partition is checked by four structural invariants before any output is produced.
 
-https://github.com/user-attachments/assets/0d8dccb7-ddb7-4c71-b6a5-582e9e2a00a7
+https://github.com/user-attachments/assets/ef328eef-ece7-4c89-9ff7-6414bc78687a
 
 ## Requirements
 
