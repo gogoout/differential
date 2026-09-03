@@ -62,7 +62,16 @@ With no range it opens a picker instead of failing. See [The picker](#the-picker
 | flag | meaning |
 |---|---|
 | `--name <name>` | File this session under `<name>` instead of under the range. |
+| `--pr [<N>]` | Review GitHub pull request `N` instead of a range: its merge-base diff, its review threads, filed under the request. Without `N`, the current branch's. Runs `gh`. |
+| `--mr [<N>]` | The same for a GitLab merge request. Runs `glab`. |
 | `--no-cache` | Bypass the grouping cache. This forces a fresh LLM call. |
+
+**A request instead of a range.** `--pr` and `--mr` take no range and no `--name`: the
+forge says what the endpoints are, and the request is the review's identity, so a
+force-push reopens the same review. The tool never fetches; when a commit is missing it
+prints the `git fetch` to run. Inside the reviewer the request's threads sit under their
+lines, `c` on one drafts a reply, `x` resolves it and `P` publishes the open findings. See
+[spec/forge.md](../../spec/forge.md).
 
 **Which review you reopen.** A review is normally filed under its base sha and the head
 **as typed**, so `main..feature` stays one review while `feature` moves. A spelling with no
@@ -127,6 +136,8 @@ review into other tooling.
 | flag | meaning |
 |---|---|
 | `--name <name>` | Read the named session, matching `dfr review --name`. |
+| `--pr [<N>]` / `--mr [<N>]` | Read the request's review, as `dfr review --pr` / `--mr`. |
+| `--post` | Publish the open findings to the request as review comments. Needs `--pr` or `--mr`. One line per finding: published with its URL, or skipped with the reason. |
 | `--no-cache` | Bypass the grouping cache. |
 
 Each record carries `{id, created, body, status, moved, plan_hash, anchor}`. The anchor
@@ -176,7 +187,8 @@ A path you pass explicitly must exist. A missing default file just means default
 | `a...b` | Base is the merge-base of `a` and `b`. This is what a merge request diff shows. |
 | `<rev> <rev>` | Two revisions as two arguments. |
 
-Only `dfr review` may omit the range. Every other command exits `2` without one.
+Only `dfr review` may omit the range. Every other command exits `2` without one — unless
+`--pr` or `--mr` names a request, which stands in for the range on every command.
 
 ## The picker
 

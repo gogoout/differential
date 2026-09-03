@@ -130,7 +130,7 @@ use differential_engine::{gitio::Repo, config::Config, lang::LanguageRegistry,
 let repo = Repo::open(path)?;                                          // any dir inside the repo
 let config = Config::load(&OsConfigSource, repo.root(), None, None)?;   // or Config::default()
 let src = resolve_range(&repo, &["main..feature"])?;                    // a plan::ReviewSource
-let out = run_pipeline(&repo, &src.base, &src.head, src.kind, &config,
+let out = run_pipeline(&repo, &src, &config,
                        &LanguageRegistry::builtin(),
                        &differential_symbols::readers())?;   // the symbol readers
 
@@ -141,8 +141,8 @@ let out = run_pipeline(&repo, &src.base, &src.head, src.kind, &config,
 
 `resolve_range` accepts `a..b`, `a...b` (base is the merge-base — what a merge request
 diff shows), or two separate revisions. It returns a `plan::ReviewSource`. That carries the
-endpoints (`base`, `head`, `kind`) **and** the review's identity (`head_spec`, the head as
-typed, plus `identity_base`).
+endpoints (`base`, `head`, `kind`, and `remote` when a forge named them) **and** the
+review's identity (`head_spec`, the head as typed, plus `identity_base`).
 
 The two are separate on purpose. Reviewing uncommitted work diffs against synthesized trees
 that change on every edit, while the review itself must survive. `resolve_picked` builds the
@@ -163,7 +163,7 @@ let artefacts = FsArtefactStore::for_repo(&repo)?;   // where the model reads fr
 let opts = GroupingOptions { backend: &backend, cache: &cache,
                              artefacts: &artefacts, progress: None };
 
-let out = run_grouped_pipeline(&repo, &src.base, &src.head, src.kind, &config,
+let out = run_grouped_pipeline(&repo, &src, &config,
                                &LanguageRegistry::builtin(),
                                &differential_symbols::readers(), &opts)?;
 ```
@@ -195,6 +195,9 @@ needs killing is a subprocess.
 | `gitio` | `Repo` — the only implementation of the git ports. |
 | `store` | Filesystem adapters: `FsGroupingCache`, `FsReviewStore`, `OsConfigSource`. |
 | `llm` | `LlmBackend` and `CommandBackend`. Prompt in, text out. |
+| `forge` | The forge consumer's domain: `Forge`, `Request`, `RemoteThread`, where a thread lands, what a publish sends (ADR 0029). |
+| `forgeio` | `GhForge` and `GlabForge`: `gh` and `glab` on the path. |
+| `subprocess` | One child process under a deadline and a cancel flag, shared by `llm` and `forgeio`. |
 | `lang` | The `Language` trait and `LanguageRegistry`. Shape normalisation only — symbol extraction is `artefact::symbols` (ADR 0023). |
 | `pipeline` | `run_pipeline`, `run_grouped_pipeline`, `resolve_range`, `resolve_picked`. |
 | `grouping` | The grouping stage: prompt, parse, audit, gate, assembly, cache. |

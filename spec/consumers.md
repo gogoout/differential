@@ -62,7 +62,7 @@ use differential_engine::{gitio::Repo, config::Config, lang::LanguageRegistry,
 let repo = Repo::open(path)?;                       // any dir inside the repo
 let config = Config::load(&OsConfigSource, repo.root(), None, None)?; // or defaults
 let src = resolve_range(&repo, &["main..feature"])?;   // a ReviewSource
-let out = run_pipeline(&repo, &src.base, &src.head, src.kind, &config,
+let out = run_pipeline(&repo, &src, &config,
                        &LanguageRegistry::builtin(),
                        &differential_symbols::readers())?;   // the symbol readers
 // out.report: InvariantReport — always present

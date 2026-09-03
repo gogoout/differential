@@ -158,8 +158,10 @@ Renderers are views over it:
 - **TUI** ([spec/tui.md](../spec/tui.md)) — a reviewer that emits structured
   findings keyed by hunk. Shipped, as `dfr review`. `dfr findings` prints those findings as
   JSON.
-- **Forge review** — grouped comments posted to a GitLab merge request or a GitHub pull
-  request. Planned.
+- **Forge review** ([spec/forge.md](../spec/forge.md)) — a pull request's or merge request's
+  review threads shown under their lines, and findings published back as review comments.
+  Shipped, as `dfr review --pr` / `--mr` and `dfr findings --post`, through `gh` and `glab`
+  on the path (ADR 0029).
 
 ## Guarantees
 
