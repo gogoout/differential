@@ -136,6 +136,19 @@ impl App {
                 }
                 return Vec::new();
             }
+            Mode::Publish { .. } => {
+                // Only `y` sends. Anything else keeps every note local, which
+                // is where it was: a slip must not be what notifies the author.
+                let Mode::Publish { plan } = std::mem::replace(&mut self.mode, Mode::Normal) else {
+                    unreachable!("matched above");
+                };
+                if (key.code, key.modifiers) == (KeyCode::Char('y'), KeyModifiers::NONE) {
+                    self.start_publish(plan);
+                } else {
+                    self.status = "nothing published".into();
+                }
+                return Vec::new();
+            }
             Mode::Editing {
                 hunk,
                 lines,
@@ -446,6 +459,7 @@ impl App {
             // land through `poll_forge`.
             (KeyCode::Char('x'), KeyModifiers::NONE) => self.toggle_thread_resolved(),
             (KeyCode::Char('R'), _) => self.start_fetch(),
+            (KeyCode::Char('P'), _) => self.offer_publish(),
             _ => {}
         }
         Vec::new()

@@ -477,14 +477,6 @@ fn publish(
     req: &Request,
     mut session: differential_engine::FsReviewSession,
 ) -> anyhow::Result<ExitCode> {
-    if !forge::head_matches(req, &session.doc().source.head) {
-        eprintln!(
-            "error: the {} moved to {} since this review was built; run again",
-            req.kind.noun(),
-            plan::short_oid(&req.head)
-        );
-        return Ok(ExitCode::from(1));
-    }
     let plan = session.publish_plan();
     for ex in &plan.excluded {
         println!("skipped    {}:{}  {}", ex.file, ex.lines, ex.reason);
@@ -493,11 +485,20 @@ fn publish(
         println!("nothing to publish");
         return Ok(ExitCode::SUCCESS);
     }
+    // The same sequence the reviewer's `P` runs — head check, send, refetch —
+    // from one function, so the two cannot order it differently.
     let forge = GhForge::new(repo.root());
-    let published = forge
-        .publish(req, &plan.batch)
-        .with_context(|| format!("publishing to {}", req.url))?;
+    let outcome = match forge::publish(&forge, req, &session.doc().source.head, &plan.batch) {
+        Ok(o) => o,
+        Err(e @ differential_engine::forge::ForgeError::HeadMoved { .. }) => {
+            eprintln!("error: {e}");
+            return Ok(ExitCode::from(1));
+        }
+        Err(e) => return Err(e).with_context(|| format!("publishing to {}", req.url)),
+    };
+    let published = outcome.published;
     session.mark_published(&published)?;
+    session.set_threads(outcome.threads)?;
     for p in &published {
         let at = session
             .findings()
