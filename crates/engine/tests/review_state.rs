@@ -4,9 +4,9 @@
 use differential_engine::config::Config;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::run_grouped_pipeline;
+use differential_engine::plan::ReviewSource;
 use differential_engine::ports::ReviewStore;
 use differential_engine::review_state::{Anchor, Finding, FindingStatus, reanchor, review_id};
-use differential_engine::schema::SourceKind;
 use differential_engine::store::FsReviewStore;
 use differential_engine::store::{FsArtefactStore, FsGroupingCache};
 use differential_engine::{FsReviewSession, ReviewSession};
@@ -109,9 +109,7 @@ fn doc_and_view(
 ) {
     let out = run_grouped_pipeline(
         &r.repo(),
-        base,
-        head,
-        SourceKind::Range,
+        &ReviewSource::range(base.to_string(), head.to_string(), head.to_string()),
         &Config::default(),
         &LanguageRegistry::builtin(),
         &differential_testutil::stub_readers(),

@@ -66,7 +66,7 @@ pub enum FindingStatus {
     Orphaned,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Anchor {
     pub file: String,
     /// "old" | "new"
@@ -165,6 +165,22 @@ pub struct Finding {
     pub moved: bool,
     pub plan_hash: String,
     pub anchor: Anchor,
+    /// The forge thread this answers, when the note is a reply drafted under
+    /// one. A reply needs no line to publish; it needs its thread.
+    #[serde(default)]
+    pub reply_to: Option<String>,
+    /// Where this landed on the forge, once published. `Some` is what keeps a
+    /// second publish from sending it again, and what hides it behind the
+    /// fetched thread it became.
+    #[serde(default)]
+    pub upstream: Option<Upstream>,
+}
+
+/// A published finding's address on the forge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Upstream {
+    pub thread: String,
+    pub comment: String,
 }
 
 impl Finding {
@@ -181,6 +197,8 @@ impl Finding {
             moved: false,
             plan_hash,
             anchor,
+            reply_to: None,
+            upstream: None,
         }
     }
 }

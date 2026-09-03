@@ -10,7 +10,7 @@ use differential_engine::config::Config;
 use differential_engine::gitio::Repo;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::{PipelineOutput, run_pipeline};
-use differential_engine::schema::SourceKind;
+use differential_engine::plan::ReviewSource;
 use tempfile::TempDir;
 
 pub struct TestRepo {
@@ -106,9 +106,7 @@ impl TestRepo {
     ) -> PipelineOutput {
         run_pipeline(
             &self.repo(),
-            base,
-            head,
-            SourceKind::Range,
+            &ReviewSource::range(base.to_string(), head.to_string(), head.to_string()),
             config,
             &LanguageRegistry::builtin(),
             &stub_readers(),
@@ -357,9 +355,7 @@ pub fn grouped_with_cache(
     let artefacts = FsArtefactStore::disabled();
     let out = run_grouped_pipeline(
         &r.repo(),
-        base,
-        head,
-        SourceKind::Range,
+        &ReviewSource::range(base.to_string(), head.to_string(), head.to_string()),
         &Config::default(),
         &LanguageRegistry::builtin(),
         &stub_readers(),

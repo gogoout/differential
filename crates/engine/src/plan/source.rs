@@ -81,6 +81,9 @@ pub struct ReviewSource {
     /// The base a review is filed under when it differs from `base` — set for
     /// uncommitted sources, whose `base`/`head` may be synthesized tree oids.
     pub identity_base: Option<String>,
+    /// The request this range came from, when the reader named one
+    /// (ADR 0029). Written to `source.remote`; nothing else reads it.
+    pub remote: Option<schema::Remote>,
 }
 
 impl ReviewSource {
@@ -92,6 +95,27 @@ impl ReviewSource {
             kind: schema::SourceKind::Range,
             head_spec,
             identity_base: None,
+            remote: None,
+        }
+    }
+
+    /// A pull request or merge request: the endpoints the forge gave, and the
+    /// request recorded as the document's `source.remote`. The review's
+    /// identity is the request itself, not these endpoints, so `head_spec`
+    /// is the head sha and no `identity_base` is set.
+    pub fn request(
+        base: String,
+        head: String,
+        kind: schema::SourceKind,
+        remote: schema::Remote,
+    ) -> Self {
+        ReviewSource {
+            base,
+            head_spec: head.clone(),
+            head,
+            kind,
+            identity_base: None,
+            remote: Some(remote),
         }
     }
 }

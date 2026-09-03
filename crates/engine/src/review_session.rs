@@ -11,10 +11,11 @@ use std::collections::HashSet;
 use crate::schema;
 
 use crate::EngineError;
+use crate::forge::{self, Published, RemoteThread};
 use crate::model::DiffView;
 use crate::plan;
 use crate::ports::ReviewStore;
-use crate::review_state::{Anchor, Finding, FindingStatus, Lines, ReviewState, reanchor};
+use crate::review_state::{Anchor, Finding, FindingStatus, Lines, ReviewState, Upstream, reanchor};
 
 pub struct ReviewSession<S: ReviewStore> {
     store: S,
@@ -26,6 +27,9 @@ pub struct ReviewSession<S: ReviewStore> {
     plan_hash: String,
     state: ReviewState,
     findings: Vec<Finding>,
+    /// The forge's threads, placed against THIS plan (ADR 0029). A cache of
+    /// what was last fetched, never the reader's own work.
+    threads: Vec<RemoteThread>,
 }
 
 impl<S: ReviewStore> ReviewSession<S> {
@@ -43,6 +47,12 @@ impl<S: ReviewStore> ReviewSession<S> {
         reanchor(&mut findings, &doc, &view, &plan_hash);
         store.save_findings(&findings)?;
         let state = store.load_state()?;
+        // Placed afresh on every open: the cache may be from an older plan, and
+        // placement is a pure function of the forge's coordinates and this one.
+        let mut threads = store.load_threads()?;
+        for t in &mut threads {
+            forge::place(&doc, &view, t);
+        }
 
         // The projection computes the reviewed-mark keys, so the session no
         // longer derives its own copy of the same arithmetic.
@@ -56,6 +66,7 @@ impl<S: ReviewStore> ReviewSession<S> {
             plan_hash,
             state,
             findings,
+            threads,
         })
     }
 
@@ -77,6 +88,34 @@ impl<S: ReviewStore> ReviewSession<S> {
 
     pub fn findings(&self) -> &[Finding] {
         &self.findings
+    }
+
+    /// The forge's review threads as last fetched, placed against this plan.
+    pub fn threads(&self) -> &[RemoteThread] {
+        &self.threads
+    }
+
+    pub fn thread(&self, id: &str) -> Option<&RemoteThread> {
+        self.threads.iter().find(|t| t.id == id)
+    }
+
+    /// Open findings not yet on the request: what `P` would send and what
+    /// `y` copies (ADR 0029).
+    pub fn unpublished(&self) -> impl Iterator<Item = &Finding> {
+        self.findings
+            .iter()
+            .filter(|f| f.status == FindingStatus::Open && f.upstream.is_none())
+    }
+
+    /// Whether a published finding's fetched twin is present, so the renderer
+    /// draws the thread and not the note.
+    pub fn is_twinned(&self, finding: &Finding) -> bool {
+        finding.upstream.is_some() && self.threads.iter().any(|t| t.is_twin_of(finding))
+    }
+
+    /// What a publish would send now, and what it would leave and why.
+    pub fn publish_plan(&self) -> forge::PublishPlan {
+        forge::publish_plan(&self.doc, &self.findings, &self.threads)
     }
 
     /// The reviewed-mark key of `hunk` — its exact content digest.
@@ -128,7 +167,8 @@ impl<S: ReviewStore> ReviewSession<S> {
         self.state.wrap
     }
 
-    /// The open findings as markdown: one `- file:lines: note` per line.
+    /// The open, unpublished findings as markdown: one `- file:lines: note`
+    /// per line.
     ///
     /// The human-readable projection of `findings()`, and domain policy rather
     /// than a renderer's formatting — the reviewer's `y` and `dfr findings
@@ -136,14 +176,11 @@ impl<S: ReviewStore> ReviewSession<S> {
     ///
     /// Deliberately says nothing about groups. A group is how THIS reviewer
     /// chose to read the branch, and the summary is pasted somewhere that has
-    /// no idea what `g7` was.
+    /// no idea what `g7` was. A published finding is left out for the same
+    /// reason a group is: it is already where it was going (ADR 0029).
     pub fn findings_summary(&self) -> String {
         let mut out = String::new();
-        for f in self
-            .findings
-            .iter()
-            .filter(|f| f.status == FindingStatus::Open)
-        {
+        for f in self.unpublished() {
             out.push_str(&format!(
                 "- {}:{}: {}\n",
                 f.anchor.file,
@@ -320,6 +357,75 @@ impl<S: ReviewStore> ReviewSession<S> {
         }
         self.store.save_findings(&self.findings)?;
         Ok(true)
+    }
+
+    /// Draft a reply under a forge thread: a finding that carries the thread's
+    /// id and sits where the thread does. Nothing reaches the forge until a
+    /// publish sends it (ADR 0029).
+    pub fn add_reply(&mut self, thread_id: &str, body: String) -> Result<&Finding, EngineError> {
+        let Some(thread) = self.threads.iter().find(|t| t.id == thread_id) else {
+            return Err(EngineError::PlanIntegrity(format!(
+                "no thread {thread_id} on this review"
+            )));
+        };
+        // An unplaced thread still has a file and a side; the reply anchors
+        // there with no hunk, and is orphaned like the thread it answers.
+        let anchor = thread.anchor.clone().unwrap_or_else(|| Anchor {
+            file: thread.path.clone(),
+            side: thread.side.clone(),
+            line: thread.line.unwrap_or(0),
+            end_line: thread.line.unwrap_or(0),
+            ..Anchor::default()
+        });
+        let mut finding = Finding::new(
+            crate::review_state::now_unix(),
+            body,
+            self.plan_hash.clone(),
+            anchor,
+        );
+        finding.reply_to = Some(thread_id.to_string());
+        self.findings.push(finding);
+        self.store.save_findings(&self.findings)?;
+        Ok(self.findings.last().expect("just pushed"))
+    }
+
+    /// Replace the thread cache with a fresh fetch, placed against this plan.
+    pub fn set_threads(&mut self, mut threads: Vec<RemoteThread>) -> Result<(), EngineError> {
+        for t in &mut threads {
+            forge::place(&self.doc, &self.view, t);
+        }
+        self.threads = threads;
+        self.store.save_threads(&self.threads)
+    }
+
+    /// Mirror a resolve the forge has already accepted. Returns whether the
+    /// thread was known.
+    pub fn set_thread_resolved(&mut self, id: &str, resolved: bool) -> Result<bool, EngineError> {
+        let Some(t) = self.threads.iter_mut().find(|t| t.id == id) else {
+            return Ok(false);
+        };
+        t.resolved = resolved;
+        self.store.save_threads(&self.threads)?;
+        Ok(true)
+    }
+
+    /// Record where a publish put each finding, so the next publish sends
+    /// only what is new and the renderer can hide each behind its twin.
+    pub fn mark_published(&mut self, published: &[Published]) -> Result<usize, EngineError> {
+        let mut n = 0;
+        for p in published {
+            if let Some(f) = self.findings.iter_mut().find(|f| f.id == p.finding) {
+                f.upstream = Some(Upstream {
+                    thread: p.thread.clone(),
+                    comment: p.comment.clone(),
+                });
+                n += 1;
+            }
+        }
+        if n > 0 {
+            self.store.save_findings(&self.findings)?;
+        }
+        Ok(n)
     }
 
     /// Delete every finding. Returns how many there were.

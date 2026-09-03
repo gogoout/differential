@@ -26,7 +26,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::EngineError;
+use crate::forge::RemoteThread;
 use crate::review_state::{Finding, ReviewState};
+use crate::schema;
 
 // ---------------------------------------------------------------- objects
 
@@ -339,6 +341,9 @@ pub enum ReviewIdentity {
     /// A session the reader named. The name IS the identity, so neither
     /// endpoint is in the key and rebasing either cannot strand it.
     Named(String),
+    /// A pull request or merge request (ADR 0029). Keyed like a name: the
+    /// request is an object whose endpoints are allowed to move under it.
+    Remote(schema::Remote),
 }
 
 /// One review as the catalogue sees it.
@@ -391,6 +396,11 @@ pub trait ReviewStore {
     /// Rewrites the whole set (status changes, deletions, re-anchor results).
     /// The set is small; simplicity beats cleverness.
     fn save_findings(&self, findings: &[Finding]) -> Result<(), EngineError>;
+
+    /// The forge's threads as last fetched. A cache: every fetch replaces it,
+    /// and a failed fetch leaves it as it was (ADR 0029).
+    fn load_threads(&self) -> Result<Vec<RemoteThread>, EngineError>;
+    fn save_threads(&self, threads: &[RemoteThread]) -> Result<(), EngineError>;
 }
 
 /// Where configuration comes from.

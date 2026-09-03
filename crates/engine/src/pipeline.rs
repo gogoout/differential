@@ -88,6 +88,7 @@ where
         head,
         kind: schema::SourceKind::Worktree,
         head_spec: WORKTREE_SPEC.to_string(),
+        remote: None,
     })
 }
 
@@ -107,9 +108,7 @@ const HEAD_SPEC: &str = "HEAD";
 /// influence classification, never enumeration.
 pub fn run_pipeline<G>(
     git: &G,
-    base_rev: &str,
-    head_rev: &str,
-    kind: schema::SourceKind,
+    source: &plan::ReviewSource,
     config: &Config,
     langs: &LanguageRegistry,
     symbols: &SymbolReaders,
@@ -117,7 +116,7 @@ pub fn run_pipeline<G>(
 where
     G: RangeResolver + DiffSource + AttributeSource + ObjectReader,
 {
-    run_core_with_progress(git, base_rev, head_rev, kind, config, langs, symbols, None)
+    run_core_with_progress(git, source, config, langs, symbols, None)
 }
 
 /// Core pipeline + the grouping stage (stages: enumerate, classify, group).
@@ -134,9 +133,7 @@ where
 #[allow(clippy::too_many_arguments)]
 pub fn run_grouped_pipeline<G, C, A>(
     git: &G,
-    base_rev: &str,
-    head_rev: &str,
-    kind: schema::SourceKind,
+    source: &plan::ReviewSource,
     config: &Config,
     langs: &LanguageRegistry,
     symbols: &SymbolReaders,
@@ -147,16 +144,7 @@ where
     A: crate::ports::ArtefactStore,
     G: RangeResolver + DiffSource + AttributeSource + ObjectReader,
 {
-    let mut out = run_core_with_progress(
-        git,
-        base_rev,
-        head_rev,
-        kind,
-        config,
-        langs,
-        symbols,
-        grouping.progress,
-    )?;
+    let mut out = run_core_with_progress(git, source, config, langs, symbols, grouping.progress)?;
 
     if let Some(core_doc) = &out.document {
         let mut grouped = crate::grouping::run(
@@ -215,9 +203,7 @@ where
 #[allow(clippy::too_many_arguments)]
 fn run_core_with_progress<G>(
     git: &G,
-    base_rev: &str,
-    head_rev: &str,
-    kind: schema::SourceKind,
+    source: &plan::ReviewSource,
     config: &Config,
     langs: &LanguageRegistry,
     symbols: &SymbolReaders,
@@ -231,8 +217,8 @@ where
     }
     // Commits normally; raw tree oids for uncommitted-state reviews
     // (ADR 0017) — every later stage treats the endpoints as trees anyway.
-    let base = git.resolve_endpoint(base_rev)?;
-    let head = git.resolve_endpoint(head_rev)?;
+    let base = git.resolve_endpoint(&source.base)?;
+    let head = git.resolve_endpoint(&source.head)?;
 
     // The argv for these three is FROZEN and lives in the adapter, where a
     // reviewer can see all of it at once (ADR 0002).
@@ -269,9 +255,10 @@ where
             &part,
             graph,
             &SourceInfo {
-                kind,
+                kind: source.kind,
                 base: base.clone(),
                 head: head.clone(),
+                remote: source.remote.clone(),
             },
             &report,
         )?)
