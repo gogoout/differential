@@ -2,7 +2,8 @@ tmp/
 /target
 *.local.toml
 
-# The demo recording. 2.8 MB, and GitHub will not play a video from a repo
+# The demo recording. 3.9 MB, and GitHub will not play a video from a repo
 # path anyway — it is uploaded as a GitHub attachment and linked from the
-# README. `assets/record.vhs` is what reproduces it.
+# README. `assets/record.vhs` is what reproduces it; run it from `assets/`,
+# because the tape's `Output` and `Screenshot` paths are relative.
 assets/demo.webm
