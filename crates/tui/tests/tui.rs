@@ -5825,6 +5825,7 @@ mod forge_threads {
             base_ref: "main".into(),
             base_tip: "b".repeat(40),
             head: "h".repeat(40),
+            merge_base: None,
             url: "https://example.invalid/pull/7".into(),
         }
     }

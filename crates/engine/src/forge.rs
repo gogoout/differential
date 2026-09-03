@@ -74,6 +74,10 @@ pub struct Request {
     pub base_tip: String,
     /// The request's head commit, as the forge sees it now.
     pub head: String,
+    /// The merge base, when the forge says it (GitLab's `diff_refs.base_sha`).
+    /// A GitLab position names it; the review's range is computed from git
+    /// either way.
+    pub merge_base: Option<String>,
     pub url: String,
 }
 
