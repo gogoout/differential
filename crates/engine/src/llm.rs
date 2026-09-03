@@ -11,12 +11,12 @@
 //! run inside the CLI this spawns, so what crosses this seam is still a prompt
 //! and a string. What changed is a flag in the argv below, not the trait.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
+
+use crate::subprocess;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LlmError {
@@ -161,12 +161,6 @@ impl CommandBackend {
         self
     }
 
-    fn cancelled(&self) -> bool {
-        self.cancel
-            .as_ref()
-            .is_some_and(|c| c.load(Ordering::Relaxed))
-    }
-
     /// The default: headless, text output, and read-only tools (ADR 0022).
     ///
     /// ADR 0010 denied tools outright, because the evaluated grouping tool kept
@@ -247,100 +241,40 @@ impl LlmBackend for CommandBackend {
     }
 
     fn complete(&self, prompt: &str) -> Result<String, LlmError> {
-        let mut cmd = Command::new(&self.argv[0]);
-        if let Some(dir) = &self.working_dir {
-            cmd.current_dir(dir);
-        }
-        let mut child = cmd
-            .args(&self.argv[1..])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|source| LlmError::Spawn {
-                command: self.command.clone(),
+        let command = || self.command.clone();
+        let out = subprocess::run(&subprocess::Run {
+            argv: &self.argv,
+            stdin: Some(prompt.as_bytes()),
+            working_dir: self.working_dir.as_deref(),
+            timeout: self.timeout,
+            cancel: self.cancel.as_ref(),
+        })
+        .map_err(|f| match f {
+            subprocess::Failure::Spawn(source) => LlmError::Spawn {
+                command: command(),
                 source,
-            })?;
-
-        // Prompt in and output out run on their own threads: a large prompt
-        // must not deadlock against a child that writes before it finishes
-        // reading, and a large completion must not fill the pipe while the
-        // watchdog waits for exit.
-        let mut stdin = child.stdin.take().expect("stdin piped");
-        let prompt_owned = prompt.as_bytes().to_vec();
-        let writer = std::thread::spawn(move || {
-            let _ = stdin.write_all(&prompt_owned);
-            // stdin closes on drop
-        });
-        use std::io::Read;
-        let mut out_pipe = child.stdout.take().expect("stdout piped");
-        let stdout_reader = std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let res = out_pipe.read_to_end(&mut buf);
-            res.map(|_| buf)
-        });
-        let mut err_pipe = child.stderr.take().expect("stderr piped");
-        let stderr_reader = std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = err_pipe.read_to_end(&mut buf);
-            buf
-        });
-
-        // Watchdog: poll for exit until the deadline, then kill. The poll is
-        // not just the deadline's — the cancel flag has to be read too, which
-        // is why this is a loop and not a `wait` with a timeout.
-        let deadline = std::time::Instant::now() + self.timeout;
-        let status = loop {
-            // Decide first, tear down once. The two ways out used to carry a
-            // copy each of the same five-line teardown, so a sixth thing to
-            // clean up would have had to be remembered twice.
-            let give_up = match child.try_wait().map_err(|source| LlmError::Io {
-                command: self.command.clone(),
+            },
+            subprocess::Failure::Io(source) => LlmError::Io {
+                command: command(),
                 source,
-            })? {
-                Some(status) => break status,
-                None if self.cancelled() => Some(LlmError::Cancelled {
-                    command: self.command.clone(),
-                }),
-                None if std::time::Instant::now() >= deadline => Some(LlmError::Timeout {
-                    command: self.command.clone(),
-                    timeout: self.timeout,
-                }),
-                None => None,
-            };
-            if let Some(err) = give_up {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = writer.join();
-                let _ = stdout_reader.join();
-                let _ = stderr_reader.join();
-                return Err(err);
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        };
-        let _ = writer.join();
+            },
+            subprocess::Failure::Timeout => LlmError::Timeout {
+                command: command(),
+                timeout: self.timeout,
+            },
+            subprocess::Failure::Cancelled => LlmError::Cancelled { command: command() },
+        })?;
 
-        let stdout = stdout_reader
-            .join()
-            .expect("stdout reader panicked")
-            .map_err(|source| LlmError::Io {
-                command: self.command.clone(),
-                source,
-            })?;
-        let stderr = stderr_reader.join().expect("stderr reader panicked");
-
-        if !status.success() {
+        if !out.status.success() {
             return Err(LlmError::Failed {
-                command: self.command.clone(),
-                code: status.code(),
-                stderr: String::from_utf8_lossy(&stderr[..stderr.len().min(600)]).into_owned(),
+                command: command(),
+                code: out.status.code(),
+                stderr: subprocess::stderr_excerpt(&out.stderr, 600),
             });
         }
-        let text = String::from_utf8_lossy(&stdout).into_owned();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
         if text.trim().is_empty() {
-            return Err(LlmError::Empty {
-                command: self.command.clone(),
-            });
+            return Err(LlmError::Empty { command: command() });
         }
         Ok(text)
     }
@@ -348,6 +282,8 @@ impl LlmBackend for CommandBackend {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering;
+
     use super::*;
 
     #[test]

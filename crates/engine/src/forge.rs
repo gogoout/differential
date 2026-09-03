@@ -12,7 +12,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::DiffView;
-use crate::ports::ReviewIdentity;
+use crate::plan::ReviewSource;
+use crate::ports::{Ancestry, RangeResolver, ReviewIdentity};
 use crate::review_state::{Anchor, Finding, FindingStatus};
 use crate::schema;
 
@@ -239,6 +240,14 @@ pub struct Published {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ForgeError {
+    /// The request's commits are not in this clone. The tool never fetches
+    /// (ADR 0029); the message carries the command that would.
+    #[error("{noun} {id} needs commits this clone does not have; run\n    {hint}\nand try again")]
+    NotFetched {
+        noun: &'static str,
+        id: String,
+        hint: String,
+    },
     #[error("failed to spawn {command}: {source}")]
     Spawn {
         command: String,
@@ -505,6 +514,34 @@ fn in_request_diff(doc: &schema::PlanDocument, a: &Anchor) -> bool {
             .saturating_add(REQUEST_CONTEXT);
         first >= lo && last <= hi
     })
+}
+
+/// The range a request reviews: the merge base of its target branch's tip
+/// and its head, to its head. That is the diff the request page shows.
+///
+/// Both commits must already be local; a missing one is `NotFetched`, with
+/// the `git fetch` line that brings it. The tool never runs that line itself
+/// (ADR 0011, 0029).
+pub fn source_for<G: Ancestry + RangeResolver>(
+    git: &G,
+    req: &Request,
+) -> Result<ReviewSource, crate::EngineError> {
+    let have = |sha: &str| git.commit_of(sha).map(|c| c.is_some());
+    if !have(&req.head)? || !have(&req.base_tip)? {
+        return Err(ForgeError::NotFetched {
+            noun: req.kind.noun(),
+            id: req.id.clone(),
+            hint: req.fetch_hint("origin"),
+        }
+        .into());
+    }
+    let base = git.merge_base(&req.base_tip, &req.head)?;
+    Ok(ReviewSource::request(
+        base,
+        req.head.clone(),
+        req.kind.source_kind(),
+        req.remote(),
+    ))
 }
 
 /// Whether the forge still has the head this review was opened on. Both
