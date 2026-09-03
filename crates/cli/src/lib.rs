@@ -356,7 +356,17 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 .context("grouped pipeline failed")?;
                 let identity =
                     review_identity_of(&source, request.as_ref(), session_name, &out.base);
-                Ok(differential_tui::Prepared { out, identity })
+                // The reviewer fetches and posts through this; composed here
+                // because which forge is a run-time answer (ADR 0020, 0029).
+                let forge = request.map(|req| differential_tui::ForgeLink {
+                    forge: Arc::new(GhForge::new(worker_repo.root())),
+                    request: req,
+                });
+                Ok(differential_tui::Prepared {
+                    out,
+                    identity,
+                    forge,
+                })
             })?;
             Ok(ExitCode::SUCCESS)
         }

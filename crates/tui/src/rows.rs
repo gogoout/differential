@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
+use differential_engine::forge::RemoteThread;
 use differential_engine::gitio::Repo;
 use differential_engine::plan::{
     Deferral, FileView, Fold, GroupView, HunkId, ReviewView, reading_split, role_name,
@@ -67,6 +68,10 @@ pub enum RowKind {
     },
     /// A finding attached to a hunk: (finding id, hunk index).
     Finding(String, usize),
+    /// One row of a forge review thread: (thread id, hunk index). Every
+    /// line of the thread is one of these, so `c` replies and `x` resolves
+    /// from any of them (ADR 0029).
+    Thread(String, usize),
     /// Collapsed remainder / noise: press z to unfold.
     Fold,
     Blank,
@@ -80,6 +85,7 @@ impl RowKind {
                 | RowKind::Diff(_)
                 | RowKind::ContextEdge { .. }
                 | RowKind::Finding(_, _)
+                | RowKind::Thread(_, _)
                 | RowKind::Fold
         )
     }
@@ -90,7 +96,7 @@ impl RowKind {
     pub fn hunk(&self) -> Option<usize> {
         match self {
             RowKind::HunkHeader { hunk, .. } => Some(*hunk),
-            RowKind::Diff(h) | RowKind::Finding(_, h) => Some(*h),
+            RowKind::Diff(h) | RowKind::Finding(_, h) | RowKind::Thread(_, h) => Some(*h),
             _ => None,
         }
     }
@@ -609,6 +615,9 @@ pub struct RowsContext<'a> {
     /// group.
     pub plan: &'a ReviewView,
     pub findings: &'a [Finding],
+    /// The forge's review threads, placed against this plan. A published
+    /// finding whose twin is here is drawn as the thread, not as the note.
+    pub threads: &'a [RemoteThread],
     /// Hunk indices whose class is marked reviewed.
     pub reviewed: &'a std::collections::HashSet<usize>,
     pub mode: DiffMode,
@@ -727,7 +736,7 @@ fn hunk_list_rows(
         i = end;
     }
 
-    place_findings(ctx, rows);
+    place_notes(ctx, rows);
 }
 
 /// Rows for a directory: every hunk beneath it, in file order. The shared
@@ -1053,12 +1062,17 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
 ///
 /// Every line is a `Finding` row, so `dd` deletes the note from any of them
 /// and the cursor never lands on a line that belongs to nothing.
-fn finding_rows(theme: &Theme, f: &Finding, hunk: usize) -> Vec<Row> {
+///
+/// `indent` is how far inside the rail the note sits: zero for a note on a
+/// line, one step for a reply drafted under a forge thread, where it takes
+/// the place a reply will have once it is published.
+fn finding_rows(theme: &Theme, f: &Finding, hunk: usize, indent: usize) -> Vec<Row> {
     let rail = Style::default().fg(theme.gutter_fg);
     let prose = Style::default()
         .fg(theme.hint_fg)
         .add_modifier(Modifier::ITALIC);
     let moved = if f.moved { " (moved)" } else { "" };
+    let pad = " ".repeat(indent);
     let mut lines: Vec<String> = f.body.lines().map(str::to_string).collect();
     if lines.is_empty() {
         lines.push(String::new());
@@ -1076,7 +1090,7 @@ fn finding_rows(theme: &Theme, f: &Finding, hunk: usize) -> Vec<Row> {
             Row::full(
                 RowKind::Finding(f.id.clone(), hunk),
                 Line::from(vec![
-                    Span::styled(format!("  {RAIL} "), rail),
+                    Span::styled(format!("  {RAIL} {pad}"), rail),
                     Span::styled(text, prose),
                 ]),
             )
@@ -1084,23 +1098,122 @@ fn finding_rows(theme: &Theme, f: &Finding, hunk: usize) -> Vec<Row> {
         .collect()
 }
 
-/// Put each finding under the line it annotates.
+/// Columns a reply sits inside its thread's rail.
+const REPLY_INDENT: usize = 2;
+
+/// One forge review thread, as the rows that show it (ADR 0029).
+///
+/// The same rail a finding wears, because it is the same kind of thing — prose
+/// about the code above it — and a different ink, because it is somebody
+/// else's. Each comment opens with who wrote it and when, then its lines;
+/// replies step in one indent under the root. A resolved thread is dimmed
+/// throughout: it is settled, and the reader's eye should pass over it.
+///
+/// Every row is a `Thread` row carrying the thread's id, so `c` replies and
+/// `x` resolves from any line of it.
+fn thread_rows(theme: &Theme, t: &RemoteThread, hunk: usize) -> Vec<Row> {
+    let rail = Style::default().fg(theme.gutter_fg);
+    let (meta, prose) = if t.resolved {
+        let dim = Style::default().fg(theme.noise_fg);
+        (dim, dim)
+    } else {
+        (
+            Style::default().fg(theme.hint_fg),
+            Style::default().fg(theme.context_fg),
+        )
+    };
+    let mut rows = Vec::new();
+    for (i, c) in t.comments.iter().enumerate() {
+        let pad = " ".repeat(if i == 0 { 0 } else { REPLY_INDENT });
+        let mut head = format!("{} · {}", c.author, comment_date(&c.created));
+        if i == 0 {
+            if t.resolved {
+                head.push_str(" · resolved");
+            }
+            if t.outdated {
+                head.push_str(" · outdated");
+            }
+        }
+        rows.push(Row::full(
+            RowKind::Thread(t.id.clone(), hunk),
+            Line::from(vec![
+                Span::styled(format!("  {RAIL} {pad}"), rail),
+                Span::styled(head, meta.add_modifier(Modifier::BOLD)),
+            ]),
+        ));
+        let mut lines: Vec<&str> = c.body.lines().collect();
+        if lines.is_empty() {
+            lines.push("");
+        }
+        for text in lines {
+            rows.push(Row::full(
+                RowKind::Thread(t.id.clone(), hunk),
+                Line::from(vec![
+                    Span::styled(format!("  {RAIL} {pad}"), rail),
+                    Span::styled(text.to_string(), prose),
+                ]),
+            ));
+        }
+    }
+    rows
+}
+
+/// The day a comment was written, from the forge's ISO 8601 timestamp.
+///
+/// The date rather than an age: an age needs a clock and a parser, and a
+/// review thread is read days apart, where `2026-09-03` says as much as
+/// `3 days ago` did and stays true tomorrow.
+fn comment_date(created: &str) -> &str {
+    created.get(..10).unwrap_or(created)
+}
+
+/// Put each finding and each forge thread under the line it annotates.
 ///
 /// A finding anchors to a LINE, and a note under the line it is about is one
 /// you read without holding a number in your head. Findings all sat under the
 /// hunk header instead, because that was the only thing they could anchor to.
 ///
-/// A finding whose line is not on screen still has to appear — the context
+/// A thread lands the same way, from the anchor `forge::place` gave it. Its
+/// reply drafts — findings carrying its id — follow it directly, wherever it
+/// lands, so a reply is read under what it answers. A published finding whose
+/// fetched twin is present is not drawn: the thread is it now.
+///
+/// Anything whose line is not on screen still has to appear — the context
 /// around it may still be folded, or a regeneration may have re-anchored it to
-/// the hunk — so anything unplaced falls back to its hunk's header, where they
+/// the hunk — so anything unplaced falls back to its hunk's header, where notes
 /// all used to be.
-fn place_findings(ctx: &RowsContext, rows: &mut Vec<Row>) {
-    if ctx.findings.is_empty() {
+fn place_notes(ctx: &RowsContext, rows: &mut Vec<Row>) {
+    let threads: Vec<&RemoteThread> = ctx.threads.iter().filter(|t| t.anchor.is_some()).collect();
+    let twinned = |f: &Finding| ctx.threads.iter().any(|t| t.is_twin_of(f));
+    let replies_to = |t: &RemoteThread| -> Vec<&Finding> {
+        ctx.findings
+            .iter()
+            .filter(|f| f.reply_to.as_deref() == Some(t.id.as_str()) && !twinned(f))
+            .collect()
+    };
+    // A reply whose thread is not on this review at all is a loose note.
+    let mut loose: Vec<&Finding> = ctx
+        .findings
+        .iter()
+        .filter(|f| !twinned(f))
+        .filter(|f| match &f.reply_to {
+            Some(id) => !threads.iter().any(|t| &t.id == id),
+            None => true,
+        })
+        .collect();
+    let mut left: Vec<&RemoteThread> = threads.clone();
+    if left.is_empty() && loose.is_empty() {
         return;
     }
-    let mut left: Vec<&Finding> = ctx.findings.iter().collect();
-    let mut out: Vec<Row> = Vec::with_capacity(rows.len() + left.len());
+    let mut out: Vec<Row> = Vec::with_capacity(rows.len() + left.len() + loose.len());
     let mut file = String::new();
+
+    let emit_thread = |out: &mut Vec<Row>, t: &RemoteThread, hunk: usize| {
+        out.extend(thread_rows(ctx.theme, t, hunk));
+        for r in replies_to(t) {
+            out.extend(finding_rows(ctx.theme, r, hunk, REPLY_INDENT));
+        }
+    };
 
     for row in std::mem::take(rows) {
         if let RowKind::FileHeader(path) = &row.kind {
@@ -1110,40 +1223,67 @@ fn place_findings(ctx: &RowsContext, rows: &mut Vec<Row>) {
         // context row's hunk is the one it sits NEXT to, which is a guess, and
         // a line is in exactly one place either way. `holds` takes both of a
         // row's numbers, so a note survives the layout it was written in.
-        let here: Vec<&Finding> = match (&row.kind, &row.line) {
-            (RowKind::Diff(_), Some(l)) => left
-                .iter()
-                .copied()
-                .filter(|f| f.anchor.file == file && l.holds(&f.anchor.side, f.anchor.end_line))
-                .collect(),
-            _ => Vec::new(),
-        };
+        let (threads_here, notes_here): (Vec<&RemoteThread>, Vec<&Finding>) =
+            match (&row.kind, &row.line) {
+                (RowKind::Diff(_), Some(l)) => (
+                    left.iter()
+                        .copied()
+                        .filter(|t| {
+                            let a = t.anchor.as_ref().expect("placed");
+                            a.file == file && l.holds(&a.side, a.end_line)
+                        })
+                        .collect(),
+                    loose
+                        .iter()
+                        .copied()
+                        .filter(|f| {
+                            f.anchor.file == file && l.holds(&f.anchor.side, f.anchor.end_line)
+                        })
+                        .collect(),
+                ),
+                _ => (Vec::new(), Vec::new()),
+            };
         let hunk = row.kind.hunk().unwrap_or(0);
         out.push(row);
-        for f in here {
-            left.retain(|g| g.id != f.id);
-            out.extend(finding_rows(ctx.theme, f, hunk));
+        for t in threads_here {
+            left.retain(|u| u.id != t.id);
+            emit_thread(&mut out, t, hunk);
+        }
+        for f in notes_here {
+            loose.retain(|g| g.id != f.id);
+            out.extend(finding_rows(ctx.theme, f, hunk, 0));
         }
     }
 
     // Whatever found no line goes back under its hunk's header.
-    if !left.is_empty() {
-        let mut with_headers = Vec::with_capacity(out.len() + left.len());
+    if !left.is_empty() || !loose.is_empty() {
+        let mut with_headers = Vec::with_capacity(out.len() + left.len() + loose.len());
         for row in out {
-            let under: Vec<&Finding> = match &row.kind {
+            let (threads_under, notes_under): (Vec<&RemoteThread>, Vec<&Finding>) = match &row.kind
+            {
                 RowKind::HunkHeader { hunk, .. } => {
                     let digest = &ctx.doc.hunks[*hunk].digest;
-                    left.iter()
-                        .copied()
-                        .filter(|f| &f.anchor.hunk_digest == digest)
-                        .collect()
+                    (
+                        left.iter()
+                            .copied()
+                            .filter(|t| t.anchor.as_ref().is_some_and(|a| &a.hunk_digest == digest))
+                            .collect(),
+                        loose
+                            .iter()
+                            .copied()
+                            .filter(|f| &f.anchor.hunk_digest == digest)
+                            .collect(),
+                    )
                 }
-                _ => Vec::new(),
+                _ => (Vec::new(), Vec::new()),
             };
             let hunk = row.kind.hunk().unwrap_or(0);
             with_headers.push(row);
-            for f in under {
-                with_headers.extend(finding_rows(ctx.theme, f, hunk));
+            for t in threads_under {
+                emit_thread(&mut with_headers, t, hunk);
+            }
+            for f in notes_under {
+                with_headers.extend(finding_rows(ctx.theme, f, hunk, 0));
             }
         }
         out = with_headers;

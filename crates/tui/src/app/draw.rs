@@ -90,9 +90,15 @@ impl App {
                 );
             }
             Mode::Help => {
-                let area = centered_rect(panes.body, 62, 23);
+                // As tall as its own table: a fixed height cut the footer off
+                // the first time the table grew a row.
+                let lines = help_lines(&self.theme);
+                let area = centered_rect(panes.body, 62, lines.len() as u16 + 2);
                 clear_to_ground(frame, &self.theme, area);
-                frame.render_widget(help_paragraph(&self.theme), area);
+                frame.render_widget(
+                    Paragraph::new(lines).block(pane(&self.theme, " help ".to_string(), true)),
+                    area,
+                );
             }
             Mode::Findings {
                 entries,
@@ -1051,7 +1057,7 @@ impl App {
                     b.active_style.fg.map_or(Marker::Idle(&r.idle), Marker::Lit)
                 }
                 (_, RowKind::HunkHeader { .. }) => Marker::Idle(&r.idle),
-                (_, RowKind::Finding(..)) if in_note(i) => Marker::Note,
+                (_, RowKind::Finding(..) | RowKind::Thread(..)) if in_note(i) => Marker::Note,
                 _ => Marker::None,
             };
             // How to work this row, on the one row it can be worked from.
@@ -1284,6 +1290,23 @@ impl App {
             self.theme.finding_fg,
             format!("{open} finding{}", if open == 1 { "" } else { "s" }),
         ));
+        // The forge's threads are a fact about the request, worn the same way
+        // — and only on a review that is of a request, since a range has none.
+        if self.has_forge() {
+            let threads = self.session.threads().len();
+            left.push(Span::styled(" ", bar));
+            left.extend(tally(
+                threads > 0,
+                self.theme.header_fg,
+                format!("{threads} thread{}", if threads == 1 { "" } else { "s" }),
+            ));
+            // A call is out. The pill IS the state, as `selecting` is: it
+            // appears while the answer is awaited and goes when it lands.
+            if self.syncing() {
+                left.push(Span::styled(" ", bar));
+                left.extend(tally(true, self.theme.header_fg, "syncing".to_string()));
+            }
+        }
         if !self.status.is_empty() {
             left.push(Span::styled(
                 format!("  {}", self.status),
@@ -1804,7 +1827,7 @@ pub(super) fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
-pub(super) fn help_paragraph(theme: &Theme) -> Paragraph<'static> {
+pub(super) fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     // Nothing but keys. Five lines of prose about the plan pane and the diff's
     // colours used to sit between `n/N` and `s`, splitting the table in half —
     // and a legend is not what anyone opens `?` to find.
@@ -1840,11 +1863,16 @@ pub(super) fn help_paragraph(theme: &Theme) -> Paragraph<'static> {
         row("space", "mark the hunk's class reviewed"),
         row("v", "select lines · j/k extends · v or esc drops"),
         row("c  ·  dd", "add finding · delete the one under the cursor"),
+        row("", "on a review thread: c replies"),
+        row(
+            "x  ·  R",
+            "resolve / reopen the thread · refetch review threads",
+        ),
         row("F", "every finding, in one list"),
         row("y  ·  q", "copy findings · quit (state is saved)"),
         Line::from(""),
         Line::from(Span::styled("  press any key to close", dim)),
     ];
     lines.insert(0, Line::from(""));
-    Paragraph::new(lines).block(pane(theme, " help ".to_string(), true))
+    lines
 }

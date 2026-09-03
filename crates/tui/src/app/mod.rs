@@ -17,6 +17,8 @@
 //! - [`text`] — measuring and cutting text to a column budget. A leaf: it
 //!   knows nothing about `App`, and both `keys` and `draw` read from it, which
 //!   is what keeps a list's scroll height equal to its drawn height.
+//! - [`forge`] — the forge's side: fetching review threads on a worker
+//!   thread, resolving one, drafting a reply (ADR 0029).
 //!
 //! `App`'s inherent methods are split across those files, so a method that
 //! was private to one file is `pub(super)` now. The scope is the same one it
@@ -183,6 +185,9 @@ pub enum Mode {
         lines: Option<Lines>,
         /// The finding being rewritten. `None` files a new one.
         rewriting: Option<String>,
+        /// The forge thread this answers. A reply is still a finding until a
+        /// publish sends it (ADR 0029).
+        reply_to: Option<String>,
         editor: Box<TextArea<'static>>,
     },
     Help,
@@ -380,6 +385,10 @@ pub struct App {
     /// Measured geometry. An input to update, never a draw-time output.
     viewport: Viewport,
     pending_d: bool,
+    /// The forge this review is of, when it is of a request (ADR 0029).
+    forge: Option<forge::ForgeLink>,
+    /// The one forge call that may be out. See `app::forge`.
+    inflight: Option<forge::Inflight>,
 }
 
 impl App {
@@ -443,6 +452,8 @@ impl App {
             listed_files: Vec::new(),
             viewport: Viewport::default(),
             pending_d: false,
+            forge: None,
+            inflight: None,
         };
         // The document is fixed for the session's life, so this is built once
         // rather than found by scanning the file list per row.
@@ -490,6 +501,9 @@ impl App {
 
 mod draw;
 mod findings;
+pub mod forge;
 mod keys;
 mod state;
 mod text;
+
+pub use forge::ForgeLink;

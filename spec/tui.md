@@ -399,6 +399,9 @@ list belongs; the footer's job is to point at it.
 | `dd` | delete the finding under the cursor |
 | `y` | copy the open-findings summary — a markdown list of `file:lines: note`, and nothing about groups: a group is how this reviewer chose to READ the branch, and the summary is pasted somewhere that has no idea what `g7` was. `dfr findings <range> --summary` prints the same text |
 | `F` | every finding in one list — `enter` jumps to one, `dd` deletes it, `D` clears them all, `esc` closes |
+| `c` on a review thread | draft a reply under it — a finding carrying the thread's id until `P` publishes it ([forge.md](forge.md)) |
+| `x` | resolve or reopen the review thread under the cursor, on the forge, at once |
+| `R` | fetch the request's review threads again |
 | `?` | help — the keys, as one uninterrupted table |
 | `q` | quit — state is saved on every change, quitting never loses anything |
 
@@ -605,6 +608,32 @@ sees it, which is why it cannot be the only way.
 A **paste** lands in the box whole. Bracketed paste is on precisely so a multi-line paste
 arrives as one event instead of a run of keys each driving a normal-mode action; the event
 was being dropped, which read as the box being broken.
+
+## Review threads
+
+A review opened with `--pr` shows the request's review threads ([forge.md](forge.md)). They
+are fetched on a worker thread the moment the reviewer opens, and again on `R`; the footer
+wears a `syncing` pill while a forge call is out, and a `N threads` pill on every request
+review. The loop draws nothing while a key handler runs, so no handler calls the forge:
+every call goes out on a worker and lands between keys, one call at a time.
+
+A thread is **drawn where a note is drawn**: under the last line it annotates, through the
+same placement, behind the same rail. It wears a different ink because it is somebody
+else's — each comment opens with `author · date` in bold, then its lines in the ordinary
+text colour rather than a note's italics; a reply steps in one indent; a resolved thread is
+dimmed throughout and its header says `resolved`, an outdated one `outdated`. A thread
+whose line the plan does not hold hangs off its hunk's header like an orphaned-to-hunk
+note; one nothing holds is counted in the footer's message and drawn nowhere. The date is
+the day, not an age: an age needs a clock, and `2026-09-03` stays true tomorrow.
+
+Every row of a thread is a `Thread` row, so `c` and `x` work from any line of it, and the
+cursor in one lights the cluster — the thread, its reply drafts, and the lines its anchor
+covers — the way a note's cluster lights. `dd` on a thread refuses and names the two keys
+that do work: a thread is the forge's. A **reply draft** is a finding that carries the
+thread's id; it is drawn straight after the thread it answers, stepped in like a reply, in
+the note's own look, so what is on the request and what is not yet are told apart at a
+glance. A published finding whose fetched twin is present is not drawn at all: the thread
+is it now, and `y` leaves it out for the same reason.
 
 ## Findings contract
 
