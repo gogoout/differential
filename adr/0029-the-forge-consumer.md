@@ -117,10 +117,11 @@ with no line are later work; reactions are not work at all.
 - Whether `gh` or `glab` is present, logged in, and online is checked when it is used, by
   using it. There is no probe, and a review of a request opens without its threads rather
   than not at all.
-- The reviewer's loop stays synchronous. The fetch rides the splash as one more stage; a
-  post blocks the loop with a status line for the second or two it takes. If that second
-  grows, the splash's worker-and-channel shape is the one to reach for, and the trait does
-  not change.
+- The reviewer's loop draws nothing while a key handler runs, so no handler calls the
+  forge. Every call — the fetch on open, `R`, `x`, a publish — goes out on a worker thread
+  and the loop polls for its answer between keys, one call at a time: the splash's
+  worker-and-channel shape, reused. A second call while one is out is refused with a
+  message, not queued.
 - `crates/stack` is untouched. It emits commits, and a commit has no line cursor to comment
   under.
 

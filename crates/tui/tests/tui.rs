@@ -5709,3 +5709,374 @@ fn render_dump_wrap() {
         eprintln!("{row}");
     }
 }
+
+// ------------------------------------------------------------ forge threads
+
+mod forge_threads {
+    //! The forge's review threads in the reviewer (ADR 0029, spec/forge.md):
+    //! fetched on a worker, drawn under their lines, replied to, resolved.
+
+    use std::sync::{Arc, Mutex};
+
+    use differential_engine::forge::{
+        Batch, Forge, ForgeError, ForgeKind, Published, RemoteComment, RemoteThread, Request,
+    };
+    use differential_tui::app::ForgeLink;
+
+    use super::*;
+
+    /// A forge that answers from memory. Allowed where a fake git is not: the
+    /// forge is a `dyn` seam chosen at run time, and nothing here is an
+    /// invariant that would compare the fake with itself.
+    struct FakeForge {
+        threads: Mutex<Vec<RemoteThread>>,
+        resolved: Mutex<Vec<(String, bool)>>,
+    }
+
+    impl Forge for FakeForge {
+        fn kind(&self) -> ForgeKind {
+            ForgeKind::Github
+        }
+        fn request(&self, _id: Option<&str>) -> Result<Request, ForgeError> {
+            Ok(request())
+        }
+        fn threads(&self, _req: &Request) -> Result<Vec<RemoteThread>, ForgeError> {
+            Ok(self.threads.lock().unwrap().clone())
+        }
+        fn publish(&self, _req: &Request, _batch: &Batch) -> Result<Vec<Published>, ForgeError> {
+            Ok(Vec::new())
+        }
+        fn set_resolved(
+            &self,
+            _req: &Request,
+            thread: &str,
+            resolved: bool,
+        ) -> Result<(), ForgeError> {
+            self.resolved
+                .lock()
+                .unwrap()
+                .push((thread.to_string(), resolved));
+            Ok(())
+        }
+    }
+
+    fn request() -> Request {
+        Request {
+            kind: ForgeKind::Github,
+            project: "owner/repo".into(),
+            id: "7".into(),
+            base_ref: "main".into(),
+            base_tip: "b".repeat(40),
+            head: "h".repeat(40),
+            url: "https://example.invalid/pull/7".into(),
+        }
+    }
+
+    /// A thread on the one changed line of `src/main.txt`.
+    fn thread(id: &str, root_comment: &str) -> RemoteThread {
+        RemoteThread {
+            id: id.to_string(),
+            resolved: false,
+            outdated: false,
+            path: "src/main.txt".into(),
+            side: "new".into(),
+            line: Some(1),
+            start_line: None,
+            line_text: Some("fn main() { run_with_retries(3) }".into()),
+            anchor: None,
+            comments: vec![
+                RemoteComment {
+                    id: root_comment.to_string(),
+                    author: "alice".into(),
+                    created: "2026-09-03T20:53:12Z".into(),
+                    body: "why three?".into(),
+                    reply_to: None,
+                },
+                RemoteComment {
+                    id: format!("{root_comment}-r"),
+                    author: "bob".into(),
+                    created: "2026-09-03T21:00:00Z".into(),
+                    body: "it was two before".into(),
+                    reply_to: Some(root_comment.to_string()),
+                },
+            ],
+        }
+    }
+
+    /// Wait for the one forge call that is out to land. The fake answers at
+    /// once; the wait is for the worker thread to be scheduled.
+    fn settle(app: &mut App) {
+        for _ in 0..400 {
+            if app.poll_forge() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("the forge call never landed");
+    }
+
+    /// `make_app` with a fake forge linked and its threads fetched, parked on
+    /// the group that holds `src/main.txt`.
+    fn app_with_threads(threads: Vec<RemoteThread>) -> (TestRepo, App, Arc<FakeForge>) {
+        let (r, mut app) = make_app();
+        let fake = Arc::new(FakeForge {
+            threads: Mutex::new(threads),
+            resolved: Mutex::new(Vec::new()),
+        });
+        app.link_forge(ForgeLink {
+            forge: Arc::clone(&fake) as Arc<dyn Forge>,
+            request: request(),
+        });
+        app.start_fetch();
+        assert!(app.syncing());
+        settle(&mut app);
+        assert!(!app.syncing());
+        assert!(app.status.contains("review thread"), "{}", app.status);
+        select_group_of(&mut app, "src/main.txt");
+        (r, app, fake)
+    }
+
+    /// Park the reviewer on the group that holds `path`, by pressing keys in
+    /// the plan pane: the plan's order is the engine's to decide.
+    fn select_group_of(app: &mut App, path: &str) {
+        let want = app
+            .groups()
+            .iter()
+            .position(|g| {
+                g.hunks
+                    .iter()
+                    .any(|h| app.session.doc().hunks[h.index()].file == path)
+            })
+            .expect("a group holds the file");
+        app.focus = Focus::Groups;
+        for _ in 0..app.groups().len() {
+            app.handle_key(key('k'));
+        }
+        for _ in 0..want {
+            app.handle_key(key('j'));
+        }
+        assert_eq!(app.selected_group, want);
+        app.focus = Focus::Detail;
+    }
+
+    fn thread_rows(app: &App, id: &str) -> Vec<usize> {
+        app.rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| matches!(&r.kind, RowKind::Thread(t, _) if t == id))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    #[test]
+    fn threads_arrive_on_a_worker_and_sit_under_their_line() {
+        let (_r, app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        assert_eq!(app.session.threads().len(), 1);
+
+        let rows = thread_rows(&app, "T1");
+        // Root header, root body, reply header, reply body.
+        assert_eq!(rows.len(), 4, "{rows:?}");
+        let first = rows[0];
+        let above = &app.rows[first - 1];
+        assert!(matches!(above.kind, RowKind::Diff(_)));
+        assert!(above.line.as_ref().unwrap().holds("new", 1));
+        // A thread is a selectable row like a note, and belongs to the hunk.
+        assert!(app.rows[first].kind.selectable());
+        assert_eq!(app.rows[first].kind.hunk(), above.kind.hunk());
+    }
+
+    #[test]
+    fn c_on_a_thread_drafts_a_reply_that_sits_under_it() {
+        let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        let rows = thread_rows(&app, "T1");
+        app.cursor = rows[0];
+        app.handle_key(key('c'));
+        assert!(matches!(app.mode, Mode::Editing { reply_to: Some(ref t), .. } if t == "T1"));
+        app.handle_paste("agreed, two was enough");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let reply = app
+            .session
+            .findings()
+            .iter()
+            .find(|f| f.reply_to.as_deref() == Some("T1"))
+            .expect("the reply is a finding");
+        assert_eq!(reply.body, "agreed, two was enough");
+        assert!(app.status.contains("P publishes"), "{}", app.status);
+
+        // Directly after the thread's last row, stepped in like a reply.
+        let last_thread = *thread_rows(&app, "T1").last().unwrap();
+        let note = &app.rows[last_thread + 1];
+        assert!(matches!(&note.kind, RowKind::Finding(id, _) if id == &reply.id));
+        // And nowhere else: a reply is not also a loose note on the line.
+        let notes = app
+            .rows
+            .iter()
+            .filter(|r| matches!(&r.kind, RowKind::Finding(id, _) if id == &reply.id))
+            .count();
+        assert_eq!(notes, 1);
+        // `y` counts it: it is not yet on the request.
+        assert!(app.findings_summary().contains("agreed, two was enough"));
+    }
+
+    #[test]
+    fn dd_on_a_thread_refuses_and_names_the_keys_that_work() {
+        let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        app.cursor = thread_rows(&app, "T1")[1];
+        app.handle_key(key('d'));
+        app.handle_key(key('d'));
+        assert_eq!(app.session.threads().len(), 1);
+        assert!(app.status.contains("c replies"), "{}", app.status);
+        assert!(app.status.contains("x resolves"), "{}", app.status);
+    }
+
+    #[test]
+    fn x_resolves_the_thread_through_the_forge_and_dims_it_once_answered() {
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        app.cursor = thread_rows(&app, "T1")[0];
+        app.handle_key(key('x'));
+        assert!(app.syncing(), "the forge is asked on a worker");
+        assert!(
+            !app.session.threads()[0].resolved,
+            "not before the forge says so"
+        );
+        settle(&mut app);
+        assert_eq!(
+            fake.resolved.lock().unwrap().as_slice(),
+            &[("T1".to_string(), true)]
+        );
+        assert!(app.session.threads()[0].resolved);
+        assert_eq!(app.status, "thread resolved");
+        // The header row now says so.
+        let first = thread_rows(&app, "T1")[0];
+        let text: String = match &app.rows[first].content {
+            differential_tui::rows::RowContent::Unified(half) => {
+                half.pairs.iter().map(|(_, t)| t.as_str()).collect()
+            }
+            _ => String::new(),
+        };
+        assert!(text.contains("resolved"), "{text}");
+
+        // And back.
+        app.cursor = first;
+        app.handle_key(key('x'));
+        settle(&mut app);
+        assert!(!app.session.threads()[0].resolved);
+        assert_eq!(app.status, "thread reopened");
+    }
+
+    #[test]
+    fn x_off_a_thread_says_what_it_is_for() {
+        let (_r, mut app, _fake) = app_with_threads(vec![]);
+        app.cursor = app.rows.iter().position(|r| r.line.is_some()).unwrap();
+        app.handle_key(key('x'));
+        assert!(!app.syncing());
+        assert!(app.status.contains("x resolves"), "{}", app.status);
+    }
+
+    #[test]
+    fn r_fetches_again_and_the_answer_replaces_the_cache() {
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        fake.threads.lock().unwrap().push(thread("T2", "C2"));
+        app.handle_key(key('R'));
+        assert!(app.syncing());
+        // A second call while one is out is refused, not queued.
+        app.handle_key(key('R'));
+        assert_eq!(app.status, "still syncing with the forge");
+        settle(&mut app);
+        assert_eq!(app.session.threads().len(), 2);
+        assert_eq!(thread_rows(&app, "T2").len(), 4);
+    }
+
+    #[test]
+    fn a_published_finding_hides_behind_its_fetched_twin() {
+        let (_r, mut app) = make_app();
+        select_group_of(&mut app, "src/main.txt");
+        app.cursor = app
+            .rows
+            .iter()
+            .position(|r| r.line.as_ref().is_some_and(|l| l.holds("new", 1)))
+            .unwrap();
+        app.handle_key(key('c'));
+        app.handle_paste("why three?");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let id = app.session.findings()[0].id.clone();
+        app.session
+            .mark_published(&[Published {
+                finding: id.clone(),
+                thread: "T1".into(),
+                comment: "C1".into(),
+                url: None,
+            }])
+            .unwrap();
+        // Published but not yet fetched: the note still shows.
+        app.rebuild_rows();
+        assert!(
+            app.rows
+                .iter()
+                .any(|r| matches!(&r.kind, RowKind::Finding(f, _) if f == &id))
+        );
+
+        let fake = Arc::new(FakeForge {
+            threads: Mutex::new(vec![thread("T1", "C1")]),
+            resolved: Mutex::new(Vec::new()),
+        });
+        app.link_forge(ForgeLink {
+            forge: fake as Arc<dyn Forge>,
+            request: request(),
+        });
+        app.start_fetch();
+        settle(&mut app);
+        assert!(
+            !app.rows
+                .iter()
+                .any(|r| matches!(&r.kind, RowKind::Finding(f, _) if f == &id)),
+            "the thread is the note now"
+        );
+        assert_eq!(thread_rows(&app, "T1").len(), 4);
+        // Published: not in the summary either.
+        assert!(!app.findings_summary().contains("why three?"));
+    }
+
+    #[test]
+    fn the_footer_counts_threads_only_on_a_request_review() {
+        let footer = |app: &mut App| -> String {
+            let backend = ratatui::backend::TestBackend::new(120, 30);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+            let buf = terminal.backend().buffer().clone();
+            (0..120u16).map(|x| buf[(x, 29)].symbol()).collect()
+        };
+        let (_r, mut plain) = make_app();
+        assert!(!footer(&mut plain).contains("thread"));
+
+        let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        let line = footer(&mut app);
+        assert!(line.contains("1 thread"), "{line}");
+        assert!(!line.contains("syncing"), "{line}");
+        app.handle_key(key('R'));
+        assert!(footer(&mut app).contains("syncing"));
+        settle(&mut app);
+    }
+
+    /// A thread with a reply and a reply draft under it, then the resolved look.
+    ///
+    /// `cargo test -p differential-tui --test tui render_dump_threads -- --ignored --nocapture`
+    #[test]
+    #[ignore = "prints the pane for a human to look at"]
+    fn render_dump_threads() {
+        let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        app.cursor = thread_rows(&app, "T1")[0];
+        app.handle_key(key('c'));
+        app.handle_paste("agreed, two was enough");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.cursor = thread_rows(&app, "T1")[0];
+        println!("\n=== a thread, a reply, a reply draft; cursor on the thread ===");
+        println!("{}", ansi_dump(&mut app, 120, 24));
+        app.handle_key(key('x'));
+        settle(&mut app);
+        app.cursor = app.rows.iter().position(|r| r.line.is_some()).unwrap();
+        println!("\n=== resolved; cursor elsewhere ===");
+        println!("{}", ansi_dump(&mut app, 120, 24));
+    }
+}

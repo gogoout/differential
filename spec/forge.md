@@ -90,20 +90,21 @@ reviews/<review-id>/
 └── comments.jsonl   # a cache of the forge's threads; overwritten on every fetch
 ```
 
-The fetch runs when the review opens, as one more stage on the splash. A fetch that fails —
-tool missing, not logged in, offline — keeps the previous cache, opens the review, and says
-what happened in the status line. `R` refetches from inside the reviewer. Publishing
-refetches too, so a published finding's twin appears at once.
+The fetch starts the moment the reviewer opens, on a worker thread the reviewer polls
+between keys; the footer wears `syncing` until it lands. A fetch that fails — tool missing,
+not logged in, offline — keeps the previous cache, leaves the review open, and says what
+happened in the status line. `R` refetches from inside the reviewer. Publishing refetches
+too, so a published finding's twin appears at once.
 
 ## What the reviewer shows
 
 Both files render into one diff through the placement findings already use: under the row
 whose file and side hold their line, or under the hunk header when no row does.
 
-A **remote thread** shows its root comment with the author and the age in its header row,
-each reply indented one step under the previous comment, and a resolved thread in the
-dimmed style. It is reply-only: edit and delete do nothing on it and the status line says
-so. `x` toggles resolved, on the forge, at once.
+A **remote thread** shows each comment with its author and date in a header row, each
+reply indented one step under the root, and a resolved thread in the dimmed style. It is
+reply-only: edit and delete do nothing on it and the status line says so. `x` toggles
+resolved, on the forge, at once; the local copy follows when the forge has answered.
 
 A **finding** keeps the look it has. A **published** finding is hidden when its fetched
 twin is present, matched on `upstream.comment`; the record stays in `findings.jsonl` so the

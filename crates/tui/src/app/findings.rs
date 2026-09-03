@@ -72,6 +72,36 @@ impl App {
         if self.focus != Focus::Detail {
             return None;
         }
+        // A forge thread is a note too: its rows, its reply drafts, and the
+        // lines its anchor covers read as one thing.
+        if let Some(t) = self.thread_at_cursor() {
+            let anchor = t.anchor.as_ref();
+            let mut file = "";
+            let (mut lo, mut hi) = (usize::MAX, 0usize);
+            for (i, row) in self.rows.iter().enumerate() {
+                if let RowKind::FileHeader(p) = &row.kind {
+                    file = p;
+                }
+                let mine = match (&row.kind, &row.line) {
+                    (RowKind::Thread(tid, _), _) => tid == &t.id,
+                    (RowKind::Finding(fid, _), _) => self
+                        .session
+                        .findings()
+                        .iter()
+                        .any(|f| &f.id == fid && f.reply_to.as_deref() == Some(t.id.as_str())),
+                    (_, Some(l)) => anchor.is_some_and(|a| {
+                        file == a.file
+                            && (a.line..=a.end_line.max(a.line)).any(|n| l.holds(&a.side, n))
+                    }),
+                    _ => false,
+                };
+                if mine {
+                    lo = lo.min(i);
+                    hi = hi.max(i);
+                }
+            }
+            return (lo <= hi).then_some((lo, hi));
+        }
         let f = self.finding_at_cursor()?;
         let (id, path) = (f.id.as_str(), f.anchor.file.as_str());
         let mut file = "";
@@ -352,6 +382,15 @@ impl App {
     }
 
     pub(super) fn delete_finding_at_cursor(&mut self) {
+        // A thread is the forge's. The two things a reader can do to it are
+        // both on other keys, and the footer names them (ADR 0029).
+        if matches!(
+            self.rows.get(self.cursor).map(|r| &r.kind),
+            Some(RowKind::Thread(..))
+        ) {
+            self.status = "a review thread is the forge's · c replies · x resolves".into();
+            return;
+        }
         if let Some(RowKind::Finding(id, _)) = self.rows.get(self.cursor).map(|r| r.kind.clone()) {
             match self.session.delete_finding(&id) {
                 Ok(_) => self.status = "finding deleted".into(),

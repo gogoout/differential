@@ -34,8 +34,8 @@ use differential_engine::review_identity;
 use differential_engine::store::{FsReviewCatalogue, FsReviewStore};
 use differential_engine::{PipelineOutput, ReviewSession};
 
-pub use app::ReviewOptions;
 use app::{App, Effect, Viewport};
+pub use app::{ForgeLink, ReviewOptions};
 use picker::PickedSource;
 use ratatui::layout::Rect;
 use rows::RowFactory;
@@ -49,6 +49,9 @@ type Session = vendor::terminal::TerminalSession<Stdout>;
 pub struct Prepared {
     pub out: PipelineOutput,
     pub identity: ReviewIdentity,
+    /// The forge the review is of, when it is of a request (ADR 0029). The
+    /// reviewer fetches its threads as soon as it opens.
+    pub forge: Option<ForgeLink>,
 }
 
 /// Run the whole review surface. `pick` opens the source picker first and
@@ -161,6 +164,10 @@ where
     if adopted {
         app.status = "resumed the review already open on this branch".into();
     }
+    if let Some(link) = prepared.forge {
+        app.link_forge(link);
+        app.start_fetch();
+    }
     run_app(terminal, app, range.as_deref())
 }
 
@@ -182,6 +189,11 @@ fn run_app(terminal: &mut Session, mut app: App, range: Option<&str>) -> anyhow:
     app.set_viewport(measure()?);
     let mut dirty = true;
     loop {
+        // A forge answer lands between keys, so it is looked for on every
+        // turn of the loop and not only when a key arrives.
+        if app.poll_forge() {
+            dirty = true;
+        }
         if dirty {
             terminal.draw(|frame| app.draw(frame))?;
             dirty = false;

@@ -140,9 +140,11 @@ impl App {
                 hunk,
                 lines,
                 rewriting,
+                reply_to,
                 editor: textarea,
             } => {
-                let (hunk, lines, rewriting) = (*hunk, lines.clone(), rewriting.clone());
+                let (hunk, lines, rewriting, reply_to) =
+                    (*hunk, lines.clone(), rewriting.clone(), reply_to.clone());
                 match (key.code, key.modifiers) {
                     (KeyCode::Esc, _) => {
                         self.mode = Mode::Normal;
@@ -184,14 +186,15 @@ impl App {
                     (KeyCode::Enter, _) | (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
                         let body = textarea.lines().join("\n").trim().to_string();
                         self.mode = Mode::Normal;
-                        match (rewriting, body.is_empty()) {
+                        match (rewriting, reply_to, body.is_empty()) {
                             // Emptying the box does NOT delete the note. That
                             // is `dd`, which is a deliberate press; a note lost
                             // to a stray `ctrl-u` and an `enter` is not.
-                            (Some(_), true) => self.status = "finding left as it was".into(),
-                            (Some(id), false) => self.rewrite_finding(&id, body),
-                            (None, true) => self.status = "empty finding discarded".into(),
-                            (None, false) => self.add_finding(hunk, lines, body),
+                            (Some(_), _, true) => self.status = "finding left as it was".into(),
+                            (Some(id), _, false) => self.rewrite_finding(&id, body),
+                            (None, _, true) => self.status = "empty finding discarded".into(),
+                            (None, Some(thread), false) => self.add_reply(&thread, body),
+                            (None, None, false) => self.add_finding(hunk, lines, body),
                         }
                         return Vec::new();
                     }
@@ -342,6 +345,33 @@ impl App {
             (KeyCode::Esc, _) if self.visual.is_some() => {
                 self.visual = None;
             }
+            // On a forge thread, `c` answers it: the composer opens as a reply,
+            // and what it saves is a finding carrying the thread's id until a
+            // publish sends it (ADR 0029).
+            (KeyCode::Char('c'), KeyModifiers::NONE) if self.thread_at_cursor().is_some() => {
+                let t = self.thread_at_cursor().expect("guarded");
+                let (id, author, path) = (
+                    t.id.clone(),
+                    t.root().map(|c| c.author.clone()).unwrap_or_default(),
+                    t.path.clone(),
+                );
+                let hunk = self.current_hunk().unwrap_or(0);
+                let mut ta = TextArea::default();
+                ta.set_block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(self.theme.header_fg))
+                        .title(format!(" {} · reply to {author} ", basename(&path))),
+                );
+                self.visual = None;
+                self.mode = Mode::Editing {
+                    hunk,
+                    lines: None,
+                    rewriting: None,
+                    reply_to: Some(id),
+                    editor: Box::new(ta),
+                };
+            }
             (KeyCode::Char('c'), KeyModifiers::NONE) => {
                 if let Some(h) = self.current_hunk() {
                     // A line already carrying a note opens THAT note. Two
@@ -394,6 +424,7 @@ impl App {
                         hunk: h,
                         lines,
                         rewriting: existing.map(|(id, _, _)| id),
+                        reply_to: None,
                         editor: Box::new(ta),
                     };
                 } else {
@@ -410,6 +441,11 @@ impl App {
             (KeyCode::Char('y'), _) => {
                 return vec![Effect::CopySummary(self.findings_summary())];
             }
+            // The forge's threads (ADR 0029): resolve the one under the cursor,
+            // or fetch them all again. Both go out on a worker thread and
+            // land through `poll_forge`.
+            (KeyCode::Char('x'), KeyModifiers::NONE) => self.toggle_thread_resolved(),
+            (KeyCode::Char('R'), _) => self.start_fetch(),
             _ => {}
         }
         Vec::new()
