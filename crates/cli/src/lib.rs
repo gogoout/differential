@@ -13,6 +13,8 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 use differential_engine::config::{Agent, Config};
+use differential_engine::forge::{self, Forge, Request};
+use differential_engine::forgeio::GhForge;
 use differential_engine::gitio::Repo;
 use differential_engine::grouping::GroupingOptions;
 use differential_engine::lang::LanguageRegistry;
@@ -67,7 +69,7 @@ enum Command {
         /// same name to resume it, with any range and from the picker.
         ///
         ///   dfr review --name "$(git branch --show-current)" main..HEAD
-        #[arg(long)]
+        #[arg(long, conflicts_with = "pr")]
         name: Option<String>,
         /// Bypass the grouping cache (forces a fresh LLM call).
         #[arg(long)]
@@ -79,8 +81,13 @@ enum Command {
         common: Common,
         /// Read the named review session rather than the one filed under the
         /// range. Must match the name `dfr review --name` was given.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "pr")]
         name: Option<String>,
+        /// Publish the open findings to the pull request as review comments
+        /// (ADR 0029). Needs `--pr`. Prints one line per finding: published
+        /// with its URL, or skipped with the reason.
+        #[arg(long, requires = "pr")]
+        post: bool,
         /// Print the open findings as markdown instead — the same text the
         /// reviewer's `y` copies, for pasting into an agent or a PR.
         #[arg(long)]
@@ -147,6 +154,14 @@ struct Common {
     /// without a range opens a picker (recent commits / staged / worktree).
     #[arg(num_args = 0..=2)]
     range: Vec<String>,
+    /// A GitHub pull request instead of a range: its merge-base diff, filed
+    /// under the request itself so a force-push reopens the same review
+    /// (ADR 0029). Without a number, the current branch's.
+    ///
+    /// Asks `gh`, which must be installed and logged in. Never fetches: when
+    /// the request's commits are not local it prints the `git fetch` to run.
+    #[arg(long, value_name = "N", conflicts_with = "range")]
+    pr: Option<Option<String>>,
 }
 
 /// Shared entry point for the `differential` and `dfr` binaries.
@@ -196,8 +211,22 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Ok(c) => c,
         Err(e) => return usage_error(&e.to_string()),
     };
+    // A request names both the range and the review (ADR 0029). The forge is
+    // asked once, here; everything after reads the answer.
+    let request = match &common.pr {
+        Some(id) => match GhForge::new(repo.root()).request(id.as_deref()) {
+            Ok(req) => Some(req),
+            Err(e) => return usage_error(&e.to_string()),
+        },
+        None => None,
+    };
     // Only `review` may omit the range (it opens the picker instead).
-    let resolved = if common.range.is_empty() {
+    let resolved = if let Some(req) = &request {
+        match forge::source_for(&repo, req) {
+            Ok(s) => Some(s),
+            Err(e) => return usage_error(&e.to_string()),
+        }
+    } else if common.range.is_empty() {
         if !matches!(cli.command, Command::Review { .. }) {
             return usage_error(
                 "a revision range is required: <base>..<head>, <a>...<b>, or two revs",
@@ -292,7 +321,10 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 theme: config.review.theme,
                 // As TYPED, so the footer can hand it straight back. Empty
                 // when the picker chose the source, which has no spelling.
-                range: (!common.range.is_empty()).then(|| common.range.join(" ")),
+                range: match &request {
+                    Some(req) => Some(format!("--pr {}", req.id)),
+                    None => (!common.range.is_empty()).then(|| common.range.join(" ")),
+                },
             };
             differential_tui::review(&repo, pick, opts, move |picked, tx, cancel| {
                 // Which resolver runs is dispatch; what each one decides is
@@ -322,13 +354,17 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     },
                 )
                 .context("grouped pipeline failed")?;
-                let identity = review_identity_of(&source, session_name, &out.base);
+                let identity =
+                    review_identity_of(&source, request.as_ref(), session_name, &out.base);
                 Ok(differential_tui::Prepared { out, identity })
             })?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Findings {
-            summary, no_cache, ..
+            summary,
+            post,
+            no_cache,
+            ..
         } => {
             let source = resolved.expect("range checked above");
             let out = grouped(&repo, &source, &config, &langs, &symbols, no_cache)?;
@@ -337,10 +373,18 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 .context("invariants failed; no plan available")?;
             // The same resolution the reviewer's session makes, so `findings`
             // reads the review they are looking at and not an empty namesake.
-            let identity = review_identity_of(&source, session_name, &out.base);
+            let identity = review_identity_of(&source, request.as_ref(), session_name, &out.base);
             let id = review_identity::resolve(&FsReviewCatalogue::new(&repo)?, &repo, &identity)?;
             let store = FsReviewStore::for_review(&repo, &id)?;
             let session = differential_engine::ReviewSession::open(store, doc, out.view)?;
+            if post {
+                // Declared to clap as well; checked here because a panic is
+                // the wrong answer to a flag.
+                let Some(req) = request.as_ref() else {
+                    return usage_error("--post publishes to a pull request; give --pr");
+                };
+                return publish(&repo, req, session);
+            }
             // Two projections of one store, both the engine's: JSON for a
             // consumer, markdown for a person. The reviewer's `y` copies the
             // second one, so the two cannot drift.
@@ -385,8 +429,8 @@ fn open_repo(named: Option<&Path>) -> Result<Repo, String> {
     Repo::open(&dir).map_err(|e| e.to_string())
 }
 
-/// Which review this run opens: the name if one was given, otherwise the
-/// endpoints (ADR 0026, ADR 0027).
+/// Which review this run opens: the request if one was named, else the name
+/// if one was given, otherwise the endpoints (ADR 0026, 0027, 0029).
 ///
 /// One function because `review` and `findings` must answer identically — a
 /// `findings` that resolved differently would print an empty namesake of the
@@ -394,12 +438,15 @@ fn open_repo(named: Option<&Path>) -> Result<Repo, String> {
 /// copies already differed in whether they cloned.
 fn review_identity_of(
     source: &plan::ReviewSource,
+    request: Option<&Request>,
     name: Option<String>,
     resolved_base: &str,
 ) -> ReviewIdentity {
-    match name {
-        Some(name) => ReviewIdentity::Named(name),
-        None => ReviewIdentity::Range {
+    match (request, name) {
+        // The request is the identity, the way a name is (ADR 0029).
+        (Some(req), _) => req.identity(),
+        (None, Some(name)) => ReviewIdentity::Named(name),
+        (None, None) => ReviewIdentity::Range {
             base: source
                 .identity_base
                 .clone()
@@ -407,6 +454,54 @@ fn review_identity_of(
             head_spec: source.head_spec.clone(),
         },
     }
+}
+
+/// `dfr findings --pr N --post`: send the open findings the request's diff can
+/// hold, and say what happened to each.
+///
+/// The head check comes first and refuses everything: both forges reject a
+/// comment against a commit that is not the request's, and a review built on
+/// one head cannot position comments on another (ADR 0029).
+fn publish(
+    repo: &Repo,
+    req: &Request,
+    mut session: differential_engine::FsReviewSession,
+) -> anyhow::Result<ExitCode> {
+    if !forge::head_matches(req, &session.doc().source.head) {
+        eprintln!(
+            "error: the {} moved to {} since this review was built; run again",
+            req.kind.noun(),
+            plan::short_oid(&req.head)
+        );
+        return Ok(ExitCode::from(1));
+    }
+    let plan = session.publish_plan();
+    for ex in &plan.excluded {
+        println!("skipped    {}:{}  {}", ex.file, ex.lines, ex.reason);
+    }
+    if plan.batch.is_empty() {
+        println!("nothing to publish");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let forge = GhForge::new(repo.root());
+    let published = forge
+        .publish(req, &plan.batch)
+        .with_context(|| format!("publishing to {}", req.url))?;
+    session.mark_published(&published)?;
+    for p in &published {
+        let at = session
+            .findings()
+            .iter()
+            .find(|f| f.id == p.finding)
+            .map(|f| format!("{}:{}", f.anchor.file, f.anchor.line_span()))
+            .unwrap_or_default();
+        println!("published  {at}  {}", p.url.as_deref().unwrap_or(""));
+    }
+    let unconfirmed = plan.batch.len().saturating_sub(published.len());
+    if unconfirmed > 0 {
+        println!("{unconfirmed} not confirmed by the forge; run again to retry");
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn usage_error(msg: &str) -> anyhow::Result<ExitCode> {
