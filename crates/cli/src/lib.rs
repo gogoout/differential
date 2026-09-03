@@ -13,8 +13,8 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 use differential_engine::config::{Agent, Config};
-use differential_engine::forge::{self, Forge, Request};
-use differential_engine::forgeio::GhForge;
+use differential_engine::forge::{self, Forge, ForgeKind, Request};
+use differential_engine::forgeio::{GhForge, GlabForge};
 use differential_engine::gitio::Repo;
 use differential_engine::grouping::GroupingOptions;
 use differential_engine::lang::LanguageRegistry;
@@ -69,7 +69,7 @@ enum Command {
         /// same name to resume it, with any range and from the picker.
         ///
         ///   dfr review --name "$(git branch --show-current)" main..HEAD
-        #[arg(long, conflicts_with = "pr")]
+        #[arg(long, conflicts_with_all = ["pr", "mr"])]
         name: Option<String>,
         /// Bypass the grouping cache (forces a fresh LLM call).
         #[arg(long)]
@@ -81,12 +81,12 @@ enum Command {
         common: Common,
         /// Read the named review session rather than the one filed under the
         /// range. Must match the name `dfr review --name` was given.
-        #[arg(long, conflicts_with = "pr")]
+        #[arg(long, conflicts_with_all = ["pr", "mr"])]
         name: Option<String>,
-        /// Publish the open findings to the pull request as review comments
-        /// (ADR 0029). Needs `--pr`. Prints one line per finding: published
-        /// with its URL, or skipped with the reason.
-        #[arg(long, requires = "pr")]
+        /// Publish the open findings to the request as review comments
+        /// (ADR 0029). Needs `--pr` or `--mr`. Prints one line per finding:
+        /// published with its URL, or skipped with the reason.
+        #[arg(long)]
         post: bool,
         /// Print the open findings as markdown instead — the same text the
         /// reviewer's `y` copies, for pasting into an agent or a PR.
@@ -162,6 +162,9 @@ struct Common {
     /// the request's commits are not local it prints the `git fetch` to run.
     #[arg(long, value_name = "N", conflicts_with = "range")]
     pr: Option<Option<String>>,
+    /// A GitLab merge request instead of a range: as `--pr`, through `glab`.
+    #[arg(long, value_name = "N", conflicts_with_all = ["range", "pr"])]
+    mr: Option<Option<String>>,
 }
 
 /// Shared entry point for the `differential` and `dfr` binaries.
@@ -212,13 +215,19 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Err(e) => return usage_error(&e.to_string()),
     };
     // A request names both the range and the review (ADR 0029). The forge is
-    // asked once, here; everything after reads the answer.
-    let request = match &common.pr {
-        Some(id) => match GhForge::new(repo.root()).request(id.as_deref()) {
+    // asked once, here; everything after reads the answer. Which forge is the
+    // flag's to say, and a run-time answer, hence `dyn` (ADR 0020).
+    let forge: Option<Arc<dyn Forge>> = match (&common.pr, &common.mr) {
+        (Some(_), _) => Some(Arc::new(GhForge::new(repo.root()))),
+        (None, Some(_)) => Some(Arc::new(GlabForge::new(repo.root()))),
+        (None, None) => None,
+    };
+    let request = match (&forge, common.pr.as_ref().or(common.mr.as_ref())) {
+        (Some(forge), Some(id)) => match forge.request(id.as_deref()) {
             Ok(req) => Some(req),
             Err(e) => return usage_error(&e.to_string()),
         },
-        None => None,
+        _ => None,
     };
     // Only `review` may omit the range (it opens the picker instead).
     let resolved = if let Some(req) = &request {
@@ -322,7 +331,15 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 // As TYPED, so the footer can hand it straight back. Empty
                 // when the picker chose the source, which has no spelling.
                 range: match &request {
-                    Some(req) => Some(format!("--pr {}", req.id)),
+                    Some(req) => Some(format!(
+                        "--{} {}",
+                        if req.kind == ForgeKind::Github {
+                            "pr"
+                        } else {
+                            "mr"
+                        },
+                        req.id
+                    )),
                     None => (!common.range.is_empty()).then(|| common.range.join(" ")),
                 },
             };
@@ -358,9 +375,11 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     review_identity_of(&source, request.as_ref(), session_name, &out.base);
                 // The reviewer fetches and posts through this; composed here
                 // because which forge is a run-time answer (ADR 0020, 0029).
-                let forge = request.map(|req| differential_tui::ForgeLink {
-                    forge: Arc::new(GhForge::new(worker_repo.root())),
-                    request: req,
+                let forge = request.and_then(|req| {
+                    Some(differential_tui::ForgeLink {
+                        forge: forge?,
+                        request: req,
+                    })
                 });
                 Ok(differential_tui::Prepared {
                     out,
@@ -390,10 +409,10 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             if post {
                 // Declared to clap as well; checked here because a panic is
                 // the wrong answer to a flag.
-                let Some(req) = request.as_ref() else {
-                    return usage_error("--post publishes to a pull request; give --pr");
+                let (Some(req), Some(forge)) = (request.as_ref(), forge.as_deref()) else {
+                    return usage_error("--post publishes to a request; give --pr or --mr");
                 };
-                return publish(&repo, req, session);
+                return publish(forge, req, session);
             }
             // Two projections of one store, both the engine's: JSON for a
             // consumer, markdown for a person. The reviewer's `y` copies the
@@ -473,7 +492,7 @@ fn review_identity_of(
 /// comment against a commit that is not the request's, and a review built on
 /// one head cannot position comments on another (ADR 0029).
 fn publish(
-    repo: &Repo,
+    forge: &dyn Forge,
     req: &Request,
     mut session: differential_engine::FsReviewSession,
 ) -> anyhow::Result<ExitCode> {
@@ -487,8 +506,7 @@ fn publish(
     }
     // The same sequence the reviewer's `P` runs — head check, send, refetch —
     // from one function, so the two cannot order it differently.
-    let forge = GhForge::new(repo.root());
-    let outcome = match forge::publish(&forge, req, &session.doc().source.head, &plan.batch) {
+    let outcome = match forge::publish(forge, req, &session.doc().source.head, &plan.batch) {
         Ok(o) => o,
         Err(e @ differential_engine::forge::ForgeError::HeadMoved { .. }) => {
             eprintln!("error: {e}");

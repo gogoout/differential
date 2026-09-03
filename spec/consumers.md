@@ -11,10 +11,10 @@ crates.
 
 ```sh
 dfr review [--repo <path>] [--config <path>] [--name <s>] [--no-cache] <range>
-dfr review [--repo <path>] [--config <path>] [--no-cache] --pr [N]
+dfr review [--repo <path>] [--config <path>] [--no-cache] --pr [N] | --mr [N]
 dfr stack [--repo <path>] [--config <path>] [--ref <name>] [--no-cache] <range>
 dfr findings [--repo <path>] [--config <path>] [--name <s>] [--summary] [--no-cache] <range>
-dfr findings [--repo <path>] [--config <path>] [--summary | --post] [--no-cache] --pr [N]
+dfr findings [--repo <path>] [--config <path>] [--summary | --post] [--no-cache] --pr [N] | --mr [N]
 dfr check [--repo <path>] [--config <path>] [--json] <range>
 dfr agent --doc <path>
 dfr clean [--repo <path>] [--dry-run]
@@ -25,8 +25,9 @@ dfr clean [--repo <path>] [--dry-run]
   `- file:lines: note`, which is the same text the reviewer's `y` copies. Both come from
   `ReviewSession`, so the projection has one owner and the two cannot drift.
 - `--pr [N]` replaces the range with a GitHub pull request's merge-base diff and files the
-  review under the request itself ([forge.md](forge.md)). `findings --post` publishes the
-  open findings to it. Both run `gh`; neither fetches.
+  review under the request itself ([forge.md](forge.md)); `--mr [N]` does the same for a
+  GitLab merge request. `findings --post` publishes the open findings to it. `--pr` runs
+  `gh`, `--mr` runs `glab`; neither fetches.
 - `clean` deletes the regenerable cache ([persistence.md](persistence.md)) and reports
   what went. It takes no range — the cache belongs to the repository, not to a review —
   and it never touches findings, which live in a sibling tree.

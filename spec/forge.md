@@ -170,17 +170,22 @@ and until then `event` is always `COMMENT`.
 
 | need | call |
 |---|---|
-| request | `glab api projects/:id/merge_requests/<iid>` — `diff_refs.{base_sha, start_sha, head_sha}`, `source_branch`, `target_branch`, `web_url` |
-| threads | `glab api projects/:id/merge_requests/<iid>/discussions --paginate` — each `notes[]` with `position`, `resolvable`, `resolved`, `author.username`, `created_at` |
-| publish, new | one `POST …/merge_requests/<iid>/draft_notes` per finding with `note` and `position[base_sha, start_sha, head_sha, position_type=text, old_path, new_path, old_line | new_line]`, then one `POST …/draft_notes/bulk_publish` |
+| request | `glab mr view [<iid>] --output json` — `iid`, `target_branch`, `web_url`, `diff_refs.{base_sha, start_sha, head_sha}` |
+| threads | `glab api --paginate projects/:id/merge_requests/<iid>/discussions` — a discussion is a thread when its first non-system note is a `DiffNote` with a `text` position; `notes[]` give `author.username`, `created_at`, `resolved` |
+| publish, new | one `POST …/merge_requests/<iid>/draft_notes` per finding, a JSON body of `note` and `position{position_type: text, base_sha, start_sha, head_sha, old_path, new_path, old_line | new_line}`, then one `POST …/draft_notes/bulk_publish`; the discussions are fetched again to learn each note's id |
 | publish, reply | a draft note with `in_reply_to_discussion_id`, published in the same bulk call |
-| resolve | `PUT …/merge_requests/<iid>/discussions/<id>` with `resolved=true|false` |
+| resolve | `PUT …/merge_requests/<iid>/discussions/<id>` with `{resolved: true | false}` |
 
-`:id` is the tool's placeholder for the current directory's project. `old_path` is the file
-entry's `old_path` when it has one, else the path. `start_sha` is the merge base, which is
-the review's base. A multi-line finding sends `position[line_range]`. The exact field
-spellings are confirmed against a live instance when the adapter lands; this table is the
-intent.
+`:id` is the tool's placeholder for the current directory's project. `start_sha` is the
+target branch's tip when the diff was computed, `base_sha` the merge base; both come from
+the request and travel in every position. `old_path` is the file entry's `old_path` when
+it has one, else the path. Two limits, until the adapter has met a live instance: a
+**multi-line finding is positioned at its last line** and opens its note with
+`(lines a-b)`, because `line_range` wants a `line_code` hashed from the path and both
+sides' numbers; and a **position recorded against another head is outdated** and counted
+rather than drawn, because the REST answer carries no diff text to place it by. The GitHub
+table above is verified against a live request; this one is written from the API
+reference and pinned by tests on the shapes it expects.
 
 ## Later
 
