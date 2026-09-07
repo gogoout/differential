@@ -110,10 +110,14 @@ and the forge holds the edit first, the record following its answer.
   schema is frozen, so the field stays; `spec/json-contract.md` says what it actually is.
 - A finding gains two optional fields, `reply_to` and `upstream`. Both are additive with
   defaults, like every field before them; an older `findings.jsonl` loads unchanged.
-- A note on a line the forge's diff does not show cannot be published. GitHub's request diff
-  carries three lines of context per hunk; a note further out fails the whole review. The
-  batch therefore excludes such findings and reports each by file and line, and the
-  reviewer shows which they were.
+- A note on a line the forge's diff does not show cannot be published as a line comment.
+  GitHub's request diff carries three lines of context per hunk and its public API resolves
+  a line against exactly that — measured: three after a change lands, four is refused — so a
+  note further out fails the whole review. The batch therefore excludes such findings and
+  reports each by file and line, and the reviewer shows which they were. GitHub would take
+  them as file-level comments with the place written into the body; the author declined
+  that, so they stay local. Whether GitLab is as strict is unmeasured; the same rule applies
+  there until it is.
 - The local head must equal the request's head at post time. Both forges reject a comment
   against a commit that is not the request's. The check is the first thing `P` does.
 - Whether `gh` or `glab` is present, logged in, and online is checked when it is used, by

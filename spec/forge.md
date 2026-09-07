@@ -140,8 +140,13 @@ what would stay and why, and asks. On `y`, on a worker thread:
    sent, and the status line says which commit the request is at now.
 2. **The diff check.** A finding whose line the request's diff does not show is excluded
    and reported by file and line. On GitHub a request diff carries three lines of context
-   around each hunk; the check is against the plan's hunks on the anchor's side, widened by
-   three. Replies skip this check: they need a thread id, not a line.
+   around each hunk and the public API resolves a `line` against exactly that: measured on
+   a live request, three lines after a change lands and four is refused with `line could
+   not be resolved`, whatever the web page allows after expanding. The check is against the
+   plan's hunks on the anchor's side, widened by three. Replies skip it: they need a thread
+   id, not a line. GitHub also takes a comment on the **file** (`subject_type: file`, no
+   line) and it landed in the same measurement; the author chose not to send excluded
+   notes that way, so they stay local and the float says why.
 3. **One batch.** New comments and replies go up as described per forge below. Each
    finding that lands records `upstream: { thread, comment }`. A finding that fails keeps
    no `upstream` and is reported.
@@ -215,7 +220,12 @@ it has one, else the path. Two limits, until the adapter has met a live instance
 sides' numbers; a **position recorded against another head is outdated** and counted
 rather than drawn, because the REST answer carries no diff text to place it by; and a
 **publish that fails part-way** may leave draft notes on the request, because GitLab has
-no batch create — the next publish does not know them, so they are cleared by hand. The GitHub
+no batch create — the next publish does not know them, so they are cleared by hand. One
+rule is probably tighter than it needs to be: the **three-line diff check** is GitHub's,
+measured there, and applied to GitLab too because it has not been measured there. GitLab
+positions a note by `old_line` / `new_line` against the request's diff refs and may accept
+any line of the file; when a live instance says so, the check is to be loosened for GitLab
+and this paragraph rewritten. The GitHub
 table above is verified against a live request; this one is written from the API
 reference and pinned by tests on the shapes it expects.
 
