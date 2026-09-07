@@ -188,6 +188,9 @@ pub enum Mode {
         /// The forge thread this answers. A reply is still a finding until a
         /// publish sends it (ADR 0029).
         reply_to: Option<String>,
+        /// A comment of the reader's on the forge being rewritten. Saving
+        /// sends the text there first.
+        own: Option<forge::OwnComment>,
         editor: Box<TextArea<'static>>,
     },
     Help,
@@ -220,10 +223,10 @@ pub enum Mode {
     Publish {
         plan: differential_engine::forge::PublishPlan,
     },
-    /// `dd` on a comment this reader published: the next key answers, and
-    /// only `y` deletes it on the forge (ADR 0029).
-    DeletePublished {
-        finding: String,
+    /// `dd` on a comment of the reader's: the next key answers, and only
+    /// `y` deletes it on the forge (ADR 0029).
+    DeleteComment {
+        own: forge::OwnComment,
     },
 }
 
@@ -429,6 +432,9 @@ pub struct App {
     forge: Option<forge::ForgeLink>,
     /// The one forge call that may be out. See `app::forge`.
     inflight: Option<forge::Inflight>,
+    /// The login the forge knows the reader as, once asked. A comment by
+    /// this author is the reader's own.
+    me: Option<String>,
 }
 
 impl App {
@@ -494,6 +500,7 @@ impl App {
             pending_d: false,
             forge: None,
             inflight: None,
+            me: None,
         };
         // The document is fixed for the session's life, so this is built once
         // rather than found by scanning the file list per row.

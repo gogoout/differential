@@ -5752,6 +5752,9 @@ mod forge_threads {
         fn kind(&self) -> ForgeKind {
             ForgeKind::Github
         }
+        fn whoami(&self) -> Result<String, ForgeError> {
+            Ok("me".into())
+        }
         fn request(&self, _id: Option<&str>) -> Result<Request, ForgeError> {
             Ok(Request {
                 head: self.head.lock().unwrap().clone(),
@@ -6458,7 +6461,7 @@ mod forge_threads {
         app.handle_key(key('d'));
         app.handle_key(key('d'));
         assert_eq!(app.session.threads().len(), 1);
-        assert!(app.status.contains("forge's"), "{}", app.status);
+        assert!(app.status.contains("not your comment"), "{}", app.status);
     }
 
     #[test]
@@ -6601,6 +6604,103 @@ mod forge_threads {
 
     // ------------------------------------------------------ your own comment
 
+    /// A thread by the reader, as the forge reports it, with no marker: one
+    /// sent before markers existed, or written on the forge's own page.
+    fn my_unmarked_thread(id: &str, body: &str) -> RemoteThread {
+        let mut t = thread(id, &format!("{id}-root"));
+        t.comments.truncate(1);
+        t.comments[0].author = "me".into();
+        t.comments[0].body = body.into();
+        t
+    }
+
+    #[test]
+    fn a_comment_by_you_with_no_marker_is_yours_by_author() {
+        let (_r, mut app, fake) =
+            app_with_threads(vec![my_unmarked_thread("M1", "mine, from the web")]);
+        app.cursor = thread_rows(&app, "M1")[0];
+        assert_eq!(app.session.findings().len(), 0, "no local record at all");
+
+        // c edits it on the forge; the cache follows, no record is invented.
+        app.handle_key(key('c'));
+        assert!(matches!(&app.mode, Mode::Editing { own: Some(own), .. } if own.thread == "M1"));
+        app.handle_paste(" and edited here");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        settle(&mut app);
+        assert_eq!(app.status, "comment rewritten on the request");
+        assert_eq!(
+            app.session.thread("M1").unwrap().root().unwrap().body,
+            "mine, from the web and edited here"
+        );
+        assert_eq!(
+            fake.threads.lock().unwrap()[0].root().unwrap().body,
+            "mine, from the web and edited here"
+        );
+        assert!(app.session.findings().is_empty());
+
+        // dd asks, then deletes it there and here.
+        app.cursor = thread_rows(&app, "M1")[0];
+        app.handle_key(key('d'));
+        app.handle_key(key('d'));
+        assert!(matches!(&app.mode, Mode::DeleteComment { own } if own.finding.is_none()));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        assert_eq!(app.status, "comment deleted on the request");
+        assert!(app.session.thread("M1").is_none());
+        assert!(fake.threads.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_unmarked_comment_by_you_heals_the_note_it_came_from() {
+        // The note was published before markers existed and its answer was
+        // lost: a local note with no address, and a comment by the reader on
+        // the same line with the same words and no marker.
+        let (_r, mut app) = make_app();
+        select_group_of(&mut app, "src/main.txt");
+        draft_two_without_thread(&mut app);
+        assert_eq!(app.session.unpublished().count(), 1);
+        let fake = FakeForge::new(
+            vec![my_unmarked_thread("M1", "on the change")],
+            &app.session.doc().source.head,
+        );
+        app.link_forge(ForgeLink {
+            forge: fake as Arc<dyn Forge>,
+            request: request(),
+        });
+        app.start_fetch();
+        settle(&mut app);
+        assert!(
+            app.status.contains("1 finding found already published"),
+            "{}",
+            app.status
+        );
+        let f = &app.session.findings()[0];
+        assert_eq!(
+            f.upstream
+                .as_ref()
+                .map(|u| (u.thread.as_str(), u.comment.as_str())),
+            Some(("M1", "M1-root"))
+        );
+        assert_eq!(
+            app.session.unpublished().count(),
+            0,
+            "P has nothing to send"
+        );
+        assert!(app.session.is_twinned(f), "listed once, as the thread");
+        // Not healed: a different text on the same line stays a note.
+        app.cursor = app
+            .rows
+            .iter()
+            .position(|r| r.line.as_ref().is_some_and(|l| l.holds("new", 1)))
+            .unwrap();
+        app.handle_key(key('c'));
+        app.handle_paste("something else");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(key('R'));
+        settle(&mut app);
+        assert_eq!(app.session.unpublished().count(), 1);
+    }
+
     /// Publish two notes and land the cursor on the header row of the thread
     /// the first one became.
     fn published_and_parked(app: &mut App) -> String {
@@ -6626,18 +6726,13 @@ mod forge_threads {
         let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
         let mine = published_and_parked(&mut app);
         app.handle_key(key('c'));
-        let Mode::Editing {
-            rewriting,
-            reply_to,
-            ..
-        } = &app.mode
-        else {
+        let Mode::Editing { own, reply_to, .. } = &app.mode else {
             panic!("c opens the composer");
         };
         assert_eq!(
-            rewriting.as_deref(),
+            own.as_ref().and_then(|o| o.finding.as_deref()),
             Some(mine.as_str()),
-            "a rewrite, not a reply"
+            "a rewrite of the comment, not a reply"
         );
         assert!(reply_to.is_none());
         app.handle_paste(", or is it");
@@ -6687,7 +6782,9 @@ mod forge_threads {
         let mine = published_and_parked(&mut app);
         app.handle_key(key('d'));
         app.handle_key(key('d'));
-        assert!(matches!(&app.mode, Mode::DeletePublished { finding } if finding == &mine));
+        assert!(
+            matches!(&app.mode, Mode::DeleteComment { own } if own.finding.as_deref() == Some(mine.as_str()))
+        );
         app.handle_key(key('n'));
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(app.status, "nothing deleted");
@@ -6724,7 +6821,7 @@ mod forge_threads {
         app.handle_key(key('d'));
         app.handle_key(key('d'));
         assert!(matches!(app.mode, Mode::Normal));
-        assert!(app.status.contains("forge's"), "{}", app.status);
+        assert!(app.status.contains("not your comment"), "{}", app.status);
     }
 }
 

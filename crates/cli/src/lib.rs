@@ -516,7 +516,8 @@ fn publish(
     };
     let published = outcome.published;
     session.mark_published(&published)?;
-    session.set_threads(outcome.threads)?;
+    // The CLI has no login to heal by; the marker still does its work.
+    session.set_threads(outcome.threads, None)?;
     for p in &published {
         let at = session
             .findings()

@@ -124,30 +124,37 @@ impl App {
                                 entries[*selected].thread,
                                 entries[*selected].published,
                             );
-                            // A thread whose root this reader published is
-                            // theirs to delete; anyone else's is the forge's.
+                            // A comment of the reader's is theirs to delete,
+                            // on the forge; anyone else's is not.
                             let own = if thread {
-                                self.session.thread(&id).and_then(|t| {
-                                    let root = t.root()?;
-                                    self.session.findings().iter().find(|f| {
-                                        root.finding.as_deref() == Some(f.id.as_str())
-                                            || f.upstream
-                                                .as_ref()
-                                                .is_some_and(|u| u.comment == root.id)
-                                    })
-                                })
+                                self.own_root(&id)
                             } else if published {
-                                self.session.findings().iter().find(|f| f.id == id)
+                                self.session
+                                    .findings()
+                                    .iter()
+                                    .find(|f| f.id == id)
+                                    .and_then(|f| {
+                                        let up = f.upstream.as_ref()?;
+                                        Some(forge::OwnComment {
+                                            thread: up.thread.clone(),
+                                            comment: up.comment.clone(),
+                                            finding: Some(f.id.clone()),
+                                            body: f.body.clone(),
+                                            at: format!(
+                                                "{}:{}",
+                                                f.anchor.file,
+                                                f.anchor.line_span()
+                                            ),
+                                        })
+                                    })
                             } else {
                                 None
-                            }
-                            .map(|f| f.id.clone());
+                            };
                             match (own, thread) {
-                                (Some(f), _) => self.mode = Mode::DeletePublished { finding: f },
+                                (Some(own), _) => self.mode = Mode::DeleteComment { own },
                                 (None, true) => {
                                     self.status =
-                                        "a review thread is the forge's · c replies · x resolves"
-                                            .into();
+                                        "not your comment · c replies · x resolves".into();
                                 }
                                 (None, false) => self.delete_finding(&id),
                             }
@@ -190,11 +197,11 @@ impl App {
                 }
                 return Vec::new();
             }
-            Mode::DeletePublished { finding } => {
-                let finding = finding.clone();
+            Mode::DeleteComment { own } => {
+                let own = own.clone();
                 self.mode = Mode::Normal;
                 if (key.code, key.modifiers) == (KeyCode::Char('y'), KeyModifiers::NONE) {
-                    self.start_delete_published(&finding);
+                    self.start_delete_comment(own);
                 } else {
                     self.status = "nothing deleted".into();
                 }
@@ -218,10 +225,16 @@ impl App {
                 lines,
                 rewriting,
                 reply_to,
+                own,
                 editor: textarea,
             } => {
-                let (hunk, lines, rewriting, reply_to) =
-                    (*hunk, lines.clone(), rewriting.clone(), reply_to.clone());
+                let (hunk, lines, rewriting, reply_to, own) = (
+                    *hunk,
+                    lines.clone(),
+                    rewriting.clone(),
+                    reply_to.clone(),
+                    own.clone(),
+                );
                 match (key.code, key.modifiers) {
                     (KeyCode::Esc, _) => {
                         self.mode = Mode::Normal;
@@ -263,6 +276,16 @@ impl App {
                     (KeyCode::Enter, _) | (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
                         let body = textarea.lines().join("\n").trim().to_string();
                         self.mode = Mode::Normal;
+                        // A comment on the forge: the text goes there first, and
+                        // emptying the box leaves it as it was, as with a note.
+                        if let Some(own) = own {
+                            if body.is_empty() {
+                                self.status = "comment left as it was".into();
+                            } else {
+                                self.start_edit_comment(own, body);
+                            }
+                            return Vec::new();
+                        }
                         match (rewriting, reply_to, body.is_empty()) {
                             // Emptying the box does NOT delete the note. That
                             // is `dd`, which is a deliberate press; a note lost
@@ -422,34 +445,29 @@ impl App {
             (KeyCode::Esc, _) if self.visual.is_some() => {
                 self.visual = None;
             }
-            // On a comment this reader published, `c` rewrites it: the box
-            // opens with its text, and saving sends the new text to the forge.
+            // On a comment of the reader's, `c` rewrites it: the box opens
+            // with its text, and saving sends the new text to the forge.
             (KeyCode::Char('c'), KeyModifiers::NONE)
-                if self.thread_at_cursor().is_some()
-                    && self.own_published_at_cursor().is_some() =>
+                if self.thread_at_cursor().is_some() && self.own_comment_at_cursor().is_some() =>
             {
-                let f = self.own_published_at_cursor().expect("guarded");
-                let (id, body, path, span) = (
-                    f.id.clone(),
-                    f.body.clone(),
-                    f.anchor.file.clone(),
-                    f.anchor.line_span(),
-                );
+                let own = self.own_comment_at_cursor().expect("guarded");
                 let hunk = self.current_hunk().unwrap_or(0);
-                let mut ta = TextArea::new(body.lines().map(str::to_string).collect::<Vec<_>>());
+                let mut ta =
+                    TextArea::new(own.body.lines().map(str::to_string).collect::<Vec<_>>());
                 ta.move_cursor(tui_textarea::CursorMove::End);
                 ta.set_block(
                     Block::default()
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(self.theme.header_fg))
-                        .title(format!(" {} · L{span} · on the request ", basename(&path))),
+                        .title(format!(" {} · on the request ", own.at)),
                 );
                 self.visual = None;
                 self.mode = Mode::Editing {
                     hunk,
                     lines: None,
-                    rewriting: Some(id),
+                    rewriting: None,
                     reply_to: None,
+                    own: Some(own),
                     editor: Box::new(ta),
                 };
             }
@@ -477,6 +495,7 @@ impl App {
                     lines: None,
                     rewriting: None,
                     reply_to: Some(id),
+                    own: None,
                     editor: Box::new(ta),
                 };
             }
@@ -544,6 +563,7 @@ impl App {
                         lines,
                         rewriting: existing.map(|(id, _, _)| id),
                         reply_to: None,
+                        own: None,
                         editor: Box::new(ta),
                     };
                 } else {

@@ -395,13 +395,24 @@ impl<S: ReviewStore> ReviewSession<S> {
     /// comment carries IS published, whatever the publish's answer said, and
     /// gets its address now. Returns how many were reconciled. This is what
     /// makes a publish idempotent across a lost answer (ADR 0029).
-    pub fn set_threads(&mut self, mut threads: Vec<RemoteThread>) -> Result<usize, EngineError> {
+    ///
+    /// `me` is the login the forge knows the reader as. A comment by that
+    /// author with no marker — one sent before markers existed, or written on
+    /// the forge's own page — is matched to an unpublished note on the same
+    /// file and line with the same text, and the two are linked; a reply the
+    /// same way, by thread and text. Weaker than the marker, and enough: the
+    /// same author, place and words.
+    pub fn set_threads(
+        &mut self,
+        mut threads: Vec<RemoteThread>,
+        me: Option<&str>,
+    ) -> Result<usize, EngineError> {
         for t in &mut threads {
             forge::place(&self.doc, &self.view, t);
         }
         self.threads = threads;
-        self.store.save_threads(&self.threads)?;
         let mut reconciled = 0;
+        // By marker first: exact.
         for f in self.findings.iter_mut().filter(|f| f.upstream.is_none()) {
             if let Some((t, c)) = self
                 .threads
@@ -415,6 +426,42 @@ impl<S: ReviewStore> ReviewSession<S> {
                 reconciled += 1;
             }
         }
+        // Then by author, place and words, for comments with no marker.
+        if let Some(me) = me {
+            let same =
+                |a: &str, b: &str| a.replace("\r\n", "\n").trim() == b.replace("\r\n", "\n").trim();
+            for t in &mut self.threads {
+                let Some(anchor) = t.anchor.clone() else {
+                    continue;
+                };
+                for (i, c) in t.comments.iter_mut().enumerate() {
+                    if c.finding.is_some() || c.author != me {
+                        continue;
+                    }
+                    let hit = self.findings.iter_mut().find(|f| {
+                        f.upstream.is_none()
+                            && same(&f.body, &c.body)
+                            && if i == 0 {
+                                f.reply_to.is_none()
+                                    && f.anchor.file == anchor.file
+                                    && f.anchor.end_line.max(f.anchor.line)
+                                        == anchor.end_line.max(anchor.line)
+                            } else {
+                                f.reply_to.as_deref() == Some(t.id.as_str())
+                            }
+                    });
+                    if let Some(f) = hit {
+                        f.upstream = Some(Upstream {
+                            thread: t.id.clone(),
+                            comment: c.id.clone(),
+                        });
+                        c.finding = Some(f.id.clone());
+                        reconciled += 1;
+                    }
+                }
+            }
+        }
+        self.store.save_threads(&self.threads)?;
         if reconciled > 0 {
             self.store.save_findings(&self.findings)?;
         }
@@ -432,45 +479,56 @@ impl<S: ReviewStore> ReviewSession<S> {
         Ok(true)
     }
 
-    /// A published finding, rewritten: the forge has already taken the new
-    /// body, so the record and the cached thread follow it. Returns whether
-    /// the finding was known.
-    pub fn edit_published(&mut self, id: &str, body: String) -> Result<bool, EngineError> {
-        let Some(f) = self.findings.iter_mut().find(|f| f.id == id) else {
+    /// A comment of the reader's, rewritten: the forge has already taken the
+    /// new body, so the cached thread follows it, and the record too when a
+    /// finding is linked to the comment. Returns whether the comment was known.
+    pub fn edit_comment(
+        &mut self,
+        thread: &str,
+        comment: &str,
+        body: String,
+    ) -> Result<bool, EngineError> {
+        let Some(c) = self
+            .threads
+            .iter_mut()
+            .find(|t| t.id == thread)
+            .and_then(|t| t.comments.iter_mut().find(|c| c.id == comment))
+        else {
             return Ok(false);
         };
-        f.body = body.clone();
-        let upstream = f.upstream.clone();
-        self.store.save_findings(&self.findings)?;
-        if let Some(up) = upstream
-            && let Some(c) = self
-                .threads
-                .iter_mut()
-                .flat_map(|t| t.comments.iter_mut())
-                .find(|c| c.id == up.comment || c.finding.as_deref() == Some(id))
-        {
-            c.body = body;
-            self.store.save_threads(&self.threads)?;
+        c.body = body.clone();
+        let linked = c.finding.clone();
+        self.store.save_threads(&self.threads)?;
+        if let Some(f) = self.findings.iter_mut().find(|f| {
+            linked.as_deref() == Some(f.id.as_str())
+                || f.upstream.as_ref().is_some_and(|u| u.comment == comment)
+        }) {
+            f.body = body;
+            self.store.save_findings(&self.findings)?;
         }
         Ok(true)
     }
 
-    /// A published finding the forge has already deleted: drop the record
-    /// and the cached comment, and the thread with it when nothing is left.
-    pub fn delete_published(&mut self, id: &str) -> Result<bool, EngineError> {
-        let Some(f) = self.findings.iter().find(|f| f.id == id) else {
+    /// A comment of the reader's the forge has already deleted: drop it from
+    /// the cache, the thread with it when nothing is left, and the linked
+    /// finding's record. Returns whether the comment was known.
+    pub fn delete_comment(&mut self, thread: &str, comment: &str) -> Result<bool, EngineError> {
+        let Some(t) = self.threads.iter_mut().find(|t| t.id == thread) else {
             return Ok(false);
         };
-        let upstream = f.upstream.clone();
-        self.findings.retain(|f| f.id != id);
-        self.store.save_findings(&self.findings)?;
-        if let Some(up) = upstream {
-            for t in &mut self.threads {
-                t.comments
-                    .retain(|c| c.id != up.comment && c.finding.as_deref() != Some(id));
-            }
-            self.threads.retain(|t| !t.comments.is_empty());
-            self.store.save_threads(&self.threads)?;
+        let Some(pos) = t.comments.iter().position(|c| c.id == comment) else {
+            return Ok(false);
+        };
+        let linked = t.comments.remove(pos).finding;
+        self.threads.retain(|t| !t.comments.is_empty());
+        self.store.save_threads(&self.threads)?;
+        let before = self.findings.len();
+        self.findings.retain(|f| {
+            linked.as_deref() != Some(f.id.as_str())
+                && f.upstream.as_ref().is_none_or(|u| u.comment != comment)
+        });
+        if self.findings.len() != before {
+            self.store.save_findings(&self.findings)?;
         }
         Ok(true)
     }

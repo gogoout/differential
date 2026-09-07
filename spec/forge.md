@@ -112,12 +112,16 @@ twin is present, matched on `upstream.comment` or the marker; the record stays i
 draft** renders in the finding's look under the thread it answers, in date order after the
 thread's comments.
 
-A comment **this reader published** is theirs on the forge too. `c` on one of its rows
-opens the composer on its text, and saving rewrites it on the forge first; the record and
-the cached thread follow when the forge has answered. `dd` on one asks — `y` deletes it
-there and here, any other key keeps it — and the thread goes with it when nothing is left.
-Both reach the forge through `edit_comment` and `delete_comment` on the trait. Anyone
-else's comment stays reply-only.
+A comment is **the reader's own** when its author is the login the forge knows the reader
+as (`whoami` on the trait, asked once per session with the first fetch), when its body
+carries this review's marker, or when a finding records its address. `c` on one of its rows
+opens the composer on its text, and saving rewrites it on the forge first; the cached
+thread follows when the forge has answered, and the record too when a finding is linked.
+`dd` on one asks — `y` deletes it there and here, any other key keeps it — and the thread
+goes with it when nothing is left. Both reach the forge through `edit_comment` and
+`delete_comment` on the trait, keyed by thread and comment, so a comment written on the
+forge's own page is as editable as one published from here. Anyone else's comment stays
+reply-only, and the footer says `not your comment`.
 
 ## Writing
 
@@ -151,7 +155,11 @@ match — not path, line and body, which the forge stores reflowed — and it su
 answer: on every fetch, a finding with no `upstream` whose marker a fetched comment carries
 is marked published there and then. A publish whose answer never came back therefore heals
 on the refetch it runs anyway, the plan never sends a finding a thread already carries, and
-`P` a second time has nothing to send.
+`P` a second time has nothing to send. A comment **by the reader with no marker** — sent
+before markers existed, or written on the forge's page — is matched more loosely: an
+unpublished note on the same file and line with the same text, or a reply in the same
+thread with the same text, is linked to it and marked published. Same author, same place,
+same words is enough; an edit from here then adds the marker.
 
 `y` copies only findings with no `upstream`. A published finding is on the request; the
 clipboard is for what is not. It stays in `findings.jsonl` with its address, hidden behind
@@ -178,6 +186,7 @@ before them loads unchanged:
 | publish, new | `gh api POST repos/{owner}/{repo}/pulls/<n>/reviews` with `commit_id`, `event: "COMMENT"`, and `comments: [{path, body, line, side, start_line, start_side}]` — one review |
 | publish, reply | `gh api POST repos/{owner}/{repo}/pulls/<n>/comments/<root comment id>/replies` with `body`, one per reply |
 | resolve | `gh api graphql` — `resolveReviewThread(input: {threadId})` / `unresolveReviewThread` |
+| who am I | `gh api user` → `login` |
 | edit, delete own | `PATCH` / `DELETE repos/{owner}/{repo}/pulls/comments/<id>` |
 
 `side` is `RIGHT` for the anchor's `new` and `LEFT` for `old`. `path` is the file's path in
@@ -194,6 +203,7 @@ and until then `event` is always `COMMENT`.
 | publish, new | one `POST …/merge_requests/<iid>/draft_notes` per finding, a JSON body of `note` and `position{position_type: text, base_sha, start_sha, head_sha, old_path, new_path, old_line | new_line}`, then one `POST …/draft_notes/bulk_publish`; the discussions are fetched again to learn each note's id |
 | publish, reply | a draft note with `in_reply_to_discussion_id`, published in the same bulk call |
 | resolve | `PUT …/merge_requests/<iid>/discussions/<id>` with `{resolved: true | false}` |
+| who am I | `glab api user` → `username` |
 | edit, delete own | `PUT` / `DELETE …/discussions/<id>/notes/<note id>` |
 
 `:id` is the tool's placeholder for the current directory's project. `start_sha` is the

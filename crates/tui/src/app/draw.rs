@@ -100,16 +100,10 @@ impl App {
                     area,
                 );
             }
-            Mode::DeletePublished { finding } => {
+            Mode::DeleteComment { own } => {
                 let key = Style::default().fg(self.theme.header_fg);
                 let text = Style::default().fg(self.theme.context_fg);
-                let at = self
-                    .session
-                    .findings()
-                    .iter()
-                    .find(|f| &f.id == finding)
-                    .map(|f| format!("{}:{}", f.anchor.file, f.anchor.line_span()))
-                    .unwrap_or_default();
+                let at = &own.at;
                 let lines = vec![
                     Line::from(""),
                     Line::from(Span::styled(

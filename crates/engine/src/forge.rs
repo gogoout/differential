@@ -336,6 +336,10 @@ pub enum ForgeError {
 pub trait Forge: Send + Sync {
     fn kind(&self) -> ForgeKind;
 
+    /// The login the tool is signed in as. A comment by this author is the
+    /// reader's, marker or not.
+    fn whoami(&self) -> Result<String, ForgeError>;
+
     /// The request with this id, or the current branch's when `None`.
     fn request(&self, id: Option<&str>) -> Result<Request, ForgeError>;
 

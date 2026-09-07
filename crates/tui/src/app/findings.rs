@@ -178,13 +178,23 @@ impl App {
     pub(super) fn rewrite_finding(&mut self, id: &str, body: String) {
         // Published: the forge holds the comment, so it is rewritten there
         // first and the record follows its answer.
-        if self
+        if let Some(own) = self
             .session
             .findings()
             .iter()
-            .any(|f| f.id == id && f.upstream.is_some())
+            .find(|f| f.id == id && f.upstream.is_some())
+            .and_then(|f| {
+                let up = f.upstream.as_ref()?;
+                Some(forge::OwnComment {
+                    thread: up.thread.clone(),
+                    comment: up.comment.clone(),
+                    finding: Some(f.id.clone()),
+                    body: f.body.clone(),
+                    at: format!("{}:{}", f.anchor.file, f.anchor.line_span()),
+                })
+            })
         {
-            self.start_edit_published(id, body);
+            self.start_edit_comment(own, body);
             return;
         }
         match self.session.edit_finding(id, body) {
@@ -453,21 +463,19 @@ impl App {
     }
 
     pub(super) fn delete_finding_at_cursor(&mut self) {
-        // A comment this reader published is theirs to delete, on the forge:
-        // the next key answers, because it is outward and gone for good.
-        if let Some(f) = self.own_published_at_cursor() {
-            self.mode = Mode::DeletePublished {
-                finding: f.id.clone(),
-            };
+        // A comment of the reader's is theirs to delete, on the forge: the
+        // next key answers, because it is outward and gone for good.
+        if let Some(own) = self.own_comment_at_cursor() {
+            self.mode = Mode::DeleteComment { own };
             return;
         }
-        // Anyone else's comment is the forge's. The two things a reader can
-        // do to it are both on other keys, and the footer names them.
+        // Anyone else's comment is not. The two things a reader can do to it
+        // are both on other keys, and the footer names them.
         if matches!(
             self.rows.get(self.cursor).map(|r| &r.kind),
             Some(RowKind::Thread { .. })
         ) {
-            self.status = "a review thread is the forge's · c replies · x resolves".into();
+            self.status = "not your comment · c replies · x resolves".into();
             return;
         }
         if let Some(RowKind::Finding(id, _)) = self.rows.get(self.cursor).map(|r| r.kind.clone()) {

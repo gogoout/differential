@@ -212,7 +212,7 @@ fn a_publish_sends_open_unpublished_findings_inside_the_diff_and_names_the_rest(
         .unwrap()
         .id
         .clone();
-    s.set_threads(vec![thread("t1", "src/lib.rs", "new", Some(8))])
+    s.set_threads(vec![thread("t1", "src/lib.rs", "new", Some(8))], None)
         .unwrap();
     let reply = s.add_reply("t1", "agreed".into()).unwrap().id.clone();
 
@@ -276,11 +276,11 @@ fn a_reply_whose_thread_is_gone_is_excluded_not_sent_as_a_comment() {
     let (r, base, head) = two_hunk_repo();
     let tmp = tempfile::TempDir::new().unwrap();
     let mut s = session(&r, &base, &head, tmp.path());
-    s.set_threads(vec![thread("t1", "src/lib.rs", "new", Some(8))])
+    s.set_threads(vec![thread("t1", "src/lib.rs", "new", Some(8))], None)
         .unwrap();
     s.add_reply("t1", "agreed".into()).unwrap();
     // The forge dropped the thread before the reply went up.
-    s.set_threads(vec![]).unwrap();
+    s.set_threads(vec![], None).unwrap();
     let plan = s.publish_plan();
     assert!(plan.batch.is_empty());
     assert_eq!(plan.excluded.len(), 1);
@@ -305,7 +305,7 @@ fn a_published_finding_hides_behind_its_fetched_twin() {
     assert!(!s.is_twinned(&f), "not fetched yet: the note still shows");
     let mut fetched = thread("T", "src/lib.rs", "new", Some(3));
     fetched.comments[0].id = "C".into();
-    s.set_threads(vec![fetched]).unwrap();
+    s.set_threads(vec![fetched], None).unwrap();
     assert!(s.is_twinned(&f));
 }
 
@@ -317,7 +317,7 @@ fn threads_persist_beside_findings_and_are_placed_again_on_open() {
     let tmp = tempfile::TempDir::new().unwrap();
     {
         let mut s = session(&r, &base, &head, tmp.path());
-        s.set_threads(vec![thread("t1", "src/lib.rs", "new", Some(3))])
+        s.set_threads(vec![thread("t1", "src/lib.rs", "new", Some(3))], None)
             .unwrap();
         assert!(s.set_thread_resolved("t1", true).unwrap());
         assert!(!s.set_thread_resolved("nope", true).unwrap());
@@ -345,7 +345,7 @@ fn a_reply_draft_sits_where_its_thread_does() {
     let (r, base, head) = two_hunk_repo();
     let tmp = tempfile::TempDir::new().unwrap();
     let mut s = session(&r, &base, &head, tmp.path());
-    s.set_threads(vec![thread("t1", "src/lib.rs", "new", Some(8))])
+    s.set_threads(vec![thread("t1", "src/lib.rs", "new", Some(8))], None)
         .unwrap();
     let f = s.add_reply("t1", "agreed".into()).unwrap().clone();
     assert_eq!(f.reply_to.as_deref(), Some("t1"));
@@ -492,7 +492,7 @@ fn a_fetch_reconciles_a_finding_the_forge_already_carries() {
     t.comments[0].id = "C1".into();
     t.comments[0].finding = Some(id.clone());
     t.comments[0].body = "on the change".into();
-    assert_eq!(s.set_threads(vec![t]).unwrap(), 1, "one reconciled");
+    assert_eq!(s.set_threads(vec![t], None).unwrap(), 1, "one reconciled");
     let f = s.findings().iter().find(|f| f.id == id).unwrap();
     assert_eq!(
         f.upstream
@@ -504,7 +504,7 @@ fn a_fetch_reconciles_a_finding_the_forge_already_carries() {
     assert!(s.publish_plan().batch.is_empty(), "nothing sent twice");
     assert_eq!(s.findings_summary().trim(), "(no open findings)");
     // A second fetch has nothing left to reconcile.
-    assert_eq!(s.set_threads(s.threads().to_vec()).unwrap(), 0);
+    assert_eq!(s.set_threads(s.threads().to_vec(), None).unwrap(), 0);
 }
 
 #[test]

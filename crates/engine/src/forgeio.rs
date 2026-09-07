@@ -239,6 +239,11 @@ impl Forge for GhForge {
         ForgeKind::Github
     }
 
+    fn whoami(&self) -> Result<String, ForgeError> {
+        let v = self.tool.json(&["api", "user"], None)?;
+        Ok(str_of(&v, "login")?.to_string())
+    }
+
     fn request(&self, id: Option<&str>) -> Result<Request, ForgeError> {
         let mut args = vec!["pr", "view"];
         if let Some(id) = id {
@@ -631,6 +636,11 @@ impl GlabForge {
 impl Forge for GlabForge {
     fn kind(&self) -> ForgeKind {
         ForgeKind::Gitlab
+    }
+
+    fn whoami(&self) -> Result<String, ForgeError> {
+        let v = self.tool.json(&["api", "user"], None)?;
+        Ok(str_of(&v, "username")?.to_string())
     }
 
     fn request(&self, id: Option<&str>) -> Result<Request, ForgeError> {
