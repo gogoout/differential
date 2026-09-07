@@ -347,6 +347,19 @@ pub trait Forge: Send + Sync {
     fn publish(&self, req: &Request, batch: &Batch) -> Result<Vec<Published>, ForgeError>;
 
     fn set_resolved(&self, req: &Request, thread: &str, resolved: bool) -> Result<(), ForgeError>;
+
+    /// Rewrite a comment this reader published. The body arrives with its
+    /// marker, as it was sent.
+    fn edit_comment(
+        &self,
+        req: &Request,
+        thread: &str,
+        comment: &str,
+        body: &str,
+    ) -> Result<(), ForgeError>;
+
+    /// Remove a comment this reader published.
+    fn delete_comment(&self, req: &Request, thread: &str, comment: &str) -> Result<(), ForgeError>;
 }
 
 // ------------------------------------------------------------------ placing

@@ -16,6 +16,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use differential_engine::forge::{self, Forge, ForgeError, PublishOutcome, RemoteThread, Request};
 
 use crate::rows::RowKind;
+use differential_engine::review_state::Finding;
 
 use super::*;
 
@@ -38,6 +39,15 @@ pub(super) enum Inflight {
         /// did not confirm.
         sent: usize,
         rx: Receiver<Result<PublishOutcome, ForgeError>>,
+    },
+    Edit {
+        finding: String,
+        body: String,
+        rx: Receiver<Result<(), ForgeError>>,
+    },
+    Delete {
+        finding: String,
+        rx: Receiver<Result<(), ForgeError>>,
     },
 }
 
@@ -98,6 +108,16 @@ impl App {
             },
             Inflight::Publish { sent, rx } => match rx.try_recv() {
                 Ok(result) => Answer::Published(*sent, result),
+                Err(TryRecvError::Empty) => return false,
+                Err(TryRecvError::Disconnected) => Answer::Lost,
+            },
+            Inflight::Edit { finding, body, rx } => match rx.try_recv() {
+                Ok(result) => Answer::Edited(finding.clone(), body.clone(), result),
+                Err(TryRecvError::Empty) => return false,
+                Err(TryRecvError::Disconnected) => Answer::Lost,
+            },
+            Inflight::Delete { finding, rx } => match rx.try_recv() {
+                Ok(result) => Answer::Deleted(finding.clone(), result),
                 Err(TryRecvError::Empty) => return false,
                 Err(TryRecvError::Disconnected) => Answer::Lost,
             },
@@ -185,6 +205,29 @@ impl App {
             Answer::Published(_, Err(e)) => {
                 self.status = format!("nothing published: {e}");
             }
+            Answer::Edited(finding, body, Ok(())) => {
+                match self.session.edit_published(&finding, body) {
+                    Ok(true) => self.status = "comment rewritten on the request".into(),
+                    Ok(false) => self.status = "that note is gone".into(),
+                    Err(e) => self.status = format!("save failed: {e:#}"),
+                }
+                self.rebuild_rows();
+            }
+            Answer::Edited(_, _, Err(e)) => {
+                self.status = format!("the comment was not changed: {e}");
+            }
+            Answer::Deleted(finding, Ok(())) => {
+                match self.session.delete_published(&finding) {
+                    Ok(true) => self.status = "comment deleted on the request".into(),
+                    Ok(false) => self.status = "that note is gone".into(),
+                    Err(e) => self.status = format!("save failed: {e:#}"),
+                }
+                self.rebuild_rows();
+                self.reopen_findings();
+            }
+            Answer::Deleted(_, Err(e)) => {
+                self.status = format!("the comment was not deleted: {e}");
+            }
             Answer::Lost => self.status = "the forge call was lost".into(),
         }
         true
@@ -233,9 +276,101 @@ impl App {
     /// The thread whose rows the cursor is in, if any.
     pub(super) fn thread_at_cursor(&self) -> Option<&RemoteThread> {
         match self.rows.get(self.cursor).map(|r| &r.kind) {
-            Some(RowKind::Thread(id, _)) => self.session.thread(id),
+            Some(RowKind::Thread { thread, .. }) => self.session.thread(thread),
             _ => None,
         }
+    }
+
+    /// The published finding whose comment the cursor is in: a thread row of
+    /// a comment this reader sent, or the row of a published note whose twin
+    /// is not fetched yet. `None` on anyone else's comment.
+    pub(super) fn own_published_at_cursor(&self) -> Option<&Finding> {
+        match self.rows.get(self.cursor).map(|r| &r.kind) {
+            Some(RowKind::Thread {
+                thread, comment, ..
+            }) => {
+                let c = self
+                    .session
+                    .thread(thread)?
+                    .comments
+                    .iter()
+                    .find(|c| &c.id == comment)?;
+                self.session.findings().iter().find(|f| {
+                    c.finding.as_deref() == Some(f.id.as_str())
+                        || f.upstream.as_ref().is_some_and(|u| u.comment == c.id)
+                })
+            }
+            Some(RowKind::Finding(id, _)) => self
+                .session
+                .findings()
+                .iter()
+                .find(|f| &f.id == id && f.upstream.is_some()),
+            _ => None,
+        }
+    }
+
+    /// Rewrite a comment this reader published: on the forge first, and the
+    /// record follows when the forge has answered.
+    pub(super) fn start_edit_published(&mut self, id: &str, body: String) {
+        let Some(f) = self.session.findings().iter().find(|f| f.id == id) else {
+            self.status = "that note is gone".into();
+            return;
+        };
+        let Some(up) = f.upstream.clone() else {
+            return;
+        };
+        let Some(link) = &self.forge else {
+            self.status = "this review is not of a pull request".into();
+            return;
+        };
+        if self.inflight.is_some() {
+            self.status = "still syncing with the forge".into();
+            return;
+        }
+        let (forge, req) = (Arc::clone(&link.forge), link.request.clone());
+        let sent = forge::with_marker(&body, id);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(forge.edit_comment(&req, &up.thread, &up.comment, &sent));
+        });
+        self.inflight = Some(Inflight::Edit {
+            finding: id.to_string(),
+            body,
+            rx,
+        });
+        self.status = "rewriting the comment on the request…".into();
+    }
+
+    /// Delete a comment this reader published: on the forge first.
+    pub(super) fn start_delete_published(&mut self, id: &str) {
+        let Some(up) = self
+            .session
+            .findings()
+            .iter()
+            .find(|f| f.id == id)
+            .and_then(|f| f.upstream.clone())
+        else {
+            self.status = "that note is gone".into();
+            return;
+        };
+        let Some(link) = &self.forge else {
+            self.status = "this review is not of a pull request".into();
+            return;
+        };
+        if self.inflight.is_some() {
+            self.status = "still syncing with the forge".into();
+            return;
+        }
+        let (forge, req) = (Arc::clone(&link.forge), link.request.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(forge.delete_comment(&req, &up.thread, &up.comment));
+        });
+        self.inflight = Some(Inflight::Delete {
+            finding: id.to_string(),
+            rx,
+        });
+        self.status = "deleting the comment on the request…".into();
     }
 
     /// `x`: flip the thread under the cursor on the forge. The forge answers
@@ -281,6 +416,8 @@ enum Answer {
     Fetched(Result<Vec<RemoteThread>, ForgeError>),
     Resolved(String, bool, Result<(), ForgeError>),
     Published(usize, Result<PublishOutcome, ForgeError>),
+    Edited(String, String, Result<(), ForgeError>),
+    Deleted(String, Result<(), ForgeError>),
     Lost,
 }
 

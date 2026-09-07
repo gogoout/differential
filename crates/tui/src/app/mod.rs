@@ -220,6 +220,11 @@ pub enum Mode {
     Publish {
         plan: differential_engine::forge::PublishPlan,
     },
+    /// `dd` on a comment this reader published: the next key answers, and
+    /// only `y` deletes it on the forge (ADR 0029).
+    DeletePublished {
+        finding: String,
+    },
 }
 
 pub struct FindingEntry {

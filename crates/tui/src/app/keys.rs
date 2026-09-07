@@ -111,14 +111,37 @@ impl App {
                     (KeyCode::Char('D'), _) => *confirming = true,
                     (KeyCode::Char('d'), KeyModifiers::NONE) => {
                         if pending_d {
-                            let (id, thread) =
-                                (entries[*selected].id.clone(), entries[*selected].thread);
-                            if thread {
-                                self.status =
-                                    "a review thread is the forge's · c replies · x resolves"
-                                        .into();
+                            let (id, thread, published) = (
+                                entries[*selected].id.clone(),
+                                entries[*selected].thread,
+                                entries[*selected].published,
+                            );
+                            // A thread whose root this reader published is
+                            // theirs to delete; anyone else's is the forge's.
+                            let own = if thread {
+                                self.session.thread(&id).and_then(|t| {
+                                    let root = t.root()?;
+                                    self.session.findings().iter().find(|f| {
+                                        root.finding.as_deref() == Some(f.id.as_str())
+                                            || f.upstream
+                                                .as_ref()
+                                                .is_some_and(|u| u.comment == root.id)
+                                    })
+                                })
+                            } else if published {
+                                self.session.findings().iter().find(|f| f.id == id)
                             } else {
-                                self.delete_finding(&id);
+                                None
+                            }
+                            .map(|f| f.id.clone());
+                            match (own, thread) {
+                                (Some(f), _) => self.mode = Mode::DeletePublished { finding: f },
+                                (None, true) => {
+                                    self.status =
+                                        "a review thread is the forge's · c replies · x resolves"
+                                            .into();
+                                }
+                                (None, false) => self.delete_finding(&id),
                             }
                         } else {
                             self.pending_d = true;
@@ -156,6 +179,16 @@ impl App {
                         self.mode = Mode::Normal;
                     }
                     _ => {}
+                }
+                return Vec::new();
+            }
+            Mode::DeletePublished { finding } => {
+                let finding = finding.clone();
+                self.mode = Mode::Normal;
+                if (key.code, key.modifiers) == (KeyCode::Char('y'), KeyModifiers::NONE) {
+                    self.start_delete_published(&finding);
+                } else {
+                    self.status = "nothing deleted".into();
                 }
                 return Vec::new();
             }
@@ -381,6 +414,37 @@ impl App {
             (KeyCode::Esc, _) if self.visual.is_some() => {
                 self.visual = None;
             }
+            // On a comment this reader published, `c` rewrites it: the box
+            // opens with its text, and saving sends the new text to the forge.
+            (KeyCode::Char('c'), KeyModifiers::NONE)
+                if self.thread_at_cursor().is_some()
+                    && self.own_published_at_cursor().is_some() =>
+            {
+                let f = self.own_published_at_cursor().expect("guarded");
+                let (id, body, path, span) = (
+                    f.id.clone(),
+                    f.body.clone(),
+                    f.anchor.file.clone(),
+                    f.anchor.line_span(),
+                );
+                let hunk = self.current_hunk().unwrap_or(0);
+                let mut ta = TextArea::new(body.lines().map(str::to_string).collect::<Vec<_>>());
+                ta.move_cursor(tui_textarea::CursorMove::End);
+                ta.set_block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(self.theme.header_fg))
+                        .title(format!(" {} · L{span} · on the request ", basename(&path))),
+                );
+                self.visual = None;
+                self.mode = Mode::Editing {
+                    hunk,
+                    lines: None,
+                    rewriting: Some(id),
+                    reply_to: None,
+                    editor: Box::new(ta),
+                };
+            }
             // On a forge thread, `c` answers it: the composer opens as a reply,
             // and what it saves is a finding carrying the thread's id until a
             // publish sends it (ADR 0029).
@@ -428,16 +492,9 @@ impl App {
                                 f.upstream.is_some(),
                             )
                         });
-                    // Published and not yet fetched back as a thread: it is the
-                    // request's now, and a rewrite here would never reach it.
-                    if existing
-                        .as_ref()
-                        .is_some_and(|(_, _, _, published)| *published)
-                    {
-                        self.status =
-                            "that note is on the request · edit it on the forge, or R to fetch its thread".into();
-                        return Vec::new();
-                    }
+                    // Published and not yet fetched back as a thread: the box
+                    // opens on it all the same, and saving rewrites it on the
+                    // forge, which `rewrite_finding` decides.
                     let existing = existing.map(|(id, body, span, _)| (id, body, span));
                     let lines = self.selected_lines();
                     // Name what is being annotated: a note whose subject you

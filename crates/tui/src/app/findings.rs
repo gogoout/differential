@@ -83,7 +83,7 @@ impl App {
                     file = p;
                 }
                 let mine = match (&row.kind, &row.line) {
-                    (RowKind::Thread(tid, _), _) => tid == &t.id,
+                    (RowKind::Thread { thread: tid, .. }, _) => tid == &t.id,
                     (RowKind::Finding(fid, _), _) => self
                         .session
                         .findings()
@@ -176,6 +176,17 @@ impl App {
     }
 
     pub(super) fn rewrite_finding(&mut self, id: &str, body: String) {
+        // Published: the forge holds the comment, so it is rewritten there
+        // first and the record follows its answer.
+        if self
+            .session
+            .findings()
+            .iter()
+            .any(|f| f.id == id && f.upstream.is_some())
+        {
+            self.start_edit_published(id, body);
+            return;
+        }
         match self.session.edit_finding(id, body) {
             Ok(true) => self.status = "finding rewritten".into(),
             Ok(false) => self.status = "that finding is gone".into(),
@@ -331,7 +342,7 @@ impl App {
     pub(super) fn row_of_thread(&self, id: &str) -> Option<usize> {
         self.rows
             .iter()
-            .position(|r| matches!(&r.kind, RowKind::Thread(tid, _) if tid == id))
+            .position(|r| matches!(&r.kind, RowKind::Thread { thread: tid, .. } if tid == id))
     }
 
     /// Put the cursor on a forge thread, wherever in the review it lives —
@@ -430,25 +441,21 @@ impl App {
     }
 
     pub(super) fn delete_finding_at_cursor(&mut self) {
-        // A thread is the forge's. The two things a reader can do to it are
-        // both on other keys, and the footer names them (ADR 0029).
-        if matches!(
-            self.rows.get(self.cursor).map(|r| &r.kind),
-            Some(RowKind::Thread(..))
-        ) {
-            self.status = "a review thread is the forge's · c replies · x resolves".into();
+        // A comment this reader published is theirs to delete, on the forge:
+        // the next key answers, because it is outward and gone for good.
+        if let Some(f) = self.own_published_at_cursor() {
+            self.mode = Mode::DeletePublished {
+                finding: f.id.clone(),
+            };
             return;
         }
-        // A published note is on the request; deleting the record here would
-        // only make the reviewer send it again.
-        if let Some(RowKind::Finding(id, _)) = self.rows.get(self.cursor).map(|r| &r.kind)
-            && self
-                .session
-                .findings()
-                .iter()
-                .any(|f| &f.id == id && f.upstream.is_some())
-        {
-            self.status = "that note is on the request · edit or delete it on the forge".into();
+        // Anyone else's comment is the forge's. The two things a reader can
+        // do to it are both on other keys, and the footer names them.
+        if matches!(
+            self.rows.get(self.cursor).map(|r| &r.kind),
+            Some(RowKind::Thread { .. })
+        ) {
+            self.status = "a review thread is the forge's · c replies · x resolves".into();
             return;
         }
         if let Some(RowKind::Finding(id, _)) = self.rows.get(self.cursor).map(|r| r.kind.clone()) {

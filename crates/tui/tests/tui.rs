@@ -5810,6 +5810,40 @@ mod forge_threads {
                 .push((thread.to_string(), resolved));
             Ok(())
         }
+        fn edit_comment(
+            &self,
+            _req: &Request,
+            thread: &str,
+            comment: &str,
+            body: &str,
+        ) -> Result<(), ForgeError> {
+            use differential_engine::forge::strip_marker;
+            let mut threads = self.threads.lock().unwrap();
+            let c = threads
+                .iter_mut()
+                .find(|t| t.id == thread)
+                .and_then(|t| t.comments.iter_mut().find(|c| c.id == comment))
+                .ok_or_else(|| ForgeError::NoRequest("no such comment".into()))?;
+            let (text, finding) = strip_marker(body);
+            c.body = text;
+            c.finding = finding;
+            Ok(())
+        }
+        fn delete_comment(
+            &self,
+            _req: &Request,
+            thread: &str,
+            comment: &str,
+        ) -> Result<(), ForgeError> {
+            let mut threads = self.threads.lock().unwrap();
+            let t = threads
+                .iter_mut()
+                .find(|t| t.id == thread)
+                .ok_or_else(|| ForgeError::NoRequest("no such thread".into()))?;
+            t.comments.retain(|c| c.id != comment);
+            threads.retain(|t| !t.comments.is_empty());
+            Ok(())
+        }
     }
 
     fn request() -> Request {
@@ -5915,7 +5949,7 @@ mod forge_threads {
         app.rows
             .iter()
             .enumerate()
-            .filter(|(_, r)| matches!(&r.kind, RowKind::Thread(t, _) if t == id))
+            .filter(|(_, r)| matches!(&r.kind, RowKind::Thread { thread: t, .. } if t == id))
             .map(|(i, _)| i)
             .collect()
     }
@@ -6414,7 +6448,9 @@ mod forge_threads {
         app.handle_key(key('j'));
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(matches!(app.mode, Mode::Normal));
-        assert!(matches!(&app.rows[app.cursor].kind, RowKind::Thread(t, _) if t == "T1"));
+        assert!(
+            matches!(&app.rows[app.cursor].kind, RowKind::Thread { thread: t, .. } if t == "T1")
+        );
 
         // dd on a thread in the list refuses, as it does in the diff.
         app.handle_key(key('F'));
@@ -6500,6 +6536,133 @@ mod forge_threads {
                 .filter(|f| f.upstream.is_some())
                 .all(|f| f.body != "on the change")
         );
+    }
+    // ------------------------------------------------------ your own comment
+
+    /// Publish two notes and land the cursor on the header row of the thread
+    /// the first one became.
+    fn published_and_parked(app: &mut App) -> String {
+        draft_two(app);
+        app.handle_key(key('P'));
+        app.handle_key(key('y'));
+        settle(app);
+        let mine = app
+            .session
+            .findings()
+            .iter()
+            .find(|f| f.body == "three is a magic number")
+            .unwrap()
+            .id
+            .clone();
+        let tid = format!("T-{mine}");
+        app.cursor = thread_rows(app, &tid)[0];
+        mine
+    }
+
+    #[test]
+    fn c_on_your_own_published_comment_edits_it_on_the_forge() {
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        let mine = published_and_parked(&mut app);
+        app.handle_key(key('c'));
+        let Mode::Editing {
+            rewriting,
+            reply_to,
+            ..
+        } = &app.mode
+        else {
+            panic!("c opens the composer");
+        };
+        assert_eq!(
+            rewriting.as_deref(),
+            Some(mine.as_str()),
+            "a rewrite, not a reply"
+        );
+        assert!(reply_to.is_none());
+        app.handle_paste(", or is it");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.syncing(), "the forge first");
+        settle(&mut app);
+        assert_eq!(app.status, "comment rewritten on the request");
+        let f = app
+            .session
+            .findings()
+            .iter()
+            .find(|f| f.id == mine)
+            .unwrap();
+        assert_eq!(f.body, "three is a magic number, or is it");
+        assert!(f.upstream.is_some(), "still published");
+        {
+            let on_forge = fake.threads.lock().unwrap();
+            let c = on_forge
+                .iter()
+                .find(|t| t.id == format!("T-{mine}"))
+                .unwrap()
+                .root()
+                .unwrap()
+                .clone();
+            assert_eq!(c.body, "three is a magic number, or is it");
+            assert_eq!(
+                c.finding.as_deref(),
+                Some(mine.as_str()),
+                "the marker travelled"
+            );
+        }
+        // And the cached thread shows the new text without a refetch.
+        assert_eq!(
+            app.session
+                .thread(&format!("T-{mine}"))
+                .unwrap()
+                .root()
+                .unwrap()
+                .body,
+            "three is a magic number, or is it"
+        );
+    }
+
+    #[test]
+    fn dd_on_your_own_published_comment_asks_then_deletes_it_there_and_here() {
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        let mine = published_and_parked(&mut app);
+        app.handle_key(key('d'));
+        app.handle_key(key('d'));
+        assert!(matches!(&app.mode, Mode::DeletePublished { finding } if finding == &mine));
+        app.handle_key(key('n'));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.status, "nothing deleted");
+        assert_eq!(app.session.findings().len(), 2);
+
+        app.handle_key(key('d'));
+        app.handle_key(key('d'));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        assert_eq!(app.status, "comment deleted on the request");
+        assert!(app.session.findings().iter().all(|f| f.id != mine));
+        assert!(
+            app.session.thread(&format!("T-{mine}")).is_none(),
+            "its thread went with it"
+        );
+        assert!(
+            fake.threads
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|t| t.id != format!("T-{mine}"))
+        );
+        assert_eq!(app.session.findings().len(), 1, "the reply is untouched");
+    }
+
+    #[test]
+    fn someone_elses_comment_is_still_reply_only() {
+        let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        app.cursor = thread_rows(&app, "T1")[0];
+        app.handle_key(key('c'));
+        assert!(matches!(&app.mode, Mode::Editing { reply_to: Some(t), .. } if t == "T1"));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.cursor = thread_rows(&app, "T1")[0];
+        app.handle_key(key('d'));
+        app.handle_key(key('d'));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(app.status.contains("forge's"), "{}", app.status);
     }
 }
 

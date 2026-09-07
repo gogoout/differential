@@ -100,6 +100,39 @@ impl App {
                     area,
                 );
             }
+            Mode::DeletePublished { finding } => {
+                let key = Style::default().fg(self.theme.header_fg);
+                let text = Style::default().fg(self.theme.context_fg);
+                let at = self
+                    .session
+                    .findings()
+                    .iter()
+                    .find(|f| &f.id == finding)
+                    .map(|f| format!("{}:{}", f.anchor.file, f.anchor.line_span()))
+                    .unwrap_or_default();
+                let lines = vec![
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        format!("  delete your comment at {at} on the pull request?"),
+                        text,
+                    )),
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled("  y", key),
+                        Span::styled(
+                            " deletes it there and here  ·  any other key keeps it",
+                            Style::default().fg(self.theme.gutter_fg),
+                        ),
+                    ]),
+                ];
+                let width = panes.body.width.saturating_sub(6).min(80);
+                let area = centered_rect(panes.body, width, lines.len() as u16 + 2);
+                clear_to_ground(frame, &self.theme, area);
+                frame.render_widget(
+                    Paragraph::new(lines).block(pane(&self.theme, " delete ".to_string(), true)),
+                    area,
+                );
+            }
             Mode::Publish { plan } => {
                 // What leaves, what stays, and why — before anything leaves.
                 // The one outward act in this reviewer, so it reads its whole
@@ -1131,7 +1164,7 @@ impl App {
                     b.active_style.fg.map_or(Marker::Idle(&r.idle), Marker::Lit)
                 }
                 (_, RowKind::HunkHeader { .. }) => Marker::Idle(&r.idle),
-                (_, RowKind::Finding(..) | RowKind::Thread(..)) if in_note(i) => Marker::Note,
+                (_, RowKind::Finding(..) | RowKind::Thread { .. }) if in_note(i) => Marker::Note,
                 _ => Marker::None,
             };
             // How to work this row, on the one row it can be worked from.
@@ -1934,7 +1967,10 @@ pub(super) fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         row("space", "mark the hunk's class reviewed"),
         row("v", "select lines · j/k extends · v or esc drops"),
         row("c  ·  dd", "add finding · delete the one under the cursor"),
-        row("", "on a review thread: c replies"),
+        row(
+            "",
+            "on a review thread: c replies · on your own comment: c edits, dd deletes",
+        ),
         row(
             "x  ·  R",
             "resolve / reopen the thread · refetch review threads",

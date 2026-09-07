@@ -353,6 +353,40 @@ impl Forge for GhForge {
         self.graphql(mutation, &[("id", json!(thread))])?;
         Ok(())
     }
+
+    fn edit_comment(
+        &self,
+        req: &Request,
+        _thread: &str,
+        comment: &str,
+        body: &str,
+    ) -> Result<(), ForgeError> {
+        self.rest(
+            "PATCH",
+            &format!("repos/{}/pulls/comments/{comment}", req.project),
+            Some(&json!({ "body": body })),
+        )?;
+        Ok(())
+    }
+
+    fn delete_comment(
+        &self,
+        req: &Request,
+        _thread: &str,
+        comment: &str,
+    ) -> Result<(), ForgeError> {
+        // A delete answers with no body, so it is not read as JSON.
+        self.tool.run(
+            &[
+                "api",
+                "--method",
+                "DELETE",
+                &format!("repos/{}/pulls/comments/{comment}", req.project),
+            ],
+            None,
+        )?;
+        Ok(())
+    }
 }
 
 /// `gh pr view --json number,baseRefName,baseRefOid,headRefOid,url`.
@@ -660,6 +694,34 @@ impl Forge for GlabForge {
             "PUT",
             &Self::mr(req, &format!("/discussions/{thread}")),
             Some(&json!({ "resolved": resolved })),
+        )?;
+        Ok(())
+    }
+
+    fn edit_comment(
+        &self,
+        req: &Request,
+        thread: &str,
+        comment: &str,
+        body: &str,
+    ) -> Result<(), ForgeError> {
+        self.rest(
+            "PUT",
+            &Self::mr(req, &format!("/discussions/{thread}/notes/{comment}")),
+            Some(&json!({ "body": body })),
+        )?;
+        Ok(())
+    }
+
+    fn delete_comment(&self, req: &Request, thread: &str, comment: &str) -> Result<(), ForgeError> {
+        self.tool.run(
+            &[
+                "api",
+                "--method",
+                "DELETE",
+                &Self::mr(req, &format!("/discussions/{thread}/notes/{comment}")),
+            ],
+            None,
         )?;
         Ok(())
     }

@@ -68,10 +68,15 @@ pub enum RowKind {
     },
     /// A finding attached to a hunk: (finding id, hunk index).
     Finding(String, usize),
-    /// One row of a forge review thread: (thread id, hunk index). Every
-    /// line of the thread is one of these, so `c` replies and `x` resolves
-    /// from any of them (ADR 0029).
-    Thread(String, usize),
+    /// One row of a forge review thread. Every line of the thread is one of
+    /// these, so `c` replies and `x` resolves from any of them; the comment
+    /// says which one the cursor is in, so a comment this reader published
+    /// can be edited or deleted from its own rows (ADR 0029).
+    Thread {
+        thread: String,
+        comment: String,
+        hunk: usize,
+    },
     /// Collapsed remainder / noise: press z to unfold.
     Fold,
     Blank,
@@ -85,7 +90,7 @@ impl RowKind {
                 | RowKind::Diff(_)
                 | RowKind::ContextEdge { .. }
                 | RowKind::Finding(_, _)
-                | RowKind::Thread(_, _)
+                | RowKind::Thread { .. }
                 | RowKind::Fold
         )
     }
@@ -96,7 +101,7 @@ impl RowKind {
     pub fn hunk(&self) -> Option<usize> {
         match self {
             RowKind::HunkHeader { hunk, .. } => Some(*hunk),
-            RowKind::Diff(h) | RowKind::Finding(_, h) | RowKind::Thread(_, h) => Some(*h),
+            RowKind::Diff(h) | RowKind::Finding(_, h) | RowKind::Thread { hunk: h, .. } => Some(*h),
             _ => None,
         }
     }
@@ -1138,7 +1143,11 @@ fn thread_rows(theme: &Theme, t: &RemoteThread, hunk: usize) -> Vec<Row> {
             }
         }
         rows.push(Row::full(
-            RowKind::Thread(t.id.clone(), hunk),
+            RowKind::Thread {
+                thread: t.id.clone(),
+                comment: c.id.clone(),
+                hunk,
+            },
             Line::from(vec![
                 Span::styled(format!("  {RAIL} {pad}"), rail),
                 Span::styled(head, meta.add_modifier(Modifier::BOLD)),
@@ -1150,7 +1159,11 @@ fn thread_rows(theme: &Theme, t: &RemoteThread, hunk: usize) -> Vec<Row> {
         }
         for text in lines {
             rows.push(Row::full(
-                RowKind::Thread(t.id.clone(), hunk),
+                RowKind::Thread {
+                    thread: t.id.clone(),
+                    comment: c.id.clone(),
+                    hunk,
+                },
                 Line::from(vec![
                     Span::styled(format!("  {RAIL} {pad}"), rail),
                     Span::styled(text.to_string(), prose),

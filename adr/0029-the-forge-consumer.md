@@ -97,8 +97,10 @@ confirmation would cost more than they protect.
 
 **8. GitHub first, both directions, then GitLab.** The first release pulls threads down and
 posts findings up, on GitHub. GitLab is the second adapter behind the same trait. A review
-verdict (approve / request changes), editing or deleting a published comment, and comments
-with no line are later work; reactions are not work at all.
+verdict (approve / request changes) and comments with no line are later work; reactions are
+not work at all. Editing and deleting a comment the reader published was deferred here and
+then built at the author's word after the first live run: a note you sent is still yours,
+and the forge holds the edit first, the record following its answer.
 
 ## Consequences
 

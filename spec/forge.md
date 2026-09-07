@@ -107,9 +107,17 @@ reply-only: edit and delete do nothing on it and the status line says so. `x` to
 resolved, on the forge, at once; the local copy follows when the forge has answered.
 
 A **finding** keeps the look it has. A **published** finding is hidden when its fetched
-twin is present, matched on `upstream.comment`; the record stays in `findings.jsonl` so the
-summary and a re-post can count it. A finding that is a **reply draft** renders in the
-finding's look under the thread it answers, in date order after the thread's comments.
+twin is present, matched on `upstream.comment` or the marker; the record stays in
+`findings.jsonl` so the summary and a re-post can count it. A finding that is a **reply
+draft** renders in the finding's look under the thread it answers, in date order after the
+thread's comments.
+
+A comment **this reader published** is theirs on the forge too. `c` on one of its rows
+opens the composer on its text, and saving rewrites it on the forge first; the record and
+the cached thread follow when the forge has answered. `dd` on one asks — `y` deletes it
+there and here, any other key keeps it — and the thread goes with it when nothing is left.
+Both reach the forge through `edit_comment` and `delete_comment` on the trait. Anyone
+else's comment stays reply-only.
 
 ## Writing
 
@@ -170,6 +178,7 @@ before them loads unchanged:
 | publish, new | `gh api POST repos/{owner}/{repo}/pulls/<n>/reviews` with `commit_id`, `event: "COMMENT"`, and `comments: [{path, body, line, side, start_line, start_side}]` — one review |
 | publish, reply | `gh api POST repos/{owner}/{repo}/pulls/<n>/comments/<root comment id>/replies` with `body`, one per reply |
 | resolve | `gh api graphql` — `resolveReviewThread(input: {threadId})` / `unresolveReviewThread` |
+| edit, delete own | `PATCH` / `DELETE repos/{owner}/{repo}/pulls/comments/<id>` |
 
 `side` is `RIGHT` for the anchor's `new` and `LEFT` for `old`. `path` is the file's path in
 the request, which for a renamed file is the new path on either side. A multi-line finding
@@ -185,6 +194,7 @@ and until then `event` is always `COMMENT`.
 | publish, new | one `POST …/merge_requests/<iid>/draft_notes` per finding, a JSON body of `note` and `position{position_type: text, base_sha, start_sha, head_sha, old_path, new_path, old_line | new_line}`, then one `POST …/draft_notes/bulk_publish`; the discussions are fetched again to learn each note's id |
 | publish, reply | a draft note with `in_reply_to_discussion_id`, published in the same bulk call |
 | resolve | `PUT …/merge_requests/<iid>/discussions/<id>` with `{resolved: true | false}` |
+| edit, delete own | `PUT` / `DELETE …/discussions/<id>/notes/<note id>` |
 
 `:id` is the tool's placeholder for the current directory's project. `start_sha` is the
 target branch's tip when the diff was computed, `base_sha` the merge base; both come from
@@ -200,10 +210,9 @@ reference and pinned by tests on the shapes it expects.
 ## Later
 
 In the order they are likely to be wanted: a verdict on `P` (GitHub `event: APPROVE |
-REQUEST_CHANGES`; GitLab `POST …/approve`); editing and deleting a published comment from
-the reviewer; a request-level comment with no line, which is where a findings summary could
-go; and a `[forge]` config table, should a tool ever need a flag the defaults do not give.
-Reactions are not planned.
+REQUEST_CHANGES`; GitLab `POST …/approve`); a request-level comment with no line, which is
+where a findings summary could go; and a `[forge]` config table, should a tool ever need a
+flag the defaults do not give. Reactions are not planned.
 
 ## Status
 

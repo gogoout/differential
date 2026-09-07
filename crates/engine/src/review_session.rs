@@ -432,6 +432,49 @@ impl<S: ReviewStore> ReviewSession<S> {
         Ok(true)
     }
 
+    /// A published finding, rewritten: the forge has already taken the new
+    /// body, so the record and the cached thread follow it. Returns whether
+    /// the finding was known.
+    pub fn edit_published(&mut self, id: &str, body: String) -> Result<bool, EngineError> {
+        let Some(f) = self.findings.iter_mut().find(|f| f.id == id) else {
+            return Ok(false);
+        };
+        f.body = body.clone();
+        let upstream = f.upstream.clone();
+        self.store.save_findings(&self.findings)?;
+        if let Some(up) = upstream
+            && let Some(c) = self
+                .threads
+                .iter_mut()
+                .flat_map(|t| t.comments.iter_mut())
+                .find(|c| c.id == up.comment || c.finding.as_deref() == Some(id))
+        {
+            c.body = body;
+            self.store.save_threads(&self.threads)?;
+        }
+        Ok(true)
+    }
+
+    /// A published finding the forge has already deleted: drop the record
+    /// and the cached comment, and the thread with it when nothing is left.
+    pub fn delete_published(&mut self, id: &str) -> Result<bool, EngineError> {
+        let Some(f) = self.findings.iter().find(|f| f.id == id) else {
+            return Ok(false);
+        };
+        let upstream = f.upstream.clone();
+        self.findings.retain(|f| f.id != id);
+        self.store.save_findings(&self.findings)?;
+        if let Some(up) = upstream {
+            for t in &mut self.threads {
+                t.comments
+                    .retain(|c| c.id != up.comment && c.finding.as_deref() != Some(id));
+            }
+            self.threads.retain(|t| !t.comments.is_empty());
+            self.store.save_threads(&self.threads)?;
+        }
+        Ok(true)
+    }
+
     /// Record where a publish put each finding, so the next publish sends
     /// only what is new and the renderer can hide each behind its twin.
     pub fn mark_published(&mut self, published: &[Published]) -> Result<usize, EngineError> {
