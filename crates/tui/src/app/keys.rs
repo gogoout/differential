@@ -25,6 +25,13 @@ fn is_yes(key: KeyEvent) -> bool {
     (key.code, key.modifiers) == (KeyCode::Char('y'), KeyModifiers::NONE)
 }
 
+/// The composer's key footer lives on the block's last inner row. Padding
+/// keeps the text above it: a long note used to scroll into the footer and
+/// the two overwrote each other.
+fn composer_padding() -> ratatui::widgets::Padding {
+    ratatui::widgets::Padding::new(0, 0, 0, 1)
+}
+
 impl App {
     /// Text pasted into the terminal.
     ///
@@ -465,6 +472,7 @@ impl App {
                 ta.set_block(
                     Block::default()
                         .borders(Borders::ALL)
+                        .padding(composer_padding())
                         .border_style(Style::default().fg(self.theme.header_fg))
                         .title(format!(" {} · on the request ", own.at)),
                 );
@@ -493,6 +501,7 @@ impl App {
                 ta.set_block(
                     Block::default()
                         .borders(Borders::ALL)
+                        .padding(composer_padding())
                         .border_style(Style::default().fg(self.theme.header_fg))
                         .title(format!(" {} · reply to {author} ", basename(&path))),
                 );
@@ -550,6 +559,7 @@ impl App {
                     ta.set_block(
                         Block::default()
                             .borders(Borders::ALL)
+                            .padding(composer_padding())
                             .border_style(Style::default().fg(self.theme.header_fg))
                             .title(format!(" {file} · {at} ")),
                     );

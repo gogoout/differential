@@ -60,8 +60,13 @@ impl App {
                 editor: textarea, ..
             } => {
                 // A float over the diff, not a strip pinned to the bottom: a
-                // finding is about the lines you can still see around it.
-                let area = centered_rect(panes.body, panes.body.width * 3 / 5, 10);
+                // finding is about the lines you can still see around it. It
+                // grows with the text — borders, footer and a spare row on top
+                // of the lines — up to the body, and the text area scrolls
+                // beyond that.
+                let wanted = textarea.lines().len() as u16 + 4;
+                let height = wanted.clamp(10, panes.body.height.max(10));
+                let area = centered_rect(panes.body, panes.body.width * 3 / 5, height);
                 clear_to_ground(frame, &self.theme, area);
                 frame.render_widget(&**textarea, area);
                 // The keys go INSIDE the box, on its last row, where a footer

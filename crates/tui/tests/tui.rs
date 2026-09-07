@@ -6801,6 +6801,49 @@ mod forge_threads {
         assert!(screen[first + 1].contains('▍'), "{}", screen[first + 1]);
     }
 
+    #[test]
+    fn a_long_note_in_the_composer_stays_above_the_key_footer() {
+        let (_r, mut app, _fake) = app_with_threads(vec![]);
+        app.cursor = app
+            .rows
+            .iter()
+            .position(|r| r.line.as_ref().is_some_and(|l| l.holds("new", 1)))
+            .unwrap();
+        app.handle_key(key('c'));
+        let text: Vec<String> = (1..=30)
+            .map(|i| format!("line {i} of a long note"))
+            .collect();
+        app.handle_paste(&text.join("\n"));
+        let backend = ratatui::backend::TestBackend::new(120, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let screen: Vec<String> = (0..30u16)
+            .map(|y| (0..120u16).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        let footer = screen
+            .iter()
+            .position(|l| l.contains("enter") && l.contains("save"))
+            .expect("the key footer is drawn");
+        assert!(
+            !screen[footer].contains("of a long note"),
+            "the footer row carries no text: {}",
+            screen[footer]
+        );
+        assert!(
+            screen[footer - 1].contains("of a long note"),
+            "the row above the footer is the note's last visible line: {}",
+            screen[footer - 1]
+        );
+        // The box grew to the body: more of the note is visible than the old
+        // ten-row box could show.
+        let shown = screen
+            .iter()
+            .filter(|l| l.contains("of a long note"))
+            .count();
+        assert!(shown > 6, "{shown} lines shown");
+    }
+
     // ------------------------------------------------------ your own comment
 
     /// A thread by the reader, as the forge reports it, with no marker: one

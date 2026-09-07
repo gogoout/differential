@@ -659,43 +659,74 @@ impl Forge for GlabForge {
         if batch.is_empty() {
             return Ok(Sent::default());
         }
-        // Draft notes, then one publish: the author is notified once, as a
-        // GitHub review notifies once. A draft is not live, so a failure here
-        // is still "nothing published" — though the drafts already made stay
-        // on the request, unpublished, which the spec names as a limit.
-        for c in &batch.comments {
-            self.tool.rest(
-                "POST",
-                &Self::mr(req, "/draft_notes"),
-                Some(&draft_note_body(req, c)),
-            )?;
-        }
-        for r in &batch.replies {
-            self.tool.rest(
-                "POST",
-                &Self::mr(req, "/draft_notes"),
-                Some(&json!({
-                    "note": r.body,
-                    "in_reply_to_discussion_id": r.thread,
-                })),
-            )?;
-        }
-        self.tool.run(
-            &[
-                "api",
-                "--method",
-                "POST",
-                &Self::mr(req, "/draft_notes/bulk_publish"),
-            ],
-            None,
-        )?;
-        // Live from here. The publish answers with nothing; the discussions,
-        // fetched again, hold every note that landed — and are the fresh set
-        // the caller wants, so they are handed back rather than fetched twice.
         let mut sent = Sent::default();
+
+        // New comments: draft notes, then one publish, so the author is
+        // notified once, as a GitHub review notifies once. A draft is not
+        // live, so a failure before the publish is still "nothing published"
+        // — though the drafts already made stay on the request, unpublished,
+        // which the spec names as a limit.
+        if !batch.comments.is_empty() {
+            for c in &batch.comments {
+                self.tool.rest(
+                    "POST",
+                    &Self::mr(req, "/draft_notes"),
+                    Some(&draft_note_body(req, c)),
+                )?;
+            }
+            self.tool.run(
+                &[
+                    "api",
+                    "--method",
+                    "POST",
+                    &Self::mr(req, "/draft_notes/bulk_publish"),
+                ],
+                None,
+            )?;
+        }
+
+        // Replies go straight into their discussion, one call each: the note
+        // endpoint is the documented way to add to a thread, and it answers
+        // with the note, so nothing has to be matched back. A draft note with
+        // `in_reply_to_discussion_id` came out as a new discussion on the
+        // first live run.
+        for r in &batch.replies {
+            let v = match self.tool.rest(
+                "POST",
+                &Self::mr(req, &format!("/discussions/{}/notes", r.thread)),
+                Some(&json!({ "body": r.body })),
+            ) {
+                Ok(v) => v,
+                Err(e) if sent.published.is_empty() && batch.comments.is_empty() => return Err(e),
+                Err(e) => {
+                    sent.failed = Some(e);
+                    return Ok(sent);
+                }
+            };
+            sent.published.push(Published {
+                finding: r.finding.clone(),
+                thread: r.thread.clone(),
+                comment: v
+                    .get("id")
+                    .and_then(Value::as_i64)
+                    .map(|n| n.to_string())
+                    .unwrap_or_default(),
+                url: None,
+            });
+        }
+
+        // Live from here. The bulk publish answers with nothing; the
+        // discussions, fetched again, hold every note that landed — and are
+        // the fresh set the caller wants, so they are handed back rather than
+        // fetched twice.
         match self.discussions(req) {
             Ok(pages) => {
-                sent.published = match_gitlab_published(batch, &pages);
+                let comments_only = Batch {
+                    comments: batch.comments.clone(),
+                    replies: Vec::new(),
+                };
+                sent.published
+                    .extend(match_gitlab_published(&comments_only, &pages));
                 sent.threads = Some(parse_discussions(&pages, &req.head));
             }
             Err(e) => sent.failed = Some(e),
