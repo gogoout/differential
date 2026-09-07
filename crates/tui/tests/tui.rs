@@ -6844,6 +6844,75 @@ mod forge_threads {
         assert!(shown > 6, "{shown} lines shown");
     }
 
+    #[test]
+    fn c_on_someone_elses_reply_in_your_own_thread_drafts_a_reply() {
+        // The reader's root, published from here; a reply by someone else;
+        // the cursor on that reply.
+        let (_r, mut app, fake) = app_with_threads(vec![]);
+        draft_two_without_thread(&mut app);
+        app.handle_key(key('P'));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        let mine = app.session.findings()[0].id.clone();
+        let tid = format!("T-{mine}");
+        {
+            let mut threads = fake.threads.lock().unwrap();
+            let t = threads.iter_mut().find(|t| t.id == tid).unwrap();
+            t.comments.push(RemoteComment {
+                id: "theirs".into(),
+                author: "bob".into(),
+                created: "2026-09-08T09:00:00Z".into(),
+                body: "are you sure?".into(),
+                reply_to: Some(t.comments[0].id.clone()),
+                finding: None,
+            });
+        }
+        app.handle_key(key('R'));
+        settle(&mut app);
+        let rows = thread_rows(&app, &tid);
+        assert_eq!(
+            rows.len(),
+            4,
+            "root header, root body, reply header, reply body"
+        );
+        // On their reply: not mine, so c replies.
+        app.cursor = rows[3];
+        app.handle_key(key('c'));
+        assert!(
+            matches!(&app.mode, Mode::Editing { reply_to: Some(t), own: None, .. } if t == &tid),
+            "a reply to the thread, not an edit of my root"
+        );
+        app.handle_paste("yes, because");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let reply = app
+            .session
+            .findings()
+            .iter()
+            .find(|f| f.reply_to.as_deref() == Some(tid.as_str()))
+            .expect("filed as a reply");
+        assert_eq!(reply.body, "yes, because");
+        // Drawn stepped in under their reply, not as a loose note on the line.
+        let last = *thread_rows(&app, &tid).last().unwrap();
+        assert!(matches!(&app.rows[last + 1].kind, RowKind::Finding(id, _) if id == &reply.id));
+        // And on my own root, c edits.
+        app.cursor = thread_rows(&app, &tid)[0];
+        app.handle_key(key('c'));
+        assert!(
+            matches!(&app.mode, Mode::Editing { own: Some(o), .. } if o.comment == format!("C-{mine}"))
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        // Publishing the reply sends it into the thread, not as a new comment.
+        app.handle_key(key('P'));
+        let Mode::Publish { plan } = &app.mode else {
+            panic!("P offers the reply");
+        };
+        assert_eq!(
+            (plan.batch.comments.len(), plan.batch.replies.len()),
+            (0, 1)
+        );
+        assert_eq!(plan.batch.replies[0].thread, tid);
+    }
+
     // ------------------------------------------------------ your own comment
 
     /// A thread by the reader, as the forge reports it, with no marker: one
