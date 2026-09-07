@@ -537,7 +537,7 @@ pub fn publish_plan(
         if !in_request_diff(doc, &f.anchor) {
             out.excluded.push(excluded(
                 f,
-                "outside the request's diff (more than 3 lines from a change)",
+                "outside the request's diff: more than 3 lines from a change",
             ));
             continue;
         }

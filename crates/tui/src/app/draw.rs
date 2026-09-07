@@ -162,11 +162,18 @@ impl App {
                         format!("  {} stay local:", plan.excluded.len()),
                         text,
                     )));
+                    // The reason on its own line under the place: side by side
+                    // they overran the box on any path of ordinary length, and
+                    // a float clips rather than wraps.
                     for ex in &plan.excluded {
-                        lines.push(Line::from(vec![
-                            Span::styled(format!("    {}:{}  ", ex.file, ex.lines), key),
-                            Span::styled(ex.reason.clone(), dim),
-                        ]));
+                        lines.push(Line::from(Span::styled(
+                            format!("    {}:{}", ex.file, ex.lines),
+                            key,
+                        )));
+                        lines.push(Line::from(Span::styled(
+                            format!("      {}", ex.reason),
+                            dim,
+                        )));
                     }
                 }
                 lines.push(Line::from(""));
