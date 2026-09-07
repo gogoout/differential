@@ -64,9 +64,19 @@ impl App {
                 // grows with the text — borders, footer and a spare row on top
                 // of the lines — up to the body, and the text area scrolls
                 // beyond that.
-                let wanted = textarea.lines().len() as u16 + 4;
+                let width = panes.body.width * 3 / 5;
+                // Rows as wrapped, not lines as typed: a long line takes as many
+                // rows as the box is narrow. A floor, since word wrap can take
+                // one more; the text area scrolls beyond the body anyway.
+                let inner = usize::from(width.saturating_sub(2)).max(1);
+                let rows: usize = textarea
+                    .lines()
+                    .iter()
+                    .map(|l| UnicodeWidthStr::width(l.as_str()).div_ceil(inner).max(1))
+                    .sum();
+                let wanted = u16::try_from(rows).unwrap_or(u16::MAX).saturating_add(4);
                 let height = wanted.clamp(10, panes.body.height.max(10));
-                let area = centered_rect(panes.body, panes.body.width * 3 / 5, height);
+                let area = centered_rect(panes.body, width, height);
                 clear_to_ground(frame, &self.theme, area);
                 frame.render_widget(&**textarea, area);
                 // The keys go INSIDE the box, on its last row, where a footer

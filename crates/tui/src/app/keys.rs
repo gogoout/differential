@@ -25,11 +25,32 @@ fn is_yes(key: KeyEvent) -> bool {
     (key.code, key.modifiers) == (KeyCode::Char('y'), KeyModifiers::NONE)
 }
 
-/// The composer's key footer lives on the block's last inner row. Padding
-/// keeps the text above it: a long note used to scroll into the footer and
-/// the two overwrote each other.
-fn composer_padding() -> ratatui::widgets::Padding {
-    ratatui::widgets::Padding::new(0, 0, 0, 1)
+impl App {
+    /// The composer, opened on `body` with the cursor at its end.
+    ///
+    /// One place for the three keys that open it — a note, a reply, a
+    /// rewrite — so they cannot drift on what a composer is. It soft-wraps at
+    /// word boundaries: a note is prose, and a line the reader cannot see the
+    /// end of is a line they cannot finish. The key footer lives on the
+    /// block's last inner row, and the padding keeps the text above it: a long
+    /// note used to scroll into the footer and the two overwrote each other.
+    fn composer(&self, body: &str, title: String) -> Box<TextArea<'static>> {
+        let mut ta = if body.is_empty() {
+            TextArea::default()
+        } else {
+            TextArea::new(body.lines().map(str::to_string).collect::<Vec<_>>())
+        };
+        ta.move_cursor(tui_textarea::CursorMove::End);
+        ta.set_wrap_mode(tui_textarea::WrapMode::Word);
+        ta.set_block(
+            Block::default()
+                .borders(Borders::ALL)
+                .padding(ratatui::widgets::Padding::new(0, 0, 0, 1))
+                .border_style(Style::default().fg(self.theme.header_fg))
+                .title(title),
+        );
+        Box::new(ta)
+    }
 }
 
 impl App {
@@ -466,16 +487,7 @@ impl App {
             (KeyCode::Char('c'), KeyModifiers::NONE) if self.own_comment_at_cursor().is_some() => {
                 let own = self.own_comment_at_cursor().expect("guarded");
                 let hunk = self.current_hunk().unwrap_or(0);
-                let mut ta =
-                    TextArea::new(own.body.lines().map(str::to_string).collect::<Vec<_>>());
-                ta.move_cursor(tui_textarea::CursorMove::End);
-                ta.set_block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .padding(composer_padding())
-                        .border_style(Style::default().fg(self.theme.header_fg))
-                        .title(format!(" {} · on the request ", own.at)),
-                );
+                let ta = self.composer(&own.body, format!(" {} · on the request ", own.at));
                 self.visual = None;
                 self.mode = Mode::Editing {
                     hunk,
@@ -483,7 +495,7 @@ impl App {
                     rewriting: None,
                     reply_to: None,
                     own: Some(own),
-                    editor: Box::new(ta),
+                    editor: ta,
                 };
             }
             // On a forge thread, `c` answers it: the composer opens as a reply,
@@ -497,14 +509,7 @@ impl App {
                     t.path.clone(),
                 );
                 let hunk = self.current_hunk().unwrap_or(0);
-                let mut ta = TextArea::default();
-                ta.set_block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .padding(composer_padding())
-                        .border_style(Style::default().fg(self.theme.header_fg))
-                        .title(format!(" {} · reply to {author} ", basename(&path))),
-                );
+                let ta = self.composer("", format!(" {} · reply to {author} ", basename(&path)));
                 self.visual = None;
                 self.mode = Mode::Editing {
                     hunk,
@@ -512,7 +517,7 @@ impl App {
                     rewriting: None,
                     reply_to: Some(id),
                     own: None,
-                    editor: Box::new(ta),
+                    editor: ta,
                 };
             }
             (KeyCode::Char('c'), KeyModifiers::NONE) => {
@@ -549,20 +554,8 @@ impl App {
                         ),
                         (None, None) => format!("L{}", hunk.new_start),
                     };
-                    let mut ta = match &existing {
-                        Some((_, body, _)) => {
-                            TextArea::new(body.lines().map(str::to_string).collect::<Vec<_>>())
-                        }
-                        None => TextArea::default(),
-                    };
-                    ta.move_cursor(tui_textarea::CursorMove::End);
-                    ta.set_block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .padding(composer_padding())
-                            .border_style(Style::default().fg(self.theme.header_fg))
-                            .title(format!(" {file} · {at} ")),
-                    );
+                    let body = existing.as_ref().map(|(_, b, _)| b.as_str()).unwrap_or("");
+                    let ta = self.composer(body, format!(" {file} · {at} "));
                     self.visual = None;
                     self.mode = Mode::Editing {
                         hunk: h,
@@ -570,7 +563,7 @@ impl App {
                         rewriting: existing.map(|(id, _, _)| id),
                         reply_to: None,
                         own: None,
-                        editor: Box::new(ta),
+                        editor: ta,
                     };
                 } else {
                     self.status = "move onto a hunk first".into();

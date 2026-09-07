@@ -6913,6 +6913,45 @@ mod forge_threads {
         assert_eq!(plan.batch.replies[0].thread, tid);
     }
 
+    #[test]
+    fn a_long_line_in_the_composer_wraps_instead_of_running_off() {
+        let (_r, mut app, _fake) = app_with_threads(vec![]);
+        app.cursor = app
+            .rows
+            .iter()
+            .position(|r| r.line.as_ref().is_some_and(|l| l.holds("new", 1)))
+            .unwrap();
+        app.handle_key(key('c'));
+        let long = (1..=30)
+            .map(|i| format!("word{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        app.handle_paste(&long);
+        let backend = ratatui::backend::TestBackend::new(100, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let screen: Vec<String> = (0..30u16)
+            .map(|y| (0..100u16).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        let first = screen
+            .iter()
+            .position(|l| l.contains("word1 "))
+            .expect("the note starts");
+        assert!(
+            !screen[first].contains("word30"),
+            "one row cannot hold it all at this width: {}",
+            screen[first]
+        );
+        assert!(
+            screen[first + 1..first + 4]
+                .iter()
+                .any(|l| l.contains("word30")),
+            "the tail is on a following row, not off the edge: {:?}",
+            &screen[first..first + 4]
+        );
+    }
+
     // ------------------------------------------------------ your own comment
 
     /// A thread by the reader, as the forge reports it, with no marker: one

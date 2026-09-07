@@ -600,7 +600,9 @@ them, which is the signpost that sends a reader to `F`.
 
 **Writing a finding** opens a float over the diff rather than a strip pinned to its foot:
 a note is about lines you should still be able to see. Its border carries the file and line
-range it will anchor to, and its footer the keys.
+range it will anchor to, and its footer the keys. The text **soft-wraps at word boundaries**
+and the box grows with it, up to the body: a note is prose, and a line the reader cannot see
+the end of is a line they cannot finish. The footer row stays clear of the text.
 
 **`enter` saves.** A finding is usually one line, and the key that ends a line is the key a
 reader reaches for to be done with it. A newline is `shift+enter` where the terminal
