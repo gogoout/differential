@@ -5719,7 +5719,7 @@ mod forge_threads {
     use std::sync::{Arc, Mutex};
 
     use differential_engine::forge::{
-        Batch, Forge, ForgeError, ForgeKind, Published, RemoteComment, RemoteThread, Request,
+        Batch, Forge, ForgeError, ForgeKind, Published, RemoteComment, RemoteThread, Request, Sent,
     };
     use differential_tui::app::ForgeLink;
 
@@ -5740,6 +5740,9 @@ mod forge_threads {
         /// When set, `publish` records the batch and creates nothing: a
         /// send the forge silently dropped.
         swallow: Mutex<bool>,
+        /// When set, `publish` creates nothing and reports a failure after
+        /// the fact: a forge that broke part-way.
+        stop_part_way: Mutex<bool>,
     }
 
     impl FakeForge {
@@ -5751,6 +5754,7 @@ mod forge_threads {
                 published: Mutex::new(Vec::new()),
                 fail_threads: Mutex::new(false),
                 swallow: Mutex::new(false),
+                stop_part_way: Mutex::new(false),
             })
         }
     }
@@ -5780,11 +5784,20 @@ mod forge_threads {
         /// real adapter does. Answers with NOTHING, as GitHub did the first
         /// time this ran for real: the reviewer must learn what landed from
         /// the threads, not from this answer.
-        fn publish(&self, _req: &Request, batch: &Batch) -> Result<Vec<Published>, ForgeError> {
+        fn publish(&self, _req: &Request, batch: &Batch) -> Result<Sent, ForgeError> {
             use differential_engine::forge::strip_marker;
             self.published.lock().unwrap().push(batch.clone());
             if *self.swallow.lock().unwrap() {
-                return Ok(Vec::new());
+                return Ok(Sent::default());
+            }
+            if *self.stop_part_way.lock().unwrap() {
+                // The forge took the batch and then broke before it could say
+                // what it made of it. Nothing to name; the error to report.
+                return Ok(Sent {
+                    published: Vec::new(),
+                    threads: None,
+                    failed: Some(ForgeError::NoRequest("the forge fell over after".into())),
+                });
             }
             let mut threads = self.threads.lock().unwrap();
             for c in &batch.comments {
@@ -5812,7 +5825,7 @@ mod forge_threads {
                     });
                 }
             }
-            Ok(Vec::new())
+            Ok(Sent::default())
         }
         fn set_resolved(
             &self,
@@ -6737,6 +6750,24 @@ mod forge_threads {
         app.handle_key(key('D'));
         println!("\n=== F, then D ===");
         println!("{}", ansi_dump(&mut app, 120, 20));
+    }
+
+    #[test]
+    fn a_forge_that_stops_part_way_is_reported_and_what_landed_is_kept() {
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        draft_two(&mut app);
+        *fake.stop_part_way.lock().unwrap() = true;
+        app.handle_key(key('P'));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        assert!(app.status.contains("stopped part-way"), "{}", app.status);
+        assert!(app.status.contains("P to send the rest"), "{}", app.status);
+        // Nothing was named and the fake made nothing, so both notes are
+        // still the reader's — and the next P offers exactly them.
+        assert_eq!(app.session.unpublished().count(), 2);
+        *fake.stop_part_way.lock().unwrap() = false;
+        app.handle_key(key('P'));
+        assert!(matches!(&app.mode, Mode::Publish { plan } if plan.batch.len() == 2));
     }
 
     // ------------------------------------------------------ your own comment

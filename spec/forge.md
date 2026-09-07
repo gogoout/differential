@@ -146,7 +146,9 @@ what would stay and why, and asks. On `y`, on a worker thread:
    plan's hunks on the anchor's side, widened by three. Replies skip it: they need a thread
    id, not a line. GitHub also takes a comment on the **file** (`subject_type: file`, no
    line) and it landed in the same measurement; the author chose not to send excluded
-   notes that way, so they stay local and the float says why.
+   notes that way, so they stay local and the float says why. **GitLab is not held to
+   this rule**: every open note goes, positioned by its own line numbers, and if GitLab
+   refuses one its refusal is what the reader sees.
 3. **One batch.** New comments and replies go up as described per forge below. Each
    finding that lands records `upstream: { thread, comment }`. A finding that fails keeps
    no `upstream` and is reported.
@@ -205,7 +207,7 @@ and until then `event` is always `COMMENT`.
 |---|---|
 | request | `glab mr view [<iid>] --output json` — `iid`, `target_branch`, `web_url`, `diff_refs.{base_sha, start_sha, head_sha}` |
 | threads | `glab api --paginate projects/:id/merge_requests/<iid>/discussions` — a discussion is a thread when its first non-system note is a `DiffNote` with a `text` position; `notes[]` give `author.username`, `created_at`, `resolved` |
-| publish, new | one `POST …/merge_requests/<iid>/draft_notes` per finding, a JSON body of `note` and `position{position_type: text, base_sha, start_sha, head_sha, old_path, new_path, old_line | new_line}`, then one `POST …/draft_notes/bulk_publish`; the discussions are fetched again to learn each note's id |
+| publish, new | one `POST …/merge_requests/<iid>/draft_notes` per finding, a JSON body of `note` and `position{position_type: text, base_sha, start_sha, head_sha, old_path, new_path, old_line and/or new_line}` — one number for a changed line, both for an unchanged one — then one `POST …/draft_notes/bulk_publish`; the discussions are fetched again to learn each note's id |
 | publish, reply | a draft note with `in_reply_to_discussion_id`, published in the same bulk call |
 | resolve | `PUT …/merge_requests/<iid>/discussions/<id>` with `{resolved: true | false}` |
 | who am I | `glab api user` → `username` |
@@ -220,12 +222,12 @@ it has one, else the path. Two limits, until the adapter has met a live instance
 sides' numbers; a **position recorded against another head is outdated** and counted
 rather than drawn, because the REST answer carries no diff text to place it by; and a
 **publish that fails part-way** may leave draft notes on the request, because GitLab has
-no batch create — the next publish does not know them, so they are cleared by hand. One
-rule is probably tighter than it needs to be: the **three-line diff check** is GitHub's,
-measured there, and applied to GitLab too because it has not been measured there. GitLab
-positions a note by `old_line` / `new_line` against the request's diff refs and may accept
-any line of the file; when a live instance says so, the check is to be loosened for GitLab
-and this paragraph rewritten. The GitHub
+no batch create — the next publish does not know them, so they are cleared by hand. The
+**three-line diff check is GitHub's** and is not applied here: GitLab positions a note by
+`old_line` / `new_line` against the request's diff refs, an unchanged line carries both
+numbers (the other side's computed from the hunks before it), and any line of the file is
+sent. Whether GitLab accepts every such line is unmeasured; a refusal comes back as the
+tool's own error. The GitHub
 table above is verified against a live request; this one is written from the API
 reference and pinned by tests on the shapes it expects.
 

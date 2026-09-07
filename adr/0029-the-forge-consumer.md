@@ -116,8 +116,9 @@ and the forge holds the edit first, the record following its answer.
   note further out fails the whole review. The batch therefore excludes such findings and
   reports each by file and line, and the reviewer shows which they were. GitHub would take
   them as file-level comments with the place written into the body; the author declined
-  that, so they stay local. Whether GitLab is as strict is unmeasured; the same rule applies
-  there until it is.
+  that, so they stay local. GitLab is not held to the rule: it positions a note by line
+  numbers, both for an unchanged line, and every note goes; whether it refuses any is
+  unmeasured, and its refusal would be what the reader sees.
 - The local head must equal the request's head at post time. Both forges reject a comment
   against a commit that is not the request's. The check is the first thing `P` does.
 - Whether `gh` or `glab` is present, logged in, and online is checked when it is used, by

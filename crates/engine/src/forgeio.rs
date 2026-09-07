@@ -12,15 +12,13 @@
 //! change to it fails a test rather than a review.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
 use crate::forge::{
     Batch, Forge, ForgeError, ForgeKind, NewComment, Published, RemoteComment, RemoteThread,
-    Request, marker, strip_marker,
+    Request, Sent, marker, strip_marker,
 };
 use crate::subprocess;
 
@@ -32,16 +30,18 @@ struct Tool {
     program: &'static str,
     working_dir: PathBuf,
     timeout: Duration,
-    cancel: Option<Arc<AtomicBool>>,
 }
+
+/// Long enough for a paginated read of a large request over a slow link;
+/// short enough that a hung tool gives the reviewer back within a minute.
+const TOOL_TIMEOUT: Duration = Duration::from_secs(60);
 
 impl Tool {
     fn new(program: &'static str, root: &Path) -> Self {
         Tool {
             program,
             working_dir: root.to_path_buf(),
-            timeout: Duration::from_secs(60),
-            cancel: None,
+            timeout: TOOL_TIMEOUT,
         }
     }
 
@@ -57,7 +57,7 @@ impl Tool {
             stdin,
             working_dir: Some(&self.working_dir),
             timeout: self.timeout,
-            cancel: self.cancel.as_ref(),
+            cancel: None,
         })
         .map_err(|f| match f {
             subprocess::Failure::Spawn(source) => ForgeError::Spawn {
@@ -104,6 +104,22 @@ impl Tool {
             command: format!("{} {}", self.program, args.join(" ")),
             msg,
         }
+    }
+
+    /// One REST call through `<tool> api`, a JSON body on stdin when there is
+    /// one, the JSON answer back.
+    fn rest(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value, ForgeError> {
+        let mut args = vec!["api", "--method", method, path];
+        let text;
+        let stdin = match body {
+            Some(b) => {
+                args.extend(["--input", "-"]);
+                text = b.to_string();
+                Some(text.as_bytes())
+            }
+            None => None,
+        };
+        self.json(&args, stdin)
     }
 }
 
@@ -177,16 +193,6 @@ impl GhForge {
         }
     }
 
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.tool.timeout = timeout;
-        self
-    }
-
-    pub fn with_cancel(mut self, flag: Arc<AtomicBool>) -> Self {
-        self.tool.cancel = Some(flag);
-        self
-    }
-
     fn graphql(&self, query: &str, vars: &[(&str, Value)]) -> Result<Value, ForgeError> {
         let body = json!({
             "query": query,
@@ -215,22 +221,22 @@ impl GhForge {
         Ok(v)
     }
 
-    fn rest(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value, ForgeError> {
-        let mut args = vec!["api", "--method", method, path];
-        let text;
-        let stdin = match body {
-            Some(b) => {
-                args.extend(["--input", "-"]);
-                text = b.to_string();
-                Some(text.as_bytes())
-            }
-            None => None,
-        };
-        self.tool.json(&args, stdin)
-    }
-
     fn pulls(req: &Request, tail: &str) -> String {
         format!("repos/{}/pulls/{}{}", req.project, req.id, tail)
+    }
+
+    /// The comments of a review just submitted: the review's own answer names
+    /// none of them.
+    fn review_comments(&self, req: &Request, review: &Value) -> Result<Value, ForgeError> {
+        let review_id = review
+            .get("id")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| parse_err("the review came back without an id"))?;
+        self.tool.rest(
+            "GET",
+            &Self::pulls(req, &format!("/reviews/{review_id}/comments")),
+            None,
+        )
     }
 }
 
@@ -288,36 +294,45 @@ impl Forge for GhForge {
         Ok(all)
     }
 
-    fn publish(&self, req: &Request, batch: &Batch) -> Result<Vec<Published>, ForgeError> {
-        let mut out = Vec::new();
+    fn publish(&self, req: &Request, batch: &Batch) -> Result<Sent, ForgeError> {
+        let mut sent = Sent::default();
 
-        // New comments: one review, so the author gets one notification.
+        // New comments: one review, so the author gets one notification. Up
+        // to this call nothing has left; from its answer on, a failure is
+        // reported in `sent`, never returned, or the caller would forget
+        // comments that are already live.
         if !batch.comments.is_empty() {
-            let review = self.rest(
+            let review = self.tool.rest(
                 "POST",
                 &Self::pulls(req, "/reviews"),
                 Some(&review_body(req, &batch.comments)),
             )?;
-            let review_id = review
-                .get("id")
-                .and_then(Value::as_i64)
-                .ok_or_else(|| parse_err("the review came back without an id"))?;
-            let posted = self.rest(
-                "GET",
-                &Self::pulls(req, &format!("/reviews/{review_id}/comments")),
-                None,
-            )?;
-            out.extend(match_published(&batch.comments, &posted));
+            match self.review_comments(req, &review) {
+                Ok(posted) => sent
+                    .published
+                    .extend(match_published(&batch.comments, &posted)),
+                Err(e) => {
+                    sent.failed = Some(e);
+                    return Ok(sent);
+                }
+            }
         }
 
         // Replies thread under the root comment, one call each.
         for r in &batch.replies {
-            let v = self.rest(
+            let v = match self.tool.rest(
                 "POST",
                 &Self::pulls(req, &format!("/comments/{}/replies", r.root_comment)),
                 Some(&json!({ "body": r.body })),
-            )?;
-            out.push(Published {
+            ) {
+                Ok(v) => v,
+                Err(e) if sent.published.is_empty() && batch.comments.is_empty() => return Err(e),
+                Err(e) => {
+                    sent.failed = Some(e);
+                    return Ok(sent);
+                }
+            };
+            sent.published.push(Published {
                 finding: r.finding.clone(),
                 thread: r.thread.clone(),
                 comment: v
@@ -333,20 +348,23 @@ impl Forge for GhForge {
         }
 
         // A new comment's thread id is GraphQL's, which REST never says. One
-        // fetch of the threads names every root, and the renderer needs the
-        // fresh threads anyway.
-        if !batch.comments.is_empty() {
-            let threads = self.threads(req)?;
-            for p in out.iter_mut().filter(|p| p.thread.is_empty()) {
-                if let Some(t) = threads
-                    .iter()
-                    .find(|t| t.root().is_some_and(|c| c.id == p.comment))
-                {
-                    p.thread = t.id.clone();
+        // fetch of the threads names every root — and is the fresh set the
+        // caller wants, so it is handed back rather than fetched twice.
+        match self.threads(req) {
+            Ok(threads) => {
+                for p in sent.published.iter_mut().filter(|p| p.thread.is_empty()) {
+                    if let Some(t) = threads
+                        .iter()
+                        .find(|t| t.root().is_some_and(|c| c.id == p.comment))
+                    {
+                        p.thread = t.id.clone();
+                    }
                 }
+                sent.threads = Some(threads);
             }
+            Err(e) => sent.failed = Some(e),
         }
-        Ok(out)
+        Ok(sent)
     }
 
     fn set_resolved(&self, _req: &Request, thread: &str, resolved: bool) -> Result<(), ForgeError> {
@@ -366,7 +384,7 @@ impl Forge for GhForge {
         comment: &str,
         body: &str,
     ) -> Result<(), ForgeError> {
-        self.rest(
+        self.tool.rest(
             "PATCH",
             &format!("repos/{}/pulls/comments/{comment}", req.project),
             Some(&json!({ "body": body })),
@@ -599,32 +617,8 @@ impl GlabForge {
         }
     }
 
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.tool.timeout = timeout;
-        self
-    }
-
-    pub fn with_cancel(mut self, flag: Arc<AtomicBool>) -> Self {
-        self.tool.cancel = Some(flag);
-        self
-    }
-
     fn mr(req: &Request, tail: &str) -> String {
         format!("projects/:id/merge_requests/{}{}", req.id, tail)
-    }
-
-    fn rest(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value, ForgeError> {
-        let mut args = vec!["api", "--method", method, path];
-        let text;
-        let stdin = match body {
-            Some(b) => {
-                args.extend(["--input", "-"]);
-                text = b.to_string();
-                Some(text.as_bytes())
-            }
-            None => None,
-        };
-        self.tool.json(&args, stdin)
     }
 
     fn discussions(&self, req: &Request) -> Result<Vec<Value>, ForgeError> {
@@ -661,21 +655,23 @@ impl Forge for GlabForge {
         Ok(parse_discussions(&pages, &req.head))
     }
 
-    fn publish(&self, req: &Request, batch: &Batch) -> Result<Vec<Published>, ForgeError> {
+    fn publish(&self, req: &Request, batch: &Batch) -> Result<Sent, ForgeError> {
         if batch.is_empty() {
-            return Ok(Vec::new());
+            return Ok(Sent::default());
         }
         // Draft notes, then one publish: the author is notified once, as a
-        // GitHub review notifies once.
+        // GitHub review notifies once. A draft is not live, so a failure here
+        // is still "nothing published" — though the drafts already made stay
+        // on the request, unpublished, which the spec names as a limit.
         for c in &batch.comments {
-            self.rest(
+            self.tool.rest(
                 "POST",
                 &Self::mr(req, "/draft_notes"),
                 Some(&draft_note_body(req, c)),
             )?;
         }
         for r in &batch.replies {
-            self.rest(
+            self.tool.rest(
                 "POST",
                 &Self::mr(req, "/draft_notes"),
                 Some(&json!({
@@ -693,14 +689,22 @@ impl Forge for GlabForge {
             ],
             None,
         )?;
-        // The publish answers with nothing. The discussions, fetched again,
-        // hold every note that landed.
-        let pages = self.discussions(req)?;
-        Ok(match_gitlab_published(batch, &pages))
+        // Live from here. The publish answers with nothing; the discussions,
+        // fetched again, hold every note that landed — and are the fresh set
+        // the caller wants, so they are handed back rather than fetched twice.
+        let mut sent = Sent::default();
+        match self.discussions(req) {
+            Ok(pages) => {
+                sent.published = match_gitlab_published(batch, &pages);
+                sent.threads = Some(parse_discussions(&pages, &req.head));
+            }
+            Err(e) => sent.failed = Some(e),
+        }
+        Ok(sent)
     }
 
     fn set_resolved(&self, req: &Request, thread: &str, resolved: bool) -> Result<(), ForgeError> {
-        self.rest(
+        self.tool.rest(
             "PUT",
             &Self::mr(req, &format!("/discussions/{thread}")),
             Some(&json!({ "resolved": resolved })),
@@ -715,7 +719,7 @@ impl Forge for GlabForge {
         comment: &str,
         body: &str,
     ) -> Result<(), ForgeError> {
-        self.rest(
+        self.tool.rest(
             "PUT",
             &Self::mr(req, &format!("/discussions/{thread}/notes/{comment}")),
             Some(&json!({ "body": body })),
@@ -887,10 +891,16 @@ pub fn draft_note_body(req: &Request, c: &NewComment) -> Value {
         "new_path": c.path,
         "old_path": c.old_path.clone().unwrap_or_else(|| c.path.clone()),
     });
-    if c.side == "old" {
-        position["old_line"] = json!(c.line);
+    // GitLab wants one number for a changed line and both for an unchanged
+    // one, which exists on both sides.
+    let (mine, other) = if c.side == "old" {
+        ("old_line", "new_line")
     } else {
-        position["new_line"] = json!(c.line);
+        ("new_line", "old_line")
+    };
+    position[mine] = json!(c.line);
+    if let Some(o) = c.other_line {
+        position[other] = json!(o);
     }
     json!({ "note": ranged_note(c), "position": position })
 }
@@ -1035,6 +1045,7 @@ mod tests {
             side: side.into(),
             line,
             start_line: start,
+            other_line: None,
             body: body.into(),
         }
     }
@@ -1254,6 +1265,13 @@ mod tests {
         assert_eq!(body["position"]["old_path"], json!("src/old.rs"));
         assert_eq!(body["position"]["new_line"], json!(3));
         assert!(body["position"].get("old_line").is_none());
+
+        // An unchanged line carries both numbers.
+        let mut ctx = comment("f3", "new", 12, None, "context");
+        ctx.other_line = Some(11);
+        let both = draft_note_body(&req, &ctx);
+        assert_eq!(both["position"]["new_line"], json!(12));
+        assert_eq!(both["position"]["old_line"], json!(11));
 
         // A range is positioned at its last line and says so in the note.
         let ranged = draft_note_body(&req, &comment("f2", "old", 8, Some(6), "a range"));

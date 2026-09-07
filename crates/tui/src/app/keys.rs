@@ -18,6 +18,13 @@ use super::*;
 /// was following.
 const SHIFT_STEP: isize = 8;
 
+/// A bare `y`, and nothing else, answers a question here. Some terminals
+/// report ctrl-y as `Char('y')` with a modifier, and the irreversible actions
+/// in this reviewer must not answer to a chord nobody aimed.
+fn is_yes(key: KeyEvent) -> bool {
+    (key.code, key.modifiers) == (KeyCode::Char('y'), KeyModifiers::NONE)
+}
+
 impl App {
     /// Text pasted into the terminal.
     ///
@@ -92,7 +99,7 @@ impl App {
                     // Some terminals report ctrl-y as `Char('y')` with a
                     // modifier, and the one irreversible action in this
                     // reviewer should not answer to a chord nobody aimed.
-                    if (key.code, key.modifiers) == (KeyCode::Char('y'), KeyModifiers::NONE) {
+                    if is_yes(key) {
                         self.clear_findings();
                     } else {
                         self.status = "nothing deleted".into();
@@ -200,7 +207,7 @@ impl App {
             Mode::DeleteComment { own } => {
                 let own = own.clone();
                 self.mode = Mode::Normal;
-                if (key.code, key.modifiers) == (KeyCode::Char('y'), KeyModifiers::NONE) {
+                if is_yes(key) {
                     self.start_delete_comment(own);
                 } else {
                     self.status = "nothing deleted".into();
@@ -213,7 +220,7 @@ impl App {
                 let Mode::Publish { plan } = std::mem::replace(&mut self.mode, Mode::Normal) else {
                     unreachable!("matched above");
                 };
-                if (key.code, key.modifiers) == (KeyCode::Char('y'), KeyModifiers::NONE) {
+                if is_yes(key) {
                     self.start_publish(plan);
                 } else {
                     self.status = "nothing published".into();
@@ -511,18 +518,7 @@ impl App {
                         .is_none()
                         .then(|| self.finding_at_cursor())
                         .flatten()
-                        .map(|f| {
-                            (
-                                f.id.clone(),
-                                f.body.clone(),
-                                f.anchor.line_span(),
-                                f.upstream.is_some(),
-                            )
-                        });
-                    // Published and not yet fetched back as a thread: the box
-                    // opens on it all the same, and saving rewrites it on the
-                    // forge, which `rewrite_finding` decides.
-                    let existing = existing.map(|(id, body, span, _)| (id, body, span));
+                        .map(|f| (f.id.clone(), f.body.clone(), f.anchor.line_span()));
                     let lines = self.selected_lines();
                     // Name what is being annotated: a note whose subject you
                     // cannot see is a note you have to trust yourself to have

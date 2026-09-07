@@ -227,6 +227,13 @@ impl App {
                 let total = sent.len();
                 self.status = match (marked, refetch) {
                     (Err(e), _) | (_, Err(e)) => format!("save failed: {e:#}"),
+                    // The forge took part of the batch and then stopped. What
+                    // it took is recorded; the rest is still the reader's, and
+                    // the next P sends only that.
+                    _ if outcome.failed.is_some() => format!(
+                        "published {landed} of {total} · the forge stopped part-way ({}) · R to check, P to send the rest",
+                        outcome.failed.as_ref().expect("guarded")
+                    ),
                     (_, Ok(Some(e))) => format!(
                         "published {landed} of {total} · the threads could not be fetched back ({e}) · R to retry"
                     ),
@@ -279,7 +286,8 @@ impl App {
             self.status = "still syncing with the forge".into();
             return;
         }
-        let plan = self.session.publish_plan();
+        let kind = self.forge.as_ref().expect("checked above").request.kind;
+        let plan = self.session.publish_plan(kind);
         if plan.batch.is_empty() {
             self.status = match plan.excluded.len() {
                 0 => "nothing to publish: every open finding is on the request".into(),

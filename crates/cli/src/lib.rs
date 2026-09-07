@@ -497,7 +497,7 @@ fn publish(
     req: &Request,
     mut session: differential_engine::FsReviewSession,
 ) -> anyhow::Result<ExitCode> {
-    let plan = session.publish_plan();
+    let plan = session.publish_plan(req.kind);
     for ex in &plan.excluded {
         println!("skipped    {}:{}  {}", ex.file, ex.lines, ex.reason);
     }
@@ -517,6 +517,11 @@ fn publish(
     };
     let published = outcome.published;
     session.mark_published(&published)?;
+    if let Some(e) = &outcome.failed {
+        eprintln!(
+            "note: the forge stopped part-way: {e}; what landed is recorded, run again for the rest"
+        );
+    }
     // The CLI has no login to heal by; the marker still does its work. A
     // refetch that fails is said, not fatal: the comments are already there.
     match outcome.threads {

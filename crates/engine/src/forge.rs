@@ -57,6 +57,21 @@ impl ForgeKind {
             ForgeKind::Gitlab => schema::SourceKind::Mr,
         }
     }
+
+    /// How far from a change a line comment may sit, or no limit.
+    ///
+    /// GitHub's public API resolves a line against the request's diff with
+    /// exactly `REQUEST_CONTEXT` lines around each hunk — measured on a live
+    /// request: three after a change lands, four is refused. GitLab positions
+    /// a note by its own line numbers against the diff refs and is not held to
+    /// that rule here; if it refuses a line, its refusal is what the reader
+    /// sees.
+    pub fn line_rule(self) -> Option<u32> {
+        match self {
+            ForgeKind::Github => Some(REQUEST_CONTEXT),
+            ForgeKind::Gitlab => None,
+        }
+    }
 }
 
 /// A request as the forge describes it: the object a review is of.
@@ -229,6 +244,10 @@ pub struct NewComment {
     pub line: u32,
     /// The first line of a multi-line comment; `None` for one line.
     pub start_line: Option<u32>,
+    /// The same line's number on the other side, when the line is unchanged
+    /// and so exists on both. GitLab positions an unchanged line by both
+    /// numbers; a changed line has one.
+    pub other_line: Option<u32>,
     pub body: String,
 }
 
@@ -274,6 +293,22 @@ pub struct Excluded {
 pub struct PublishPlan {
     pub batch: Batch,
     pub excluded: Vec<Excluded>,
+}
+
+/// What an adapter's publish brought back.
+///
+/// `Err` from `Forge::publish` means nothing left the machine. Once anything
+/// has, the adapter returns `Ok` with what it knows: the comments it can name,
+/// the threads if it fetched them on the way, and the error that stopped it,
+/// so the caller records what landed before it says what failed. A publish
+/// that lost track of its own comments would send them again.
+#[derive(Debug, Default)]
+pub struct Sent {
+    pub published: Vec<Published>,
+    /// The threads, when the adapter had to fetch them anyway.
+    pub threads: Option<Vec<RemoteThread>>,
+    /// What stopped the adapter after something had already gone up.
+    pub failed: Option<ForgeError>,
 }
 
 /// One comment the forge accepted, keyed back to its finding.
@@ -347,8 +382,9 @@ pub trait Forge: Send + Sync {
     fn threads(&self, req: &Request) -> Result<Vec<RemoteThread>, ForgeError>;
 
     /// Send one batch. Comments against `req.head`; the caller has already
-    /// checked that is the review's head.
-    fn publish(&self, req: &Request, batch: &Batch) -> Result<Vec<Published>, ForgeError>;
+    /// checked that is the review's head. `Err` only while nothing has left
+    /// the machine; after that, `Ok(Sent)` with a `failed`.
+    fn publish(&self, req: &Request, batch: &Batch) -> Result<Sent, ForgeError>;
 
     fn set_resolved(&self, req: &Request, thread: &str, resolved: bool) -> Result<(), ForgeError>;
 
@@ -511,6 +547,7 @@ pub fn publish_plan(
     doc: &schema::PlanDocument,
     findings: &[Finding],
     threads: &[RemoteThread],
+    line_rule: Option<u32>,
 ) -> PublishPlan {
     let mut out = PublishPlan::default();
     // A finding a thread already carries is on the request, whatever its
@@ -534,7 +571,9 @@ pub fn publish_plan(
             }
             continue;
         }
-        if !in_request_diff(doc, &f.anchor) {
+        if let Some(context) = line_rule
+            && !in_request_diff(doc, &f.anchor, context)
+        {
             out.excluded.push(excluded(
                 f,
                 "outside the request's diff: more than 3 lines from a change",
@@ -553,6 +592,12 @@ pub fn publish_plan(
             side: f.anchor.side.clone(),
             line: f.anchor.end_line.max(f.anchor.line),
             start_line: (f.anchor.end_line > f.anchor.line).then_some(f.anchor.line),
+            other_line: other_side_line(
+                doc,
+                &f.anchor.file,
+                &f.anchor.side,
+                f.anchor.end_line.max(f.anchor.line),
+            ),
             body: with_marker(&f.body, &f.id),
         });
     }
@@ -568,8 +613,52 @@ fn excluded(f: &Finding, reason: &str) -> Excluded {
     }
 }
 
-/// Whether both ends of `a` sit inside the request's diff of its file.
-fn in_request_diff(doc: &schema::PlanDocument, a: &Anchor) -> bool {
+/// The number an unchanged line has on the other side, or `None` for a
+/// changed line, which exists on one side only.
+///
+/// Every hunk that ends before the line shifts the other side's numbering by
+/// its own imbalance; the nearest such hunk carries the whole shift, since
+/// its end already accounts for every hunk before it.
+pub fn other_side_line(
+    doc: &schema::PlanDocument,
+    file: &str,
+    side: &str,
+    line: u32,
+) -> Option<u32> {
+    let old = side == "old";
+    let range = |h: &schema::HunkEntry| -> ((u32, u32), (u32, u32)) {
+        let mine = if old {
+            (h.old_start.max(1), h.old_count)
+        } else {
+            (h.new_start.max(1), h.new_count)
+        };
+        let other = if old {
+            (h.new_start.max(1), h.new_count)
+        } else {
+            (h.old_start.max(1), h.old_count)
+        };
+        (mine, other)
+    };
+    let hunks: Vec<&schema::HunkEntry> = doc.hunks.iter().filter(|h| h.file == file).collect();
+    if hunks.iter().any(|h| {
+        let ((s, n), _) = range(h);
+        n > 0 && line >= s && line < s.saturating_add(n)
+    }) {
+        return None;
+    }
+    let shift = hunks
+        .iter()
+        .map(|h| range(h))
+        .filter(|((s, n), _)| s.saturating_add(*n) <= line)
+        .max_by_key(|((s, _), _)| *s)
+        .map(|((s, n), (os, on))| i64::from(os + on) - i64::from(s + n))
+        .unwrap_or(0);
+    u32::try_from(i64::from(line) + shift).ok()
+}
+
+/// Whether both ends of `a` sit inside the request's diff of its file, with
+/// `context` lines around each hunk.
+fn in_request_diff(doc: &schema::PlanDocument, a: &Anchor, context: u32) -> bool {
     let old = a.side == "old";
     let first = a.line;
     let last = a.end_line.max(a.line);
@@ -579,11 +668,11 @@ fn in_request_diff(doc: &schema::PlanDocument, a: &Anchor) -> bool {
         } else {
             (h.new_start.max(1), h.new_count)
         };
-        let lo = s.saturating_sub(REQUEST_CONTEXT);
+        let lo = s.saturating_sub(context);
         let hi = s
             .saturating_add(n)
             .saturating_sub(1)
-            .saturating_add(REQUEST_CONTEXT);
+            .saturating_add(context);
         first >= lo && last <= hi
     })
 }
@@ -633,6 +722,8 @@ pub fn head_matches(req: &Request, review_head: &str) -> bool {
 pub struct PublishOutcome {
     pub published: Vec<Published>,
     pub threads: Result<Vec<RemoteThread>, ForgeError>,
+    /// What stopped the adapter after part of the batch had gone up.
+    pub failed: Option<ForgeError>,
 }
 
 /// The whole publish, forge side: ask the forge where the request is now,
@@ -654,7 +745,16 @@ pub fn publish(
             at: fresh.head.get(..12).unwrap_or(&fresh.head).to_string(),
         });
     }
-    let published = forge.publish(req, batch)?;
-    let threads = forge.threads(req);
-    Ok(PublishOutcome { published, threads })
+    let sent = forge.publish(req, batch)?;
+    // The adapter may have fetched the threads on its way; one round of
+    // pages, not two.
+    let threads = match sent.threads {
+        Some(threads) => Ok(threads),
+        None => forge.threads(req),
+    };
+    Ok(PublishOutcome {
+        published: sent.published,
+        threads,
+        failed: sent.failed,
+    })
 }

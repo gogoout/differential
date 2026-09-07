@@ -114,8 +114,8 @@ impl<S: ReviewStore> ReviewSession<S> {
     }
 
     /// What a publish would send now, and what it would leave and why.
-    pub fn publish_plan(&self) -> forge::PublishPlan {
-        forge::publish_plan(&self.doc, &self.findings, &self.threads)
+    pub fn publish_plan(&self, kind: forge::ForgeKind) -> forge::PublishPlan {
+        forge::publish_plan(&self.doc, &self.findings, &self.threads, kind.line_rule())
     }
 
     /// The reviewed-mark key of `hunk` — its exact content digest.
@@ -368,15 +368,14 @@ impl<S: ReviewStore> ReviewSession<S> {
                 "no thread {thread_id} on this review"
             )));
         };
-        // An unplaced thread still has a file and a side; the reply anchors
-        // there with no hunk, and is orphaned like the thread it answers.
-        let anchor = thread.anchor.clone().unwrap_or_else(|| Anchor {
-            file: thread.path.clone(),
-            side: thread.side.clone(),
-            line: thread.line.unwrap_or(0),
-            end_line: thread.line.unwrap_or(0),
-            ..Anchor::default()
-        });
+        // A thread nothing in this plan holds has no row, so a reply under it
+        // would have none either: filed, listed as open, reachable nowhere.
+        // Refused instead; the forge's own page still takes a reply.
+        let Some(anchor) = thread.anchor.clone() else {
+            return Err(EngineError::PlanIntegrity(format!(
+                "thread {thread_id} has no line in this diff; reply on the forge"
+            )));
+        };
         let mut finding = Finding::new(
             crate::review_state::now_unix(),
             body,

@@ -216,7 +216,7 @@ fn a_publish_sends_open_unpublished_findings_inside_the_diff_and_names_the_rest(
         .unwrap();
     let reply = s.add_reply("t1", "agreed".into()).unwrap().id.clone();
 
-    let plan = s.publish_plan();
+    let plan = s.publish_plan(forge::ForgeKind::Github);
     let sent: Vec<&str> = plan
         .batch
         .comments
@@ -259,7 +259,7 @@ fn a_publish_sends_open_unpublished_findings_inside_the_diff_and_names_the_rest(
         }))
         .collect();
     assert_eq!(s.mark_published(&published).unwrap(), 3);
-    let again = s.publish_plan();
+    let again = s.publish_plan(forge::ForgeKind::Github);
     assert!(again.batch.is_empty());
     // Still excluded, still reported: it never left.
     assert_eq!(again.excluded.len(), 1);
@@ -281,7 +281,7 @@ fn a_reply_whose_thread_is_gone_is_excluded_not_sent_as_a_comment() {
     s.add_reply("t1", "agreed".into()).unwrap();
     // The forge dropped the thread before the reply went up.
     s.set_threads(vec![], None).unwrap();
-    let plan = s.publish_plan();
+    let plan = s.publish_plan(forge::ForgeKind::Github);
     assert!(plan.batch.is_empty());
     assert_eq!(plan.excluded.len(), 1);
     assert!(plan.excluded[0].reason.contains("thread"));
@@ -487,7 +487,7 @@ fn a_fetch_reconciles_a_finding_the_forge_already_carries() {
 
     // The publish's answer was lost: nothing was marked. The plan would send
     // it again — until the threads say it is there.
-    assert_eq!(s.publish_plan().batch.len(), 1);
+    assert_eq!(s.publish_plan(forge::ForgeKind::Github).batch.len(), 1);
     let mut t = thread("T1", "src/lib.rs", "new", Some(3));
     t.comments[0].id = "C1".into();
     t.comments[0].finding = Some(id.clone());
@@ -501,7 +501,10 @@ fn a_fetch_reconciles_a_finding_the_forge_already_carries() {
         Some(("T1", "C1"))
     );
     assert!(s.is_twinned(f));
-    assert!(s.publish_plan().batch.is_empty(), "nothing sent twice");
+    assert!(
+        s.publish_plan(forge::ForgeKind::Github).batch.is_empty(),
+        "nothing sent twice"
+    );
     assert_eq!(s.findings_summary().trim(), "(no open findings)");
     // A second fetch has nothing left to reconcile.
     assert_eq!(s.set_threads(s.threads().to_vec(), None).unwrap(), 0);
@@ -518,7 +521,7 @@ fn the_batch_sends_bodies_with_their_markers() {
         .unwrap()
         .id
         .clone();
-    let plan = s.publish_plan();
+    let plan = s.publish_plan(forge::ForgeKind::Github);
     assert_eq!(
         plan.batch.comments[0].body,
         forge::with_marker("on the change", &id)
@@ -614,4 +617,71 @@ fn a_linked_record_follows_an_edit_or_delete_even_before_its_twin_is_fetched() {
     assert!(s.delete_comment("T", "C").unwrap());
     assert!(s.findings().is_empty());
     assert!(!s.delete_comment("T", "C").unwrap(), "nothing left to know");
+}
+
+#[test]
+fn gitlab_is_not_held_to_the_three_line_rule_and_an_unchanged_line_carries_both_numbers() {
+    // Head inserts a line at the top and edits line 3 (now 4): every later
+    // unchanged line is one higher on the new side than on the old.
+    let r = TestRepo::new();
+    let lines: Vec<String> = (1..=10).map(|i| format!("line_{i} = {i}")).collect();
+    r.write("src/lib.rs", format!("{}\n", lines.join("\n")).as_bytes());
+    let base = r.commit_all("base");
+    let mut changed = lines.clone();
+    changed[2] = "line_3 = 300".to_string();
+    changed.insert(0, "inserted = 0".to_string());
+    r.write("src/lib.rs", format!("{}\n", changed.join("\n")).as_bytes());
+    let head = r.commit_all("head");
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut s = session(&r, &base, &head, tmp.path());
+    let (doc, _) = doc_and_view(&r, &base, &head);
+
+    // A changed line has one number; an unchanged line far below has both.
+    assert_eq!(forge::other_side_line(&doc, "src/lib.rs", "new", 1), None);
+    assert_eq!(forge::other_side_line(&doc, "src/lib.rs", "new", 4), None);
+    assert_eq!(
+        forge::other_side_line(&doc, "src/lib.rs", "new", 9),
+        Some(8)
+    );
+    assert_eq!(
+        forge::other_side_line(&doc, "src/lib.rs", "old", 8),
+        Some(9)
+    );
+    assert_eq!(forge::other_side_line(&doc, "src/lib.rs", "old", 3), None);
+
+    let h = s.doc().hunks.iter().position(|h| h.new_start == 4).unwrap();
+    s.add_finding(h, Some(lines_at("new", 9, 9)), "far below".into())
+        .unwrap();
+    let github = s.publish_plan(forge::ForgeKind::Github);
+    assert!(
+        github.batch.is_empty(),
+        "GitHub: five lines from a change is out"
+    );
+    assert_eq!(github.excluded.len(), 1);
+    let gitlab = s.publish_plan(forge::ForgeKind::Gitlab);
+    assert_eq!(gitlab.batch.comments.len(), 1, "GitLab: any line goes");
+    assert!(gitlab.excluded.is_empty());
+    assert_eq!(gitlab.batch.comments[0].line, 9);
+    assert_eq!(gitlab.batch.comments[0].other_line, Some(8));
+}
+
+fn lines_at(side: &str, start: u32, end: u32) -> Lines {
+    lines(side, start, end)
+}
+
+#[test]
+fn a_reply_on_a_thread_with_no_line_is_refused_not_lost() {
+    let (r, base, head) = two_hunk_repo();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut s = session(&r, &base, &head, tmp.path());
+    let mut gone = thread("T9", "src/lib.rs", "new", None);
+    gone.line_text = Some("nothing like this".into());
+    s.set_threads(vec![gone], None).unwrap();
+    assert!(s.thread("T9").unwrap().anchor.is_none());
+    let err = s.add_reply("T9", "into the void".into()).unwrap_err();
+    assert!(err.to_string().contains("no line in this diff"), "{err}");
+    assert!(
+        s.findings().is_empty(),
+        "nothing filed that nothing could reach"
+    );
 }

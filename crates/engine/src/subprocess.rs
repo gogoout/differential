@@ -91,11 +91,14 @@ pub fn run(spec: &Run<'_>) -> Result<Output, Failure> {
     let cancelled = || spec.cancel.is_some_and(|c| c.load(Ordering::Relaxed));
     let status = loop {
         // Decide first, tear down once.
-        let give_up = match child.try_wait().map_err(Failure::Io)? {
-            Some(status) => break status,
-            None if cancelled() => Some(Failure::Cancelled),
-            None if Instant::now() >= deadline => Some(Failure::Timeout),
-            None => None,
+        // Decide first, tear down once — a `try_wait` error included, or
+        // the child and its three threads would outlive this call.
+        let give_up = match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Err(e) => Some(Failure::Io(e)),
+            Ok(None) if cancelled() => Some(Failure::Cancelled),
+            Ok(None) if Instant::now() >= deadline => Some(Failure::Timeout),
+            Ok(None) => None,
         };
         if let Some(err) = give_up {
             let _ = child.kill();
