@@ -230,6 +230,36 @@ pub struct FindingEntry {
     pub body: String,
     pub orphaned: bool,
     pub moved: bool,
+    /// A forge thread rather than a note: `id` is the thread's (ADR 0029).
+    pub thread: bool,
+    /// A note the request already has, whose twin was not fetched (yet).
+    pub published: bool,
+    /// A thread the forge marks resolved.
+    pub resolved: bool,
+}
+
+impl FindingEntry {
+    /// Which of the list's three sections this sits in, in list order:
+    /// notes, threads, orphaned.
+    pub fn section(&self) -> u8 {
+        match (self.orphaned, self.thread) {
+            (true, _) => 2,
+            (false, true) => 1,
+            (false, false) => 0,
+        }
+    }
+}
+
+/// Where the rules between the list's sections fall: the index of the first
+/// entry of each section after the first non-empty one. Drawn, not stored, so
+/// they cost a row on screen and nothing in the model.
+pub fn section_rules(entries: &[FindingEntry]) -> Vec<usize> {
+    entries
+        .windows(2)
+        .enumerate()
+        .filter(|(_, w)| w[0].section() != w[1].section())
+        .map(|(i, _)| i + 1)
+        .collect()
 }
 
 pub struct FileListEntry {

@@ -5763,45 +5763,40 @@ mod forge_threads {
         }
         /// Takes everything: each new comment becomes a thread of its own on
         /// the same line, each reply a comment in its thread — what the real
-        /// forge's refetch would then show.
+        /// forge's refetch would then show, marker read and stripped like a
+        /// real adapter does. Answers with NOTHING, as GitHub did the first
+        /// time this ran for real: the reviewer must learn what landed from
+        /// the threads, not from this answer.
         fn publish(&self, _req: &Request, batch: &Batch) -> Result<Vec<Published>, ForgeError> {
+            use differential_engine::forge::strip_marker;
             self.published.lock().unwrap().push(batch.clone());
-            let mut out = Vec::new();
             let mut threads = self.threads.lock().unwrap();
             for c in &batch.comments {
                 let (tid, cid) = (format!("T-{}", c.finding), format!("C-{}", c.finding));
                 let mut t = thread(&tid, &cid);
                 t.comments.truncate(1);
-                t.comments[0].body = c.body.clone();
+                let (body, finding) = strip_marker(&c.body);
+                t.comments[0].body = body;
+                t.comments[0].finding = finding;
                 t.comments[0].author = "me".into();
                 t.line = Some(c.line);
                 threads.push(t);
-                out.push(Published {
-                    finding: c.finding.clone(),
-                    thread: tid,
-                    comment: cid,
-                    url: None,
-                });
             }
             for r in &batch.replies {
                 let cid = format!("C-{}", r.finding);
                 if let Some(t) = threads.iter_mut().find(|t| t.id == r.thread) {
+                    let (body, finding) = strip_marker(&r.body);
                     t.comments.push(RemoteComment {
                         id: cid.clone(),
                         author: "me".into(),
                         created: "2026-09-04T09:00:00Z".into(),
-                        body: r.body.clone(),
+                        body,
                         reply_to: t.comments.first().map(|c| c.id.clone()),
+                        finding,
                     });
                 }
-                out.push(Published {
-                    finding: r.finding.clone(),
-                    thread: r.thread.clone(),
-                    comment: cid,
-                    url: None,
-                });
             }
-            Ok(out)
+            Ok(Vec::new())
         }
         fn set_resolved(
             &self,
@@ -5849,6 +5844,7 @@ mod forge_threads {
                     created: "2026-09-03T20:53:12Z".into(),
                     body: "why three?".into(),
                     reply_to: None,
+                    finding: None,
                 },
                 RemoteComment {
                     id: format!("{root_comment}-r"),
@@ -5856,6 +5852,7 @@ mod forge_threads {
                     created: "2026-09-03T21:00:00Z".into(),
                     body: "it was two before".into(),
                     reply_to: Some(root_comment.to_string()),
+                    finding: None,
                 },
             ],
         }
@@ -6355,4 +6352,163 @@ mod forge_threads {
         println!("\n=== after y: the twins, and the footer ===");
         println!("{}", ansi_dump(&mut app, 120, 24));
     }
+
+    // ---------------------------------------------------------- the F list
+
+    pub(super) fn dump_findings_and_threads() {
+        let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        draft_two(&mut app);
+        app.handle_key(key('P'));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        draft_two_without_thread(&mut app);
+        app.handle_key(key('F'));
+        println!("\n=== F: notes, then review threads ===");
+        println!("{}", ansi_dump(&mut app, 120, 20));
+    }
+
+    #[test]
+    fn the_findings_list_holds_threads_too_and_enter_reaches_one() {
+        let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        draft_two_without_thread(&mut app);
+        app.cursor = 0;
+        app.handle_key(key('F'));
+        let Mode::Findings { entries, .. } = &app.mode else {
+            panic!("F opens the list");
+        };
+        assert_eq!(entries.len(), 2);
+        assert!(!entries[0].thread, "notes first");
+        assert!(entries[1].thread);
+        assert_eq!(entries[1].id, "T1");
+        assert!(
+            entries[1].body.starts_with("alice: why three?"),
+            "{}",
+            entries[1].body
+        );
+        assert_eq!(entries[1].at, "src/main.txt:1");
+
+        // The rule between the sections, and the title, are drawn.
+        let backend = ratatui::backend::TestBackend::new(120, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let screen: Vec<String> = (0..30u16)
+            .map(|y| (0..120u16).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        assert!(
+            screen.iter().any(|l| l.contains("review threads")),
+            "{screen:#?}"
+        );
+        assert!(
+            screen
+                .iter()
+                .any(|l| l.contains("findings · 1 · threads · 1")),
+            "{screen:#?}"
+        );
+        assert!(
+            screen.iter().any(|l| l.contains("P publish")),
+            "{screen:#?}"
+        );
+
+        // enter on the thread lands on its rows.
+        app.handle_key(key('j'));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(matches!(&app.rows[app.cursor].kind, RowKind::Thread(t, _) if t == "T1"));
+
+        // dd on a thread in the list refuses, as it does in the diff.
+        app.handle_key(key('F'));
+        app.handle_key(key('j'));
+        app.handle_key(key('d'));
+        app.handle_key(key('d'));
+        assert_eq!(app.session.threads().len(), 1);
+        assert!(app.status.contains("forge's"), "{}", app.status);
+    }
+
+    #[test]
+    fn p_from_the_findings_list_publishes_everything_unpublished() {
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        draft_two(&mut app);
+        app.handle_key(key('F'));
+        app.handle_key(key('P'));
+        assert!(
+            matches!(app.mode, Mode::Publish { .. }),
+            "the same float as P in the diff"
+        );
+        app.handle_key(key('y'));
+        settle(&mut app);
+        assert_eq!(fake.published.lock().unwrap()[0].len(), 2);
+        assert_eq!(app.session.unpublished().count(), 0);
+    }
+
+    #[test]
+    fn a_lost_publish_answer_is_recovered_from_the_markers() {
+        // The fake answers the publish with nothing, as the real forge did.
+        // The refetched threads carry each finding's marker, so the reviewer
+        // still knows what landed, hides the notes and sends nothing twice.
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        draft_two(&mut app);
+        app.handle_key(key('P'));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        assert_eq!(
+            app.status, "published 2 comments",
+            "counted from the threads"
+        );
+        assert!(app.session.findings().iter().all(|f| f.upstream.is_some()));
+        assert!(
+            !app.rows
+                .iter()
+                .any(|r| matches!(r.kind, RowKind::Finding(..)))
+        );
+        // The published finding is listed once, as its thread.
+        app.handle_key(key('F'));
+        let Mode::Findings { entries, .. } = &app.mode else {
+            panic!("F opens the list");
+        };
+        assert!(
+            entries.iter().all(|e| e.thread),
+            "{:?}",
+            entries.iter().map(|e| &e.body).collect::<Vec<_>>()
+        );
+        assert_eq!(entries.len(), 2);
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        // And the bodies the forge holds carry the marker, not the reader.
+        let sent = &fake.published.lock().unwrap()[0];
+        assert!(sent.comments[0].body.contains("<!-- differential:finding "));
+        assert!(
+            !app.session.thread("T1").unwrap().comments[2]
+                .body
+                .contains("differential:finding")
+        );
+        // A second publish has nothing to send.
+        app.handle_key(key('P'));
+        assert!(
+            app.status.starts_with("nothing to publish"),
+            "{}",
+            app.status
+        );
+        // c on the line files a NEW note: the published one is a thread now,
+        // not a note to reopen and rewrite.
+        draft_two_without_thread(&mut app);
+        assert_eq!(app.session.unpublished().count(), 1);
+        assert_eq!(app.session.findings().len(), 3);
+        assert!(
+            app.session
+                .findings()
+                .iter()
+                .filter(|f| f.upstream.is_some())
+                .all(|f| f.body != "on the change")
+        );
+    }
+}
+
+/// The findings list with a note, a published note's thread, a review thread
+/// and an orphan.
+///
+/// `cargo test -p differential-tui --test tui render_dump_findings_and_threads -- --ignored --nocapture`
+#[test]
+#[ignore = "prints the pane for a human to look at"]
+fn render_dump_findings_and_threads() {
+    forge_threads::dump_findings_and_threads();
 }

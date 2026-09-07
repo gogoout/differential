@@ -118,6 +118,38 @@ pub struct RemoteComment {
     pub body: String,
     #[serde(default)]
     pub reply_to: Option<String>,
+    /// The finding this comment was published from, when its body carried
+    /// the marker `with_marker` writes. What makes a publish idempotent: a
+    /// comment that says which finding it is can be matched without trusting
+    /// the forge's answer to the publish itself.
+    #[serde(default)]
+    pub finding: Option<String>,
+}
+
+/// The marker a published body ends with: an HTML comment, which neither
+/// forge renders, carrying the finding's id.
+pub fn marker(finding: &str) -> String {
+    format!("<!-- differential:finding {finding} -->")
+}
+
+/// A finding's body as it is sent: the text, a blank line, the marker.
+pub fn with_marker(body: &str, finding: &str) -> String {
+    format!("{}\n\n{}", body.trim_end(), marker(finding))
+}
+
+/// A fetched body, split into what is shown and which finding wrote it.
+pub fn strip_marker(body: &str) -> (String, Option<String>) {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r"\s*<!-- differential:finding ([0-9a-f]+) -->\s*").expect("a literal")
+    });
+    match re.captures(body) {
+        Some(c) => {
+            let id = c[1].to_string();
+            (re.replace(body, "").trim_end().to_string(), Some(id))
+        }
+        None => (body.to_string(), None),
+    }
 }
 
 /// One review thread: where the forge put it, and where this review did.
@@ -162,12 +194,23 @@ impl RemoteThread {
         self.comments.first()
     }
 
-    /// Whether `finding` is this thread's own root, published from here.
+    /// Whether this thread holds `finding`, published from here: by the
+    /// address the publish recorded, or by the marker in a comment's body,
+    /// which survives a publish whose answer was lost.
     pub fn is_twin_of(&self, finding: &Finding) -> bool {
-        match &finding.upstream {
-            Some(up) => up.thread == self.id || self.comments.iter().any(|c| c.id == up.comment),
-            None => false,
+        if let Some(up) = &finding.upstream
+            && (up.thread == self.id || self.comments.iter().any(|c| c.id == up.comment))
+        {
+            return true;
         }
+        self.published_here(&finding.id).is_some()
+    }
+
+    /// The comment in this thread that a finding's publish made, if any.
+    pub fn published_here(&self, finding: &str) -> Option<&RemoteComment> {
+        self.comments
+            .iter()
+            .find(|c| c.finding.as_deref() == Some(finding))
     }
 }
 
@@ -453,17 +496,20 @@ pub fn publish_plan(
     threads: &[RemoteThread],
 ) -> PublishPlan {
     let mut out = PublishPlan::default();
-    for f in findings
-        .iter()
-        .filter(|f| f.status == FindingStatus::Open && f.upstream.is_none())
-    {
+    // A finding a thread already carries is on the request, whatever its
+    // record says: a publish whose answer was lost must not send it twice.
+    for f in findings.iter().filter(|f| {
+        f.status == FindingStatus::Open
+            && f.upstream.is_none()
+            && !threads.iter().any(|t| t.published_here(&f.id).is_some())
+    }) {
         if let Some(thread_id) = &f.reply_to {
             match threads.iter().find(|t| &t.id == thread_id) {
                 Some(t) => out.batch.replies.push(NewReply {
                     finding: f.id.clone(),
                     thread: t.id.clone(),
                     root_comment: t.root().map(|c| c.id.clone()).unwrap_or_default(),
-                    body: f.body.clone(),
+                    body: with_marker(&f.body, &f.id),
                 }),
                 None => out
                     .excluded
@@ -490,7 +536,7 @@ pub fn publish_plan(
             side: f.anchor.side.clone(),
             line: f.anchor.end_line.max(f.anchor.line),
             start_line: (f.anchor.end_line > f.anchor.line).then_some(f.anchor.line),
-            body: f.body.clone(),
+            body: with_marker(&f.body, &f.id),
         });
     }
     out

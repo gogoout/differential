@@ -136,8 +136,18 @@ what would stay and why, and asks. On `y`, on a worker thread:
 4. **Refetch.** `comments.jsonl` is rewritten and the published findings hide behind their
    twins.
 
+**A publish is idempotent by marker.** Every body sent ends with an HTML comment neither
+forge renders, `<!-- differential:finding <id> -->`. Fetched comments are read for it: the
+marker is stripped from what is shown and recorded as the comment's `finding`. That is the
+match — not path, line and body, which the forge stores reflowed — and it survives a lost
+answer: on every fetch, a finding with no `upstream` whose marker a fetched comment carries
+is marked published there and then. A publish whose answer never came back therefore heals
+on the refetch it runs anyway, the plan never sends a finding a thread already carries, and
+`P` a second time has nothing to send.
+
 `y` copies only findings with no `upstream`. A published finding is on the request; the
-clipboard is for what is not.
+clipboard is for what is not. It stays in `findings.jsonl` with its address, hidden behind
+its twin in the diff and listed once, as the thread, in `F`.
 
 `dfr findings --pr 123 --post` runs steps 1 to 3 without the reviewer and prints one line
 per finding: published with its URL, excluded with its reason, or failed with the tool's

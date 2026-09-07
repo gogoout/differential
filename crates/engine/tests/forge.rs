@@ -83,6 +83,7 @@ fn thread(id: &str, path: &str, side: &str, line: Option<u32>) -> RemoteThread {
             created: "2026-09-03T20:53:12Z".into(),
             body: "why?".into(),
             reply_to: None,
+            finding: None,
         }],
     }
 }
@@ -452,4 +453,74 @@ fn a_request_source_writes_the_remote_into_the_document() {
         },
         &doc.source.head
     ));
+}
+
+// ------------------------------------------------------------- idempotency
+
+#[test]
+fn a_published_body_carries_its_finding_and_gives_it_back() {
+    let sent = forge::with_marker("why three?\n", "abc123");
+    assert_eq!(sent, "why three?\n\n<!-- differential:finding abc123 -->");
+    assert_eq!(
+        forge::strip_marker(&sent),
+        ("why three?".to_string(), Some("abc123".to_string()))
+    );
+    // As GitHub gives it back: reflowed line endings, nothing after.
+    assert_eq!(
+        forge::strip_marker("why three?\r\n\r\n<!-- differential:finding abc123 -->\r\n"),
+        ("why three?".to_string(), Some("abc123".to_string()))
+    );
+    assert_eq!(forge::strip_marker("plain"), ("plain".to_string(), None));
+}
+
+#[test]
+fn a_fetch_reconciles_a_finding_the_forge_already_carries() {
+    let (r, base, head) = two_hunk_repo();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut s = session(&r, &base, &head, tmp.path());
+    let h3 = s.doc().hunks.iter().position(|h| h.new_start == 3).unwrap();
+    let id = s
+        .add_finding(h3, None, "on the change".into())
+        .unwrap()
+        .id
+        .clone();
+
+    // The publish's answer was lost: nothing was marked. The plan would send
+    // it again — until the threads say it is there.
+    assert_eq!(s.publish_plan().batch.len(), 1);
+    let mut t = thread("T1", "src/lib.rs", "new", Some(3));
+    t.comments[0].id = "C1".into();
+    t.comments[0].finding = Some(id.clone());
+    t.comments[0].body = "on the change".into();
+    assert_eq!(s.set_threads(vec![t]).unwrap(), 1, "one reconciled");
+    let f = s.findings().iter().find(|f| f.id == id).unwrap();
+    assert_eq!(
+        f.upstream
+            .as_ref()
+            .map(|u| (u.thread.as_str(), u.comment.as_str())),
+        Some(("T1", "C1"))
+    );
+    assert!(s.is_twinned(f));
+    assert!(s.publish_plan().batch.is_empty(), "nothing sent twice");
+    assert_eq!(s.findings_summary().trim(), "(no open findings)");
+    // A second fetch has nothing left to reconcile.
+    assert_eq!(s.set_threads(s.threads().to_vec()).unwrap(), 0);
+}
+
+#[test]
+fn the_batch_sends_bodies_with_their_markers() {
+    let (r, base, head) = two_hunk_repo();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut s = session(&r, &base, &head, tmp.path());
+    let h3 = s.doc().hunks.iter().position(|h| h.new_start == 3).unwrap();
+    let id = s
+        .add_finding(h3, None, "on the change".into())
+        .unwrap()
+        .id
+        .clone();
+    let plan = s.publish_plan();
+    assert_eq!(
+        plan.batch.comments[0].body,
+        forge::with_marker("on the change", &id)
+    );
 }

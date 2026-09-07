@@ -107,21 +107,30 @@ impl App {
             Answer::Fetched(Ok(threads)) => {
                 let n = threads.len();
                 match self.session.set_threads(threads) {
-                    Ok(()) => {
+                    Ok(reconciled) => {
                         let unplaced = self
                             .session
                             .threads()
                             .iter()
                             .filter(|t| t.anchor.is_none())
                             .count();
-                        self.status = match (n, unplaced) {
-                            (0, _) => "no review threads on the request".into(),
+                        let mut status = match (n, unplaced) {
+                            (0, _) => "no review threads on the request".to_string(),
                             (n, 0) => format!("{n} review thread{}", plural(n)),
                             (n, u) => format!(
                                 "{n} review thread{} · {u} with no line in this diff",
                                 plural(n)
                             ),
                         };
+                        // A note the forge already had, found by its marker:
+                        // it is published now whatever the last publish said.
+                        if reconciled > 0 {
+                            status.push_str(&format!(
+                                " · {reconciled} finding{} found already published",
+                                plural(reconciled)
+                            ));
+                        }
+                        self.status = status;
                     }
                     Err(e) => self.status = format!("save failed: {e:#}"),
                 }
@@ -150,13 +159,23 @@ impl App {
                 self.status = format!("could not resolve the thread: {e}");
             }
             Answer::Published(sent, Ok(outcome)) => {
-                let landed = outcome.published.len();
+                // What the publish's answer named, then what the refetched
+                // threads carry by marker: a finding is published when either
+                // says so, and the count is read from the findings afterwards
+                // rather than from the answer alone.
                 let marked = self.session.mark_published(&outcome.published);
                 let cached = self.session.set_threads(outcome.threads);
+                let landed = self
+                    .session
+                    .findings()
+                    .iter()
+                    .filter(|f| f.upstream.is_some())
+                    .count()
+                    .min(sent);
                 self.status = match (marked, cached) {
                     (Err(e), _) | (_, Err(e)) => format!("save failed: {e:#}"),
                     _ if landed < sent => format!(
-                        "published {landed} of {sent} · {} not confirmed by the forge, P again to retry",
+                        "published {landed} of {sent} · {} not confirmed by the forge, R to check, P to retry",
                         sent - landed
                     ),
                     _ => format!("published {landed} comment{}", plural(landed)),

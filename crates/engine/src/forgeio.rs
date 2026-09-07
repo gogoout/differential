@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 
 use crate::forge::{
     Batch, Forge, ForgeError, ForgeKind, NewComment, Published, RemoteComment, RemoteThread,
-    Request,
+    Request, marker, strip_marker,
 };
 use crate::subprocess;
 
@@ -452,6 +452,7 @@ fn parse_gh_thread(t: &Value) -> Result<RemoteThread, ForgeError> {
 }
 
 fn parse_gh_comment(c: &Value) -> Result<RemoteComment, ForgeError> {
+    let (body, finding) = strip_marker(str_of(c, "body")?);
     Ok(RemoteComment {
         id: c
             .get("databaseId")
@@ -464,11 +465,12 @@ fn parse_gh_comment(c: &Value) -> Result<RemoteComment, ForgeError> {
             .unwrap_or("(deleted)")
             .to_string(),
         created: str_of(c, "createdAt")?.to_string(),
-        body: str_of(c, "body")?.to_string(),
+        body,
         reply_to: c
             .pointer("/replyTo/databaseId")
             .and_then(Value::as_i64)
             .map(|n| n.to_string()),
+        finding,
     })
 }
 
@@ -510,19 +512,23 @@ pub fn review_body(req: &Request, comments: &[NewComment]) -> Value {
     })
 }
 
-/// Pair each sent comment with the record GitHub made of it, by path, line
-/// and body. The review's answer has no ids for its comments; the list of
-/// the review's comments does.
+/// Pair each sent comment with the record GitHub made of it, by the marker
+/// its body carries. The review's answer has no ids for its comments; the
+/// list of the review's comments does. The marker rather than path, line
+/// and body: an equality on the stored text matched nothing the first time
+/// this ran against the real forge, and a publish that cannot find what it
+/// sent is a publish that sends it again.
 pub fn match_published(sent: &[NewComment], posted: &Value) -> Vec<Published> {
     let Some(posted) = posted.as_array() else {
         return Vec::new();
     };
     sent.iter()
         .filter_map(|c| {
+            let mark = marker(&c.finding);
             let hit = posted.iter().find(|p| {
-                p.get("path").and_then(Value::as_str) == Some(c.path.as_str())
-                    && p.get("line").and_then(Value::as_u64) == Some(u64::from(c.line))
-                    && p.get("body").and_then(Value::as_str) == Some(c.body.as_str())
+                p.get("body")
+                    .and_then(Value::as_str)
+                    .is_some_and(|b| b.contains(&mark))
             })?;
             Some(Published {
                 finding: c.finding.clone(),
@@ -739,28 +745,29 @@ fn parse_discussion(d: &Value, head: &str) -> Option<RemoteThread> {
     let comments = notes
         .iter()
         .enumerate()
-        .map(|(i, n)| RemoteComment {
-            id: n
-                .get("id")
-                .and_then(Value::as_i64)
-                .map(|n| n.to_string())
-                .unwrap_or_default(),
-            author: n
-                .pointer("/author/username")
-                .and_then(Value::as_str)
-                .unwrap_or("(deleted)")
-                .to_string(),
-            created: n
-                .get("created_at")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            body: n
-                .get("body")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            reply_to: (i > 0).then(|| root_id.clone()),
+        .map(|(i, n)| {
+            let (body, finding) =
+                strip_marker(n.get("body").and_then(Value::as_str).unwrap_or_default());
+            RemoteComment {
+                id: n
+                    .get("id")
+                    .and_then(Value::as_i64)
+                    .map(|n| n.to_string())
+                    .unwrap_or_default(),
+                author: n
+                    .pointer("/author/username")
+                    .and_then(Value::as_str)
+                    .unwrap_or("(deleted)")
+                    .to_string(),
+                created: n
+                    .get("created_at")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                body,
+                reply_to: (i > 0).then(|| root_id.clone()),
+                finding,
+            }
         })
         .collect();
     Some(RemoteThread {
@@ -816,72 +823,46 @@ pub fn draft_note_body(req: &Request, c: &NewComment) -> Value {
     json!({ "note": ranged_note(c), "position": position })
 }
 
-/// Pair each sent note with the discussion or note GitLab made of it, from
-/// the discussions fetched after the publish. Comments match on path, line
-/// and body against a discussion's root; replies on their discussion and
-/// body, taking the newest such note.
+/// Pair each sent note with the discussion and note GitLab made of it, from
+/// the discussions fetched after the publish, by the marker each body
+/// carries.
 pub fn match_gitlab_published(batch: &Batch, pages: &[Value]) -> Vec<Published> {
     let discussions: Vec<&Value> = pages.iter().filter_map(Value::as_array).flatten().collect();
-    let mut out = Vec::new();
-    for c in &batch.comments {
-        let want = ranged_note(c);
-        let line_key = if c.side == "old" {
-            "/old_line"
-        } else {
-            "/new_line"
-        };
-        let hit = discussions.iter().find(|d| {
-            let Some(first) = d.pointer("/notes/0") else {
-                return false;
-            };
-            let pos = first.get("position");
-            first.get("body").and_then(Value::as_str) == Some(want.as_str())
-                && pos.and_then(|p| p.get("new_path")).and_then(Value::as_str)
-                    == Some(c.path.as_str())
-                && pos.and_then(|p| u32_at(p, line_key)) == Some(c.line)
-        });
-        if let Some(d) = hit
-            && let (Some(id), Some(note)) = (
-                d.get("id").and_then(Value::as_str),
-                d.pointer("/notes/0/id").and_then(Value::as_i64),
-            )
-        {
-            out.push(Published {
-                finding: c.finding.clone(),
-                thread: id.to_string(),
-                comment: note.to_string(),
+    let find = |finding: &str| -> Option<(String, String)> {
+        let mark = marker(finding);
+        discussions.iter().find_map(|d| {
+            let note = d.get("notes")?.as_array()?.iter().find(|n| {
+                n.get("body")
+                    .and_then(Value::as_str)
+                    .is_some_and(|b| b.contains(&mark))
+            })?;
+            Some((
+                d.get("id")?.as_str()?.to_string(),
+                note.get("id")?.as_i64()?.to_string(),
+            ))
+        })
+    };
+    batch
+        .comments
+        .iter()
+        .map(|c| c.finding.as_str())
+        .chain(batch.replies.iter().map(|r| r.finding.as_str()))
+        .filter_map(|finding| {
+            let (thread, comment) = find(finding)?;
+            Some(Published {
+                finding: finding.to_string(),
+                thread,
+                comment,
                 url: None,
-            });
-        }
-    }
-    for r in &batch.replies {
-        let note = discussions
-            .iter()
-            .find(|d| d.get("id").and_then(Value::as_str) == Some(r.thread.as_str()))
-            .and_then(|d| d.get("notes")?.as_array())
-            .and_then(|notes| {
-                notes
-                    .iter()
-                    .rev()
-                    .find(|n| n.get("body").and_then(Value::as_str) == Some(r.body.as_str()))
             })
-            .and_then(|n| n.get("id").and_then(Value::as_i64));
-        if let Some(note) = note {
-            out.push(Published {
-                finding: r.finding.clone(),
-                thread: r.thread.clone(),
-                comment: note.to_string(),
-                url: None,
-            });
-        }
-    }
-    out
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::forge::NewReply;
+    use crate::forge::{NewReply, with_marker};
 
     #[test]
     fn a_pull_request_is_read_from_gh_pr_view() {
@@ -912,7 +893,9 @@ mod tests {
             {"id":"PRRT_a","isResolved":true,"isOutdated":false,"line":39,"startLine":34,
              "diffSide":"RIGHT","path":"assets/record.vhs",
              "comments":{"nodes":[
-                {"databaseId":3928619949_i64,"body":"root","author":{"login":"alice"},
+                {"databaseId":3928619949_i64,"body":format!("root
+
+{}", marker("abc123")),"author":{"login":"alice"},
                  "createdAt":"2026-09-03T20:53:12Z","replyTo":null,
                  "diffHunk":"@@ -1,100 +1,227 @@\n+# The demo\n+Hide\n+Type \"y\""},
                 {"databaseId":3928660390_i64,"body":"reply","author":{"login":"bob"},
@@ -943,6 +926,9 @@ mod tests {
         assert_eq!(a.line_text.as_deref(), Some("Type \"y\""));
         assert_eq!(a.comments.len(), 2);
         assert_eq!(a.root().unwrap().id, "3928619949");
+        assert_eq!(a.root().unwrap().body, "root");
+        assert_eq!(a.root().unwrap().finding.as_deref(), Some("abc123"));
+        assert_eq!(a.comments[1].finding, None);
         assert_eq!(a.comments[1].reply_to.as_deref(), Some("3928619949"));
         assert_eq!(a.comments[1].author, "bob");
 
@@ -1017,9 +1003,14 @@ mod tests {
                 c
             },
         ];
+        // GitHub gives the body back reflowed; only the marker is trusted.
         let posted = json!([
-            {"id": 11, "path": "a.rs", "line": 9, "body": "y", "html_url": "https://x/9"},
-            {"id": 10, "path": "a.rs", "line": 3, "body": "x", "html_url": "https://x/3"},
+            {"id": 11, "path": "a.rs", "line": 9, "html_url": "https://x/9",
+             "body": format!("y\r\n\r\n{}", marker("f2"))},
+            {"id": 10, "path": "a.rs", "line": 3, "html_url": "https://x/3",
+             "body": format!("x\r\n\r\n{}", marker("f1"))},
+            {"id": 12, "path": "a.rs", "line": 3, "html_url": "https://x/3b",
+             "body": "x"},
         ]);
         let got = match_published(&sent, &posted);
         assert_eq!(got.len(), 2);
@@ -1115,8 +1106,8 @@ mod tests {
         vec![
             json!([
                 {"id": "d1", "individual_note": false, "notes": [
-                    note(101, "why?", "alice", Some("DiffNote"), Some(position(HEAD, Some(3), None))),
-                    note(102, "because", "bob", Some("DiffNote"), Some(position(HEAD, Some(3), None))),
+                    note(101, &with_marker("why?", "f1"), "alice", Some("DiffNote"), Some(position(HEAD, Some(3), None))),
+                    note(102, &with_marker("because", "f2"), "bob", Some("DiffNote"), Some(position(HEAD, Some(3), None))),
                 ]},
                 {"id": "d2", "individual_note": false, "notes": [
                     note(201, "old side", "carol", Some("DiffNote"), Some(position(HEAD, None, Some(5)))),
@@ -1154,6 +1145,11 @@ mod tests {
         assert_eq!(d1.root().unwrap().id, "101");
         assert_eq!(d1.comments[1].reply_to.as_deref(), Some("101"));
         assert_eq!(d1.comments[1].author, "bob");
+        // The marker is read and not shown.
+        assert_eq!(d1.comments[0].body, "why?");
+        assert_eq!(d1.comments[0].finding.as_deref(), Some("f1"));
+        assert_eq!(d1.comments[1].finding.as_deref(), Some("f2"));
+        assert_eq!(threads[1].comments[0].finding, None);
 
         assert_eq!(
             (threads[1].side.as_str(), threads[1].line),
@@ -1197,12 +1193,12 @@ mod tests {
     #[test]
     fn published_notes_are_matched_from_the_refetched_discussions() {
         let batch = Batch {
-            comments: vec![comment("f1", "new", 3, None, "why?")],
+            comments: vec![comment("f1", "new", 3, None, &with_marker("why?", "f1"))],
             replies: vec![NewReply {
                 finding: "f2".into(),
                 thread: "d1".into(),
                 root_comment: "101".into(),
-                body: "because".into(),
+                body: with_marker("because", "f2"),
             }],
         };
         let got = match_gitlab_published(&batch, &discussion_pages());

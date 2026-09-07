@@ -163,18 +163,19 @@ impl App {
                 confirming,
             } => {
                 let orphans = entries.iter().filter(|e| e.orphaned).count();
-                // The rule between the two groups is drawn, not stored, so it
-                // costs a row on screen and nothing in the model.
-                let rule_at = (orphans > 0).then(|| entries.len() - orphans);
-                let extra = usize::from(rule_at.is_some());
+                let threads = entries.iter().filter(|e| e.thread).count();
+                let notes = entries.len() - threads;
+                // The rules between the sections are drawn, not stored, so
+                // they cost a row on screen and nothing in the model.
+                let rules = section_rules(entries);
                 let body_rows = panes.body.height as usize;
-                let height = (entries.len() + extra + 4).min(body_rows) as u16;
+                let height = (entries.len() + rules.len() + 4).min(body_rows) as u16;
                 let area = centered_rect(panes.body, 74, height);
                 let inner_w = area.width.saturating_sub(2) as usize;
                 // The same number `j`/`k` scroll against, from the same
                 // function, so the window a list moves in is the window it is
                 // drawn in.
-                let inner_h = findings_rows(entries.len(), rule_at.is_some(), body_rows);
+                let inner_h = findings_rows(entries.len(), rules.len(), body_rows);
 
                 let dim = Style::default().fg(self.theme.gutter_fg);
                 // A BUDGET, not a measurement. `{:<width$}` pads and never
@@ -189,14 +190,21 @@ impl App {
                     .min(inner_w / 3);
                 let mut lines: Vec<Line> = Vec::new();
                 for (i, e) in entries.iter().enumerate() {
-                    if rule_at == Some(i) {
+                    if rules.contains(&i) {
+                        let label = match e.section() {
+                            1 => "review threads",
+                            _ => "orphaned",
+                        };
                         lines.push(Line::from(Span::styled(
-                            format!(" ── orphaned {} ", "─".repeat(inner_w.saturating_sub(14))),
+                            format!(
+                                " ── {label} {} ",
+                                "─".repeat(inner_w.saturating_sub(label.len() + 6))
+                            ),
                             dim,
                         )));
                     }
                     let on = i == *selected;
-                    let base = Style::default().fg(if e.orphaned {
+                    let base = Style::default().fg(if e.orphaned || e.resolved {
                         self.theme.gutter_fg
                     } else {
                         self.theme.context_fg
@@ -213,7 +221,12 @@ impl App {
                             st
                         }
                     };
-                    let moved = if e.moved { " (moved)" } else { "" };
+                    let moved = match (e.moved, e.published, e.resolved) {
+                        (true, _, _) => " (moved)",
+                        (_, true, _) => " (published)",
+                        (_, _, true) => " (resolved)",
+                        _ => "",
+                    };
                     let at_text = elide_head(&e.at, at_col);
                     // Padded by DISPLAY width, not by `{:<width$}`, which
                     // counts chars — one wide character in a path and the
@@ -239,8 +252,8 @@ impl App {
                     }
                     lines.push(line);
                 }
-                // The rule is a row too, so scrolling counts drawn rows.
-                let skip = *scroll + usize::from(rule_at.is_some_and(|r| r <= *scroll));
+                // A rule is a row too, so scrolling counts drawn rows.
+                let skip = *scroll + rules.iter().filter(|r| **r <= *scroll).count();
                 let shown: Vec<Line> = lines.into_iter().skip(skip).take(inner_h).collect();
 
                 // The keys go in a footer inside the box, as the composer's
@@ -266,14 +279,19 @@ impl App {
                         Span::styled("delete", text),
                         Span::styled("  ·  D ", key),
                         Span::styled("delete all", text),
+                        Span::styled("  ·  P ", key),
+                        Span::styled("publish", text),
                         Span::styled("  ·  esc ", key),
                         Span::styled("close", text),
                     ])
                 };
-                let title = match orphans {
-                    0 => format!(" findings · {} ", entries.len()),
-                    n => format!(" findings · {} · {n} orphaned ", entries.len()),
-                };
+                let mut title = format!(" findings · {notes} ");
+                if threads > 0 {
+                    title.push_str(&format!("· threads · {threads} "));
+                }
+                if orphans > 0 {
+                    title.push_str(&format!("· {orphans} orphaned "));
+                }
                 clear_to_ground(frame, &self.theme, area);
                 frame.render_widget(
                     Paragraph::new(shown).block(pane(&self.theme, title, true)),

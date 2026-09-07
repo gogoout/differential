@@ -99,8 +99,8 @@ impl App {
                     }
                     return Vec::new();
                 }
-                let ruled = entries.iter().any(|e| e.orphaned);
-                let rows = findings_rows(entries.len(), ruled, self.viewport.body_rows);
+                let rules = section_rules(entries).len();
+                let rows = findings_rows(entries.len(), rules, self.viewport.body_rows);
                 match (key.code, key.modifiers) {
                     (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
                         step_list(selected, scroll, entries.len(), rows, true);
@@ -111,20 +111,43 @@ impl App {
                     (KeyCode::Char('D'), _) => *confirming = true,
                     (KeyCode::Char('d'), KeyModifiers::NONE) => {
                         if pending_d {
-                            let id = entries[*selected].id.clone();
-                            self.delete_finding(&id);
+                            let (id, thread) =
+                                (entries[*selected].id.clone(), entries[*selected].thread);
+                            if thread {
+                                self.status =
+                                    "a review thread is the forge's · c replies · x resolves"
+                                        .into();
+                            } else {
+                                self.delete_finding(&id);
+                            }
                         } else {
                             self.pending_d = true;
                         }
                     }
+                    // Publish from here too: the list is where the reader sees
+                    // what is not yet on the request, and it sends everything
+                    // that is not, exactly as P in the diff does.
+                    (KeyCode::Char('P'), _) => {
+                        self.mode = Mode::Normal;
+                        self.offer_publish();
+                    }
                     (KeyCode::Enter, _) => {
                         let id = entries[*selected].id.clone();
-                        let orphaned = entries[*selected].orphaned;
+                        let (orphaned, thread) =
+                            (entries[*selected].orphaned, entries[*selected].thread);
                         // Assign the mode first: it is what drops the borrow
                         // this arm holds on it.
                         self.mode = Mode::Normal;
                         if orphaned {
-                            self.status = "that finding has no line any more".into();
+                            self.status = if thread {
+                                "that thread has no line in this diff".into()
+                            } else {
+                                "that finding has no line any more".into()
+                            };
+                        } else if thread {
+                            if !self.jump_to_thread(&id) {
+                                self.status = "could not reach that thread".into();
+                            }
                         } else if !self.jump_to_finding(&id) {
                             self.status = "could not reach that finding".into();
                         }
@@ -397,7 +420,25 @@ impl App {
                         .is_none()
                         .then(|| self.finding_at_cursor())
                         .flatten()
-                        .map(|f| (f.id.clone(), f.body.clone(), f.anchor.line_span()));
+                        .map(|f| {
+                            (
+                                f.id.clone(),
+                                f.body.clone(),
+                                f.anchor.line_span(),
+                                f.upstream.is_some(),
+                            )
+                        });
+                    // Published and not yet fetched back as a thread: it is the
+                    // request's now, and a rewrite here would never reach it.
+                    if existing
+                        .as_ref()
+                        .is_some_and(|(_, _, _, published)| *published)
+                    {
+                        self.status =
+                            "that note is on the request · edit it on the forge, or R to fetch its thread".into();
+                        return Vec::new();
+                    }
+                    let existing = existing.map(|(id, body, span, _)| (id, body, span));
                     let lines = self.selected_lines();
                     // Name what is being annotated: a note whose subject you
                     // cannot see is a note you have to trust yourself to have

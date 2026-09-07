@@ -509,23 +509,56 @@ impl App {
         // built, so one captured here would be stale the moment the reader
         // navigates — `jump_to_finding` re-finds it by id after selecting the
         // group or file that owns it.
+        // Notes first, then the forge's threads, then orphans. A published
+        // note whose twin is fetched IS a thread now and is listed once, as
+        // the thread (ADR 0029).
         let mut entries: Vec<FindingEntry> = self
             .session
             .findings()
             .iter()
+            .filter(|f| !self.session.is_twinned(f))
             .map(|f| FindingEntry {
                 at: format!("{}:{}", f.anchor.file, f.anchor.line_span()),
                 body: f.body.lines().next().unwrap_or("").to_string(),
                 orphaned: f.status == FindingStatus::Orphaned,
                 moved: f.moved,
                 id: f.id.clone(),
+                thread: false,
+                published: f.upstream.is_some(),
+                resolved: false,
             })
             .collect();
+        entries.extend(self.session.threads().iter().map(|t| {
+            let at = match &t.anchor {
+                Some(a) => format!("{}:{}", a.file, a.line_span()),
+                None => match t.line {
+                    Some(l) => format!("{}:{l}", t.path),
+                    None => t.path.clone(),
+                },
+            };
+            let root = t.root();
+            FindingEntry {
+                at,
+                body: format!(
+                    "{}: {}",
+                    root.map(|c| c.author.as_str()).unwrap_or("?"),
+                    root.and_then(|c| c.body.lines().next()).unwrap_or("")
+                ),
+                // A thread nothing in this plan holds is listed like an
+                // orphan: it can be read here and reached nowhere.
+                orphaned: t.anchor.is_none(),
+                moved: false,
+                id: t.id.clone(),
+                thread: true,
+                published: false,
+                resolved: t.resolved,
+            }
+        }));
         if entries.is_empty() {
             self.status = "no findings yet — c writes one".into();
             return;
         }
-        entries.sort_by_key(|e| e.orphaned);
+        entries.sort_by_key(FindingEntry::section);
         self.mode = Mode::Findings {
             entries,
             selected: 0,

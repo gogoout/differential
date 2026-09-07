@@ -398,7 +398,7 @@ list belongs; the footer's job is to point at it.
 | `c` | write a finding — on the line under the cursor, on the lines `v` selected, or on the whole hunk from a row that is not a line; on a line that already carries one, rewrite that one |
 | `dd` | delete the finding under the cursor |
 | `y` | copy the open-findings summary — a markdown list of `file:lines: note`, and nothing about groups: a group is how this reviewer chose to READ the branch, and the summary is pasted somewhere that has no idea what `g7` was. `dfr findings <range> --summary` prints the same text |
-| `F` | every finding in one list — `enter` jumps to one, `dd` deletes it, `D` clears them all, `esc` closes |
+| `F` | every finding and every review thread in one list — `enter` jumps to one, `dd` deletes a note, `D` clears the notes, `P` publishes, `esc` closes |
 | `c` on a review thread | draft a reply under it — a finding carrying the thread's id until `P` publishes it ([forge.md](forge.md)) |
 | `x` | resolve or reopen the review thread under the cursor, on the forge, at once |
 | `R` | fetch the request's review threads again |
@@ -635,6 +635,15 @@ thread's id; it is drawn straight after the thread it answers, stepped in like a
 the note's own look, so what is on the request and what is not yet are told apart at a
 glance. A published finding whose fetched twin is present is not drawn at all: the thread
 is it now, and `y` leaves it out for the same reason.
+
+**The list holds the threads too.** `F` lists the notes first, then the request's review
+threads under a rule, then the orphans: what the reader has to say, what others have said,
+and what has lost its line. A thread's row is `file:line  author: first line`, dimmed and
+marked `(resolved)` when the forge says so; a published note whose twin is fetched is
+listed once, as the thread, and one whose twin is not fetched yet is marked
+`(published)`. `enter` on a thread lands on its rows; `dd` on one refuses as it does in
+the diff. `P` works from the list as it does from the diff, and sends everything not yet
+on the request.
 
 **`P` publishes, and asks first.** It is the one outward act in this reviewer, so the float
 reads its whole consequence back before the question: how many new comments and replies go

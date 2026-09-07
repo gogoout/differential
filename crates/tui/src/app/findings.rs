@@ -136,6 +136,9 @@ impl App {
     /// "In", not "on": a note over a RANGE covers every line of it, and it is
     /// drawn under the last of them. Standing on the first line of a run is
     /// standing in the note about that run.
+    ///
+    /// A published note whose twin is fetched is not "in" anywhere: it is
+    /// drawn as its thread, and `c` on that thread replies (ADR 0029).
     pub(super) fn finding_at_cursor(&self) -> Option<&Finding> {
         let by_id = |id: &str| self.session.findings().iter().find(|f| f.id == id);
         // On the note itself.
@@ -145,11 +148,9 @@ impl App {
         // On a line the note covers.
         if let Some(l) = self.rows.get(self.cursor).and_then(|r| r.line.as_ref())
             && let Some(path) = self.file_path_above(self.cursor)
-            && let Some(f) = self
-                .session
-                .findings()
-                .iter()
-                .find(|f| f.anchor.file == path && self.anchor_covers(f, l))
+            && let Some(f) = self.session.findings().iter().find(|f| {
+                f.anchor.file == path && self.anchor_covers(f, l) && !self.session.is_twinned(f)
+            })
         {
             return Some(f);
         }
@@ -326,6 +327,53 @@ impl App {
         }
     }
 
+    /// The first row a thread was laid into, if this view holds one.
+    pub(super) fn row_of_thread(&self, id: &str) -> Option<usize> {
+        self.rows
+            .iter()
+            .position(|r| matches!(&r.kind, RowKind::Thread(tid, _) if tid == id))
+    }
+
+    /// Put the cursor on a forge thread, wherever in the review it lives —
+    /// the same navigation `jump_to_finding` makes, keyed on the thread's
+    /// anchor.
+    pub(super) fn jump_to_thread(&mut self, id: &str) -> bool {
+        if let Some(row) = self.row_of_thread(id) {
+            self.land_on(row);
+            return true;
+        }
+        let Some((digest, path)) = self
+            .session
+            .thread(id)
+            .and_then(|t| t.anchor.as_ref())
+            .map(|a| (a.hunk_digest.clone(), a.file.clone()))
+        else {
+            return false;
+        };
+        let owner = match self.view_mode {
+            ViewMode::Groups => {
+                let plan = self.session.plan();
+                plan.hunk_by_digest(&digest)
+                    .and_then(|h| plan.group_of_hunk(h))
+                    .map(|g| g.id.clone())
+                    .and_then(|gid| self.session.plan().group_position(&gid))
+            }
+            ViewMode::Files => self.reveal_path(&path),
+        };
+        let Some(owner) = owner else { return false };
+        self.select_entry(owner);
+        if self.row_of_thread(id).is_none() {
+            self.toggle_group_fold();
+        }
+        match self.row_of_thread(id) {
+            Some(row) => {
+                self.land_on(row);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Park the cursor on a row and bring it into view.
     pub(super) fn land_on(&mut self, row: usize) {
         self.cursor = self.next_selectable(row, 1).unwrap_or(row);
@@ -389,6 +437,18 @@ impl App {
             Some(RowKind::Thread(..))
         ) {
             self.status = "a review thread is the forge's · c replies · x resolves".into();
+            return;
+        }
+        // A published note is on the request; deleting the record here would
+        // only make the reviewer send it again.
+        if let Some(RowKind::Finding(id, _)) = self.rows.get(self.cursor).map(|r| &r.kind)
+            && self
+                .session
+                .findings()
+                .iter()
+                .any(|f| &f.id == id && f.upstream.is_some())
+        {
+            self.status = "that note is on the request · edit or delete it on the forge".into();
             return;
         }
         if let Some(RowKind::Finding(id, _)) = self.rows.get(self.cursor).map(|r| r.kind.clone()) {

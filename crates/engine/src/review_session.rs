@@ -390,12 +390,35 @@ impl<S: ReviewStore> ReviewSession<S> {
     }
 
     /// Replace the thread cache with a fresh fetch, placed against this plan.
-    pub fn set_threads(&mut self, mut threads: Vec<RemoteThread>) -> Result<(), EngineError> {
+    ///
+    /// Then reconcile: a finding with no upstream whose marker a fetched
+    /// comment carries IS published, whatever the publish's answer said, and
+    /// gets its address now. Returns how many were reconciled. This is what
+    /// makes a publish idempotent across a lost answer (ADR 0029).
+    pub fn set_threads(&mut self, mut threads: Vec<RemoteThread>) -> Result<usize, EngineError> {
         for t in &mut threads {
             forge::place(&self.doc, &self.view, t);
         }
         self.threads = threads;
-        self.store.save_threads(&self.threads)
+        self.store.save_threads(&self.threads)?;
+        let mut reconciled = 0;
+        for f in self.findings.iter_mut().filter(|f| f.upstream.is_none()) {
+            if let Some((t, c)) = self
+                .threads
+                .iter()
+                .find_map(|t| t.published_here(&f.id).map(|c| (t, c)))
+            {
+                f.upstream = Some(Upstream {
+                    thread: t.id.clone(),
+                    comment: c.id.clone(),
+                });
+                reconciled += 1;
+            }
+        }
+        if reconciled > 0 {
+            self.store.save_findings(&self.findings)?;
+        }
+        Ok(reconciled)
     }
 
     /// Mirror a resolve the forge has already accepted. Returns whether the
