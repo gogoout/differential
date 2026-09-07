@@ -69,10 +69,15 @@ merge-base diff is what a pull request shows. The review session is keyed on the
 survives every force-push, which is the property ADR 0027 borrowed from the forges in the
 first place. `source.kind` and `source.remote` are finally written.
 
-**4. The tool does not fetch.** If the request's head or base tip is not in the local object
-database, the command prints the `git fetch` line that would bring it and stops. Every git
+**4. The tool fetches the request's refs when it has to.** If the request's head or base
+tip is not in the local object database, the tool runs `git fetch origin <target branch>
+<the forge's head ref>` and looks again; only a commit still missing after that is an error,
+with the line to try by hand. As first written this decision said the opposite — every git
 port stays plumbing and offline ([ADR 0011](0011-plumbing-over-porcelain.md)), and the one
-network-touching git command a reader might not expect stays theirs to run.
+network-touching command stays the reader's — and the author reversed it after the first
+GitLab run: a reader who typed a request number should not be told to type a fetch as
+well. `git fetch` is the one porcelain command in the tool, behind its own port
+(`Fetcher`), so a bound list still says which function may go online.
 
 **5. Remote threads are a cache in the sidecar; local notes are the reader's.** The forge's
 review threads are fetched when the review opens, anchored into the diff with the same

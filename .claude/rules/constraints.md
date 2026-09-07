@@ -21,7 +21,9 @@ Linked from [`AGENTS.md`](../../AGENTS.md), which carries the one-line form.
 - **The generic normaliser is frozen.** `lang/generic.rs` is pinned to the validated
   prototype for hash parity; improvements land as language plugins with their own ids
   (ADR 0015). The real-corpus parity test's exact class count is the guard.
-- **Git access shells out to real git, plumbing commands only** (ADR 0002, 0011). Bytes
+- **Git access shells out to real git, plumbing commands only** (ADR 0002, 0011) — with one
+  exception the author granted: `git fetch` of a request's refs, behind the `Fetcher` port
+  (ADR 0029, decision 4). Bytes
   in/out; UTF-8 only at display boundaries. Domain code reaches git through the
   `engine::ports` traits, whose only implementation is `gitio::Repo`; never add a second
   one, a fake git included (ADR 0020). The migration completes when `Repo::run` is

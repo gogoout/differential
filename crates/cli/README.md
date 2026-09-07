@@ -68,8 +68,8 @@ With no range it opens a picker instead of failing. See [The picker](#the-picker
 
 **A request instead of a range.** `--pr` and `--mr` take no range and no `--name`: the
 forge says what the endpoints are, and the request is the review's identity, so a
-force-push reopens the same review. The tool never fetches; when a commit is missing it
-prints the `git fetch` to run. Inside the reviewer the request's threads sit under their
+force-push reopens the same review. When the request's commits are not local, the tool
+fetches its refs from `origin` first. Inside the reviewer the request's threads sit under their
 lines, `c` on one drafts a reply, `x` resolves it and `P` publishes the open findings. See
 [spec/forge.md](../../spec/forge.md).
 

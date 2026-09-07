@@ -99,6 +99,20 @@ pub trait Ancestry {
     fn is_ancestor(&self, older: &str, newer: &str) -> Result<bool, EngineError>;
 }
 
+/// Bringing a request's commits into this clone (ADR 0029, decision 4 as
+/// reversed by the author).
+///
+/// The one port that reaches the network, and the one git command here that
+/// is porcelain rather than plumbing: `git fetch` has no plumbing form worth
+/// the name, and a reviewer who typed a request number should not be told to
+/// go and type a fetch as well. Kept apart from every other port so a bound
+/// list still says which function may go online.
+pub trait Fetcher {
+    /// `git fetch <remote> <refspec>…`, and nothing about what came back: the
+    /// caller asks `Ancestry::commit_of` afterwards, as it did before.
+    fn fetch(&self, remote: &str, refspecs: &[&str]) -> Result<(), EngineError>;
+}
+
 /// Peeling an endpoint to its tree oid — the one thing invariant 3 compares
 /// against.
 ///

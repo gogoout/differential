@@ -267,6 +267,14 @@ impl ports::Ancestry for Repo {
     }
 }
 
+impl ports::Fetcher for Repo {
+    fn fetch(&self, remote: &str, refspecs: &[&str]) -> Result<(), EngineError> {
+        let mut args = vec!["fetch", "--quiet", remote];
+        args.extend(refspecs);
+        self.run(args, None).map(|_| ())
+    }
+}
+
 impl ports::TreeResolver for Repo {
     fn tree_of(&self, rev: &str) -> Result<String, EngineError> {
         self.rev_parse_raw(&format!("{rev}^{{tree}}"))

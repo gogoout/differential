@@ -42,7 +42,8 @@ has a way of quietly reversing itself. **Open the file before you argue with the
   parser.
 - **The schema is frozen** at version 3 (ADR 0022). Additive changes only.
 - **The generic normaliser is frozen** (ADR 0015). Improvements land as language plugins.
-- **Git is real git, plumbing only** (ADR 0002, 0011, 0020). One implementation of the
+- **Git is real git, plumbing only** (ADR 0002, 0011, 0020), bar `git fetch` of a request's
+  refs behind the `Fetcher` port (ADR 0029). One implementation of the
   ports, `gitio::Repo`. A fake git for tests is forbidden.
 - **The core is a library** (ADR 0014, 0018). `crates/cli` is presentation and dispatch.
 

@@ -685,3 +685,53 @@ fn a_reply_on_a_thread_with_no_line_is_refused_not_lost() {
         "nothing filed that nothing could reach"
     );
 }
+
+#[test]
+fn a_request_whose_commits_are_only_on_the_remote_is_fetched_first() {
+    // `origin` has base, then a head on a request ref; the clone has base only.
+    let origin = TestRepo::new();
+    origin.write("f.txt", b"one\n");
+    let base = origin.commit_all("base");
+    let clone = TestRepo::new();
+    clone.git(&["remote", "add", "origin", origin.root.to_str().unwrap()]);
+    clone.git(&["fetch", "-q", "origin", "main"]);
+    clone.git(&["reset", "-q", "--hard", &base]);
+    origin.write("f.txt", b"two\n");
+    let head = origin.commit_all("head");
+    origin.git(&["update-ref", "refs/pull/7/head", &head]);
+    let repo = clone.repo();
+    assert!(
+        differential_engine::ports::Ancestry::commit_of(&repo, &head)
+            .unwrap()
+            .is_none(),
+        "the clone does not have the head yet"
+    );
+
+    let req = Request {
+        kind: forge::ForgeKind::Github,
+        project: "owner/repo".into(),
+        id: "7".into(),
+        base_ref: "main".into(),
+        base_tip: base.clone(),
+        head: head.clone(),
+        merge_base: None,
+        url: "https://example.invalid/pull/7".into(),
+    };
+    let source = forge::source_for(&repo, &req).unwrap();
+    assert_eq!(source.head, head);
+    assert_eq!(source.base, base);
+    assert!(
+        differential_engine::ports::Ancestry::commit_of(&repo, &head)
+            .unwrap()
+            .is_some(),
+        "fetched"
+    );
+
+    // A commit no fetch can bring is still an error, with the hand-typed line.
+    let gone = Request {
+        head: "f".repeat(40),
+        ..req
+    };
+    let err = forge::source_for(&repo, &gone).unwrap_err().to_string();
+    assert!(err.contains("fetching did not bring them"), "{err}");
+}

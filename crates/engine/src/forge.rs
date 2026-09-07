@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::DiffView;
 use crate::plan::ReviewSource;
-use crate::ports::{Ancestry, RangeResolver, ReviewIdentity};
+use crate::ports::{Ancestry, Fetcher, RangeResolver, ReviewIdentity};
 use crate::review_state::{Anchor, Finding, FindingStatus};
 use crate::schema;
 
@@ -322,9 +322,12 @@ pub struct Published {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ForgeError {
-    /// The request's commits are not in this clone. The tool never fetches
-    /// (ADR 0029); the message carries the command that would.
-    #[error("{noun} {id} needs commits this clone does not have; run\n    {hint}\nand try again")]
+    /// The request's commits are not in this clone, and a fetch of its refs
+    /// did not bring them. The message carries the command a reader could
+    /// try by hand.
+    #[error(
+        "{noun} {id} needs commits this clone does not have, and fetching did not bring them; try\n    {hint}\nby hand"
+    )]
     NotFetched {
         noun: &'static str,
         id: String,
@@ -680,14 +683,19 @@ fn in_request_diff(doc: &schema::PlanDocument, a: &Anchor, context: u32) -> bool
 /// The range a request reviews: the merge base of its target branch's tip
 /// and its head, to its head. That is the diff the request page shows.
 ///
-/// Both commits must already be local; a missing one is `NotFetched`, with
-/// the `git fetch` line that brings it. The tool never runs that line itself
-/// (ADR 0011, 0029).
-pub fn source_for<G: Ancestry + RangeResolver>(
+/// When either commit is not local, the request's refs are fetched from
+/// `origin` — the target branch and the forge's own ref for the head — and
+/// the check is made again. Only a commit still missing after that is
+/// `NotFetched`, with the line a reader could run by hand (ADR 0029, decision
+/// 4 as reversed by the author).
+pub fn source_for<G: Ancestry + RangeResolver + Fetcher>(
     git: &G,
     req: &Request,
 ) -> Result<ReviewSource, crate::EngineError> {
     let have = |sha: &str| git.commit_of(sha).map(|c| c.is_some());
+    if !have(&req.head)? || !have(&req.base_tip)? {
+        git.fetch("origin", &[&req.base_ref, &req.kind.head_ref(&req.id)])?;
+    }
     if !have(&req.head)? || !have(&req.base_tip)? {
         return Err(ForgeError::NotFetched {
             noun: req.kind.noun(),

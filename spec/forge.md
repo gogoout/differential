@@ -23,16 +23,19 @@ the forge; the tool it runs is `gh` for `--pr` and `glab` for `--mr`, found on t
 
 The forge answers with the request's base branch tip, its head commit, and its project.
 The review range is `base_tip...head`: the merge-base diff, which is the diff the request
-page shows. Both commits must already be in the local object database. When one is not, the
-command prints the fetch that would bring it and stops:
+page shows. When either commit is not in the local object database, the tool fetches the
+request's refs from `origin` — `git fetch origin main pull/123/head` on GitHub,
+`… merge-requests/123/head` on GitLab — and looks again. Only a commit still missing after
+that stops the command:
 
 ```
-pull request 123 needs commits this clone does not have; run
+pull request 123 needs commits this clone does not have, and fetching did not bring them; try
     git fetch origin main pull/123/head
-and try again
+by hand
 ```
 
-(GitLab: `git fetch origin main merge-requests/123/head`.) The tool itself never fetches.
+This is the one place the tool runs `git fetch`, through the `Fetcher` port (ADR 0029,
+decision 4 as reversed by the author).
 
 The request is the review's identity. `ReviewIdentity::Remote { forge, project, id }` is
 keyed like a name (ADR 0027): neither endpoint is in the key, so a force-push of the head or
