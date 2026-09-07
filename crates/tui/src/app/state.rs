@@ -737,15 +737,22 @@ impl App {
         self.session.wrap().unwrap_or(false)
     }
 
+    /// Test-only read of the code-wrap switch.
+    #[doc(hidden)]
+    pub fn wrap_on_for_test(&self) -> bool {
+        self.wrap_on()
+    }
+
     /// Does this row wrap right now?
     ///
-    /// Prose always does. A group's description and a reviewer's note are the
-    /// reasons a plan and a finding exist, they are never code, and a reader
-    /// who cannot see the end of one is missing the point of the pane. File
-    /// content is the reader's call, because wrapping code is often unwanted.
+    /// Prose always does. A group's description, a reviewer's note and a
+    /// forge thread's comment are the reasons a plan, a finding and a review
+    /// exist, they are never code, and a reader who cannot see the end of one
+    /// is missing the point of the pane. File content is the reader's call,
+    /// because wrapping code is often unwanted.
     pub(super) fn wraps(&self, row: &Row) -> bool {
         match row.kind {
-            RowKind::GroupHeader | RowKind::Finding(..) => true,
+            RowKind::GroupHeader | RowKind::Finding(..) | RowKind::Thread { .. } => true,
             RowKind::Diff(_) => self.wrap_on(),
             _ => false,
         }

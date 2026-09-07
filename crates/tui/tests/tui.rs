@@ -6770,6 +6770,37 @@ mod forge_threads {
         assert!(matches!(&app.mode, Mode::Publish { plan } if plan.batch.len() == 2));
     }
 
+    #[test]
+    fn a_threads_comment_wraps_whatever_w_says() {
+        let long = "this comment runs on and on well past the width of any pane a reviewer \
+                    would open, and every word of it has to be readable end to end";
+        let mut t = thread("T1", "C1");
+        t.comments.truncate(1);
+        t.comments[0].body = long.into();
+        let (_r, app, _fake) = app_with_threads(vec![t]);
+        assert!(!app.wrap_on_for_test(), "soft wrap is off for code");
+        let backend = ratatui::backend::TestBackend::new(100, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let screen: Vec<String> = (0..30u16)
+            .map(|y| (0..100u16).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        let first = screen
+            .iter()
+            .position(|l| l.contains("this comment runs on"))
+            .expect("the comment starts");
+        assert!(
+            screen[first + 1..first + 4]
+                .iter()
+                .any(|l| l.contains("end to end")),
+            "the tail is on a following line, not cut: {:?}",
+            &screen[first..first + 4]
+        );
+        // The continuation lines keep the rail, so the panel stays a panel.
+        assert!(screen[first + 1].contains('▍'), "{}", screen[first + 1]);
+    }
+
     // ------------------------------------------------------ your own comment
 
     /// A thread by the reader, as the forge reports it, with no marker: one

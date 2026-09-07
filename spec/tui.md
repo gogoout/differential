@@ -631,6 +631,8 @@ whose line the plan does not hold hangs off its hunk's header like an orphaned-t
 note; one nothing holds is counted in the footer's message and drawn nowhere. The date is
 the day, not an age: an age needs a clock, and `2026-09-03` stays true tomorrow.
 
+A thread's comment **always wraps**, as a note and a group's description do: it is prose,
+and a comment cut at the pane edge is one the reader cannot answer. `w` governs code only.
 Every row of a thread is a `Thread` row, so `c` and `x` work from any line of it, and the
 cursor in one lights the cluster — the thread, its reply drafts, and the lines its anchor
 covers — the way a note's cluster lights. `dd` on a thread refuses and names the two keys
