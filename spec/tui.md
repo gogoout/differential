@@ -398,7 +398,7 @@ list belongs; the footer's job is to point at it.
 | `c` | write a finding — on the line under the cursor, on the lines `v` selected, or on the whole hunk from a row that is not a line; on a line that already carries one, rewrite that one |
 | `dd` | delete the finding under the cursor |
 | `y` | copy the open-findings summary — a markdown list of `file:lines: note`, and nothing about groups: a group is how this reviewer chose to READ the branch, and the summary is pasted somewhere that has no idea what `g7` was. `dfr findings <range> --summary` prints the same text |
-| `F` | every finding and every review thread in one list — `enter` jumps to one, `dd` deletes a note, `D` clears the notes, `P` publishes, `esc` closes |
+| `F` | every finding and every review thread in one list — `enter` jumps to one, `dd` deletes a note, `D` clears the notes not on the request (published notes and threads stay), `P` publishes, `esc` closes |
 | `c` on a review thread | draft a reply under it — a finding carrying the thread's id until `P` publishes it ([forge.md](forge.md)); on a comment you published, rewrite it on the forge |
 | `dd` on a comment you published | delete it on the forge and here — asks first, only `y` means yes |
 | `x` | resolve or reopen the review thread under the cursor, on the forge, at once |

@@ -294,11 +294,21 @@ impl App {
                 // carrying four keys is longer than the box.
                 let key = Style::default().fg(self.theme.header_fg);
                 let text = Style::default().fg(self.theme.context_fg);
+                // Counts what `y` would take: the local notes. A published
+                // note and a thread are listed here but are not up for this.
+                let local = entries.iter().filter(|e| !e.thread && !e.published).count();
+                let kept = entries.len() - local;
                 let footer = if *confirming {
                     Line::from(Span::styled(
-                        match entries.len() {
-                            1 => "  delete this finding?  y / n".to_string(),
-                            n => format!("  delete all {n} findings?  y / n"),
+                        match (local, kept) {
+                            (1, 0) => "  delete this note?  y / n".to_string(),
+                            (n, 0) => format!("  delete all {n} notes?  y / n"),
+                            (1, k) => {
+                                format!("  delete this note? ({k} on the request stay)  y / n")
+                            }
+                            (n, k) => format!(
+                                "  delete all {n} local notes? ({k} on the request stay)  y / n"
+                            ),
                         },
                         Style::default()
                             .fg(self.theme.finding_fg)

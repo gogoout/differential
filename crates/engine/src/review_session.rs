@@ -494,17 +494,22 @@ impl<S: ReviewStore> ReviewSession<S> {
         Ok(n)
     }
 
-    /// Delete every finding. Returns how many there were.
+    /// Delete every finding not on the request. Returns how many went.
+    ///
+    /// A published finding is kept: its record is what lets the reader edit or
+    /// delete the comment on the forge, and what stops the next publish from
+    /// sending it again (ADR 0029). Deleting one is `dd`, which asks.
     ///
     /// One write, not one per note: the store rewrites the whole file on every
     /// save, so a loop over `delete_finding` would rewrite it N times to reach
-    /// the same empty file.
+    /// the same file.
     pub fn clear_findings(&mut self) -> Result<usize, EngineError> {
-        let n = self.findings.len();
+        let before = self.findings.len();
+        self.findings.retain(|f| f.upstream.is_some());
+        let n = before - self.findings.len();
         if n == 0 {
             return Ok(0);
         }
-        self.findings.clear();
         self.store.save_findings(&self.findings)?;
         Ok(n)
     }

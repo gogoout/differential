@@ -4135,7 +4135,7 @@ fn d_clears_everything_but_only_after_a_yes() {
     assert!(
         drawn_rows(&mut app)
             .iter()
-            .any(|r| r.contains("delete this finding?")),
+            .any(|r| r.contains("delete this note?")),
         "the confirmation should be on screen"
     );
 
@@ -6537,6 +6537,68 @@ mod forge_threads {
                 .all(|f| f.body != "on the change")
         );
     }
+    #[test]
+    fn capital_d_clears_local_notes_only_and_counts_only_those() {
+        let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        published_and_parked(&mut app);
+        draft_two_without_thread(&mut app);
+        // One local note, two published (one a reply), one foreign thread.
+        assert_eq!(app.session.unpublished().count(), 1);
+        assert_eq!(app.session.findings().len(), 3);
+
+        app.handle_key(key('F'));
+        app.handle_key(key('D'));
+        let backend = ratatui::backend::TestBackend::new(120, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let screen: String = (0..30u16)
+            .map(|y| {
+                (0..120u16)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    + "\n"
+            })
+            .collect();
+        assert!(screen.contains("delete this note?"), "{screen}");
+        assert!(
+            !screen.contains("findings?"),
+            "threads and published notes are not counted"
+        );
+
+        app.handle_key(key('y'));
+        assert_eq!(app.session.unpublished().count(), 0);
+        assert_eq!(
+            app.session.findings().len(),
+            2,
+            "the published records stay"
+        );
+        assert_eq!(app.session.threads().len(), 2, "threads are untouched");
+        assert!(app.status.contains("1 note deleted"), "{}", app.status);
+        assert!(
+            app.status.contains("2 on the request kept"),
+            "{}",
+            app.status
+        );
+
+        // Nothing local left: D says so instead of asking.
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.handle_key(key('F'));
+        app.handle_key(key('D'));
+        assert!(matches!(
+            &app.mode,
+            Mode::Findings {
+                confirming: false,
+                ..
+            }
+        ));
+        assert!(
+            app.status.starts_with("nothing local to delete"),
+            "{}",
+            app.status
+        );
+    }
+
     // ------------------------------------------------------ your own comment
 
     /// Publish two notes and land the cursor on the header row of the thread

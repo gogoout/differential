@@ -408,8 +408,20 @@ impl App {
     }
 
     pub(super) fn clear_findings(&mut self) {
+        let published = self
+            .session
+            .findings()
+            .iter()
+            .filter(|f| f.upstream.is_some())
+            .count();
         match self.session.clear_findings() {
-            Ok(n) => self.status = format!("{n} finding(s) deleted"),
+            Ok(n) if published > 0 => {
+                self.status = format!(
+                    "{n} note{} deleted · {published} on the request kept, dd deletes one there",
+                    if n == 1 { "" } else { "s" }
+                )
+            }
+            Ok(n) => self.status = format!("{n} note{} deleted", if n == 1 { "" } else { "s" }),
             Err(e) => self.status = format!("save failed: {e:#}"),
         }
         self.rebuild_rows();

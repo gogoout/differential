@@ -108,7 +108,15 @@ impl App {
                     (KeyCode::Char('k'), _) | (KeyCode::Up, _) => {
                         step_list(selected, scroll, entries.len(), rows, false);
                     }
-                    (KeyCode::Char('D'), _) => *confirming = true,
+                    // Only the local notes are up for this: a published note is
+                    // the request's, and a thread is somebody else's.
+                    (KeyCode::Char('D'), _) => {
+                        if entries.iter().any(|e| !e.thread && !e.published) {
+                            *confirming = true;
+                        } else {
+                            self.status = "nothing local to delete · dd deletes a published note on the forge".into();
+                        }
+                    }
                     (KeyCode::Char('d'), KeyModifiers::NONE) => {
                         if pending_d {
                             let (id, thread, published) = (
