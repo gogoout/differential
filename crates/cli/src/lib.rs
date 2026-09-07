@@ -86,7 +86,7 @@ enum Command {
         /// Publish the open findings to the request as review comments
         /// (ADR 0029). Needs `--pr` or `--mr`. Prints one line per finding:
         /// published with its URL, or skipped with the reason.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "summary")]
         post: bool,
         /// Print the open findings as markdown instead — the same text the
         /// reviewer's `y` copies, for pasting into an agent or a PR.
@@ -488,9 +488,10 @@ fn review_identity_of(
 /// `dfr findings --pr N --post`: send the open findings the request's diff can
 /// hold, and say what happened to each.
 ///
-/// The head check comes first and refuses everything: both forges reject a
-/// comment against a commit that is not the request's, and a review built on
-/// one head cannot position comments on another (ADR 0029).
+/// `forge::publish` checks the head before anything is sent and refuses
+/// everything if it moved: both forges reject a comment against a commit that
+/// is not the request's (ADR 0029). The plan is printed first so a refusal
+/// still says what would have gone.
 fn publish(
     forge: &dyn Forge,
     req: &Request,
@@ -516,8 +517,14 @@ fn publish(
     };
     let published = outcome.published;
     session.mark_published(&published)?;
-    // The CLI has no login to heal by; the marker still does its work.
-    session.set_threads(outcome.threads, None)?;
+    // The CLI has no login to heal by; the marker still does its work. A
+    // refetch that fails is said, not fatal: the comments are already there.
+    match outcome.threads {
+        Ok(threads) => {
+            session.set_threads(threads, None)?;
+        }
+        Err(e) => eprintln!("note: the threads could not be fetched back: {e}"),
+    }
     for p in &published {
         let at = session
             .findings()

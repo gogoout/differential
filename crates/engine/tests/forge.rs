@@ -524,3 +524,94 @@ fn the_batch_sends_bodies_with_their_markers() {
         forge::with_marker("on the change", &id)
     );
 }
+
+#[test]
+fn an_unmarked_reply_by_the_reader_heals_its_draft_and_the_side_is_checked() {
+    let (r, base, head) = two_hunk_repo();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut s = session(&r, &base, &head, tmp.path());
+    let h3 = s.doc().hunks.iter().position(|h| h.new_start == 3).unwrap();
+
+    // Two notes on line 3, one per side, the same words; and a reply draft.
+    s.set_threads(vec![thread("T1", "src/lib.rs", "new", Some(8))], None)
+        .unwrap();
+    let new_side = s
+        .add_finding(h3, Some(lines("new", 3, 3)), "same words".into())
+        .unwrap()
+        .id
+        .clone();
+    // A trailing newline: the same words once normalised, and a different
+    // finding id — the id hashes the body, and the two would otherwise be one.
+    let old_side = s
+        .add_finding(h3, Some(lines("old", 3, 3)), "same words\n".into())
+        .unwrap()
+        .id
+        .clone();
+    let reply = s
+        .add_reply("T1", "agreed".into())
+        .map(|f| f.id.clone())
+        .unwrap();
+
+    // The forge holds: a comment by me on the OLD side of line 3, and my reply
+    // under T1 — neither with a marker.
+    let mut mine = thread("M1", "src/lib.rs", "old", Some(3));
+    mine.comments[0].author = "me".into();
+    mine.comments[0].body = "same words".into();
+    let mut t1 = thread("T1", "src/lib.rs", "new", Some(8));
+    t1.comments.push(RemoteComment {
+        id: "T1-mine".into(),
+        author: "me".into(),
+        created: "2026-09-07T10:00:00Z".into(),
+        body: "agreed".into(),
+        reply_to: Some("T1-root".into()),
+        finding: None,
+    });
+    assert_eq!(s.set_threads(vec![mine, t1], Some("me")).unwrap(), 2);
+
+    let by = |id: &str| s.findings().iter().find(|f| f.id == id).unwrap();
+    assert!(
+        by(&new_side).upstream.is_none(),
+        "the other side does not heal"
+    );
+    assert_eq!(
+        by(&old_side).upstream.as_ref().map(|u| u.comment.as_str()),
+        Some("M1-root")
+    );
+    assert_eq!(
+        by(&reply)
+            .upstream
+            .as_ref()
+            .map(|u| (u.thread.as_str(), u.comment.as_str())),
+        Some(("T1", "T1-mine"))
+    );
+    // Not by anyone else.
+    let mut theirs = thread("M2", "src/lib.rs", "new", Some(3));
+    theirs.comments[0].body = "same words".into();
+    assert_eq!(s.set_threads(vec![theirs], Some("me")).unwrap(), 0);
+}
+
+#[test]
+fn a_linked_record_follows_an_edit_or_delete_even_before_its_twin_is_fetched() {
+    let (r, base, head) = two_hunk_repo();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut s = session(&r, &base, &head, tmp.path());
+    let h3 = s.doc().hunks.iter().position(|h| h.new_start == 3).unwrap();
+    let id = s
+        .add_finding(h3, None, "first words".into())
+        .unwrap()
+        .id
+        .clone();
+    s.mark_published(&[forge::Published {
+        finding: id.clone(),
+        thread: "T".into(),
+        comment: "C".into(),
+        url: None,
+    }])
+    .unwrap();
+    assert!(s.threads().is_empty(), "no twin fetched yet");
+    assert!(s.edit_comment("T", "C", "second words".into()).unwrap());
+    assert_eq!(s.findings()[0].body, "second words");
+    assert!(s.delete_comment("T", "C").unwrap());
+    assert!(s.findings().is_empty());
+    assert!(!s.delete_comment("T", "C").unwrap(), "nothing left to know");
+}

@@ -97,7 +97,8 @@ The name is never inferred. Asking git which refs point at the base gives zero n
 several, and a different answer as branches move. A pull request is not inferred either: you
 name the source and target branch when you open it.
 
-`identity.json` records **either** a name **or** a pair of endpoints, never both.
+`identity.json` records **exactly one** of a name, a pair of endpoints, or a request
+(`{forge, project, id}`, [forge.md](forge.md)), never two of them.
 
 ## Comments
 

@@ -22,7 +22,7 @@ has a way of quietly reversing itself. **Open the file before you argue with the
 3. **Information is the most valuable thing analysis produces.** Do not discard it to keep
    a diff small. The tell: your reason for an approach was the size of its diff.
 4. **Business logic owns the trait; the adapter implements it** (ADR 0020). The domain
-   never names an adapter. Generics invert a dependency; `dyn` is for the three seams
+   never names an adapter. Generics invert a dependency; `dyn` is for the four seams
    whose implementation is a run-time answer.
 5. **Don't hand-roll utilities** — find the boring, widely-used crate.
 6. **Don't artificially minimise blast radius.** A narrow patch that leaves the design

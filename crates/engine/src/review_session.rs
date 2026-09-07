@@ -444,6 +444,7 @@ impl<S: ReviewStore> ReviewSession<S> {
                             && if i == 0 {
                                 f.reply_to.is_none()
                                     && f.anchor.file == anchor.file
+                                    && f.anchor.side == anchor.side
                                     && f.anchor.end_line.max(f.anchor.line)
                                         == anchor.end_line.max(anchor.line)
                             } else {
@@ -481,56 +482,65 @@ impl<S: ReviewStore> ReviewSession<S> {
 
     /// A comment of the reader's, rewritten: the forge has already taken the
     /// new body, so the cached thread follows it, and the record too when a
-    /// finding is linked to the comment. Returns whether the comment was known.
+    /// finding is linked to the comment — fetched twin or not. Returns whether
+    /// anything was known.
     pub fn edit_comment(
         &mut self,
         thread: &str,
         comment: &str,
         body: String,
     ) -> Result<bool, EngineError> {
-        let Some(c) = self
+        // The cached comment, when the twin has been fetched.
+        let mut linked = None;
+        let mut known = false;
+        if let Some(c) = self
             .threads
             .iter_mut()
             .find(|t| t.id == thread)
             .and_then(|t| t.comments.iter_mut().find(|c| c.id == comment))
-        else {
-            return Ok(false);
-        };
-        c.body = body.clone();
-        let linked = c.finding.clone();
-        self.store.save_threads(&self.threads)?;
+        {
+            c.body = body.clone();
+            linked = c.finding.clone();
+            known = true;
+            self.store.save_threads(&self.threads)?;
+        }
+        // The record, when one is linked — fetched twin or not.
         if let Some(f) = self.findings.iter_mut().find(|f| {
             linked.as_deref() == Some(f.id.as_str())
                 || f.upstream.as_ref().is_some_and(|u| u.comment == comment)
         }) {
             f.body = body;
+            known = true;
             self.store.save_findings(&self.findings)?;
         }
-        Ok(true)
+        Ok(known)
     }
 
     /// A comment of the reader's the forge has already deleted: drop it from
     /// the cache, the thread with it when nothing is left, and the linked
-    /// finding's record. Returns whether the comment was known.
+    /// finding's record — fetched twin or not. Returns whether anything was
+    /// known.
     pub fn delete_comment(&mut self, thread: &str, comment: &str) -> Result<bool, EngineError> {
-        let Some(t) = self.threads.iter_mut().find(|t| t.id == thread) else {
-            return Ok(false);
-        };
-        let Some(pos) = t.comments.iter().position(|c| c.id == comment) else {
-            return Ok(false);
-        };
-        let linked = t.comments.remove(pos).finding;
-        self.threads.retain(|t| !t.comments.is_empty());
-        self.store.save_threads(&self.threads)?;
+        let mut linked = None;
+        let mut known = false;
+        if let Some(t) = self.threads.iter_mut().find(|t| t.id == thread)
+            && let Some(pos) = t.comments.iter().position(|c| c.id == comment)
+        {
+            linked = t.comments.remove(pos).finding;
+            known = true;
+            self.threads.retain(|t| !t.comments.is_empty());
+            self.store.save_threads(&self.threads)?;
+        }
         let before = self.findings.len();
         self.findings.retain(|f| {
             linked.as_deref() != Some(f.id.as_str())
                 && f.upstream.as_ref().is_none_or(|u| u.comment != comment)
         });
         if self.findings.len() != before {
+            known = true;
             self.store.save_findings(&self.findings)?;
         }
-        Ok(true)
+        Ok(known)
     }
 
     /// Record where a publish put each finding, so the next publish sends

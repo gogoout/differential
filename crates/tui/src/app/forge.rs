@@ -51,9 +51,9 @@ pub(super) enum Inflight {
         rx: Receiver<Result<(), ForgeError>>,
     },
     Publish {
-        /// How many the batch carried, so the answer can say what the forge
-        /// did not confirm.
-        sent: usize,
+        /// The findings the batch carried, so the answer counts what landed
+        /// of THIS batch and not of every publish before it.
+        sent: Vec<String>,
         rx: Receiver<Result<PublishOutcome, ForgeError>>,
     },
     Edit {
@@ -127,7 +127,7 @@ impl App {
                 Err(TryRecvError::Disconnected) => Answer::Lost,
             },
             Inflight::Publish { sent, rx } => match rx.try_recv() {
-                Ok(result) => Answer::Published(*sent, result),
+                Ok(result) => Answer::Published(sent.clone(), result),
                 Err(TryRecvError::Empty) => return false,
                 Err(TryRecvError::Disconnected) => Answer::Lost,
             },
@@ -204,24 +204,35 @@ impl App {
             Answer::Published(sent, Ok(outcome)) => {
                 // What the publish's answer named, then what the refetched
                 // threads carry by marker: a finding is published when either
-                // says so, and the count is read from the findings afterwards
-                // rather than from the answer alone.
+                // says so, and the count is read from THIS batch's findings
+                // afterwards rather than from the answer alone. A refetch that
+                // failed is said; the comments are on the request regardless.
                 let marked = self.session.mark_published(&outcome.published);
-                let cached = self
-                    .session
-                    .set_threads(outcome.threads, self.me.as_deref());
-                let landed = self
-                    .session
-                    .findings()
+                let refetch = match outcome.threads {
+                    Ok(threads) => self
+                        .session
+                        .set_threads(threads, self.me.as_deref())
+                        .map(|_| None),
+                    Err(e) => Ok(Some(e)),
+                };
+                let landed = sent
                     .iter()
-                    .filter(|f| f.upstream.is_some())
-                    .count()
-                    .min(sent);
-                self.status = match (marked, cached) {
+                    .filter(|id| {
+                        self.session
+                            .findings()
+                            .iter()
+                            .any(|f| &f.id == *id && f.upstream.is_some())
+                    })
+                    .count();
+                let total = sent.len();
+                self.status = match (marked, refetch) {
                     (Err(e), _) | (_, Err(e)) => format!("save failed: {e:#}"),
-                    _ if landed < sent => format!(
-                        "published {landed} of {sent} · {} not confirmed by the forge, R to check, P to retry",
-                        sent - landed
+                    (_, Ok(Some(e))) => format!(
+                        "published {landed} of {total} · the threads could not be fetched back ({e}) · R to retry"
+                    ),
+                    _ if landed < total => format!(
+                        "published {landed} of {total} · {} not confirmed by the forge, R to check, P to retry",
+                        total - landed
                     ),
                     _ => format!("published {landed} comment{}", plural(landed)),
                 };
@@ -289,13 +300,20 @@ impl App {
         };
         let (forge, req) = (Arc::clone(&link.forge), link.request.clone());
         let head = self.session.doc().source.head.clone();
-        let sent = plan.batch.len();
+        let sent: Vec<String> = plan
+            .batch
+            .comments
+            .iter()
+            .map(|c| c.finding.clone())
+            .chain(plan.batch.replies.iter().map(|r| r.finding.clone()))
+            .collect();
+        let n = sent.len();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let _ = tx.send(forge::publish(forge.as_ref(), &req, &head, &plan.batch));
         });
         self.inflight = Some(Inflight::Publish { sent, rx });
-        self.status = format!("publishing {sent} comment{}…", plural(sent));
+        self.status = format!("publishing {n} comment{}…", plural(n));
     }
 
     /// The thread whose rows the cursor is in, if any.
@@ -453,7 +471,7 @@ impl App {
 enum Answer {
     Fetched(Result<Vec<RemoteThread>, ForgeError>, Option<String>),
     Resolved(String, bool, Result<(), ForgeError>),
-    Published(usize, Result<PublishOutcome, ForgeError>),
+    Published(Vec<String>, Result<PublishOutcome, ForgeError>),
     Edited(OwnComment, String, Result<(), ForgeError>),
     Deleted(OwnComment, Result<(), ForgeError>),
     Lost,

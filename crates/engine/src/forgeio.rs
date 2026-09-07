@@ -253,7 +253,7 @@ impl Forge for GhForge {
         let v = self
             .tool
             .json(&args, None)
-            .map_err(|e| no_request(e, id, "pull request"))?;
+            .map_err(|e| no_request(e, id, self.kind().noun()))?;
         parse_request(&v)
     }
 
@@ -652,7 +652,7 @@ impl Forge for GlabForge {
         let v = self
             .tool
             .json(&args, None)
-            .map_err(|e| no_request(e, id, "merge request"))?;
+            .map_err(|e| no_request(e, id, self.kind().noun()))?;
         parse_mr(&v)
     }
 

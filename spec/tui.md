@@ -397,7 +397,7 @@ list belongs; the footer's job is to point at it.
 | `v` | start a line selection at the cursor · `j`/`k` extend it · `v` or `esc` drops it · `c` writes a finding over it |
 | `c` | write a finding — on the line under the cursor, on the lines `v` selected, or on the whole hunk from a row that is not a line; on a line that already carries one, rewrite that one |
 | `dd` | delete the finding under the cursor |
-| `y` | copy the open-findings summary — a markdown list of `file:lines: note`, and nothing about groups: a group is how this reviewer chose to READ the branch, and the summary is pasted somewhere that has no idea what `g7` was. `dfr findings <range> --summary` prints the same text |
+| `y` | copy the summary of open findings not yet on the request — a markdown list of `file:lines: note`, and nothing about groups: a group is how this reviewer chose to READ the branch, and the summary is pasted somewhere that has no idea what `g7` was. `dfr findings <range> --summary` prints the same text |
 | `F` | every finding and every review thread in one list — `enter` jumps to one, `dd` deletes a note, `D` clears the notes not on the request (published notes and threads stay), `P` publishes, `esc` closes |
 | `c` on a review thread | draft a reply under it — a finding carrying the thread's id until `P` publishes it ([forge.md](forge.md)); on a comment of yours — by author, marker or address — rewrite it on the forge |
 | `dd` on a comment of yours | delete it on the forge and here — asks first, only `y` means yes; on anyone else's, the footer says `not your comment` |
@@ -585,9 +585,12 @@ the way, since a note whose line is hidden hangs off its hunk's header instead; 
 skim remainder is, and is opened. An orphan has no row at any depth of unfolding and says
 so. `dd` deletes the selected
 note and the list stays open — a reviewer clearing up has more than one to clear. `D` asks
-`delete all 4 findings?  y / n`, and only `y` means yes: `dd` deletes one without asking
-because a note is one line and rewriting it is `c`, while clearing the lot is the only
-irreversible thing in this reviewer.
+`delete all 4 local notes? (2 on the request stay)  y / n`, and only `y` means yes: `dd`
+deletes one without asking because a note is one line and rewriting it is `c`, while
+clearing every local note is the only irreversible thing in this reviewer. Published notes
+and threads stay: a published note is the request's, and deleting it is `dd`, which asks
+and reaches the forge ([forge.md](forge.md)). With nothing local to clear, `D` says so
+instead of asking.
 
 **Orphans have their own section**, under a rule, and for them the list is not a
 convenience but the only door. An orphaned note matches no line and no hunk digest, so no

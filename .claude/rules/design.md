@@ -42,9 +42,9 @@ How to decide what to build, and what to refuse. Linked from
 
    - The port's methods read like the tool (`run_git`, `write_file`) instead of like the
      need (`blob`, `save_state`). That is the adapter wearing a trait.
-   - A `Box<dyn>` outside the three seams whose implementation is a genuine run-time
+   - A `Box<dyn>` outside the four seams whose implementation is a genuine run-time
      answer — `llm::LlmBackend`, `lang::Language`, `artefact::symbols::SymbolSource`
-     (ADR 0023). Everywhere else a port is a generic: `fn f<G: ObjectReader>(git: &G)`.
+     (ADR 0023) and `forge::Forge` (ADR 0029). Everywhere else a port is a generic: `fn f<G: ObjectReader>(git: &G)`.
    - An `Option<&Port>` in a domain signature. Disabling is a constructor
      (`FsGroupingCache::disabled()`), so the branch lives in the adapter.
    - A bound list merged into a `trait Git: A + B + …` supertrait. The list IS the point:

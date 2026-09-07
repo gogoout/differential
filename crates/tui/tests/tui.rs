@@ -5735,6 +5735,11 @@ mod forge_threads {
         /// a test moves it to stand for a push since the review was built.
         head: Mutex<String>,
         published: Mutex<Vec<Batch>>,
+        /// When set, `threads` fails: a refetch that breaks after a publish.
+        fail_threads: Mutex<bool>,
+        /// When set, `publish` records the batch and creates nothing: a
+        /// send the forge silently dropped.
+        swallow: Mutex<bool>,
     }
 
     impl FakeForge {
@@ -5744,6 +5749,8 @@ mod forge_threads {
                 resolved: Mutex::new(Vec::new()),
                 head: Mutex::new(head.to_string()),
                 published: Mutex::new(Vec::new()),
+                fail_threads: Mutex::new(false),
+                swallow: Mutex::new(false),
             })
         }
     }
@@ -5762,6 +5769,9 @@ mod forge_threads {
             })
         }
         fn threads(&self, _req: &Request) -> Result<Vec<RemoteThread>, ForgeError> {
+            if *self.fail_threads.lock().unwrap() {
+                return Err(ForgeError::NoRequest("the forge is down".into()));
+            }
             Ok(self.threads.lock().unwrap().clone())
         }
         /// Takes everything: each new comment becomes a thread of its own on
@@ -5773,6 +5783,9 @@ mod forge_threads {
         fn publish(&self, _req: &Request, batch: &Batch) -> Result<Vec<Published>, ForgeError> {
             use differential_engine::forge::strip_marker;
             self.published.lock().unwrap().push(batch.clone());
+            if *self.swallow.lock().unwrap() {
+                return Ok(Vec::new());
+            }
             let mut threads = self.threads.lock().unwrap();
             for c in &batch.comments {
                 let (tid, cid) = (format!("T-{}", c.finding), format!("C-{}", c.finding));
@@ -6563,7 +6576,10 @@ mod forge_threads {
                     + "\n"
             })
             .collect();
-        assert!(screen.contains("delete this note?"), "{screen}");
+        assert!(
+            screen.contains("delete this note? (2 on the request stay)"),
+            "{screen}"
+        );
         assert!(
             !screen.contains("findings?"),
             "threads and published notes are not counted"
@@ -6600,6 +6616,127 @@ mod forge_threads {
             "{}",
             app.status
         );
+    }
+
+    #[test]
+    fn a_failed_refetch_after_a_publish_keeps_what_was_sent() {
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        draft_two(&mut app);
+        // The fake creates the comments and then cannot list them back. It
+        // answers the publish with nothing, so only the markers in a refetch
+        // could confirm — and the refetch fails. Nothing must be lost or
+        // resent: the comments are on the request.
+        *fake.fail_threads.lock().unwrap() = true;
+        app.handle_key(key('P'));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        assert!(
+            app.status.contains("threads could not be fetched back"),
+            "{}",
+            app.status
+        );
+        assert!(app.status.contains("R to retry"), "{}", app.status);
+        assert_eq!(fake.published.lock().unwrap().len(), 1);
+        // The next fetch reconciles by marker and the plan is empty.
+        *fake.fail_threads.lock().unwrap() = false;
+        app.handle_key(key('R'));
+        settle(&mut app);
+        assert_eq!(app.session.unpublished().count(), 0);
+        app.handle_key(key('P'));
+        assert!(
+            app.status.starts_with("nothing to publish"),
+            "{}",
+            app.status
+        );
+        assert_eq!(fake.published.lock().unwrap().len(), 1, "sent once");
+    }
+
+    #[test]
+    fn the_published_count_is_of_this_batch_not_of_every_batch_before() {
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        draft_two(&mut app);
+        app.handle_key(key('P'));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        assert_eq!(app.status, "published 2 comments");
+        // A second note, and a forge that takes the send and creates nothing.
+        draft_two_without_thread(&mut app);
+        *fake.swallow.lock().unwrap() = true;
+        app.handle_key(key('P'));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        assert!(app.status.starts_with("published 0 of 1"), "{}", app.status);
+        assert_eq!(
+            app.session.unpublished().count(),
+            1,
+            "still the reader's to send"
+        );
+    }
+
+    #[test]
+    fn a_published_note_whose_twin_is_not_fetched_yet_is_still_editable() {
+        let (_r, mut app, fake) = app_with_threads(vec![]);
+        draft_two_without_thread(&mut app);
+        let id = app.session.findings()[0].id.clone();
+        // Published, address recorded, but the reviewer has not fetched the
+        // thread back: the note still draws as a note.
+        let mut on_forge = my_unmarked_thread("T", "on the change");
+        on_forge.comments[0].id = "C".into();
+        fake.threads.lock().unwrap().push(on_forge);
+        app.session
+            .mark_published(&[Published {
+                finding: id.clone(),
+                thread: "T".into(),
+                comment: "C".into(),
+                url: None,
+            }])
+            .unwrap();
+        app.rebuild_rows();
+        let row = app
+            .rows
+            .iter()
+            .position(|r| matches!(&r.kind, RowKind::Finding(f, _) if f == &id))
+            .expect("drawn as a note");
+        app.cursor = row;
+        app.handle_key(key('c'));
+        assert!(matches!(&app.mode, Mode::Editing { own: Some(own), .. } if own.comment == "C"));
+        app.handle_paste(" — edited");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        settle(&mut app);
+        assert_eq!(app.status, "comment rewritten on the request");
+        assert_eq!(app.session.findings()[0].body, "on the change — edited");
+        assert_eq!(
+            fake.threads.lock().unwrap()[0].root().unwrap().body,
+            "on the change — edited"
+        );
+        // And dd from the note's row.
+        app.cursor = app
+            .rows
+            .iter()
+            .position(|r| matches!(&r.kind, RowKind::Finding(f, _) if f == &id))
+            .unwrap();
+        app.handle_key(key('d'));
+        app.handle_key(key('d'));
+        assert!(
+            matches!(&app.mode, Mode::DeleteComment { own } if own.finding.as_deref() == Some(id.as_str()))
+        );
+        app.handle_key(key('y'));
+        settle(&mut app);
+        assert!(app.session.findings().is_empty());
+        assert!(fake.threads.lock().unwrap().is_empty());
+    }
+
+    /// The findings list's `D` prompt, with one local note and two published.
+    ///
+    /// `cargo test -p differential-tui --test tui render_dump_clear_local -- --ignored --nocapture`
+    pub(super) fn dump_clear_local() {
+        let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        published_and_parked(&mut app);
+        draft_two_without_thread(&mut app);
+        app.handle_key(key('F'));
+        app.handle_key(key('D'));
+        println!("\n=== F, then D ===");
+        println!("{}", ansi_dump(&mut app, 120, 20));
     }
 
     // ------------------------------------------------------ your own comment
@@ -6833,4 +6970,10 @@ mod forge_threads {
 #[ignore = "prints the pane for a human to look at"]
 fn render_dump_findings_and_threads() {
     forge_threads::dump_findings_and_threads();
+}
+
+#[test]
+#[ignore = "prints the pane for a human to look at"]
+fn render_dump_clear_local() {
+    forge_threads::dump_clear_local();
 }

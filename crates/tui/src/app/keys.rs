@@ -447,9 +447,9 @@ impl App {
             }
             // On a comment of the reader's, `c` rewrites it: the box opens
             // with its text, and saving sends the new text to the forge.
-            (KeyCode::Char('c'), KeyModifiers::NONE)
-                if self.thread_at_cursor().is_some() && self.own_comment_at_cursor().is_some() =>
-            {
+            // A published note whose twin is not fetched yet is the same case
+            // from its own row: the comment is on the forge either way.
+            (KeyCode::Char('c'), KeyModifiers::NONE) if self.own_comment_at_cursor().is_some() => {
                 let own = self.own_comment_at_cursor().expect("guarded");
                 let hunk = self.current_hunk().unwrap_or(0);
                 let mut ta =

@@ -181,7 +181,7 @@ before them loads unchanged:
 
 | need | call |
 |---|---|
-| request | `gh pr view <n> --json number,baseRefName,baseRefOid,headRefOid,url,headRepository` |
+| request | `gh pr view <n> --json number,baseRefName,baseRefOid,headRefOid,url` — the project is read from `url`, since the request lives in the base repository |
 | threads | `gh api graphql` — `pullRequest(number).reviewThreads { id isResolved isOutdated path diffSide line startLine comments { databaseId body author createdAt replyTo diffHunk } }`, paginated |
 | publish, new | `gh api POST repos/{owner}/{repo}/pulls/<n>/reviews` with `commit_id`, `event: "COMMENT"`, and `comments: [{path, body, line, side, start_line, start_side}]` — one review |
 | publish, reply | `gh api POST repos/{owner}/{repo}/pulls/<n>/comments/<root comment id>/replies` with `body`, one per reply |
@@ -212,8 +212,10 @@ the request and travel in every position. `old_path` is the file entry's `old_pa
 it has one, else the path. Two limits, until the adapter has met a live instance: a
 **multi-line finding is positioned at its last line** and opens its note with
 `(lines a-b)`, because `line_range` wants a `line_code` hashed from the path and both
-sides' numbers; and a **position recorded against another head is outdated** and counted
-rather than drawn, because the REST answer carries no diff text to place it by. The GitHub
+sides' numbers; a **position recorded against another head is outdated** and counted
+rather than drawn, because the REST answer carries no diff text to place it by; and a
+**publish that fails part-way** may leave draft notes on the request, because GitLab has
+no batch create — the next publish does not know them, so they are cleared by hand. The GitHub
 table above is verified against a live request; this one is written from the API
 reference and pinned by tests on the shapes it expects.
 
@@ -226,6 +228,8 @@ flag the defaults do not give. Reactions are not planned.
 
 ## Status
 
-Specified. Nothing is implemented. The delivery order is: engine types and trait; the
-GitHub adapter and the `--pr` flag; threads in the reviewer; publishing from the reviewer;
-the GitLab adapter and `--mr`.
+Implemented: the engine types and trait, both adapters, `--pr` and `--mr`, threads in the
+reviewer, replies, resolve, publish, edit and delete of the reader's own comments, and the
+findings list with threads. Verified live on GitHub: reading a request and its threads, and
+one publish. Not verified live: editing and deleting on GitHub, `gh api user`, and anything
+GitLab.

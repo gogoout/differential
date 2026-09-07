@@ -625,10 +625,14 @@ pub fn head_matches(req: &Request, review_head: &str) -> bool {
 
 /// What one publish brings back: the forge's record of each finding it
 /// took, and the threads fetched afterwards so the twins can be shown.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The refetch is its own result. The comments are on the request the moment
+/// the publish returned; a refetch that then fails must not read as nothing
+/// having been sent, or the next publish sends it all again.
+#[derive(Debug)]
 pub struct PublishOutcome {
     pub published: Vec<Published>,
-    pub threads: Vec<RemoteThread>,
+    pub threads: Result<Vec<RemoteThread>, ForgeError>,
 }
 
 /// The whole publish, forge side: ask the forge where the request is now,
@@ -651,6 +655,6 @@ pub fn publish(
         });
     }
     let published = forge.publish(req, batch)?;
-    let threads = forge.threads(req)?;
+    let threads = forge.threads(req);
     Ok(PublishOutcome { published, threads })
 }

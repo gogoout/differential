@@ -291,7 +291,14 @@ impl App {
                 // Counts what `y` would take: the local notes. A published
                 // note and a thread are listed here but are not up for this.
                 let local = entries.iter().filter(|e| !e.thread && !e.published).count();
-                let kept = entries.len() - local;
+                // The same number the status after `y` reports: every record on
+                // the request, whether it is listed as a note or as its thread.
+                let kept = self
+                    .session
+                    .findings()
+                    .iter()
+                    .filter(|f| f.upstream.is_some())
+                    .count();
                 let footer = if *confirming {
                     Line::from(Span::styled(
                         match (local, kept) {
@@ -315,7 +322,7 @@ impl App {
                         Span::styled("  ·  dd ", key),
                         Span::styled("delete", text),
                         Span::styled("  ·  D ", key),
-                        Span::styled("delete all", text),
+                        Span::styled("clear local", text),
                         Span::styled("  ·  P ", key),
                         Span::styled("publish", text),
                         Span::styled("  ·  esc ", key),

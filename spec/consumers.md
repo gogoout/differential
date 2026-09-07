@@ -26,7 +26,8 @@ dfr clean [--repo <path>] [--dry-run]
   `ReviewSession`, so the projection has one owner and the two cannot drift.
 - `--pr [N]` replaces the range with a GitHub pull request's merge-base diff and files the
   review under the request itself ([forge.md](forge.md)); `--mr [N]` does the same for a
-  GitLab merge request. `findings --post` publishes the open findings to it. `--pr` runs
+  GitLab merge request. Either stands in for the range on every command above, `check` and
+  `stack` included. `findings --post` publishes the open findings to it. `--pr` runs
   `gh`, `--mr` runs `glab`; neither fetches.
 - `clean` deletes the regenerable cache ([persistence.md](persistence.md)) and reports
   what went. It takes no range — the cache belongs to the repository, not to a review —

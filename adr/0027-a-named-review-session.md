@@ -64,7 +64,8 @@ a heuristic that reads differently each week.
   which is a different one — the flag is the identity, so it is not a decoration.
 - Moving to a name does not carry an unnamed review's progress across. Adoption would have
   to bridge them, and that is exactly the capture a name exists to prevent.
-- `identity.json` records either a name or a pair of endpoints, never both. A half-written
+- `identity.json` records exactly one of a name, a pair of endpoints, or — since ADR 0029 —
+  a request, never two of them. A half-written
   record is read as neither: recognisable, not adoptable.
 - Nothing else changes. Marks still key on hunk digests (ADR 0025) and findings still
   re-anchor by digest, so a named session reopened over a different range keeps what still
