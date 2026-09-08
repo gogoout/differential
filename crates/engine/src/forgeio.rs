@@ -1014,20 +1014,19 @@ fn draft_note_position(req: &Request, c: &NewComment) -> Vec<(String, String)> {
     if let Some(o) = c.other_line {
         fields.push((format!("position[{other}]"), o.to_string()));
     }
-    // A multi-line comment names each end: a `line_code` (`<sha>_<old>_<new>`,
-    // `0` on the side the line is missing from), a `type`, and the line's
-    // number on the side it exists — the shape GitLab's own web UI sends.
+    // A multi-line comment names each end: a `line_code`, a `type`, and the
+    // real line number on each side the line exists — the shape GitLab's own
+    // web UI sends. See `forge::line_end` for how the three kinds differ.
     if let Some(span) = &c.span {
-        let ty = if c.side == "old" { "old" } else { "new" };
-        for (end, (old, new)) in [("start", span.start), ("end", span.end)] {
+        for (end, e) in [("start", &span.start), ("end", &span.end)] {
             let at = format!("position[line_range][{end}]");
-            fields.push((format!("{at}[line_code]"), line_code(&c.path, old, new)));
-            fields.push((format!("{at}[type]"), ty.into()));
-            if new != 0 {
-                fields.push((format!("{at}[new_line]"), new.to_string()));
+            fields.push((format!("{at}[line_code]"), line_code(&c.path, e.old, e.new)));
+            fields.push((format!("{at}[type]"), e.kind.into()));
+            if let Some(n) = e.new_line {
+                fields.push((format!("{at}[new_line]"), n.to_string()));
             }
-            if old != 0 {
-                fields.push((format!("{at}[old_line]"), old.to_string()));
+            if let Some(o) = e.old_line {
+                fields.push((format!("{at}[old_line]"), o.to_string()));
             }
         }
     }
@@ -1453,14 +1452,26 @@ mod tests {
 
     #[test]
     fn a_multi_line_draft_note_carries_a_line_range_at_each_end() {
-        use crate::forge::LineSpan;
+        use crate::forge::LineEnd;
         let req = parse_mr(&mr_view()).unwrap();
         let mut c = comment("f4", "new", 34, Some(15), "a run of lines");
         // Lines 15-34 are all added: `0` on the old side, the real number on
-        // the new side. This is the shape the GitLab web UI sends.
-        c.span = Some(LineSpan {
-            start: (0, 15),
-            end: (0, 34),
+        // the new side, `new` type. This is the shape the web UI sends.
+        c.span = Some(crate::forge::LineSpan {
+            start: LineEnd {
+                kind: "new",
+                old: 0,
+                new: 15,
+                old_line: None,
+                new_line: Some(15),
+            },
+            end: LineEnd {
+                kind: "new",
+                old: 0,
+                new: 34,
+                old_line: None,
+                new_line: Some(34),
+            },
         });
         let pos: std::collections::HashMap<String, String> =
             draft_note_position(&req, &c).into_iter().collect();
@@ -1477,6 +1488,45 @@ mod tests {
         // side an added line is missing from.
         assert!(code(0, 34).ends_with("_0_34"), "{}", code(0, 34));
         assert_eq!(code(0, 34).len(), 40 + "_0_34".len());
+    }
+
+    #[test]
+    fn a_deleted_range_takes_the_new_side_position_not_zero() {
+        use crate::forge::LineEnd;
+        let req = parse_mr(&mr_view()).unwrap();
+        let mut c = comment("f5", "old", 2953, Some(2950), "on a deleted run");
+        // Deleted old lines 2950-2953 sit at new-side position 2952; the
+        // `line_code`'s new number is that position, shared by both ends.
+        c.span = Some(crate::forge::LineSpan {
+            start: LineEnd {
+                kind: "old",
+                old: 2950,
+                new: 2952,
+                old_line: Some(2950),
+                new_line: None,
+            },
+            end: LineEnd {
+                kind: "old",
+                old: 2953,
+                new: 2952,
+                old_line: Some(2953),
+                new_line: None,
+            },
+        });
+        let pos: std::collections::HashMap<String, String> =
+            draft_note_position(&req, &c).into_iter().collect();
+        let code = |old: u32, new: u32| line_code("src/lib.rs", old, new);
+        assert_eq!(
+            pos["position[line_range][start][line_code]"],
+            code(2950, 2952)
+        );
+        assert_eq!(pos["position[line_range][start][type]"], "old");
+        assert_eq!(pos["position[line_range][start][old_line]"], "2950");
+        assert!(!pos.contains_key("position[line_range][start][new_line]"));
+        assert_eq!(
+            pos["position[line_range][end][line_code]"],
+            code(2953, 2952)
+        );
     }
 
     #[test]

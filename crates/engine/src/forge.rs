@@ -266,14 +266,29 @@ pub struct NewComment {
     pub body: String,
 }
 
-/// The endpoints of a multi-line comment, each line as its `(old, new)` pair.
-/// GitLab attaches a range by a `line_code` at each end, and a `line_code`
-/// names both sides' numbers. A changed line has a real number on its own
-/// side and the position it sits at on the other.
+/// One end of a multi-line comment, as GitLab's `line_range` names it.
+///
+/// `kind` is `"new"` for an added line, `"old"` for a deleted one, and
+/// `"expanded"` for an unchanged line, which exists on both sides. `old` and
+/// `new` are the numbers the `line_code` carries — `<sha>_<old>_<new>` — and
+/// they are not always the line's own numbers: an added line is `0` on the
+/// old side, a deleted line takes the new-side position it sits at, not `0`.
+/// `old_line` and `new_line` are the real numbers, present only on the side
+/// the line exists, exactly as the forge's web UI sends them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineEnd {
+    pub kind: &'static str,
+    pub old: u32,
+    pub new: u32,
+    pub old_line: Option<u32>,
+    pub new_line: Option<u32>,
+}
+
+/// The two ends of a multi-line comment's `line_range`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LineSpan {
-    pub start: (u32, u32),
-    pub end: (u32, u32),
+    pub start: LineEnd,
+    pub end: LineEnd,
 }
 
 /// A reply to publish into an existing thread.
@@ -629,8 +644,8 @@ pub fn publish_plan(
                 f.anchor.end_line.max(f.anchor.line),
             ),
             span: (f.anchor.end_line > f.anchor.line).then(|| LineSpan {
-                start: line_code_pair(doc, &f.anchor.file, &f.anchor.side, f.anchor.line),
-                end: line_code_pair(
+                start: line_end(doc, &f.anchor.file, &f.anchor.side, f.anchor.line),
+                end: line_end(
                     doc,
                     &f.anchor.file,
                     &f.anchor.side,
@@ -681,17 +696,68 @@ pub fn other_side_line(
     u32::try_from(i64::from(line) + shift).ok()
 }
 
-/// The `(old, new)` pair a line's GitLab `line_code` needs. An unchanged line
-/// has both exactly. A line that exists on one side only — an added line, a
-/// deleted line — has its own number and `0` on the side it is missing from,
-/// which is what GitLab writes in the `line_code` of such a line.
-fn line_code_pair(doc: &schema::PlanDocument, file: &str, side: &str, line: u32) -> (u32, u32) {
+/// One `line_range` end, as GitLab forms it. Three cases, matching the shapes
+/// the web UI sends:
+///
+/// - an **unchanged** line exists on both sides (`other_side_line` is `Some`):
+///   `kind` `"expanded"`, both numbers real.
+/// - an **added** line (new side, no old): `kind` `"new"`, `old` is `0` and
+///   `old_line` absent; `new`/`new_line` are the line.
+/// - a **deleted** line (old side, no new): `kind` `"old"`, `new` is the
+///   new-side position it sits at — not `0` — and `new_line` is absent;
+///   `old`/`old_line` are the line.
+fn line_end(doc: &schema::PlanDocument, file: &str, side: &str, line: u32) -> LineEnd {
     match other_side_line(doc, file, side, line) {
-        Some(other) if side == "old" => (line, other),
-        Some(other) => (other, line),
-        None if side == "old" => (line, 0),
-        None => (0, line),
+        Some(other) => {
+            let (old, new) = if side == "old" {
+                (line, other)
+            } else {
+                (other, line)
+            };
+            LineEnd {
+                kind: "expanded",
+                old,
+                new,
+                old_line: Some(old),
+                new_line: Some(new),
+            }
+        }
+        None if side == "old" => LineEnd {
+            kind: "old",
+            old: line,
+            new: new_side_position(doc, file, line),
+            old_line: Some(line),
+            new_line: None,
+        },
+        None => LineEnd {
+            kind: "new",
+            old: 0,
+            new: line,
+            old_line: None,
+            new_line: Some(line),
+        },
     }
+}
+
+/// Where a deleted old-side `line` sits on the new side: the start of the
+/// hunk that removes it, which is the new line the deletion follows. Every
+/// deleted line in one hunk shares this number, as GitLab's `line_code` does.
+fn new_side_position(doc: &schema::PlanDocument, file: &str, line: u32) -> u32 {
+    doc.hunks
+        .iter()
+        .filter(|h| h.file == file)
+        .find_map(|h| {
+            let (s, n) = side_range(h, true);
+            (n > 0 && line >= s && line < s.saturating_add(n)).then(|| {
+                let (ns, nn) = side_range(h, false);
+                if nn == 0 {
+                    ns
+                } else {
+                    ns.saturating_add((line - s).min(nn - 1))
+                }
+            })
+        })
+        .unwrap_or(line)
 }
 
 /// Whether both ends of `a` sit inside the request's diff of its file, with

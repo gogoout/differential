@@ -230,10 +230,13 @@ the request and travel in every position. `old_path` is the file entry's `old_pa
 it has one, else the path. Two limits, until the adapter has met a live instance: a
 **multi-line finding is positioned at its last line**, opens its note with `(lines a-b)`,
 and carries a `position[line_range]`: a `[start]` and an `[end]`, each a `line_code`, a
-`type`, and the line's number on the side it exists. A `line_code` is `<sha>_<old>_<new>`:
-the path's sha1, then the old and new line numbers, with `0` on the side a line is missing
-from — an added line is `<sha>_0_<new>`, a deleted line `<sha>_<old>_0`. This is the shape
-GitLab's own web UI sends to `draft_notes`; a **position recorded against another head is outdated** and counted
+`type`, and the real line number on each side the line exists. A `line_code` is
+`<sha>_<old>_<new>` — the path's sha1, then the two numbers — and the three kinds differ, as
+the forge's own web UI sends them: an **added** line is `type: new`, `<sha>_0_<new>`, with
+`new_line` only; an **unchanged** line is `type: expanded`, `<sha>_<old>_<new>`, with both
+numbers; a **deleted** line is `type: old`, `<sha>_<old>_<pos>`, with `old_line` only, where
+`<pos>` is the new-side line the deletion sits at — the start of its hunk, shared by every
+deleted line in it — not zero. This is confirmed against the web UI's captured requests; a **position recorded against another head is outdated** and counted
 rather than drawn, because the REST answer carries no diff text to place it by; and a
 **publish that fails part-way** may leave draft notes on the request, because GitLab has
 no batch create — the next publish does not know them, so they are cleared by hand. The

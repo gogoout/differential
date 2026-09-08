@@ -726,8 +726,15 @@ fn a_multi_line_finding_carries_both_ends_paired_across_the_sides() {
     let span = batch.comments[0]
         .span
         .expect("a multi-line comment has a span");
-    assert_eq!(span.start, (8, 9), "line 9 new is old 8");
-    assert_eq!(span.end, (9, 10), "line 10 new is old 9");
+    // Both unchanged: kind "expanded", both numbers real.
+    assert_eq!(
+        (span.start.kind, span.start.old, span.start.new),
+        ("expanded", 8, 9)
+    );
+    assert_eq!(
+        (span.end.kind, span.end.old, span.end.new),
+        ("expanded", 9, 10)
+    );
 }
 
 #[test]
@@ -747,8 +754,41 @@ fn a_finding_over_added_lines_pairs_each_end_with_zero_on_the_old_side() {
     let span = batch.comments[0]
         .span
         .expect("a multi-line comment has a span");
-    assert_eq!(span.start, (0, 1), "added line 1 is 0 on the old side");
-    assert_eq!(span.end, (0, 2), "added line 2 is 0 on the old side");
+    // Added: kind "new", `0` on the old side, no old_line.
+    assert_eq!(
+        (span.start.kind, span.start.old, span.start.new),
+        ("new", 0, 1)
+    );
+    assert_eq!(span.start.old_line, None);
+    assert_eq!(span.start.new_line, Some(1));
+    assert_eq!((span.end.kind, span.end.old, span.end.new), ("new", 0, 2));
+}
+
+#[test]
+fn a_finding_over_deleted_lines_takes_the_new_side_position_not_zero() {
+    // Delete two lines in the middle: old lines 5 and 6 exist on the old side
+    // only, and both sit at the same new-side position, which the line_code
+    // carries as its new number — not zero.
+    let (r, base, head) = ten_line_repo(|lines| {
+        lines.remove(4);
+        lines.remove(4);
+    });
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut s = session(&r, &base, &head, tmp.path());
+    let h = s.doc().hunks.iter().position(|h| h.old_count == 2).unwrap();
+    s.add_finding(h, Some(lines("old", 5, 6)), "a run".into())
+        .unwrap();
+    let batch = s.publish_plan(forge::ForgeKind::Gitlab).batch;
+    let span = batch.comments[0]
+        .span
+        .expect("a multi-line comment has a span");
+    assert_eq!(span.start.kind, "old");
+    assert_eq!((span.start.old, span.start.old_line), (5, Some(5)));
+    assert_eq!(span.start.new_line, None);
+    assert_eq!(span.end.old, 6);
+    // Both deleted ends share one new-side position, and it is not zero.
+    assert_eq!(span.start.new, span.end.new);
+    assert_ne!(span.start.new, 0);
 }
 
 #[test]
