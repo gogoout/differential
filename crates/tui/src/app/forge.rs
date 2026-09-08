@@ -388,6 +388,24 @@ impl App {
         self.status = "deleting the comment on the request…".into();
     }
 
+    /// Open or close the resolved thread under the cursor. A resolved thread
+    /// is collapsed to its header by default; this is a local reading toggle,
+    /// nothing reaches the forge.
+    pub(super) fn toggle_thread_expanded(&mut self) {
+        let Some(RowKind::Thread { thread, .. }) =
+            self.rows.get(self.cursor).map(|r| r.kind.clone())
+        else {
+            return;
+        };
+        if self.expanded_threads.remove(&thread) {
+            self.status = "thread collapsed".into();
+        } else {
+            self.expanded_threads.insert(thread);
+            self.status = "thread expanded".into();
+        }
+        self.rebuild_rows();
+    }
+
     /// `x`: flip the thread under the cursor on the forge. The forge answers
     /// on a worker thread; the local copy changes when it has.
     pub(super) fn toggle_thread_resolved(&mut self) {

@@ -7,6 +7,7 @@
 //! screen.
 
 pub mod app;
+pub mod markdown;
 pub mod osc52;
 pub mod picker;
 pub mod rows;

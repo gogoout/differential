@@ -389,6 +389,14 @@ impl App {
             {
                 self.expand_at_cursor();
             }
+            // A resolved thread is collapsed to its header; `z` opens and
+            // closes it, the way `z` opens a fold or a context gap elsewhere.
+            (KeyCode::Char('z'), _)
+                if self.focus == Focus::Detail
+                    && self.thread_at_cursor().is_some_and(|t| t.resolved) =>
+            {
+                self.toggle_thread_expanded();
+            }
             (KeyCode::Char('z'), _)
                 if self.focus == Focus::Groups && self.view_mode == ViewMode::Files =>
             {
@@ -459,12 +467,11 @@ impl App {
             (KeyCode::Esc, _) if self.visual.is_some() => {
                 self.visual = None;
             }
-            // `c` writes, and what it writes depends on the row. On a comment of
-            // the reader's it rewrites that comment: the box opens with its
+            // `c` edits. On a comment of the reader's the box opens with its
             // text, and saving sends the new text to the forge. On anyone
-            // else's thread it answers: the composer opens as a reply, and what
-            // it saves is a finding carrying the thread's id until a publish
-            // sends it (ADR 0029). Anywhere else it files a note.
+            // else's comment there is nothing of the reader's to edit, and the
+            // footer says so — `r` replies there instead. Anywhere else `c`
+            // files a note.
             (KeyCode::Char('c'), KeyModifiers::NONE) => {
                 if let Some(own) = self.own_comment_at_cursor() {
                     let hunk = self.current_hunk().unwrap_or(0);
@@ -478,24 +485,8 @@ impl App {
                         own: Some(own),
                         editor: ta,
                     };
-                } else if let Some(t) = self.thread_at_cursor() {
-                    let (id, author, path) = (
-                        t.id.clone(),
-                        t.root().map(|c| c.author.clone()).unwrap_or_default(),
-                        t.path.clone(),
-                    );
-                    let hunk = self.current_hunk().unwrap_or(0);
-                    let ta =
-                        self.composer("", format!(" {} · reply to {author} ", basename(&path)));
-                    self.visual = None;
-                    self.mode = Mode::Editing {
-                        hunk,
-                        lines: None,
-                        rewriting: None,
-                        reply_to: Some(id),
-                        own: None,
-                        editor: ta,
-                    };
+                } else if self.thread_at_cursor().is_some() {
+                    self.status = NOT_YOURS.into();
                 } else if let Some(h) = self.current_hunk() {
                     // A line already carrying a note opens THAT note. Two
                     // notes on one line would each be half the story, and
@@ -553,6 +544,32 @@ impl App {
             }
             (KeyCode::Char('y'), _) => {
                 return vec![Effect::CopySummary(self.findings_summary())];
+            }
+            // `r` replies to the review thread under the cursor — the reader's
+            // own thread or anyone's. The reply is a finding carrying the
+            // thread's id until a publish sends it (ADR 0029).
+            (KeyCode::Char('r'), KeyModifiers::NONE) => {
+                if let Some(t) = self.thread_at_cursor() {
+                    let (id, author, path) = (
+                        t.id.clone(),
+                        t.root().map(|c| c.author.clone()).unwrap_or_default(),
+                        t.path.clone(),
+                    );
+                    let hunk = self.current_hunk().unwrap_or(0);
+                    let ta =
+                        self.composer("", format!(" {} · reply to {author} ", basename(&path)));
+                    self.visual = None;
+                    self.mode = Mode::Editing {
+                        hunk,
+                        lines: None,
+                        rewriting: None,
+                        reply_to: Some(id),
+                        own: None,
+                        editor: ta,
+                    };
+                } else {
+                    self.status = "r replies to a review thread".into();
+                }
             }
             // The forge's threads (ADR 0029): resolve the one under the cursor,
             // or fetch them all again. Both go out on a worker thread and

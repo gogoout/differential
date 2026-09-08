@@ -11,7 +11,7 @@
 //! the pane edge is a width question, and row counts must never depend on
 //! width or every resize would rebuild.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use differential_engine::forge::RemoteThread;
@@ -636,6 +636,9 @@ pub struct RowsContext<'a> {
     pub context_step: usize,
     /// How far each hunk has been pulled open, by canonical index.
     pub expansion: &'a HashMap<usize, Expansion>,
+    /// Resolved threads the reader has opened; a resolved thread not here is
+    /// drawn collapsed to its header.
+    pub expanded_threads: &'a HashSet<String>,
 }
 
 /// The group view's extras on top of the shared core.
@@ -1120,9 +1123,38 @@ fn rail(theme: &Theme, indent: usize) -> Span<'static> {
 /// replies step in one indent under the root. A resolved thread is dimmed
 /// throughout: it is settled, and the reader's eye should pass over it.
 ///
-/// Every row is a `Thread` row carrying the thread's id, so `c` replies and
+/// Every row is a `Thread` row carrying the thread's id, so `r` replies and
 /// `x` resolves from any line of it.
-fn thread_rows(theme: &Theme, t: &RemoteThread, hunk: usize) -> Vec<Row> {
+///
+/// A comment body is markdown, rendered by [`crate::markdown`] into styled
+/// lines. A resolved thread renders the same structure but muted: dim
+/// throughout, no bright accents, since it is settled.
+///
+/// When `collapsed`, a resolved thread is one header row naming its comment
+/// count and the `z` that opens it; the bodies and replies are withheld.
+fn thread_rows(theme: &Theme, t: &RemoteThread, hunk: usize, collapsed: bool) -> Vec<Row> {
+    if collapsed {
+        let root = t.comments.first();
+        let mut head = root
+            .map(|c| format!("{} · {}", c.author, comment_date(&c.created)))
+            .unwrap_or_default();
+        let n = t.comments.len();
+        head.push_str(&format!(
+            " · resolved · {n} comment{} · z to open",
+            if n == 1 { "" } else { "s" }
+        ));
+        let dim = Style::default()
+            .fg(theme.noise_fg)
+            .add_modifier(Modifier::BOLD);
+        return vec![Row::full(
+            RowKind::Thread {
+                thread: t.id.clone(),
+                comment: root.map(|c| c.id.clone()).unwrap_or_default(),
+                hunk,
+            },
+            Line::from(vec![rail(theme, 0), Span::styled(head, dim)]),
+        )];
+    }
     let (meta, prose) = if t.resolved {
         let dim = Style::default().fg(theme.noise_fg);
         (dim, dim)
@@ -1140,6 +1172,16 @@ fn thread_rows(theme: &Theme, t: &RemoteThread, hunk: usize) -> Vec<Row> {
             comment: c.id.clone(),
             hunk,
         };
+        // A blank rail row before every comment but the first: air between
+        // one comment and the next, the rail carrying the eye across it. It
+        // carries the FOLLOWING comment's kind, so it belongs to what it
+        // introduces.
+        if i > 0 {
+            rows.push(Row::full(
+                kind.clone(),
+                Line::from(vec![rail(theme, indent)]),
+            ));
+        }
         let mut head = format!("{} · {}", c.author, comment_date(&c.created));
         if i == 0 {
             if t.resolved {
@@ -1156,18 +1198,11 @@ fn thread_rows(theme: &Theme, t: &RemoteThread, hunk: usize) -> Vec<Row> {
                 Span::styled(head, meta.add_modifier(Modifier::BOLD)),
             ]),
         ));
-        let mut lines: Vec<&str> = c.body.lines().collect();
-        if lines.is_empty() {
-            lines.push("");
-        }
-        for text in lines {
-            rows.push(Row::full(
-                kind.clone(),
-                Line::from(vec![
-                    rail(theme, indent),
-                    Span::styled(text.to_string(), prose),
-                ]),
-            ));
+        let body = crate::markdown::render(&c.body, prose, theme, t.resolved);
+        for mut spans in body {
+            let mut line = vec![rail(theme, indent)];
+            line.append(&mut spans);
+            rows.push(Row::full(kind.clone(), Line::from(line)));
         }
     }
     rows
@@ -1224,9 +1259,14 @@ fn place_notes(ctx: &RowsContext, rows: &mut Vec<Row>) {
     let mut file = String::new();
 
     let emit_thread = |out: &mut Vec<Row>, t: &RemoteThread, hunk: usize| {
-        out.extend(thread_rows(ctx.theme, t, hunk));
-        for r in replies_to(t) {
-            out.extend(finding_rows(ctx.theme, r, hunk, REPLY_INDENT));
+        // A resolved thread is collapsed to its header until `z` opens it; its
+        // replies are hidden with it.
+        let collapsed = t.resolved && !ctx.expanded_threads.contains(&t.id);
+        out.extend(thread_rows(ctx.theme, t, hunk, collapsed));
+        if !collapsed {
+            for r in replies_to(t) {
+                out.extend(finding_rows(ctx.theme, r, hunk, REPLY_INDENT));
+            }
         }
     };
 

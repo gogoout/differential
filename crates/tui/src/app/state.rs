@@ -204,6 +204,7 @@ impl App {
                             context: self.opts.context,
                             context_step: self.opts.context_step,
                             expansion: &self.expanded,
+                            expanded_threads: &self.expanded_threads,
                         },
                         view,
                         fold: if self.folds_open.contains(&view.id) {
@@ -234,6 +235,7 @@ impl App {
                         context: self.opts.context,
                         context_step: self.opts.context_step,
                         expansion: &self.expanded,
+                        expanded_threads: &self.expanded_threads,
                     };
                     self.rows = match targets.as_slice() {
                         // A single file keeps its dedicated builder (it renders a

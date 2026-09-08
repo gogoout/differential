@@ -140,6 +140,32 @@ impl SyntaxHighlighter {
         Some(out)
     }
 
+    /// Highlight a fenced code block's `lines` by its info string (`rust`,
+    /// `py`, …), one entry of spans per line. `None` when the language is
+    /// empty or unknown, so the caller renders the block plainly. Parse state
+    /// carries across the block's lines, as it does for a file.
+    pub fn highlight_fenced(&self, lang: &str, lines: &[&str]) -> Option<Vec<HighlightedSpans>> {
+        use syntect::easy::HighlightLines;
+        let token = lang.split_whitespace().next().unwrap_or("");
+        if token.is_empty() {
+            return None;
+        }
+        let syntax = self
+            .syntax_set
+            .find_syntax_by_token(token)
+            .or_else(|| self.syntax_set.find_syntax_by_extension(token))?;
+        let mut hl = HighlightLines::new(syntax, &self.theme);
+        Some(
+            lines
+                .iter()
+                .map(|l| {
+                    self.spans_for(&mut hl, l)
+                        .unwrap_or_else(|| vec![(Style::default(), (*l).to_string())])
+                })
+                .collect(),
+        )
+    }
+
     /// One line through syntect, converted to ratatui spans.
     fn spans_for(
         &self,
