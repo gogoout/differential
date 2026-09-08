@@ -6312,24 +6312,27 @@ mod forge_threads {
         draft_two(&mut app);
         app.handle_key(key('P'));
         assert!(matches!(app.mode, Mode::Publish { .. }));
-        // Four lines — blank, the sentence, blank, the footer — make a six-row
-        // box, 90 wide, centred on the 39-row body: x 5, y 16. The footer is
-        // its last content row.
-        let footer = footer_y(16, 6);
-        let x0 = 6u16;
+        // `publish_lines` with nothing excluded: a blank, the sentence, a
+        // blank and the footer.
+        let area = publish_area(layout(SCREEN).body, 4);
+        let row = footer_row(area);
+        // `publish_footer`: `y publishes`, then the clause about any other key.
+        let hints = publish_footer();
+        let yes = on_hint(&hints, 0, row.x, row);
+        let keep = on_hint(&hints, 1, row.x, row);
 
         // A click in the box, off the footer, is nothing.
-        app.handle_mouse(click(x0 + 3, 17));
+        let (x, y) = on_line(area, 1);
+        app.handle_mouse(click(x, y));
         assert!(matches!(app.mode, Mode::Publish { .. }));
 
-        // `  ·  any other key keeps them local` starts after `  y publishes`.
-        app.handle_mouse(click(x0 + 13 + 5, footer));
+        app.handle_mouse(click(keep.0, keep.1));
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(app.status, "nothing published");
         assert!(fake.published.lock().unwrap().is_empty());
 
         app.handle_key(key('P'));
-        app.handle_mouse(click(x0 + 2, footer));
+        app.handle_mouse(click(yes.0, yes.1));
         assert!(app.syncing(), "the `y` sends");
         settle(&mut app);
         assert_eq!(fake.published.lock().unwrap().len(), 1);
@@ -7273,10 +7276,13 @@ mod forge_threads {
 // ------------------------------------------------------------------ the mouse
 
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use differential_tui::app::{
+    Hint, centered_x, composer_area, composer_footer, file_list_modal_area, findings_footer,
+    findings_modal_area, footer_row, hints_width, layout, pane_inner, publish_area, publish_footer,
+};
 use ratatui::layout::Rect;
 
-/// The screen every mouse test is measured at: the plan pane is columns 0..40,
-/// the detail pane 40..100, the status row is y=39.
+/// The screen every mouse test is measured at.
 const SCREEN: Rect = Rect {
     x: 0,
     y: 0,
@@ -7297,12 +7303,35 @@ fn wheel_down(x: u16, y: u16) -> MouseEvent {
     mouse(MouseEventKind::ScrollDown, x, y)
 }
 
+fn wheel_up(x: u16, y: u16) -> MouseEvent {
+    mouse(MouseEventKind::ScrollUp, x, y)
+}
+
 fn click(x: u16, y: u16) -> MouseEvent {
     mouse(MouseEventKind::Down(MouseButton::Left), x, y)
 }
 
 fn sized(app: &mut App) {
     app.set_viewport(Viewport::measure(SCREEN));
+}
+
+/// A cell inside a pane's content, a little way in from its top-left corner.
+fn inside(pane: Rect) -> (u16, u16) {
+    let inner = pane_inner(pane);
+    (inner.x + inner.width / 2, inner.y + inner.height / 3)
+}
+
+/// Content line `line` of a framed box, a couple of cells in.
+fn on_line(area: Rect, line: u16) -> (u16, u16) {
+    let inner = pane_inner(area);
+    (inner.x + 2, inner.y + line)
+}
+
+/// The first cell of the `n`-th hint of a footer laid out from `x0` on `row`.
+/// The widths come from the hints themselves, so a reworded footer moves the
+/// click with it.
+fn on_hint(hints: &[Hint], n: usize, x0: u16, row: Rect) -> (u16, u16) {
+    (x0 + hints_width(&hints[..n]) as u16, row.y)
 }
 
 fn next_selectable_after(app: &App, from: usize) -> usize {
@@ -7315,11 +7344,12 @@ fn next_selectable_after(app: &App, from: usize) -> usize {
 fn a_wheel_notch_in_the_detail_pane_moves_one_row_and_focuses_it() {
     let (_r, mut app) = app_with_many_files();
     sized(&mut app);
+    let (x, y) = inside(layout(SCREEN).detail);
     assert_eq!(app.focus, Focus::Groups);
     let before = app.cursor;
     let want = next_selectable_after(&app, before);
 
-    app.handle_mouse(wheel_down(60, 10));
+    app.handle_mouse(wheel_down(x, y));
 
     assert_eq!(
         app.focus,
@@ -7329,11 +7359,11 @@ fn a_wheel_notch_in_the_detail_pane_moves_one_row_and_focuses_it() {
     assert_eq!(app.cursor, want, "one notch is one selectable row");
 
     let want = next_selectable_after(&app, app.cursor);
-    app.handle_mouse(wheel_down(60, 10));
+    app.handle_mouse(wheel_down(x, y));
     assert_eq!(app.cursor, want, "and the next notch is the next row");
 
     let here = app.cursor;
-    app.handle_mouse(mouse(MouseEventKind::ScrollUp, 60, 10));
+    app.handle_mouse(wheel_up(x, y));
     assert!(app.cursor < here, "a notch up is one row back");
     assert!(app.rows[app.cursor].kind.selectable());
 }
@@ -7342,15 +7372,16 @@ fn a_wheel_notch_in_the_detail_pane_moves_one_row_and_focuses_it() {
 fn a_wheel_notch_in_the_plan_pane_switches_entry_and_focuses_it() {
     let (_r, mut app) = make_app();
     sized(&mut app);
+    let (x, y) = inside(layout(SCREEN).plan);
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     assert_eq!(app.focus, Focus::Detail);
 
-    app.handle_mouse(wheel_down(10, 5));
+    app.handle_mouse(wheel_down(x, y));
 
     assert_eq!(app.focus, Focus::Groups);
     assert_eq!(app.selected_group, 1);
 
-    app.handle_mouse(mouse(MouseEventKind::ScrollUp, 10, 5));
+    app.handle_mouse(wheel_up(x, y));
     assert_eq!(app.selected_group, 0);
 }
 
@@ -7358,6 +7389,7 @@ fn a_wheel_notch_in_the_plan_pane_switches_entry_and_focuses_it() {
 fn a_click_lands_on_the_row_under_the_pointer_counting_wrapped_lines() {
     let (_r, mut app) = app_with_a_long_line();
     sized(&mut app);
+    let detail = layout(SCREEN).detail;
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     app.handle_key(key('w'));
     assert!(app.wrap_on_for_test());
@@ -7369,10 +7401,9 @@ fn a_click_lands_on_the_row_under_the_pointer_counting_wrapped_lines() {
         .expect("a wrapped selectable row");
     let top: usize = (0..tall).map(|i| app.row_height(i)).sum();
     let height = app.row_height(tall);
-    // The detail pane's content starts one row inside its border.
-    let y_of = |line: usize| 1 + line as u16;
 
-    app.handle_mouse(click(60, y_of(top + 1)));
+    let (x, y) = on_line(detail, (top + 1) as u16);
+    app.handle_mouse(click(x, y));
     assert_eq!(
         app.cursor, tall,
         "the second screen line of a wrapped row is still that row"
@@ -7381,7 +7412,8 @@ fn a_click_lands_on_the_row_under_the_pointer_counting_wrapped_lines() {
     if let Some(below) = (tall + 1..app.rows.len()).find(|&i| app.rows[i].kind.selectable()) {
         let below_top: usize = (0..below).map(|i| app.row_height(i)).sum();
         assert!(below_top >= top + height);
-        app.handle_mouse(click(60, y_of(below_top)));
+        let (x, y) = on_line(detail, below_top as u16);
+        app.handle_mouse(click(x, y));
         assert_eq!(
             app.cursor, below,
             "the line after the wrapped row is the next row"
@@ -7399,7 +7431,9 @@ fn a_click_on_a_row_that_cannot_be_selected_leaves_the_cursor() {
     assert!(!app.rows[0].kind.selectable(), "row 0 is the group header");
     assert_eq!(app.scroll(), 0);
 
-    app.handle_mouse(click(60, 1));
+    // Content line 0 of the pane is row 0.
+    let (x, y) = on_line(layout(SCREEN).detail, 0);
+    app.handle_mouse(click(x, y));
 
     assert_eq!(app.cursor, before);
     assert_eq!(app.focus, Focus::Detail);
@@ -7410,16 +7444,16 @@ fn a_click_selects_a_plan_entry_and_a_second_click_enters_it() {
     let (_r, mut app) = make_app();
     sized(&mut app);
     assert_eq!(app.selected_group, 0);
-    // A group block is a title row and a counts row, plus an `after:` row
-    // when it follows another group.
+    // `plan_block_height`: a group's block is a title row and a counts row,
+    // plus an `after:` row when it follows another group.
     let first_block = 2 + usize::from(!app.groups()[0].depends_on.is_empty());
-    let y = 1 + first_block as u16;
+    let (x, y) = on_line(layout(SCREEN).plan, first_block as u16);
 
-    app.handle_mouse(click(10, y));
+    app.handle_mouse(click(x, y));
     assert_eq!(app.selected_group, 1);
     assert_eq!(app.focus, Focus::Groups);
 
-    app.handle_mouse(click(10, y));
+    app.handle_mouse(click(x, y));
     assert_eq!(app.selected_group, 1);
     assert_eq!(
         app.focus,
@@ -7434,31 +7468,31 @@ fn the_file_list_modal_takes_a_click_and_closes_on_one_outside() {
     sized(&mut app);
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     app.handle_key(key('f'));
-    let (n, second_row) = match &app.mode {
-        Mode::FileList { entries, .. } => (entries.len(), entries[1].row_idx),
+    let (area, second_row) = match &app.mode {
+        Mode::FileList { entries, .. } => (
+            file_list_modal_area(layout(SCREEN).body, entries),
+            entries[1].row_idx,
+        ),
         _ => panic!("f opens the file list"),
     };
-    assert!(n >= 2);
-    // The box is `entries + 2` rows tall and centred in the 39-row body; its
-    // first entry sits one row inside the border.
-    let height = (n + 2) as u16;
-    let top = (39 - height) / 2;
-    let y = top + 1 + 1;
+    // Nothing has scrolled, so content line 1 is entry 1.
+    let (x, y) = on_line(area, 1);
 
-    app.handle_mouse(click(50, y));
+    app.handle_mouse(click(x, y));
     assert!(
         matches!(app.mode, Mode::FileList { selected: 1, .. }),
         "a click selects the entry under it"
     );
 
-    app.handle_mouse(click(50, y));
+    app.handle_mouse(click(x, y));
     assert!(matches!(app.mode, Mode::Normal), "a second click jumps");
     assert!(app.cursor >= second_row);
     assert!(app.rows[app.cursor].kind.selectable());
 
     app.handle_key(key('f'));
     assert!(matches!(app.mode, Mode::FileList { .. }));
-    app.handle_mouse(click(5, 2));
+    // The screen's corner is the plan pane's frame: outside any box.
+    app.handle_mouse(click(0, 0));
     assert!(
         matches!(app.mode, Mode::Normal),
         "a click outside the box closes it"
@@ -7469,13 +7503,14 @@ fn the_file_list_modal_takes_a_click_and_closes_on_one_outside() {
 fn help_ignores_the_wheel_and_closes_on_a_click() {
     let (_r, mut app) = make_app();
     sized(&mut app);
+    let (x, y) = inside(layout(SCREEN).body);
     app.handle_key(key('?'));
     assert!(matches!(app.mode, Mode::Help));
 
-    app.handle_mouse(wheel_down(50, 20));
+    app.handle_mouse(wheel_down(x, y));
     assert!(matches!(app.mode, Mode::Help));
 
-    app.handle_mouse(click(50, 20));
+    app.handle_mouse(click(x, y));
     assert!(matches!(app.mode, Mode::Normal));
 }
 
@@ -7483,15 +7518,9 @@ fn help_ignores_the_wheel_and_closes_on_a_click() {
 fn the_viewport_records_the_screen_the_panes_are_laid_out_on() {
     let v = Viewport::measure(SCREEN);
     assert_eq!(v.area, SCREEN);
-    let panes = differential_tui::app::layout(v.area);
-    assert_eq!(panes.plan.width, 40);
-    assert_eq!(panes.detail.x, 40);
-    assert_eq!(panes.status.y, 39);
-}
-
-/// Where a box's footer row is drawn: one row inside its bottom border.
-fn footer_y(top: u16, height: u16) -> u16 {
-    top + height - 2
+    let panes = layout(v.area);
+    assert_eq!(panes.plan.x + panes.plan.width, panes.detail.x);
+    assert_eq!(panes.status.y, SCREEN.height - 1);
 }
 
 #[test]
@@ -7500,26 +7529,26 @@ fn the_composer_footer_buttons_save_and_cancel() {
     sized(&mut app);
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     app.handle_key(key('c'));
-    assert!(matches!(app.mode, Mode::Editing { .. }));
     for ch in "off by one".chars() {
         app.handle_key(key(ch));
     }
-    // The box is three fifths of the body wide (60 of 100) and ten rows tall
-    // for a one-line note, centred on the 39-row body: x 20..80, y 14..24.
-    let (x, y, w, h) = (20u16, 14u16, 60u16, 10u16);
-    let footer = footer_y(y, h);
-    // Its footer is 57 columns, centred in the 58 inside the border, so it
-    // starts at x+1. `  enter save` is the first 12; `esc cancel` the last 10.
-    let x0 = x + 1;
-    let save = x0 + 3;
-    let cancel = x0 + 57 - 5;
-    assert!(cancel < x + w - 1);
+    let area = match &app.mode {
+        Mode::Editing { editor, .. } => composer_area(layout(SCREEN).body, editor),
+        _ => panic!("c opens the composer"),
+    };
+    let row = footer_row(area);
+    let hints = composer_footer();
+    let x0 = centered_x(row, hints_width(&hints));
+    // `composer_footer`: save, a rule, the newline note, a rule, cancel.
+    let save = on_hint(&hints, 0, x0, row);
+    let cancel = on_hint(&hints, 4, x0, row);
 
     // A click in the text does nothing; the caret owns the box.
-    app.handle_mouse(click(x + 10, y + 3));
+    let (x, y) = on_line(area, 1);
+    app.handle_mouse(click(x, y));
     assert!(matches!(app.mode, Mode::Editing { .. }));
 
-    app.handle_mouse(click(save, footer));
+    app.handle_mouse(click(save.0, save.1));
     assert!(matches!(app.mode, Mode::Normal), "save closes the composer");
     assert_eq!(app.session.findings().len(), 1);
     assert_eq!(app.session.findings()[0].body, "off by one");
@@ -7528,7 +7557,7 @@ fn the_composer_footer_buttons_save_and_cancel() {
     for ch in "second thought".chars() {
         app.handle_key(key(ch));
     }
-    app.handle_mouse(click(cancel, footer));
+    app.handle_mouse(click(cancel.0, cancel.1));
     assert!(
         matches!(app.mode, Mode::Normal),
         "cancel closes the composer"
@@ -7551,18 +7580,18 @@ fn the_findings_footer_buttons_jump_and_close() {
 
     app.handle_key(key('F'));
     assert!(matches!(app.mode, Mode::Findings { .. }));
-    // One entry, no rules: a five-row box, 74 wide, centred: x 13, y 17.
-    let (x, y, h) = (13u16, 17u16, 5u16);
-    let footer = footer_y(y, h);
-    let x0 = x + 1;
-    // `  enter jump` 12 · `  ·  dd delete` 14 · `  ·  D clear local` 18 ·
-    // `  ·  P publish` 14 · `  ·  esc close` 14.
-    let close = x0 + 12 + 14 + 18 + 14 + 6;
-    app.handle_mouse(click(close, footer));
+    // One local note, no section rules, nothing on a request.
+    let row = footer_row(findings_modal_area(layout(SCREEN).body, 1, 0));
+    // `findings_footer`: enter jump, dd delete, D clear local, P publish,
+    // esc close.
+    let keys = findings_footer(false, 1, 0);
+    let (x, y) = on_hint(&keys, 4, row.x, row);
+    app.handle_mouse(click(x, y));
     assert!(matches!(app.mode, Mode::Normal), "esc close closes");
 
     app.handle_key(key('F'));
-    app.handle_mouse(click(x0 + 4, footer));
+    let (x, y) = on_hint(&keys, 0, row.x, row);
+    app.handle_mouse(click(x, y));
     assert!(matches!(app.mode, Mode::Normal), "enter jump closes");
     assert!(
         matches!(app.rows[app.cursor].kind, RowKind::Finding(_, _)),
@@ -7570,9 +7599,13 @@ fn the_findings_footer_buttons_jump_and_close() {
     );
     assert_ne!(app.cursor, top_row);
 
-    // `D` asks; the `n` in the question answers no.
+    // `D` asks. The question's footer is the question, `y`, a slash, `n`.
+    let asks = findings_footer(true, 1, 0);
+    let clear = on_hint(&keys, 2, row.x, row);
+    let yes = on_hint(&asks, 1, row.x, row);
+    let no = on_hint(&asks, 3, row.x, row);
     app.handle_key(key('F'));
-    app.handle_mouse(click(x0 + 12 + 14 + 8, footer));
+    app.handle_mouse(click(clear.0, clear.1));
     assert!(matches!(
         app.mode,
         Mode::Findings {
@@ -7580,8 +7613,7 @@ fn the_findings_footer_buttons_jump_and_close() {
             ..
         }
     ));
-    // `  delete this note?  ` is 21 columns, then `y`, ` / `, `n`.
-    app.handle_mouse(click(x0 + 21 + 4, footer));
+    app.handle_mouse(click(no.0, no.1));
     assert!(matches!(
         app.mode,
         Mode::Findings {
@@ -7590,8 +7622,7 @@ fn the_findings_footer_buttons_jump_and_close() {
         }
     ));
     assert_eq!(app.session.findings().len(), 1);
-    // And the `y` answers yes.
-    app.handle_mouse(click(x0 + 12 + 14 + 8, footer));
-    app.handle_mouse(click(x0 + 21, footer));
+    app.handle_mouse(click(clear.0, clear.1));
+    app.handle_mouse(click(yes.0, yes.1));
     assert!(app.session.findings().is_empty());
 }

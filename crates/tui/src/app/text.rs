@@ -185,6 +185,14 @@ pub(super) fn findings_entry_at_line(
     None
 }
 
+/// Drawn rows the findings list skips to start at entry `scroll`: the entries
+/// above it, and every section rule drawn above or at it. The draw and the
+/// hit test both count from here, so a click lands on the entry it was drawn
+/// on.
+pub(super) fn findings_skip(scroll: usize, rules: &[usize]) -> usize {
+    scroll + rules.iter().filter(|r| **r <= scroll).count()
+}
+
 /// The same, for the file list — a plain bordered box with no footer row.
 pub(super) fn file_list_rows(entries: usize, body_rows: usize) -> usize {
     (entries + 2).min(body_rows).saturating_sub(2)
@@ -208,7 +216,7 @@ pub(super) fn follow(selected: usize, scroll: usize, height: usize) -> usize {
 /// described here and painted in `draw`, and hit-tested in `keys` without a
 /// palette in hand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Ink {
+pub enum Ink {
     Key,
     Text,
     Dim,
@@ -222,7 +230,7 @@ pub(super) enum Ink {
 /// sees is the button under their pointer: a footer laid out twice, once for
 /// each, is how the two drift apart.
 #[derive(Debug, Clone)]
-pub(super) struct Hint {
+pub struct Hint {
     pub pieces: Vec<(String, Ink)>,
     pub presses: Vec<KeyEvent>,
 }
@@ -258,7 +266,7 @@ impl Hint {
 }
 
 /// Columns the whole footer takes.
-pub(super) fn hints_width(hints: &[Hint]) -> usize {
+pub fn hints_width(hints: &[Hint]) -> usize {
     hints.iter().map(Hint::width).sum()
 }
 

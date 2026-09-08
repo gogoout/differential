@@ -161,16 +161,16 @@ enum Hit {
 
 impl PickerState {
     /// The rows above the commit list: the checkbox when it is drawn, and the
-    /// rule. `header` builds them; this is their count, so the two must agree.
+    /// rule. `header` builds them and asserts this count against what it built.
     fn header_rows(&self) -> usize {
         usize::from(self.dirty) + 1
     }
 
-    /// What screen row `y` holds. The list sits inside a border, so the first
-    /// header row is `y == 1`; `scroll` is the one the last draw settled on,
-    /// which is the frame the click was aimed at.
+    /// What screen row `y` holds. The list sits inside the block's top border,
+    /// so the first header row is `y == TOP_BORDER`; `scroll` is the one the
+    /// last draw settled on, which is the frame the click was aimed at.
     fn hit(&self, y: u16, commits: usize) -> Option<Hit> {
-        let line = usize::from(y).checked_sub(1)?;
+        let line = usize::from(y).checked_sub(TOP_BORDER)?;
         if self.dirty && line == 0 {
             return Some(Hit::Checkbox);
         }
@@ -186,8 +186,11 @@ const IN_RANGE: &str = "▌ ";
 const OUT_RANGE: &str = "  ";
 const AT_BASE: &str = "└ ";
 
+/// The block `draw` frames the list with: one row of border at the top, which
+/// is where the first header row is, and `BORDER_ROWS` in all.
+const TOP_BORDER: usize = 1;
 /// Block border, top and bottom.
-const BORDER_ROWS: usize = 2;
+const BORDER_ROWS: usize = 2 * TOP_BORDER;
 /// The blank line plus the key hints under the commit list.
 const FOOTER_ROWS: usize = 2;
 
@@ -242,6 +245,11 @@ fn header(theme: &Theme, state: &PickerState, bar: Style) -> Vec<Line<'static>> 
         ),
     ]));
 
+    debug_assert_eq!(
+        lines.len(),
+        state.header_rows(),
+        "the hit test counts the header rows this builds"
+    );
     lines
 }
 
@@ -393,6 +401,11 @@ mod tests {
         let bar = ratatui::style::Style::default();
         assert_eq!(super::header(&theme(), &state(true), bar).len(), 2);
         assert_eq!(super::header(&theme(), &state(false), bar).len(), 1);
+        // The hit test counts the same rows without building them.
+        for dirty in [true, false] {
+            let s = state(dirty);
+            assert_eq!(super::header(&theme(), &s, bar).len(), s.header_rows());
+        }
     }
 
     /// The commit list's viewport is derived from the header, so hiding a row

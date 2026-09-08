@@ -566,6 +566,16 @@ mod keys;
 mod state;
 mod text;
 
+// The geometry a click is judged against, from the functions that draw it.
+// Exposed so a test can aim a click at the box the draw will place, rather
+// than at a number that was true of the box once.
+pub use draw::{
+    FRAME_ROWS, centered_x, composer_area, composer_footer, delete_comment_area,
+    delete_comment_footer, file_list_modal_area, findings_footer, findings_modal_area, footer_row,
+    pane_inner, publish_area, publish_footer,
+};
+pub use text::{Hint, Ink, hints_width};
+
 pub use forge::ForgeLink;
 
 /// What the footer says on a key aimed at someone else's comment.

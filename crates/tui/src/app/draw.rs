@@ -18,8 +18,8 @@ use crate::theme::Theme;
 use crate::vendor::text_utils::{drop_columns, slice_pairs, truncate_or_pad_spans, wrap_pairs};
 
 use super::text::{
-    Hint, Ink, basename, counts_columns, elide_head, file_list_rows, findings_rows, pad_to_width,
-    truncate_width,
+    Hint, Ink, basename, counts_columns, elide_head, file_list_rows, findings_rows, findings_skip,
+    pad_to_width, truncate_width,
 };
 use super::*;
 use crossterm::event::KeyCode;
@@ -65,10 +65,16 @@ impl App {
                 frame.render_widget(&**textarea, area);
                 // The keys go INSIDE the box, on its last row, where a footer
                 // belongs — the title says what you are annotating.
+                let hints = composer_footer();
+                let row = footer_row(area);
+                let x = centered_x(row, hints_width(&hints));
                 frame.render_widget(
-                    footer_line(&self.theme, &composer_footer())
-                        .alignment(ratatui::layout::Alignment::Center),
-                    footer_row(area),
+                    footer_line(&self.theme, &hints),
+                    Rect {
+                        x,
+                        width: row.width.saturating_sub(x - row.x),
+                        ..row
+                    },
                 );
             }
             Mode::Help => {
@@ -211,7 +217,7 @@ impl App {
                     lines.push(line);
                 }
                 // A rule is a row too, so scrolling counts drawn rows.
-                let skip = *scroll + rules.iter().filter(|r| **r <= *scroll).count();
+                let skip = findings_skip(*scroll, &rules);
                 let shown: Vec<Line> = lines.into_iter().skip(skip).take(inner_h).collect();
 
                 // The keys go in a footer inside the box, as the composer's
@@ -1889,14 +1895,32 @@ pub(super) fn clear_to_ground(frame: &mut Frame, theme: &Theme, area: Rect) {
     frame.render_widget(Block::default().style(theme.ground()), area);
 }
 
+/// The frame every pane and every box wears: one cell of border each side.
+/// `pane` paints it; `pane_inner` reads it. Nothing else names the border,
+/// so a change to the frame changes both.
+fn frame() -> Block<'static> {
+    Block::default().borders(Borders::ALL)
+}
+
+/// Rows the frame takes from a box's height: its top and bottom border. A box
+/// sized "around `n` lines" is `n + FRAME_ROWS` tall; a unit test holds this
+/// to what `frame` actually takes.
+pub const FRAME_ROWS: u16 = 2;
+
+/// The content `frame` leaves inside `area`. The rows a click is mapped onto
+/// and the footer row are read from here, so a hit test cannot disagree with
+/// the draw about where the border is.
+pub fn pane_inner(area: Rect) -> Rect {
+    frame().inner(area)
+}
+
 pub(super) fn pane(theme: &Theme, title: String, focused: bool) -> Block<'static> {
     let ink = if focused {
         theme.header_fg
     } else {
         theme.gutter_fg
     };
-    Block::default()
-        .borders(Borders::ALL)
+    frame()
         .border_style(Style::default().fg(theme.gutter_fg))
         .title(Span::styled(
             title,
@@ -1913,48 +1937,74 @@ fn wrapped_rows<'a>(lines: impl Iterator<Item = &'a str>, inner: usize) -> usize
 }
 
 /// The composer's box: three fifths of the body wide, and as tall as its
-/// text — borders, footer and a spare row on top of the lines — up to the
-/// body, beyond which the text area scrolls. A float over the diff, not a
+/// text — the frame, the footer and a spare row on top of the lines — up to
+/// the body, beyond which the text area scrolls. A float over the diff, not a
 /// strip pinned to the bottom: a finding is about the lines you can still see
 /// around it. Shared with the hit test.
-pub(super) fn composer_area(body: Rect, textarea: &TextArea<'_>) -> Rect {
+pub fn composer_area(body: Rect, textarea: &TextArea<'_>) -> Rect {
     let width = body.width * 3 / 5;
     // Rows as wrapped, not lines as typed; the text area scrolls beyond the
     // body anyway.
     let rows = wrapped_rows(
         textarea.lines().iter().map(String::as_str),
-        usize::from(width.saturating_sub(2)),
+        usize::from(width.saturating_sub(FRAME_ROWS)),
     );
-    let wanted = u16::try_from(rows).unwrap_or(u16::MAX).saturating_add(4);
+    // The frame, the footer and the spare row: that is the four.
+    let wanted = u16::try_from(rows)
+        .unwrap_or(u16::MAX)
+        .saturating_add(FRAME_ROWS + 2);
     let height = wanted.clamp(10, body.height.max(10));
     centered_rect(body, width, height)
 }
 
+/// A box centred on the body around `lines` of text, `width` wide at most.
+/// Clamped to the body, in which case the last lines are not drawn; see
+/// `footer_fits`.
+fn box_around(body: Rect, width: u16, lines: usize) -> Rect {
+    let height = u16::try_from(lines)
+        .unwrap_or(u16::MAX)
+        .saturating_add(FRAME_ROWS);
+    centered_rect(body, width, height)
+}
+
+/// Whether a box `box_around` sized for `lines` was tall enough to hold them
+/// all — so its last line, the footer, is on screen to be clicked.
+pub(super) fn footer_fits(area: Rect, lines: usize) -> bool {
+    usize::from(area.height) == lines + usize::from(FRAME_ROWS)
+}
+
 /// The publish modal's box, around `lines` of text.
-pub(super) fn publish_area(body: Rect, lines: usize) -> Rect {
-    let width = body.width.saturating_sub(6).min(90);
-    centered_rect(body, width, lines as u16 + 2)
+pub fn publish_area(body: Rect, lines: usize) -> Rect {
+    box_around(body, body.width.saturating_sub(6).min(90), lines)
 }
 
 /// The delete-comment modal's box, around `lines` of text.
-pub(super) fn delete_comment_area(body: Rect, lines: usize) -> Rect {
-    let width = body.width.saturating_sub(6).min(80);
-    centered_rect(body, width, lines as u16 + 2)
+pub fn delete_comment_area(body: Rect, lines: usize) -> Rect {
+    box_around(body, body.width.saturating_sub(6).min(80), lines)
 }
 
-/// A box's footer: its last content row, inside the border.
-pub(super) fn footer_row(area: Rect) -> Rect {
+/// A box's footer: the last content row `frame` leaves inside it.
+pub fn footer_row(area: Rect) -> Rect {
+    let inner = pane_inner(area);
     Rect {
-        x: area.x + 1,
-        y: area.y + area.height.saturating_sub(2),
-        width: area.width.saturating_sub(2),
+        x: inner.x,
+        y: inner.bottom().saturating_sub(1),
+        width: inner.width,
         height: 1,
     }
 }
 
+/// Where a line `width` columns wide starts when centred in `row` — the one
+/// arithmetic for the composer's footer, drawn and hit-tested, so the two
+/// cannot round differently.
+pub fn centered_x(row: Rect, width: usize) -> u16 {
+    let slack = usize::from(row.width).saturating_sub(width);
+    row.x + u16::try_from(slack / 2).unwrap_or(0)
+}
+
 /// The composer's keys. The newline hint reads and does nothing on a click:
 /// a caret is where a newline goes, and a click has none.
-pub(super) fn composer_footer() -> Vec<Hint> {
+pub fn composer_footer() -> Vec<Hint> {
     vec![
         Hint::button("  enter ", "save", vec![Hint::press(KeyCode::Enter)]),
         Hint::note("  │  ", Ink::Dim),
@@ -1974,7 +2024,7 @@ pub(super) fn composer_footer() -> Vec<Hint> {
 
 /// The findings modal's keys — or, while `D` waits for its answer, the
 /// question, with `y` and `n` the two things a click can say.
-pub(super) fn findings_footer(confirming: bool, local: usize, kept: usize) -> Vec<Hint> {
+pub fn findings_footer(confirming: bool, local: usize, kept: usize) -> Vec<Hint> {
     let press = |c: char| vec![Hint::press(KeyCode::Char(c))];
     if confirming {
         let question = match (local, kept) {
@@ -2024,11 +2074,11 @@ fn yes_or_keep_footer(does: &str, keeps: &str) -> Vec<Hint> {
     ]
 }
 
-pub(super) fn publish_footer() -> Vec<Hint> {
+pub fn publish_footer() -> Vec<Hint> {
     yes_or_keep_footer("publishes", "keeps them local")
 }
 
-pub(super) fn delete_comment_footer() -> Vec<Hint> {
+pub fn delete_comment_footer() -> Vec<Hint> {
     yes_or_keep_footer("deletes it there and here", "keeps it")
 }
 
@@ -2054,7 +2104,7 @@ pub(super) fn footer_line(theme: &Theme, hints: &[Hint]) -> Line<'static> {
 /// The file-list modal's box: as tall as its entries and as wide as its
 /// widest path, centred on the body. One function for the draw and the hit
 /// test, so a click is judged against the box that was drawn.
-pub(super) fn file_list_modal_area(body: Rect, entries: &[FileListEntry]) -> Rect {
+pub fn file_list_modal_area(body: Rect, entries: &[FileListEntry]) -> Rect {
     let height = (entries.len() + 2).min(body.height as usize) as u16;
     let (_, _, lead) = counts_columns(entries);
     let widest = entries
@@ -2072,7 +2122,7 @@ pub(super) fn file_list_modal_area(body: Rect, entries: &[FileListEntry]) -> Rec
 
 /// The findings modal's box: the entries, their section rules, a title row
 /// and the key footer, centred on the body. Shared with the hit test.
-pub(super) fn findings_modal_area(body: Rect, entries: usize, rules: usize) -> Rect {
+pub fn findings_modal_area(body: Rect, entries: usize, rules: usize) -> Rect {
     let height = (entries + rules + 4).min(body.height as usize) as u16;
     centered_rect(body, 74, height)
 }
@@ -2147,4 +2197,19 @@ pub(super) fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     ];
     lines.insert(0, Line::from(""));
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `FRAME_ROWS` is a number about `frame`, and this is what ties them.
+    #[test]
+    fn the_frame_takes_frame_rows() {
+        let area = Rect::new(0, 0, 20, 10);
+        let inner = pane_inner(area);
+        assert_eq!(area.height - inner.height, FRAME_ROWS);
+        assert_eq!(area.width - inner.width, FRAME_ROWS);
+        assert_eq!(footer_row(area).y, inner.bottom() - 1);
+    }
 }

@@ -10,13 +10,13 @@ use ratatui::layout::{Position, Rect};
 use crate::rows::RowKind;
 
 use super::draw::{
-    composer_area, composer_footer, delete_comment_area, delete_comment_footer,
-    file_list_modal_area, findings_footer, findings_modal_area, footer_row, publish_area,
-    publish_footer,
+    centered_x, composer_area, composer_footer, delete_comment_area, delete_comment_footer,
+    file_list_modal_area, findings_footer, findings_modal_area, footer_fits, footer_row,
+    pane_inner, publish_area, publish_footer,
 };
 use super::text::{
-    Hint, basename, file_list_rows, findings_entry_at_line, findings_rows, hint_at, hints_width,
-    step_list,
+    Hint, basename, file_list_rows, findings_entry_at_line, findings_rows, findings_skip, hint_at,
+    hints_width, step_list,
 };
 use super::*;
 
@@ -221,9 +221,7 @@ impl App {
                 match content_line(area, at) {
                     None => self.mode = Mode::Normal,
                     Some(line) => {
-                        // The list is drawn from `scroll`, rules counted as
-                        // rows — the same skip the draw takes.
-                        let skip = *scroll + rules.iter().filter(|r| **r <= *scroll).count();
+                        let skip = findings_skip(*scroll, &rules);
                         let Some(hit) = findings_entry_at_line(entries.len(), &rules, skip + line)
                         else {
                             return Vec::new();
@@ -817,15 +815,10 @@ impl App {
     }
 }
 
-/// The content line of a bordered box under `at`, counted from the box's first
-/// line inside its border — or `None` when `at` is on the border or outside.
+/// The content line of a framed box under `at`, counted from the box's first
+/// line inside its frame — or `None` when `at` is on the frame or outside.
 fn content_line(area: Rect, at: Position) -> Option<usize> {
-    let inner = Rect {
-        x: area.x + 1,
-        y: area.y + 1,
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
-    };
+    let inner = pane_inner(area);
     inner.contains(at).then(|| usize::from(at.y - inner.y))
 }
 
@@ -842,8 +835,7 @@ fn footer_presses(
         return None;
     }
     let x0 = if centered {
-        let slack = usize::from(row.width).saturating_sub(hints_width(hints));
-        row.x + u16::try_from(slack / 2).unwrap_or(0)
+        centered_x(row, hints_width(hints))
     } else {
         row.x
     };
@@ -861,7 +853,7 @@ fn float_footer_presses(
     lines: usize,
     at: Position,
 ) -> Option<Vec<KeyEvent>> {
-    let fits = usize::from(area.height) >= lines + 2;
-    fits.then(|| footer_presses(hints, footer_row(area), false, at))
+    footer_fits(area, lines)
+        .then(|| footer_presses(hints, footer_row(area), false, at))
         .flatten()
 }
