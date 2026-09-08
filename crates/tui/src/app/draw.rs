@@ -248,8 +248,7 @@ impl App {
                 let notes = entries.len() - threads;
                 let rules = section_rules(entries);
                 let body_rows = panes.body.height as usize;
-                let height = (entries.len() + rules.len() + 4).min(body_rows) as u16;
-                let area = centered_rect(panes.body, 74, height);
+                let area = findings_modal_area(panes.body, entries.len(), rules.len());
                 let inner_w = area.width.saturating_sub(2) as usize;
                 // The same number `j`/`k` scroll against, from the same
                 // function, so the window a list moves in is the window it is
@@ -404,24 +403,13 @@ impl App {
                 scroll,
             } => {
                 let body_rows = panes.body.height as usize;
-                let height = (entries.len() + 2).min(body_rows) as u16;
                 // Window before building, and by the same number `j`/`k`
                 // scroll against: the surplus lines used to be built and then
                 // silently dropped off the bottom of the box.
                 let inner_h = file_list_rows(entries.len(), body_rows);
 
                 let (add_w, del_w, lead) = counts_columns(entries);
-                let widest = entries
-                    .iter()
-                    .map(|e| UnicodeWidthStr::width(e.path.as_str()))
-                    .max()
-                    .unwrap_or(0);
-                // The box fits its content, exactly as its height already
-                // does — 70 columns is a floor, not the size. A fixed width
-                // cut deep paths against the border and took the file NAME
-                // with them, which is the one part of a path worth reading.
-                let width = (lead + widest + 2).max(70).min(panes.body.width as usize) as u16;
-                let area = centered_rect(panes.body, width, height);
+                let area = file_list_modal_area(panes.body, entries);
                 let inner_w = area.width.saturating_sub(2) as usize;
                 let path_col = inner_w.saturating_sub(lead);
 
@@ -822,19 +810,28 @@ impl App {
 
     /// The flat file list, floating over the foot of the plan pane: where you
     /// are, and how much is left.
-    pub(super) fn draw_file_list(&self, frame: &mut Frame, plan: Rect) {
+    /// Where the file list floats while the diff has focus: the foot of the
+    /// plan pane, or nowhere when there are no files. Shared with the hit
+    /// test, so a click on the float is known to be one.
+    pub(super) fn file_list_area(&self, plan: Rect) -> Option<Rect> {
         let files_len = self.listed_files.len();
         if files_len == 0 {
-            return;
+            return None;
         }
         let h = (files_len as u16 + 2)
             .min(plan.height.saturating_sub(2))
             .max(3);
-        let area = Rect {
+        Some(Rect {
             x: plan.x,
             y: plan.y + plan.height.saturating_sub(h),
             width: plan.width,
             height: h,
+        })
+    }
+
+    pub(super) fn draw_file_list(&self, frame: &mut Frame, plan: Rect) {
+        let Some(area) = self.file_list_area(plan) else {
+            return;
         };
         clear_to_ground(frame, &self.theme, area);
         self.draw_file_list_in(frame, area);
@@ -910,7 +907,9 @@ impl App {
     ///
     /// Deliberately not interactive. It is a map; a second cursor in a second
     /// pane is a thing to explain and to get wrong.
-    pub(super) fn draw_group_map(&self, frame: &mut Frame, detail: Rect) {
+    /// Where the group map floats while the plan has focus, or nowhere when the
+    /// pane is too short to hold it. Shared with the hit test.
+    pub(super) fn group_map_area(&self, detail: Rect) -> Option<Rect> {
         // The group's header block is what the height is capped against, so its
         // full label and description — which the 40-column plan pane truncates —
         // stay readable however many files the group touches.
@@ -920,25 +919,31 @@ impl App {
             .take_while(|r| matches!(r.kind, RowKind::GroupHeader | RowKind::Blank))
             .count()
             .min(6) as u16;
-        // Read, not recomputed. This walked the whole tree on every frame:
-        // an ancestor pass over every row above each live file, and a scan
-        // forward per folded directory. It depends on `tree` and `map_files`
-        // and nothing else, both of which `rebuild_overviews` already owns.
-        let rows = &self.map_rows;
         // A pane too short to hold the header block AND a box yields the BOX. A
         // floor that beat the cap would cover the very label the cap exists to
         // protect, which is the one thing the reader cannot do without.
         let cap = detail.height.saturating_sub(header + 2);
         if cap < 3 {
-            return;
+            return None;
         }
-        let h = (rows.len() as u16 + 2).max(3).min(cap);
-        let area = Rect {
+        let h = (self.map_rows.len() as u16 + 2).max(3).min(cap);
+        Some(Rect {
             x: detail.x,
             y: detail.y + detail.height.saturating_sub(h),
             width: detail.width,
             height: h,
+        })
+    }
+
+    pub(super) fn draw_group_map(&self, frame: &mut Frame, detail: Rect) {
+        let Some(area) = self.group_map_area(detail) else {
+            return;
         };
+        // Read, not recomputed. This walked the whole tree on every frame:
+        // an ancestor pass over every row above each live file, and a scan
+        // forward per folded directory. It depends on `tree` and `map_files`
+        // and nothing else, both of which `rebuild_overviews` already owns.
+        let rows = &self.map_rows;
         clear_to_ground(frame, &self.theme, area);
         let inner_h = area.height.saturating_sub(2) as usize;
         let dim = Style::default().fg(self.theme.gutter_fg);
@@ -2003,6 +2008,32 @@ fn wrapped_rows<'a>(lines: impl Iterator<Item = &'a str>, inner: usize) -> usize
     lines.map(|l| textwrap::wrap(l, inner).len().max(1)).sum()
 }
 
+/// The file-list modal's box: as tall as its entries and as wide as its
+/// widest path, centred on the body. One function for the draw and the hit
+/// test, so a click is judged against the box that was drawn.
+pub(super) fn file_list_modal_area(body: Rect, entries: &[FileListEntry]) -> Rect {
+    let height = (entries.len() + 2).min(body.height as usize) as u16;
+    let (_, _, lead) = counts_columns(entries);
+    let widest = entries
+        .iter()
+        .map(|e| UnicodeWidthStr::width(e.path.as_str()))
+        .max()
+        .unwrap_or(0);
+    // The box fits its content, exactly as its height already does — 70
+    // columns is a floor, not the size. A fixed width cut deep paths against
+    // the border and took the file NAME with them, which is the one part of
+    // a path worth reading.
+    let width = (lead + widest + 2).max(70).min(body.width as usize) as u16;
+    centered_rect(body, width, height)
+}
+
+/// The findings modal's box: the entries, their section rules, a title row
+/// and the key footer, centred on the body. Shared with the hit test.
+pub(super) fn findings_modal_area(body: Rect, entries: usize, rules: usize) -> Rect {
+    let height = (entries + rules + 4).min(body.height as usize) as u16;
+    centered_rect(body, 74, height)
+}
+
 pub(super) fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
     let w = width.min(area.width);
     let h = height.min(area.height);
@@ -2034,6 +2065,7 @@ pub(super) fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         row("j/k", "move · in the plan pane, switch group"),
         row("J/K  { }", "previous / next group"),
         row("tab", "switch pane focus"),
+        row("mouse", "wheel one row · click selects · twice enters"),
         row("n/N", "next / previous hunk"),
         row("ctrl-d/u", "half page"),
         row("g/G", "top / bottom"),

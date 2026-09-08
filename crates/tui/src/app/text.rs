@@ -160,6 +160,30 @@ pub(super) fn findings_rows(entries: usize, rules: usize, body_rows: usize) -> u
     (entries + rules + 4).min(body_rows).saturating_sub(3)
 }
 
+/// The entry drawn on line `line` of the findings list, counting from the
+/// list's first line with every section rule counted as a line of its own —
+/// the same rows the list scrolls by. `None` on a rule, or past the end.
+pub(super) fn findings_entry_at_line(
+    entries: usize,
+    rules: &[usize],
+    line: usize,
+) -> Option<usize> {
+    let mut drawn = 0;
+    for i in 0..entries {
+        if rules.contains(&i) {
+            if drawn == line {
+                return None;
+            }
+            drawn += 1;
+        }
+        if drawn == line {
+            return Some(i);
+        }
+        drawn += 1;
+    }
+    None
+}
+
 /// The same, for the file list — a plain bordered box with no footer row.
 pub(super) fn file_list_rows(entries: usize, body_rows: usize) -> usize {
     (entries + 2).min(body_rows).saturating_sub(2)

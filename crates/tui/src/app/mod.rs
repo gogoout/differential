@@ -141,6 +141,10 @@ pub struct Viewport {
     /// body and draws its own box, so it needs the raw number the two panes
     /// have already subtracted their borders from.
     pub body_rows: usize,
+    /// The whole screen the panes were laid out on. A mouse event names a
+    /// cell, and which pane that cell is in is `layout(area)` — the same call
+    /// `draw` makes, so a hit test and a frame cannot disagree.
+    pub area: Rect,
 }
 
 impl Viewport {
@@ -152,6 +156,7 @@ impl Viewport {
             detail_cols: panes.detail.width.saturating_sub(2) as usize,
             plan_rows: panes.plan.height.saturating_sub(2) as usize,
             body_rows: panes.body.height as usize,
+            area,
         }
     }
 }
@@ -164,6 +169,7 @@ impl Default for Viewport {
             detail_cols: 78,
             plan_rows: 24,
             body_rows: 26,
+            area: Rect::new(0, 0, 120, 27),
         }
     }
 }

@@ -4,11 +4,13 @@
 //! reviewer without a terminal. Modal arms return early; the normal-mode arm
 //! is the tail.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::{Position, Rect};
 
 use crate::rows::RowKind;
 
-use super::text::{basename, file_list_rows, findings_rows, step_list};
+use super::draw::{file_list_modal_area, findings_modal_area};
+use super::text::{basename, file_list_rows, findings_entry_at_line, findings_rows, step_list};
 use super::*;
 
 /// Columns one press of `h`/`l` moves the diff pane.
@@ -70,6 +72,211 @@ impl App {
     }
 
     /// Key handling. Returns effects for the loop to execute.
+    /// `enter` in the plan pane: a directory opens rather than jumping to the
+    /// diff; anything else moves focus to the diff.
+    fn enter_plan_entry(&mut self) {
+        if !(self.view_mode == ViewMode::Files && self.toggle_dir()) {
+            self.focus = Focus::Detail;
+        }
+    }
+
+    /// `enter` in the file-list modal: close it on the selected file's header.
+    fn jump_to_listed_file(&mut self) {
+        let Mode::FileList {
+            entries, selected, ..
+        } = &self.mode
+        else {
+            return;
+        };
+        let row = entries[*selected].row_idx;
+        self.mode = Mode::Normal;
+        self.cursor = self.next_selectable(row, 1).unwrap_or(row);
+        self.focus = Focus::Detail;
+        self.follow_cursor();
+    }
+
+    /// `enter` in the findings modal: close it on the selected note or thread,
+    /// or say why that is not possible.
+    fn jump_to_listed_finding(&mut self) {
+        let Mode::Findings {
+            entries, selected, ..
+        } = &self.mode
+        else {
+            return;
+        };
+        let e = &entries[*selected];
+        let (id, orphaned, thread) = (e.id.clone(), e.orphaned, e.thread);
+        // Assign the mode first: it is what drops the borrow this holds on it.
+        self.mode = Mode::Normal;
+        if orphaned {
+            self.status = if thread {
+                "that thread has no line in this diff".into()
+            } else {
+                "that finding has no line any more".into()
+            };
+        } else if thread {
+            if !self.jump_to_thread(&id) {
+                self.status = "could not reach that thread".into();
+            }
+        } else if !self.jump_to_finding(&id) {
+            self.status = "could not reach that finding".into();
+        }
+    }
+
+    /// The mouse. One rule: it acts on the pane under the pointer, and that
+    /// pane takes focus. The wheel is `j`/`k` there, one row per notch; a
+    /// click selects the row or entry under it; a click on what is already
+    /// selected is `enter`; a click outside a box closes the box.
+    ///
+    /// The event loop hands over only the kinds this reads — the wheel's
+    /// four directions and a left press — so a pointer moving across the
+    /// screen never reaches the model, let alone repaints it.
+    pub fn handle_mouse(&mut self, m: MouseEvent) -> Vec<Effect> {
+        let at = Position::new(m.column, m.row);
+        let click = matches!(m.kind, MouseEventKind::Down(MouseButton::Left));
+        let step: isize = match m.kind {
+            MouseEventKind::ScrollDown => 1,
+            MouseEventKind::ScrollUp => -1,
+            _ => 0,
+        };
+        // A key clears the footer, and so does a notch or a click: the message
+        // answers "what did that just do", and this is the next thing done.
+        self.status.clear();
+        let panes = layout(self.viewport.area);
+        match &mut self.mode {
+            Mode::Help | Mode::Notice { .. } => {
+                if click {
+                    self.mode = Mode::Normal;
+                }
+            }
+            // A question only `y` answers, and a box the caret owns.
+            Mode::Editing { .. } | Mode::Publish { .. } | Mode::DeleteComment { .. } => {}
+            Mode::FileList {
+                entries,
+                selected,
+                scroll,
+            } => {
+                if step != 0 {
+                    let rows = file_list_rows(entries.len(), self.viewport.body_rows);
+                    step_list(selected, scroll, entries.len(), rows, step > 0);
+                    return Vec::new();
+                }
+                if !click {
+                    return Vec::new();
+                }
+                match content_line(file_list_modal_area(panes.body, entries), at) {
+                    None => self.mode = Mode::Normal,
+                    Some(line) => {
+                        let hit = *scroll + line;
+                        if hit >= entries.len() {
+                            return Vec::new();
+                        }
+                        if hit == *selected {
+                            self.jump_to_listed_file();
+                        } else {
+                            *selected = hit;
+                        }
+                    }
+                }
+            }
+            Mode::Findings {
+                entries,
+                selected,
+                scroll,
+                confirming,
+            } => {
+                // The wheel is not an answer; a click is `n`, as any key but
+                // `y` is.
+                if *confirming {
+                    if click {
+                        *confirming = false;
+                        self.status = "nothing deleted".into();
+                    }
+                    return Vec::new();
+                }
+                let rules = section_rules(entries);
+                if step != 0 {
+                    let rows = findings_rows(entries.len(), rules.len(), self.viewport.body_rows);
+                    step_list(selected, scroll, entries.len(), rows, step > 0);
+                    return Vec::new();
+                }
+                if !click {
+                    return Vec::new();
+                }
+                let area = findings_modal_area(panes.body, entries.len(), rules.len());
+                match content_line(area, at) {
+                    None => self.mode = Mode::Normal,
+                    Some(line) => {
+                        // The list is drawn from `scroll`, rules counted as
+                        // rows — the same skip the draw takes.
+                        let skip = *scroll + rules.iter().filter(|r| **r <= *scroll).count();
+                        let Some(hit) = findings_entry_at_line(entries.len(), &rules, skip + line)
+                        else {
+                            return Vec::new();
+                        };
+                        if hit == *selected {
+                            self.jump_to_listed_finding();
+                        } else {
+                            *selected = hit;
+                        }
+                    }
+                }
+            }
+            Mode::Normal => {
+                // The floats are maps, deliberately not interactive: a click
+                // on one must not fall through to the pane beneath.
+                if self.view_mode == ViewMode::Groups {
+                    let float = match self.focus {
+                        Focus::Groups => self.group_map_area(panes.detail),
+                        Focus::Detail => self.file_list_area(panes.plan),
+                    };
+                    if float.is_some_and(|a| a.contains(at)) {
+                        return Vec::new();
+                    }
+                }
+                if panes.plan.contains(at) {
+                    self.focus = Focus::Groups;
+                    if step != 0 {
+                        let idx = self.selected_entry().saturating_add_signed(step);
+                        self.select_entry(idx);
+                    } else if click
+                        && let Some(line) = content_line(panes.plan, at)
+                        && let Some(idx) = self.plan_entry_at_line(self.group_scroll + line)
+                    {
+                        if idx == self.selected_entry() {
+                            self.enter_plan_entry();
+                        } else {
+                            self.select_entry(idx);
+                        }
+                    }
+                } else if panes.detail.contains(at) {
+                    self.focus = Focus::Detail;
+                    match m.kind {
+                        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+                            self.move_cursor(step);
+                        }
+                        MouseEventKind::ScrollRight => self.shift_pane(Some(SHIFT_STEP)),
+                        MouseEventKind::ScrollLeft => self.shift_pane(Some(-SHIFT_STEP)),
+                        _ => {
+                            // A row that cannot be selected — the group's
+                            // header, a blank — leaves the cursor where it
+                            // was, as `j` never lands on one either.
+                            if click
+                                && let Some(line) = content_line(panes.detail, at)
+                                && let Some(row) = self.row_at_line(line)
+                                && self.rows[row].kind.selectable()
+                            {
+                                self.cursor = row;
+                                self.follow_cursor();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Vec::new()
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         // One latch, taken before anything reads a key. It used to be taken
         // inside the normal-mode block, which a modal's early return never
@@ -98,13 +305,7 @@ impl App {
                     KeyCode::Char('k') | KeyCode::Up => {
                         step_list(selected, scroll, entries.len(), rows, false);
                     }
-                    KeyCode::Enter => {
-                        let row = entries[*selected].row_idx;
-                        self.mode = Mode::Normal;
-                        self.cursor = self.next_selectable(row, 1).unwrap_or(row);
-                        self.focus = Focus::Detail;
-                        self.follow_cursor();
-                    }
+                    KeyCode::Enter => self.jump_to_listed_file(),
                     KeyCode::Esc | KeyCode::Char('f') | KeyCode::Char('q') => {
                         self.mode = Mode::Normal;
                     }
@@ -179,27 +380,7 @@ impl App {
                         self.mode = Mode::Normal;
                         self.offer_publish();
                     }
-                    (KeyCode::Enter, _) => {
-                        let id = entries[*selected].id.clone();
-                        let (orphaned, thread) =
-                            (entries[*selected].orphaned, entries[*selected].thread);
-                        // Assign the mode first: it is what drops the borrow
-                        // this arm holds on it.
-                        self.mode = Mode::Normal;
-                        if orphaned {
-                            self.status = if thread {
-                                "that thread has no line in this diff".into()
-                            } else {
-                                "that finding has no line any more".into()
-                            };
-                        } else if thread {
-                            if !self.jump_to_thread(&id) {
-                                self.status = "could not reach that thread".into();
-                            }
-                        } else if !self.jump_to_finding(&id) {
-                            self.status = "could not reach that finding".into();
-                        }
-                    }
+                    (KeyCode::Enter, _) => self.jump_to_listed_finding(),
                     (KeyCode::Esc, _) | (KeyCode::Char('F'), _) | (KeyCode::Char('q'), _) => {
                         self.mode = Mode::Normal;
                     }
@@ -333,12 +514,7 @@ impl App {
                     Focus::Detail => Focus::Groups,
                 }
             }
-            (KeyCode::Enter, _) if self.focus == Focus::Groups => {
-                // Enter opens a directory rather than jumping to the diff.
-                if !(self.view_mode == ViewMode::Files && self.toggle_dir()) {
-                    self.focus = Focus::Detail;
-                }
-            }
+            (KeyCode::Enter, _) if self.focus == Focus::Groups => self.enter_plan_entry(),
             (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, _) => match self.focus {
                 Focus::Groups => self.select_entry(self.selected_entry() + 1),
                 Focus::Detail => self.move_cursor(1),
@@ -581,4 +757,16 @@ impl App {
         }
         Vec::new()
     }
+}
+
+/// The content line of a bordered box under `at`, counted from the box's first
+/// line inside its border — or `None` when `at` is on the border or outside.
+fn content_line(area: Rect, at: Position) -> Option<usize> {
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+    inner.contains(at).then(|| usize::from(at.y - inner.y))
 }

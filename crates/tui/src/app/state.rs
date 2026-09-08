@@ -389,6 +389,38 @@ impl App {
         top.min(self.cursor)
     }
 
+    /// The row drawn on screen line `line` of the detail pane, counted from
+    /// the pane's first content line — `highest_scroll` run the other way: a
+    /// click names a line, and a wrapped row is several of them.
+    pub(super) fn row_at_line(&self, line: usize) -> Option<usize> {
+        let mut used = 0;
+        for i in self.scroll..self.rows.len() {
+            used += self.row_height(i);
+            if line < used {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// The plan entry whose block holds line `line` of the whole list — the
+    /// caller adds `group_scroll` to a screen line, so this is
+    /// `follow_plan_scroll`'s arithmetic run the other way.
+    pub(super) fn plan_entry_at_line(&self, line: usize) -> Option<usize> {
+        let n = match self.view_mode {
+            ViewMode::Groups => self.groups().len(),
+            ViewMode::Files => self.tree.len(),
+        };
+        let mut used = 0;
+        for i in 0..n {
+            used += self.plan_block_height(i);
+            if line < used {
+                return Some(i);
+            }
+        }
+        None
+    }
+
     /// The row half a pane away from `from`, walking `dir`.
     ///
     /// Half a pane of screen LINES. Counting rows would jump a screenful of
