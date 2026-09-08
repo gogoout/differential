@@ -7626,3 +7626,66 @@ fn the_findings_footer_buttons_jump_and_close() {
     app.handle_mouse(click(yes.0, yes.1));
     assert!(app.session.findings().is_empty());
 }
+
+#[test]
+fn the_floating_overviews_swallow_a_click_and_the_wheel() {
+    let (_r, mut app) = make_app();
+    sized(&mut app);
+    let panes = layout(SCREEN);
+
+    // The plan has focus, so the group map floats at the foot of the diff.
+    assert_eq!(app.focus, Focus::Groups);
+    let map = app
+        .group_map_area(panes.detail)
+        .expect("the group map floats while the plan has focus");
+    let (x, y) = inside(map);
+    let (group, cursor) = (app.selected_group, app.cursor);
+    app.handle_mouse(click(x, y));
+    app.handle_mouse(wheel_down(x, y));
+    assert_eq!(app.focus, Focus::Groups, "a map takes no focus");
+    assert_eq!(
+        (app.selected_group, app.cursor),
+        (group, cursor),
+        "and moves nothing"
+    );
+
+    // The diff has focus, so the file list floats at the foot of the plan.
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    let list = app
+        .file_list_area(panes.plan)
+        .expect("the file list floats while the diff has focus");
+    let (x, y) = inside(list);
+    let (group, cursor) = (app.selected_group, app.cursor);
+    app.handle_mouse(click(x, y));
+    app.handle_mouse(wheel_down(x, y));
+    assert_eq!(app.focus, Focus::Detail);
+    assert_eq!((app.selected_group, app.cursor), (group, cursor));
+}
+
+#[test]
+fn the_horizontal_wheel_shifts_the_diff_pane_as_h_and_l_do() {
+    let (_r, mut app) = app_with_a_long_line();
+    sized(&mut app);
+    let (x, y) = inside(layout(SCREEN).detail);
+    let head = "Soft wrap exists because";
+    let before = wrapped_pane(&mut app);
+    assert!(before.iter().any(|r| r.contains(head)));
+
+    for _ in 0..6 {
+        app.handle_mouse(mouse(MouseEventKind::ScrollRight, x, y));
+    }
+    let after = wrapped_pane(&mut app);
+    assert!(
+        !after.iter().any(|r| r.contains(head)),
+        "six notches right move the head off the pane: {after:#?}"
+    );
+
+    for _ in 0..6 {
+        app.handle_mouse(mouse(MouseEventKind::ScrollLeft, x, y));
+    }
+    assert_eq!(
+        wrapped_pane(&mut app),
+        before,
+        "six notches left bring it back"
+    );
+}

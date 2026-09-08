@@ -660,7 +660,7 @@ impl App {
     /// Where the file list floats while the diff has focus: the foot of the
     /// plan pane, or nowhere when there are no files. Shared with the hit
     /// test, so a click on the float is known to be one.
-    pub(super) fn file_list_area(&self, plan: Rect) -> Option<Rect> {
+    pub fn file_list_area(&self, plan: Rect) -> Option<Rect> {
         let files_len = self.listed_files.len();
         if files_len == 0 {
             return None;
@@ -756,7 +756,7 @@ impl App {
     /// pane is a thing to explain and to get wrong.
     /// Where the group map floats while the plan has focus, or nowhere when the
     /// pane is too short to hold it. Shared with the hit test.
-    pub(super) fn group_map_area(&self, detail: Rect) -> Option<Rect> {
+    pub fn group_map_area(&self, detail: Rect) -> Option<Rect> {
         // The group's header block is what the height is capped against, so its
         // full label and description — which the 40-column plan pane truncates —
         // stay readable however many files the group touches.
