@@ -156,7 +156,7 @@ impl SymbolSource for AstSymbols {
         let mut cursor = QueryCursor::new();
         let mut matches = cursor.matches(query, tree.root_node(), content);
         while let Some(m) = matches.next() {
-            for capture in m.captures {
+            for capture in m.captures() {
                 let node = capture.node;
                 if is_prose(node) {
                     continue;

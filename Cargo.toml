@@ -29,23 +29,23 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 anyhow = "1"
-base64 = "0.22"
+base64 = "0.23"
 clap = { version = "4", features = ["derive"] }
 regex = "1"
-sha1 = "0.10"
+sha1 = "0.11"
 hex = "0.4"
 tempfile = "3"
-toml = "0.8"
+toml = "1"
 globset = "0.4"
 memchr = "2"
 percent-encoding = "2"
 petgraph = "0.8"
-etcetera = "0.10"
+etcetera = "0.11"
 palette = "0.7"
 # Symbol readers. All grammar crates resolve to one `tree-sitter-language`
-# (0.1.7), which is the ABI that actually matters — their own version numbers
+# (0.1.8 or later), which is the ABI that actually matters — their own version numbers
 # scatter across 0.23-0.25 and mean nothing here.
-tree-sitter = "0.26"
+tree-sitter = "0.27"
 tree-sitter-rust = "0.24"
 tree-sitter-python = "0.25"
 tree-sitter-go = "0.25"
