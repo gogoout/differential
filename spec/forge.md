@@ -228,9 +228,12 @@ on stderr — `glab: HTTP 400` — and the forge's own answer, which is the reas
 target branch's tip when the diff was computed, `base_sha` the merge base; both come from
 the request and travel in every position. `old_path` is the file entry's `old_path` when
 it has one, else the path. Two limits, until the adapter has met a live instance: a
-**multi-line finding is positioned at its last line** and opens its note with
-`(lines a-b)`, because `line_range` wants a `line_code` hashed from the path and both
-sides' numbers; a **position recorded against another head is outdated** and counted
+**multi-line finding is positioned at its last line**, opens its note with `(lines a-b)`,
+and carries a `position[line_range]`: a `[start]` and an `[end]`, each a `line_code` (the
+path's sha1, then the old and new line numbers, `<sha>_<old>_<new>`) and a `type`. An added
+or deleted line has a real number on its own side and, on the other, the position it sits at.
+GitLab rejects `old_line`/`new_line` fields inside `line_range`, so each end carries only its
+`line_code` and `type`. This is unconfirmed against a live instance; a **position recorded against another head is outdated** and counted
 rather than drawn, because the REST answer carries no diff text to place it by; and a
 **publish that fails part-way** may leave draft notes on the request, because GitLab has
 no batch create — the next publish does not know them, so they are cleared by hand. The

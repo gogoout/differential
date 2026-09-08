@@ -705,6 +705,29 @@ fn gitlab_is_not_held_to_the_three_line_rule_and_an_unchanged_line_carries_both_
     assert!(gitlab.excluded.is_empty());
     assert_eq!(gitlab.batch.comments[0].line, 9);
     assert_eq!(gitlab.batch.comments[0].other_line, Some(8));
+    // One line, so no range.
+    assert!(gitlab.batch.comments[0].span.is_none());
+}
+
+#[test]
+fn a_multi_line_finding_carries_both_ends_paired_across_the_sides() {
+    // Head edits line 3 and inserts a line at the top: line 9 (new) is
+    // unchanged and is old line 8, line 10 (new) is old line 9.
+    let (r, base, head) = ten_line_repo(|lines| {
+        lines[2] = "line_3 = 300".to_string();
+        lines.insert(0, "inserted = 0".to_string());
+    });
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut s = session(&r, &base, &head, tmp.path());
+    let h = s.doc().hunks.iter().position(|h| h.new_start == 4).unwrap();
+    s.add_finding(h, Some(lines("new", 9, 10)), "a run".into())
+        .unwrap();
+    let batch = s.publish_plan(forge::ForgeKind::Gitlab).batch;
+    let span = batch.comments[0]
+        .span
+        .expect("a multi-line comment has a span");
+    assert_eq!(span.start, (8, 9), "line 9 new is old 8");
+    assert_eq!(span.end, (9, 10), "line 10 new is old 9");
 }
 
 #[test]

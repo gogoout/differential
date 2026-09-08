@@ -260,7 +260,20 @@ pub struct NewComment {
     /// and so exists on both. GitLab positions an unchanged line by both
     /// numbers; a changed line has one.
     pub other_line: Option<u32>,
+    /// The two ends of a multi-line comment, each as its `(old, new)` pair,
+    /// which GitLab needs to build a `line_code`. `None` for one line.
+    pub span: Option<LineSpan>,
     pub body: String,
+}
+
+/// The endpoints of a multi-line comment, each line as its `(old, new)` pair.
+/// GitLab attaches a range by a `line_code` at each end, and a `line_code`
+/// names both sides' numbers. A changed line has a real number on its own
+/// side and the position it sits at on the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineSpan {
+    pub start: (u32, u32),
+    pub end: (u32, u32),
 }
 
 /// A reply to publish into an existing thread.
@@ -615,6 +628,15 @@ pub fn publish_plan(
                 &f.anchor.side,
                 f.anchor.end_line.max(f.anchor.line),
             ),
+            span: (f.anchor.end_line > f.anchor.line).then(|| LineSpan {
+                start: line_code_pair(doc, &f.anchor.file, &f.anchor.side, f.anchor.line),
+                end: line_code_pair(
+                    doc,
+                    &f.anchor.file,
+                    &f.anchor.side,
+                    f.anchor.end_line.max(f.anchor.line),
+                ),
+            }),
             body: with_marker(&f.body, &f.id),
         });
     }
@@ -657,6 +679,45 @@ pub fn other_side_line(
         .map(|((s, n), (os, on))| i64::from(os + on) - i64::from(s + n))
         .unwrap_or(0);
     u32::try_from(i64::from(line) + shift).ok()
+}
+
+/// The `(old, new)` pair a line's GitLab `line_code` needs. An unchanged line
+/// has both exactly; a changed line has its own side exactly and, on the other
+/// side, the position it sits at — the number GitLab records for an added or
+/// deleted line in a `line_code`.
+fn line_code_pair(doc: &schema::PlanDocument, file: &str, side: &str, line: u32) -> (u32, u32) {
+    let other = other_position(doc, file, side, line);
+    if side == "old" {
+        (line, other)
+    } else {
+        (other, line)
+    }
+}
+
+/// The line's number on the other side. Exact for an unchanged line; for a
+/// changed line, the other side's position: the start of the paired hunk when
+/// nothing sits there (a pure insertion or deletion), else the matching offset
+/// into it.
+fn other_position(doc: &schema::PlanDocument, file: &str, side: &str, line: u32) -> u32 {
+    let old = side == "old";
+    if let Some(o) = other_side_line(doc, file, side, line) {
+        return o;
+    }
+    doc.hunks
+        .iter()
+        .filter(|h| h.file == file)
+        .find_map(|h| {
+            let (s, n) = side_range(h, old);
+            (n > 0 && line >= s && line < s.saturating_add(n)).then(|| {
+                let (os, on) = side_range(h, !old);
+                if on == 0 {
+                    os
+                } else {
+                    os.saturating_add((line - s).min(on - 1))
+                }
+            })
+        })
+        .unwrap_or(line)
 }
 
 /// Whether both ends of `a` sit inside the request's diff of its file, with

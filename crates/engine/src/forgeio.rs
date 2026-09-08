@@ -16,6 +16,8 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+use sha1::{Digest, Sha1};
+
 use crate::forge::{
     Batch, Forge, ForgeError, ForgeKind, NewComment, NewReply, Published, RemoteComment,
     RemoteThread, Request, Sent, marker, strip_marker,
@@ -1012,7 +1014,28 @@ fn draft_note_position(req: &Request, c: &NewComment) -> Vec<(String, String)> {
     if let Some(o) = c.other_line {
         fields.push((format!("position[{other}]"), o.to_string()));
     }
+    // A multi-line comment names a `line_code` at each end. GitLab rejects
+    // `old_line`/`new_line` objects inside `line_range`, so each end carries
+    // only its `line_code` and side.
+    if let Some(span) = &c.span {
+        let ty = if c.side == "old" { "old" } else { "new" };
+        for (end, (old, new)) in [("start", span.start), ("end", span.end)] {
+            fields.push((
+                format!("position[line_range][{end}][line_code]"),
+                line_code(&c.path, old, new),
+            ));
+            fields.push((format!("position[line_range][{end}][type]"), ty.into()));
+        }
+    }
     fields
+}
+
+/// GitLab's id for a diff line: the sha1 of the file path, then the old and
+/// new line numbers. `<sha>_<old>_<new>`, as the docs and the diff UI form it.
+fn line_code(path: &str, old: u32, new: u32) -> String {
+    let mut h = Sha1::new();
+    h.update(path.as_bytes());
+    format!("{}_{old}_{new}", hex::encode(h.finalize()))
 }
 
 /// Pair each sent note with the discussion and note GitLab made of it, from
@@ -1148,6 +1171,7 @@ mod tests {
             line,
             start_line: start,
             other_line: None,
+            span: None,
             body: body.into(),
         }
     }
@@ -1421,6 +1445,31 @@ mod tests {
             "{query}"
         );
         assert!(!query.contains('/'), "{query}");
+    }
+
+    #[test]
+    fn a_multi_line_draft_note_carries_a_line_range_at_each_end() {
+        use crate::forge::LineSpan;
+        let req = parse_mr(&mr_view()).unwrap();
+        let mut c = comment("f4", "new", 20, Some(18), "a run of lines");
+        // Line 18 is unchanged (old 18, new 18); lines 19-20 are added, so
+        // their old side is the position they sit at, line 18.
+        c.span = Some(LineSpan {
+            start: (18, 18),
+            end: (18, 20),
+        });
+        let pos: std::collections::HashMap<String, String> =
+            draft_note_position(&req, &c).into_iter().collect();
+        let code = |old: u32, new: u32| line_code("src/lib.rs", old, new);
+        assert_eq!(pos["position[line_range][start][line_code]"], code(18, 18));
+        assert_eq!(pos["position[line_range][start][type]"], "new");
+        assert_eq!(pos["position[line_range][end][line_code]"], code(18, 20));
+        assert_eq!(pos["position[line_range][end][type]"], "new");
+        // The last line is still the anchor position.
+        assert_eq!(pos["position[new_line]"], "20");
+        // A line_code is the path's sha1, then the two numbers.
+        assert!(code(18, 20).ends_with("_18_20"), "{}", code(18, 20));
+        assert_eq!(code(18, 20).len(), 40 + "_18_20".len());
     }
 
     #[test]
