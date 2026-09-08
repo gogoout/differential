@@ -25,6 +25,10 @@ jobs:
         with:
           fetch-depth: 1
 
-      - uses: anthropics/claude-code-action@v1
+      # Pinned to v1.0.217. v1.0.218 installs Claude Code 2.1.265, whose
+      # launcher is not created on the ubuntu24 20260907 runner image, so
+      # every run fails before Claude starts (claude-code-action issue 1817).
+      # Move the pin once upstream ships a fix.
+      - uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1.0.217
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
