@@ -975,10 +975,9 @@ fn encode_query(fields: &[(String, String)]) -> String {
 /// The `position[key]=value` fields of `POST .../draft_notes` for one new
 /// comment, in the order GitLab documents them.
 ///
-/// A position names both paths and the three shas. A multi-line finding is
-/// positioned at its last line and says its range in the note: GitLab's
-/// `line_range` wants a `line_code` built from a hash of the path and both
-/// sides' numbers, which is not confirmed against a live instance yet.
+/// A position names both paths and the three shas. A multi-line finding also
+/// carries a `position[line_range]`; `line_end` in `engine::forge` builds each
+/// end's `line_code` from the path's sha1 and both sides' numbers.
 fn draft_note_position(req: &Request, c: &NewComment) -> Vec<(String, String)> {
     let mut fields = vec![
         ("position[position_type]".into(), "text".into()),

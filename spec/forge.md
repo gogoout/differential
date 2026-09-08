@@ -224,23 +224,27 @@ content type set, and a raw body without one drew `HTTP 415` from GitLab on the 
 write. `gh` labels a raw body as JSON, so GitHub keeps its bodies. When a call fails, the
 error carries what the tool printed on stderr **and** stdout: both tools put only the status
 on stderr — `glab: HTTP 400` — and the forge's own answer, which is the reason, on stdout.
-`start_sha` is the
-target branch's tip when the diff was computed, `base_sha` the merge base; both come from
-the request and travel in every position. `old_path` is the file entry's `old_path` when
-it has one, else the path. Two limits, until the adapter has met a live instance: a
-**multi-line finding is positioned at its last line** and carries a `position[line_range]`: a `[start]` and an `[end]`, each a `line_code`, a
-`type`, and the real line number on each side the line exists. A `line_code` is
-`<sha>_<old>_<new>` — the path's sha1, then the two numbers — and the three kinds differ, as
-the forge's own web UI sends them. A line missing from one side takes, on that side, the
-position it sits at: the paired hunk's start, shared by every added or deleted line in the
-hunk, `0` only for a block at the file's top. So an **added** line is `type: new`,
-`<sha>_<oldpos>_<new>`, with `new_line` only; a **deleted** line is `type: old`,
-`<sha>_<old>_<newpos>`, with `old_line` only; an **unchanged** line is `type: expanded`,
-`<sha>_<old>_<new>`, with both numbers and both `*_line` fields. This is confirmed against the
-web UI's captured requests, added side and deleted side alike; a **position recorded against another head is outdated** and counted
-rather than drawn, because the REST answer carries no diff text to place it by; and a
-**publish that fails part-way** may leave draft notes on the request, because GitLab has
-no batch create — the next publish does not know them, so they are cleared by hand. The
+`start_sha` is
+the target branch's tip when the diff was computed, `base_sha` the merge base; both come
+from the request and travel in every position. `old_path` is the file entry's `old_path`
+when it has one, else the path.
+
+A **multi-line finding is positioned at its last line** and carries a `position[line_range]`:
+a `[start]` and an `[end]`, each a `line_code`, a `type`, and the real line number on each
+side the line exists. A `line_code` is `<sha>_<old>_<new>` — the path's sha1, then the two
+numbers — and the three kinds differ, as the forge's own web UI sends them. A line missing
+from one side takes, on that side, the position it sits at: the paired hunk's start, shared
+by every added or deleted line in the hunk, `0` only for a block at the file's top. So an
+**added** line is `type: new`, `<sha>_<oldpos>_<new>`, with `new_line` only; a **deleted**
+line is `type: old`, `<sha>_<old>_<newpos>`, with `old_line` only; an **unchanged** line is
+`type: expanded`, `<sha>_<old>_<new>`, with both numbers and both `*_line` fields. This is
+confirmed against the web UI's captured requests, added side and deleted side alike.
+
+Two limits remain, until the adapter has met a live instance: a **position recorded against
+another head is outdated** and counted rather than drawn, because the REST answer carries no
+diff text to place it by; and a **publish that fails part-way** may leave draft notes on the
+request, because GitLab has no batch create — the next publish does not know them, so they
+are cleared by hand. The
 **three-line diff check is GitHub's** and is not applied here: GitLab positions a note by
 `old_line` / `new_line` against the request's diff refs, an unchanged line carries both
 numbers (the other side's computed from the hunks before it), and any line of the file is
