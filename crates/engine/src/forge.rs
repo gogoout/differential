@@ -351,11 +351,15 @@ pub enum ForgeError {
         #[source]
         source: std::io::Error,
     },
-    #[error("{command} exited with {code:?}: {stderr}")]
+    #[error("{command} exited with {code:?}: {output}")]
     Failed {
         command: String,
         code: Option<i32>,
-        stderr: String,
+        /// What the tool said as it failed: stderr, then stdout. `glab` and
+        /// `gh` print only the status on stderr and the forge's own answer —
+        /// `{"error": "position[new_line] is invalid"}` — on stdout, and the
+        /// answer is the part that says why.
+        output: String,
     },
     #[error("{command} did not finish within {timeout:?}")]
     Timeout {

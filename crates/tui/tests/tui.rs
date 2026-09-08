@@ -5799,7 +5799,7 @@ mod forge_threads {
                 return Err(ForgeError::Failed {
                     command: "fakeforge api --method POST projects/:id/merge_requests/1/discussions/abc/notes --input -".into(),
                     code: Some(1),
-                    stderr: "{\"message\":\"400 Bad Request - the forge's own words, at length, which the footer could never hold\"}".into(),
+                    output: "{\"message\":\"400 Bad Request - the forge's own words, at length, which the footer could never hold\"}".into(),
                 });
             }
             self.published.lock().unwrap().push(batch.clone());

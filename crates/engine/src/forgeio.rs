@@ -74,10 +74,16 @@ impl Tool {
             subprocess::Failure::Cancelled => ForgeError::Cancelled { command: command() },
         })?;
         if !out.status.success() {
+            let output = [&out.stderr, &out.stdout]
+                .into_iter()
+                .map(|bytes| subprocess::stderr_excerpt(bytes, 600))
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
             return Err(ForgeError::Failed {
                 command: command(),
                 code: out.status.code(),
-                stderr: subprocess::stderr_excerpt(&out.stderr, 600),
+                output,
             });
         }
         Ok(out.stdout)
@@ -167,8 +173,8 @@ fn field_args(method: &str, path: &str, fields: &[(&str, &Value)]) -> Vec<String
 /// "none" is an answer rather than a broken tool.
 fn no_request(err: ForgeError, id: Option<&str>, noun: &str) -> ForgeError {
     match err {
-        ForgeError::Failed { stderr, .. } if id.is_none() => {
-            ForgeError::NoRequest(format!("the current branch has no {noun} ({stderr})"))
+        ForgeError::Failed { output, .. } if id.is_none() => {
+            ForgeError::NoRequest(format!("the current branch has no {noun} ({output})"))
         }
         e => e,
     }
@@ -1421,7 +1427,7 @@ dir=$(dirname "$0")
 printf '%s\n' "$*" >> "$dir/calls"
 mode=$(cat "$dir/mode")
 case "$*" in
-  *"/discussions/bad/notes"*) echo "glab: HTTP 500" >&2; exit 1 ;;
+  *"/discussions/bad/notes"*) echo '{"error":"body is invalid"}'; echo "glab: HTTP 400" >&2; exit 1 ;;
   *"/discussions/"*"/notes"*) echo '{"id": 555, "body": "because"}' ;;
   *"/draft_notes/bulk_publish"*)
     if [ "$mode" = "bulk-fails" ]; then echo "glab: HTTP 500" >&2; exit 1; fi ;;
@@ -1468,7 +1474,9 @@ esac
         // the comments were never sent.
         std::fs::write(dir.path().join("mode"), "ok").unwrap();
         let err = forge.publish(&req, &mixed_batch("bad")).unwrap_err();
-        assert!(err.to_string().contains("HTTP 500"), "{err}");
+        // The status from stderr and the forge's reason from stdout, both.
+        assert!(err.to_string().contains("HTTP 400"), "{err}");
+        assert!(err.to_string().contains("body is invalid"), "{err}");
         assert!(
             !calls(dir.path()).contains("draft_notes"),
             "{}",

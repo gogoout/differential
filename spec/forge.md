@@ -221,7 +221,10 @@ and until then `event` is always `COMMENT`.
 `:id` is the tool's placeholder for the current directory's project. Every write goes as
 `glab`'s field flags, never as a raw body on stdin: the tool sends fields as JSON with the
 content type set, and a raw body without one drew `HTTP 415` from GitLab on the first live
-write. `gh` labels a raw body as JSON, so GitHub keeps its bodies. `start_sha` is the
+write. `gh` labels a raw body as JSON, so GitHub keeps its bodies. When a call fails, the
+error carries what the tool printed on stderr **and** stdout: both tools put only the status
+on stderr — `glab: HTTP 400` — and the forge's own answer, which is the reason, on stdout.
+`start_sha` is the
 target branch's tip when the diff was computed, `base_sha` the merge base; both come from
 the request and travel in every position. `old_path` is the file entry's `old_path` when
 it has one, else the path. Two limits, until the adapter has met a live instance: a
