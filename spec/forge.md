@@ -232,11 +232,13 @@ it has one, else the path. Two limits, until the adapter has met a live instance
 and carries a `position[line_range]`: a `[start]` and an `[end]`, each a `line_code`, a
 `type`, and the real line number on each side the line exists. A `line_code` is
 `<sha>_<old>_<new>` — the path's sha1, then the two numbers — and the three kinds differ, as
-the forge's own web UI sends them: an **added** line is `type: new`, `<sha>_0_<new>`, with
-`new_line` only; an **unchanged** line is `type: expanded`, `<sha>_<old>_<new>`, with both
-numbers; a **deleted** line is `type: old`, `<sha>_<old>_<pos>`, with `old_line` only, where
-`<pos>` is the new-side line the deletion sits at — the start of its hunk, shared by every
-deleted line in it — not zero. This is confirmed against the web UI's captured requests; a **position recorded against another head is outdated** and counted
+the forge's own web UI sends them. A line missing from one side takes, on that side, the
+position it sits at: the paired hunk's start, shared by every added or deleted line in the
+hunk, `0` only for a block at the file's top. So an **added** line is `type: new`,
+`<sha>_<oldpos>_<new>`, with `new_line` only; a **deleted** line is `type: old`,
+`<sha>_<old>_<newpos>`, with `old_line` only; an **unchanged** line is `type: expanded`,
+`<sha>_<old>_<new>`, with both numbers and both `*_line` fields. This is confirmed against the
+web UI's captured requests, added side and deleted side alike; a **position recorded against another head is outdated** and counted
 rather than drawn, because the REST answer carries no diff text to place it by; and a
 **publish that fails part-way** may leave draft notes on the request, because GitLab has
 no batch create — the next publish does not know them, so they are cleared by hand. The

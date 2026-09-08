@@ -765,6 +765,30 @@ fn a_finding_over_added_lines_pairs_each_end_with_zero_on_the_old_side() {
 }
 
 #[test]
+fn added_lines_below_the_top_take_the_old_side_position_not_zero() {
+    // Two lines inserted after old line 5: the additions sit at old position
+    // 5, so the line_code's old number is 5, not 0 — the deleted case's
+    // mirror, as GitLab's own requests show.
+    let (r, base, head) = ten_line_repo(|lines| {
+        lines.insert(5, "added_a = 0".to_string());
+        lines.insert(6, "added_b = 0".to_string());
+    });
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut s = session(&r, &base, &head, tmp.path());
+    let h = s.doc().hunks.iter().position(|h| h.new_count == 2).unwrap();
+    s.add_finding(h, Some(lines("new", 6, 7)), "a run".into())
+        .unwrap();
+    let batch = s.publish_plan(forge::ForgeKind::Gitlab).batch;
+    let span = batch.comments[0]
+        .span
+        .expect("a multi-line comment has a span");
+    assert_eq!(span.start.kind, "new");
+    assert_eq!(span.start.old, 5, "added line 6 sits at old line 5");
+    assert_eq!(span.start.old_line, None);
+    assert_eq!((span.end.old, span.end.new), (5, 7));
+}
+
+#[test]
 fn a_finding_over_deleted_lines_takes_the_new_side_position_not_zero() {
     // Delete two lines in the middle: old lines 5 and 6 exist on the old side
     // only, and both sit at the same new-side position, which the line_code

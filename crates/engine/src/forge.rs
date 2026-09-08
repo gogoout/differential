@@ -271,8 +271,9 @@ pub struct NewComment {
 /// `kind` is `"new"` for an added line, `"old"` for a deleted one, and
 /// `"expanded"` for an unchanged line, which exists on both sides. `old` and
 /// `new` are the numbers the `line_code` carries — `<sha>_<old>_<new>` — and
-/// they are not always the line's own numbers: an added line is `0` on the
-/// old side, a deleted line takes the new-side position it sits at, not `0`.
+/// they are not always the line's own numbers: a line missing from one side
+/// takes the position it sits at there — the paired hunk's start, which is
+/// `0` only for a block at the file's top.
 /// `old_line` and `new_line` are the real numbers, present only on the side
 /// the line exists, exactly as the forge's web UI sends them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -725,13 +726,13 @@ fn line_end(doc: &schema::PlanDocument, file: &str, side: &str, line: u32) -> Li
         None if side == "old" => LineEnd {
             kind: "old",
             old: line,
-            new: new_side_position(doc, file, line),
+            new: other_position(doc, file, "old", line),
             old_line: Some(line),
             new_line: None,
         },
         None => LineEnd {
             kind: "new",
-            old: 0,
+            old: other_position(doc, file, "new", line),
             new: line,
             old_line: None,
             new_line: Some(line),
@@ -739,21 +740,31 @@ fn line_end(doc: &schema::PlanDocument, file: &str, side: &str, line: u32) -> Li
     }
 }
 
-/// Where a deleted old-side `line` sits on the new side: the start of the
-/// hunk that removes it, which is the new line the deletion follows. Every
-/// deleted line in one hunk shares this number, as GitLab's `line_code` does.
-fn new_side_position(doc: &schema::PlanDocument, file: &str, line: u32) -> u32 {
+/// Where `line` on `side` sits on the other side: the paired hunk's start
+/// when nothing sits there (a pure insertion's old side, a pure deletion's
+/// new side), else the matching offset into it. Every added or deleted line
+/// in one hunk shares the other side's start, which is the number GitLab's
+/// `line_code` carries for it — `0` only when the block is at the file's top.
+fn other_position(doc: &schema::PlanDocument, file: &str, side: &str, line: u32) -> u32 {
+    let own_old = side == "old";
     doc.hunks
         .iter()
         .filter(|h| h.file == file)
         .find_map(|h| {
-            let (s, n) = side_range(h, true);
+            let (s, n) = side_range(h, own_old);
             (n > 0 && line >= s && line < s.saturating_add(n)).then(|| {
-                let (ns, nn) = side_range(h, false);
-                if nn == 0 {
-                    ns
+                // The paired side's RAW start: a block at the file's top sits
+                // at `0`, which `side_range` would clamp to 1. That `0` is
+                // exactly what GitLab's `line_code` carries there.
+                let (os, on) = if own_old {
+                    (h.new_start, h.new_count)
                 } else {
-                    ns.saturating_add((line - s).min(nn - 1))
+                    (h.old_start, h.old_count)
+                };
+                if on == 0 {
+                    os
+                } else {
+                    os.saturating_add((line - s).min(on - 1))
                 }
             })
         })
