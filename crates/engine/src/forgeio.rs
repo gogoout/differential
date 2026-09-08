@@ -753,13 +753,15 @@ impl Forge for GlabForge {
         // though the drafts already made stay on the request, unpublished,
         // which the spec names as a limit.
         for c in &batch.comments {
-            let body = draft_note_body(req, c);
-            let r = self.tool.rest_fields(
-                "POST",
-                &Self::mr(req, "/draft_notes"),
-                &[("note", &body["note"]), ("position", &body["position"])],
-            );
-            if let Err(e) = r {
+            // The position goes in the query string as `position[key]=…`, not
+            // as a `position` object in the JSON body: this endpoint reads the
+            // hash only from bracket-encoded params, and a body object comes
+            // back "position[base_sha] is missing" for every key. The note,
+            // which carries newlines and the marker, stays a body field.
+            let query = encode_query(&draft_note_position(req, c));
+            let path = Self::mr(req, &format!("/draft_notes?{query}"));
+            let note = json!(ranged_note(c));
+            if let Err(e) = self.tool.rest_fields("POST", &path, &[("note", &note)]) {
                 return stop(sent, e);
             }
         }
@@ -957,21 +959,48 @@ fn ranged_note(c: &NewComment) -> String {
     }
 }
 
-/// The body of `POST .../draft_notes` for one new comment.
+/// `key=value&…`, each side percent-encoded. Building a query string by hand
+/// is where an unescaped `/` or `+` in a path or sha corrupts a request, so
+/// the encoder is `percent_encoding`, not `format!`. The set encodes every
+/// reserved character — the `[` `]` of a bracket key, the `/` of a path —
+/// and leaves the URL-unreserved `-_.~` alone.
+fn encode_query(fields: &[(String, String)]) -> String {
+    use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
+    const UNRESERVED: &AsciiSet = &NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'_')
+        .remove(b'.')
+        .remove(b'~');
+    let enc = |s: &str| utf8_percent_encode(s, UNRESERVED).to_string();
+    fields
+        .iter()
+        .map(|(k, v)| format!("{}={}", enc(k), enc(v)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+/// The `position[key]=value` fields of `POST .../draft_notes` for one new
+/// comment, in the order GitLab documents them.
 ///
 /// A position names both paths and the three shas. A multi-line finding is
 /// positioned at its last line and says its range in the note: GitLab's
 /// `line_range` wants a `line_code` built from a hash of the path and both
 /// sides' numbers, which is not confirmed against a live instance yet.
-fn draft_note_body(req: &Request, c: &NewComment) -> Value {
-    let mut position = json!({
-        "position_type": "text",
-        "base_sha": req.merge_base.clone().unwrap_or_default(),
-        "start_sha": req.base_tip,
-        "head_sha": req.head,
-        "new_path": c.path,
-        "old_path": c.old_path.clone().unwrap_or_else(|| c.path.clone()),
-    });
+fn draft_note_position(req: &Request, c: &NewComment) -> Vec<(String, String)> {
+    let mut fields = vec![
+        ("position[position_type]".into(), "text".into()),
+        (
+            "position[base_sha]".into(),
+            req.merge_base.clone().unwrap_or_default(),
+        ),
+        ("position[start_sha]".into(), req.base_tip.clone()),
+        ("position[head_sha]".into(), req.head.clone()),
+        ("position[new_path]".into(), c.path.clone()),
+        (
+            "position[old_path]".into(),
+            c.old_path.clone().unwrap_or_else(|| c.path.clone()),
+        ),
+    ];
     // GitLab wants one number for a changed line and both for an unchanged
     // one, which exists on both sides.
     let (mine, other) = if c.side == "old" {
@@ -979,11 +1008,11 @@ fn draft_note_body(req: &Request, c: &NewComment) -> Value {
     } else {
         ("new_line", "old_line")
     };
-    position[mine] = json!(c.line);
+    fields.push((format!("position[{mine}]"), c.line.to_string()));
     if let Some(o) = c.other_line {
-        position[other] = json!(o);
+        fields.push((format!("position[{other}]"), o.to_string()));
     }
-    json!({ "note": ranged_note(c), "position": position })
+    fields
 }
 
 /// Pair each sent note with the discussion and note GitLab made of it, from
@@ -1356,29 +1385,42 @@ mod tests {
         let req = parse_mr(&mr_view()).unwrap();
         let mut c = comment("f1", "new", 3, None, "one line");
         c.old_path = Some("src/old.rs".into());
-        let body = draft_note_body(&req, &c);
-        assert_eq!(body["note"], json!("one line"));
-        assert_eq!(body["position"]["position_type"], json!("text"));
-        assert_eq!(body["position"]["base_sha"], json!("2".repeat(40)));
-        assert_eq!(body["position"]["start_sha"], json!("3".repeat(40)));
-        assert_eq!(body["position"]["head_sha"], json!(HEAD));
-        assert_eq!(body["position"]["new_path"], json!("src/lib.rs"));
-        assert_eq!(body["position"]["old_path"], json!("src/old.rs"));
-        assert_eq!(body["position"]["new_line"], json!(3));
-        assert!(body["position"].get("old_line").is_none());
+        let pos: std::collections::HashMap<String, String> =
+            draft_note_position(&req, &c).into_iter().collect();
+        assert_eq!(ranged_note(&c), "one line");
+        assert_eq!(pos["position[position_type]"], "text");
+        assert_eq!(pos["position[base_sha]"], "2".repeat(40));
+        assert_eq!(pos["position[start_sha]"], "3".repeat(40));
+        assert_eq!(pos["position[head_sha]"], HEAD);
+        assert_eq!(pos["position[new_path]"], "src/lib.rs");
+        assert_eq!(pos["position[old_path]"], "src/old.rs");
+        assert_eq!(pos["position[new_line]"], "3");
+        assert!(!pos.contains_key("position[old_line]"));
 
         // An unchanged line carries both numbers.
         let mut ctx = comment("f3", "new", 12, None, "context");
         ctx.other_line = Some(11);
-        let both = draft_note_body(&req, &ctx);
-        assert_eq!(both["position"]["new_line"], json!(12));
-        assert_eq!(both["position"]["old_line"], json!(11));
+        let both: std::collections::HashMap<String, String> =
+            draft_note_position(&req, &ctx).into_iter().collect();
+        assert_eq!(both["position[new_line]"], "12");
+        assert_eq!(both["position[old_line]"], "11");
 
         // A range is positioned at its last line and says so in the note.
-        let ranged = draft_note_body(&req, &comment("f2", "old", 8, Some(6), "a range"));
-        assert_eq!(ranged["note"], json!("(lines 6-8)\n\na range"));
-        assert_eq!(ranged["position"]["old_line"], json!(8));
-        assert!(ranged["position"].get("new_line").is_none());
+        let ranged = comment("f2", "old", 8, Some(6), "a range");
+        assert_eq!(ranged_note(&ranged), "(lines 6-8)\n\na range");
+        let rpos: std::collections::HashMap<String, String> =
+            draft_note_position(&req, &ranged).into_iter().collect();
+        assert_eq!(rpos["position[old_line]"], "8");
+        assert!(!rpos.contains_key("position[new_line]"));
+
+        // The position rides in the query string, not a body object; a path
+        // with a slash is escaped so it cannot break the query.
+        let query = encode_query(&draft_note_position(&req, &c));
+        assert!(
+            query.contains("position%5Bnew_path%5D=src%2Flib.rs"),
+            "{query}"
+        );
+        assert!(!query.contains('/'), "{query}");
     }
 
     #[test]
