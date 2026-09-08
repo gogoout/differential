@@ -526,7 +526,7 @@ fn publish(
     // refetch that fails is said, not fatal: the comments are already there.
     match outcome.threads {
         Ok(threads) => {
-            session.set_threads(threads, None)?;
+            session.set_threads(threads)?;
         }
         Err(e) => eprintln!("note: the threads could not be fetched back: {e}"),
     }

@@ -116,8 +116,10 @@ draft** renders in the finding's look under the thread it answers, in date order
 thread's comments.
 
 A comment is **the reader's own** when its author is the login the forge knows the reader
-as (`whoami` on the trait, asked once per session with the first fetch), when its body
-carries this review's marker, or when a finding records its address. `c` on one of its rows
+as (`whoami` on the trait, asked once per session with the first fetch and told to the
+session), when its body carries this review's marker, or when a finding records its
+address. The session decides it (`own_comment`, `own_root`, `own_of_finding`); the
+reviewer only maps a row to a thread and a comment. `c` on one of its rows
 opens the composer on its text, and saving rewrites it on the forge first; the cached
 thread follows when the forge has answered, and the record too when a finding is linked.
 `dd` on one asks — `y` deletes it there and here, any other key keeps it — and the thread

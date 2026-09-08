@@ -178,22 +178,7 @@ impl App {
     pub(super) fn rewrite_finding(&mut self, id: &str, body: String) {
         // Published: the forge holds the comment, so it is rewritten there
         // first and the record follows its answer.
-        if let Some(own) = self
-            .session
-            .findings()
-            .iter()
-            .find(|f| f.id == id && f.upstream.is_some())
-            .and_then(|f| {
-                let up = f.upstream.as_ref()?;
-                Some(forge::OwnComment {
-                    thread: up.thread.clone(),
-                    comment: up.comment.clone(),
-                    finding: Some(f.id.clone()),
-                    body: f.body.clone(),
-                    at: format!("{}:{}", f.anchor.file, f.anchor.line_span()),
-                })
-            })
-        {
+        if let Some(own) = self.session.own_of_finding(id) {
             self.start_edit_comment(own, body);
             return;
         }

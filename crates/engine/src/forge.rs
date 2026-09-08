@@ -229,6 +229,20 @@ impl RemoteThread {
     }
 }
 
+/// A comment on the forge that is the reader's: by author, by marker, or by
+/// the address a publish recorded. What the reviewer's `c` edits and `dd`
+/// deletes; `ReviewSession::own_comment` is the one place that decides it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnComment {
+    pub thread: String,
+    pub comment: String,
+    /// The local record, when one is linked.
+    pub finding: Option<String>,
+    pub body: String,
+    /// `file:lines`, for a prompt.
+    pub at: String,
+}
+
 /// A new review comment to publish: a finding that is not a reply.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewComment {

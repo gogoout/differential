@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use crate::schema;
 
 use crate::EngineError;
-use crate::forge::{self, Published, RemoteThread};
+use crate::forge::{self, OwnComment, Published, RemoteThread};
 use crate::model::DiffView;
 use crate::plan;
 use crate::ports::ReviewStore;
@@ -30,6 +30,9 @@ pub struct ReviewSession<S: ReviewStore> {
     /// The forge's threads, placed against THIS plan (ADR 0029). A cache of
     /// what was last fetched, never the reader's own work.
     threads: Vec<RemoteThread>,
+    /// The login the forge knows the reader as, once told. What makes a
+    /// comment with no marker and no record theirs.
+    me: Option<String>,
 }
 
 impl<S: ReviewStore> ReviewSession<S> {
@@ -67,6 +70,7 @@ impl<S: ReviewStore> ReviewSession<S> {
             state,
             findings,
             threads,
+            me: None,
         })
     }
 
@@ -97,6 +101,58 @@ impl<S: ReviewStore> ReviewSession<S> {
 
     pub fn thread(&self, id: &str) -> Option<&RemoteThread> {
         self.threads.iter().find(|t| t.id == id)
+    }
+
+    /// The login the forge knows the reader as, if the forge has been asked.
+    pub fn me(&self) -> Option<&str> {
+        self.me.as_deref()
+    }
+
+    /// Whether `comment` in `thread` is the reader's, and how to act on it:
+    /// by a linked record — a marker or a publish's recorded address — or by
+    /// author. `None` for anyone else's comment, which is reply-only.
+    pub fn own_comment(&self, thread: &str, comment: &str) -> Option<OwnComment> {
+        let t = self.thread(thread)?;
+        let c = t.comments.iter().find(|c| c.id == comment)?;
+        let linked = self.findings.iter().find(|f| {
+            c.finding.as_deref() == Some(f.id.as_str())
+                || f.upstream.as_ref().is_some_and(|u| u.comment == c.id)
+        });
+        let mine = linked.is_some() || self.me.as_deref() == Some(c.author.as_str());
+        if !mine {
+            return None;
+        }
+        let at = match &t.anchor {
+            Some(a) => format!("{}:{}", a.file, a.line_span()),
+            None => t.path.clone(),
+        };
+        Some(OwnComment {
+            thread: thread.to_string(),
+            comment: comment.to_string(),
+            finding: linked.map(|f| f.id.clone()),
+            body: c.body.clone(),
+            at,
+        })
+    }
+
+    /// The thread's root as the reader's own comment, if it is theirs.
+    pub fn own_root(&self, thread: &str) -> Option<OwnComment> {
+        let root = self.thread(thread)?.root()?.id.clone();
+        self.own_comment(thread, &root)
+    }
+
+    /// A published finding as the comment it became, whether or not its twin
+    /// has been fetched back yet.
+    pub fn own_of_finding(&self, id: &str) -> Option<OwnComment> {
+        let f = self.findings.iter().find(|f| f.id == id)?;
+        let up = f.upstream.as_ref()?;
+        Some(OwnComment {
+            thread: up.thread.clone(),
+            comment: up.comment.clone(),
+            finding: Some(f.id.clone()),
+            body: f.body.clone(),
+            at: format!("{}:{}", f.anchor.file, f.anchor.line_span()),
+        })
     }
 
     /// Open findings not yet on the request: what `P` would send and what
@@ -395,17 +451,13 @@ impl<S: ReviewStore> ReviewSession<S> {
     /// gets its address now. Returns how many were reconciled. This is what
     /// makes a publish idempotent across a lost answer (ADR 0029).
     ///
-    /// `me` is the login the forge knows the reader as. A comment by that
+    /// When the session knows who the reader is (`set_me`), a comment by that
     /// author with no marker — one sent before markers existed, or written on
     /// the forge's own page — is matched to an unpublished note on the same
     /// file and line with the same text, and the two are linked; a reply the
     /// same way, by thread and text. Weaker than the marker, and enough: the
     /// same author, place and words.
-    pub fn set_threads(
-        &mut self,
-        mut threads: Vec<RemoteThread>,
-        me: Option<&str>,
-    ) -> Result<usize, EngineError> {
+    pub fn set_threads(&mut self, mut threads: Vec<RemoteThread>) -> Result<usize, EngineError> {
         for t in &mut threads {
             forge::place(&self.doc, &self.view, t);
         }
@@ -426,7 +478,7 @@ impl<S: ReviewStore> ReviewSession<S> {
             }
         }
         // Then by author, place and words, for comments with no marker.
-        if let Some(me) = me {
+        if let Some(me) = self.me.as_deref() {
             let same =
                 |a: &str, b: &str| a.replace("\r\n", "\n").trim() == b.replace("\r\n", "\n").trim();
             for t in &mut self.threads {
@@ -466,6 +518,12 @@ impl<S: ReviewStore> ReviewSession<S> {
             self.store.save_findings(&self.findings)?;
         }
         Ok(reconciled)
+    }
+
+    /// Tell the session who the reader is on the forge. Asked of the forge
+    /// once per sitting; a comment by this author is the reader's own.
+    pub fn set_me(&mut self, login: String) {
+        self.me = Some(login);
     }
 
     /// Mirror a resolve the forge has already accepted. Returns whether the

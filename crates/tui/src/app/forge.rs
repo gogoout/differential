@@ -13,7 +13,9 @@
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-use differential_engine::forge::{self, Forge, ForgeError, PublishOutcome, RemoteThread, Request};
+use differential_engine::forge::{
+    self, Forge, ForgeError, OwnComment, PublishOutcome, RemoteThread, Request,
+};
 
 use crate::rows::RowKind;
 
@@ -23,19 +25,6 @@ use super::*;
 pub struct ForgeLink {
     pub forge: Arc<dyn Forge>,
     pub request: Request,
-}
-
-/// A comment on the forge that is the reader's: by author, by marker, or by
-/// the address a publish recorded. What `c` edits and `dd` deletes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OwnComment {
-    pub thread: String,
-    pub comment: String,
-    /// The local record, when one is linked.
-    pub finding: Option<String>,
-    pub body: String,
-    /// `file:lines`, for the prompt.
-    pub at: String,
 }
 
 /// A fetch's answer: the threads, and the reader's login when it was asked
@@ -96,7 +85,7 @@ impl App {
         let (forge, req) = (Arc::clone(&link.forge), link.request.clone());
         // Who the reader is, asked once: the answer does not change while
         // the reviewer is open, and it is what makes a comment theirs.
-        let ask_me = self.me.is_none();
+        let ask_me = self.session.me().is_none();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let me = ask_me.then(|| forge.whoami().ok()).flatten();
@@ -145,11 +134,11 @@ impl App {
         self.inflight = None;
         match answer {
             Answer::Fetched(Ok(threads), me) => {
-                if me.is_some() {
-                    self.me = me;
+                if let Some(me) = me {
+                    self.session.set_me(me);
                 }
                 let n = threads.len();
-                match self.session.set_threads(threads, self.me.as_deref()) {
+                match self.session.set_threads(threads) {
                     Ok(reconciled) => {
                         let unplaced = self
                             .session
@@ -209,10 +198,7 @@ impl App {
                 // failed is said; the comments are on the request regardless.
                 let marked = self.session.mark_published(&outcome.published);
                 let refetch = match outcome.threads {
-                    Ok(threads) => self
-                        .session
-                        .set_threads(threads, self.me.as_deref())
-                        .map(|_| None),
+                    Ok(threads) => self.session.set_threads(threads).map(|_| None),
                     Err(e) => Ok(Some(e)),
                 };
                 let landed = sent
@@ -357,54 +343,10 @@ impl App {
         match self.rows.get(self.cursor).map(|r| &r.kind) {
             Some(RowKind::Thread {
                 thread, comment, ..
-            }) => self.own_comment(thread, comment),
-            Some(RowKind::Finding(id, _)) => {
-                let f = self
-                    .session
-                    .findings()
-                    .iter()
-                    .find(|f| &f.id == id && f.upstream.is_some())?;
-                let up = f.upstream.as_ref()?;
-                Some(OwnComment {
-                    thread: up.thread.clone(),
-                    comment: up.comment.clone(),
-                    finding: Some(f.id.clone()),
-                    body: f.body.clone(),
-                    at: format!("{}:{}", f.anchor.file, f.anchor.line_span()),
-                })
-            }
+            }) => self.session.own_comment(thread, comment),
+            Some(RowKind::Finding(id, _)) => self.session.own_of_finding(id),
             _ => None,
         }
-    }
-
-    /// The thread's root as the reader's own comment, if it is theirs.
-    pub(super) fn own_root(&self, thread: &str) -> Option<OwnComment> {
-        let root = self.session.thread(thread)?.root()?.id.clone();
-        self.own_comment(thread, &root)
-    }
-
-    fn own_comment(&self, thread: &str, comment: &str) -> Option<OwnComment> {
-        let t = self.session.thread(thread)?;
-        let c = t.comments.iter().find(|c| c.id == comment)?;
-        let linked = self.session.findings().iter().find(|f| {
-            c.finding.as_deref() == Some(f.id.as_str())
-                || f.upstream.as_ref().is_some_and(|u| u.comment == c.id)
-        });
-        let mine = linked.is_some() || self.me.as_deref() == Some(c.author.as_str());
-        if !mine {
-            return None;
-        }
-        let at = match &t.anchor {
-            Some(a) => format!("{}:{}", a.file, a.line_span()),
-            None => t.path.clone(),
-        };
-        Some(OwnComment {
-            thread: thread.to_string(),
-            comment: comment.to_string(),
-            finding: linked.map(|f| f.id.clone()),
-            body: c.body.clone(),
-            at,
-        })
     }
 
     /// Rewrite a comment of the reader's: on the forge first, and the cache

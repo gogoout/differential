@@ -162,26 +162,9 @@ impl App {
                             // A comment of the reader's is theirs to delete,
                             // on the forge; anyone else's is not.
                             let own = if thread {
-                                self.own_root(&id)
+                                self.session.own_root(&id)
                             } else if published {
-                                self.session
-                                    .findings()
-                                    .iter()
-                                    .find(|f| f.id == id)
-                                    .and_then(|f| {
-                                        let up = f.upstream.as_ref()?;
-                                        Some(forge::OwnComment {
-                                            thread: up.thread.clone(),
-                                            comment: up.comment.clone(),
-                                            finding: Some(f.id.clone()),
-                                            body: f.body.clone(),
-                                            at: format!(
-                                                "{}:{}",
-                                                f.anchor.file,
-                                                f.anchor.line_span()
-                                            ),
-                                        })
-                                    })
+                                self.session.own_of_finding(&id)
                             } else {
                                 None
                             };

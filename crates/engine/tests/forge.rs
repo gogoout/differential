@@ -212,7 +212,7 @@ fn a_publish_sends_open_unpublished_findings_inside_the_diff_and_names_the_rest(
         .unwrap()
         .id
         .clone();
-    s.set_threads(vec![thread("t1", "src/lib.rs", "new", Some(8))], None)
+    s.set_threads(vec![thread("t1", "src/lib.rs", "new", Some(8))])
         .unwrap();
     let reply = s.add_reply("t1", "agreed".into()).unwrap().id.clone();
 
@@ -276,11 +276,11 @@ fn a_reply_whose_thread_is_gone_is_excluded_not_sent_as_a_comment() {
     let (r, base, head) = two_hunk_repo();
     let tmp = tempfile::TempDir::new().unwrap();
     let mut s = session(&r, &base, &head, tmp.path());
-    s.set_threads(vec![thread("t1", "src/lib.rs", "new", Some(8))], None)
+    s.set_threads(vec![thread("t1", "src/lib.rs", "new", Some(8))])
         .unwrap();
     s.add_reply("t1", "agreed".into()).unwrap();
     // The forge dropped the thread before the reply went up.
-    s.set_threads(vec![], None).unwrap();
+    s.set_threads(vec![]).unwrap();
     let plan = s.publish_plan(forge::ForgeKind::Github);
     assert!(plan.batch.is_empty());
     assert_eq!(plan.excluded.len(), 1);
@@ -305,7 +305,7 @@ fn a_published_finding_hides_behind_its_fetched_twin() {
     assert!(!s.is_twinned(&f), "not fetched yet: the note still shows");
     let mut fetched = thread("T", "src/lib.rs", "new", Some(3));
     fetched.comments[0].id = "C".into();
-    s.set_threads(vec![fetched], None).unwrap();
+    s.set_threads(vec![fetched]).unwrap();
     assert!(s.is_twinned(&f));
 }
 
@@ -317,7 +317,7 @@ fn threads_persist_beside_findings_and_are_placed_again_on_open() {
     let tmp = tempfile::TempDir::new().unwrap();
     {
         let mut s = session(&r, &base, &head, tmp.path());
-        s.set_threads(vec![thread("t1", "src/lib.rs", "new", Some(3))], None)
+        s.set_threads(vec![thread("t1", "src/lib.rs", "new", Some(3))])
             .unwrap();
         assert!(s.set_thread_resolved("t1", true).unwrap());
         assert!(!s.set_thread_resolved("nope", true).unwrap());
@@ -345,7 +345,7 @@ fn a_reply_draft_sits_where_its_thread_does() {
     let (r, base, head) = two_hunk_repo();
     let tmp = tempfile::TempDir::new().unwrap();
     let mut s = session(&r, &base, &head, tmp.path());
-    s.set_threads(vec![thread("t1", "src/lib.rs", "new", Some(8))], None)
+    s.set_threads(vec![thread("t1", "src/lib.rs", "new", Some(8))])
         .unwrap();
     let f = s.add_reply("t1", "agreed".into()).unwrap().clone();
     assert_eq!(f.reply_to.as_deref(), Some("t1"));
@@ -492,7 +492,7 @@ fn a_fetch_reconciles_a_finding_the_forge_already_carries() {
     t.comments[0].id = "C1".into();
     t.comments[0].finding = Some(id.clone());
     t.comments[0].body = "on the change".into();
-    assert_eq!(s.set_threads(vec![t], None).unwrap(), 1, "one reconciled");
+    assert_eq!(s.set_threads(vec![t]).unwrap(), 1, "one reconciled");
     let f = s.findings().iter().find(|f| f.id == id).unwrap();
     assert_eq!(
         f.upstream
@@ -507,7 +507,7 @@ fn a_fetch_reconciles_a_finding_the_forge_already_carries() {
     );
     assert_eq!(s.findings_summary().trim(), "(no open findings)");
     // A second fetch has nothing left to reconcile.
-    assert_eq!(s.set_threads(s.threads().to_vec(), None).unwrap(), 0);
+    assert_eq!(s.set_threads(s.threads().to_vec()).unwrap(), 0);
 }
 
 #[test]
@@ -536,7 +536,7 @@ fn an_unmarked_reply_by_the_reader_heals_its_draft_and_the_side_is_checked() {
     let h3 = s.doc().hunks.iter().position(|h| h.new_start == 3).unwrap();
 
     // Two notes on line 3, one per side, the same words; and a reply draft.
-    s.set_threads(vec![thread("T1", "src/lib.rs", "new", Some(8))], None)
+    s.set_threads(vec![thread("T1", "src/lib.rs", "new", Some(8))])
         .unwrap();
     let new_side = s
         .add_finding(h3, Some(lines("new", 3, 3)), "same words".into())
@@ -555,6 +555,7 @@ fn an_unmarked_reply_by_the_reader_heals_its_draft_and_the_side_is_checked() {
         .map(|f| f.id.clone())
         .unwrap();
 
+    s.set_me("me".into());
     // The forge holds: a comment by me on the OLD side of line 3, and my reply
     // under T1 — neither with a marker.
     let mut mine = thread("M1", "src/lib.rs", "old", Some(3));
@@ -569,7 +570,7 @@ fn an_unmarked_reply_by_the_reader_heals_its_draft_and_the_side_is_checked() {
         reply_to: Some("T1-root".into()),
         finding: None,
     });
-    assert_eq!(s.set_threads(vec![mine, t1], Some("me")).unwrap(), 2);
+    assert_eq!(s.set_threads(vec![mine, t1]).unwrap(), 2);
 
     let by = |id: &str| s.findings().iter().find(|f| f.id == id).unwrap();
     assert!(
@@ -590,7 +591,69 @@ fn an_unmarked_reply_by_the_reader_heals_its_draft_and_the_side_is_checked() {
     // Not by anyone else.
     let mut theirs = thread("M2", "src/lib.rs", "new", Some(3));
     theirs.comments[0].body = "same words".into();
-    assert_eq!(s.set_threads(vec![theirs], Some("me")).unwrap(), 0);
+    assert_eq!(s.set_threads(vec![theirs]).unwrap(), 0);
+}
+
+#[test]
+fn whose_a_comment_is_is_the_sessions_call() {
+    let (r, base, head) = two_hunk_repo();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut s = session(&r, &base, &head, tmp.path());
+    let h3 = s.doc().hunks.iter().position(|h| h.new_start == 3).unwrap();
+
+    // Alice's thread with my reply under it; my own unmarked thread; a
+    // published note whose twin is not fetched.
+    let mut t1 = thread("T1", "src/lib.rs", "new", Some(3));
+    t1.comments.push(RemoteComment {
+        id: "T1-me".into(),
+        author: "me".into(),
+        created: "2026-09-08T09:00:00Z".into(),
+        body: "mine".into(),
+        reply_to: Some("T1-root".into()),
+        finding: None,
+    });
+    let mut m1 = thread("M1", "src/lib.rs", "new", Some(8));
+    m1.comments[0].author = "me".into();
+    s.set_threads(vec![t1, m1]).unwrap();
+
+    // Not told who I am: only a linked record makes a comment mine.
+    assert!(s.own_comment("T1", "T1-me").is_none());
+    assert!(s.own_root("M1").is_none());
+
+    s.set_me("me".into());
+    assert!(
+        s.own_comment("T1", "T1-root").is_none(),
+        "alice's root is not mine"
+    );
+    let reply = s
+        .own_comment("T1", "T1-me")
+        .expect("my reply is mine by author");
+    assert_eq!(
+        (reply.finding, reply.body.as_str(), reply.at.as_str()),
+        (None, "mine", "src/lib.rs:3")
+    );
+    assert!(s.own_root("M1").is_some());
+    assert!(s.own_root("T1").is_none());
+
+    // Linked by a publish's address, twin not fetched: still mine, with the record.
+    let id = s.add_finding(h3, None, "note".into()).unwrap().id.clone();
+    s.mark_published(&[forge::Published {
+        finding: id.clone(),
+        thread: "T9".into(),
+        comment: "C9".into(),
+        url: None,
+    }])
+    .unwrap();
+    let own = s.own_of_finding(&id).expect("published, so on the forge");
+    assert_eq!(
+        (
+            own.thread.as_str(),
+            own.comment.as_str(),
+            own.finding.as_deref()
+        ),
+        ("T9", "C9", Some(id.as_str()))
+    );
+    assert!(s.own_of_finding("nope").is_none());
 }
 
 #[test]
@@ -676,7 +739,7 @@ fn a_reply_on_a_thread_with_no_line_is_refused_not_lost() {
     let mut s = session(&r, &base, &head, tmp.path());
     let mut gone = thread("T9", "src/lib.rs", "new", None);
     gone.line_text = Some("nothing like this".into());
-    s.set_threads(vec![gone], None).unwrap();
+    s.set_threads(vec![gone]).unwrap();
     assert!(s.thread("T9").unwrap().anchor.is_none());
     let err = s.add_reply("T9", "into the void".into()).unwrap_err();
     assert!(err.to_string().contains("no line in this diff"), "{err}");
