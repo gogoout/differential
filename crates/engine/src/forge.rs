@@ -682,42 +682,16 @@ pub fn other_side_line(
 }
 
 /// The `(old, new)` pair a line's GitLab `line_code` needs. An unchanged line
-/// has both exactly; a changed line has its own side exactly and, on the other
-/// side, the position it sits at — the number GitLab records for an added or
-/// deleted line in a `line_code`.
+/// has both exactly. A line that exists on one side only — an added line, a
+/// deleted line — has its own number and `0` on the side it is missing from,
+/// which is what GitLab writes in the `line_code` of such a line.
 fn line_code_pair(doc: &schema::PlanDocument, file: &str, side: &str, line: u32) -> (u32, u32) {
-    let other = other_position(doc, file, side, line);
-    if side == "old" {
-        (line, other)
-    } else {
-        (other, line)
+    match other_side_line(doc, file, side, line) {
+        Some(other) if side == "old" => (line, other),
+        Some(other) => (other, line),
+        None if side == "old" => (line, 0),
+        None => (0, line),
     }
-}
-
-/// The line's number on the other side. Exact for an unchanged line; for a
-/// changed line, the other side's position: the start of the paired hunk when
-/// nothing sits there (a pure insertion or deletion), else the matching offset
-/// into it.
-fn other_position(doc: &schema::PlanDocument, file: &str, side: &str, line: u32) -> u32 {
-    let old = side == "old";
-    if let Some(o) = other_side_line(doc, file, side, line) {
-        return o;
-    }
-    doc.hunks
-        .iter()
-        .filter(|h| h.file == file)
-        .find_map(|h| {
-            let (s, n) = side_range(h, old);
-            (n > 0 && line >= s && line < s.saturating_add(n)).then(|| {
-                let (os, on) = side_range(h, !old);
-                if on == 0 {
-                    os
-                } else {
-                    os.saturating_add((line - s).min(on - 1))
-                }
-            })
-        })
-        .unwrap_or(line)
 }
 
 /// Whether both ends of `a` sit inside the request's diff of its file, with

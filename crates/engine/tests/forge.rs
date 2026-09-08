@@ -731,6 +731,27 @@ fn a_multi_line_finding_carries_both_ends_paired_across_the_sides() {
 }
 
 #[test]
+fn a_finding_over_added_lines_pairs_each_end_with_zero_on_the_old_side() {
+    // Two lines inserted at the top: new lines 1 and 2 exist on the new side
+    // only, so each end is (0, its new number), as GitLab writes it.
+    let (r, base, head) = ten_line_repo(|lines| {
+        lines.insert(0, "added_a = 0".to_string());
+        lines.insert(1, "added_b = 0".to_string());
+    });
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut s = session(&r, &base, &head, tmp.path());
+    let h = s.doc().hunks.iter().position(|h| h.new_start == 1).unwrap();
+    s.add_finding(h, Some(lines("new", 1, 2)), "a run".into())
+        .unwrap();
+    let batch = s.publish_plan(forge::ForgeKind::Gitlab).batch;
+    let span = batch.comments[0]
+        .span
+        .expect("a multi-line comment has a span");
+    assert_eq!(span.start, (0, 1), "added line 1 is 0 on the old side");
+    assert_eq!(span.end, (0, 2), "added line 2 is 0 on the old side");
+}
+
+#[test]
 fn a_reply_on_a_thread_with_no_line_is_refused_not_lost() {
     let (r, base, head) = two_hunk_repo();
     let tmp = tempfile::TempDir::new().unwrap();

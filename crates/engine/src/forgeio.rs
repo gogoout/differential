@@ -1014,17 +1014,21 @@ fn draft_note_position(req: &Request, c: &NewComment) -> Vec<(String, String)> {
     if let Some(o) = c.other_line {
         fields.push((format!("position[{other}]"), o.to_string()));
     }
-    // A multi-line comment names a `line_code` at each end. GitLab rejects
-    // `old_line`/`new_line` objects inside `line_range`, so each end carries
-    // only its `line_code` and side.
+    // A multi-line comment names each end: a `line_code` (`<sha>_<old>_<new>`,
+    // `0` on the side the line is missing from), a `type`, and the line's
+    // number on the side it exists — the shape GitLab's own web UI sends.
     if let Some(span) = &c.span {
         let ty = if c.side == "old" { "old" } else { "new" };
         for (end, (old, new)) in [("start", span.start), ("end", span.end)] {
-            fields.push((
-                format!("position[line_range][{end}][line_code]"),
-                line_code(&c.path, old, new),
-            ));
-            fields.push((format!("position[line_range][{end}][type]"), ty.into()));
+            let at = format!("position[line_range][{end}]");
+            fields.push((format!("{at}[line_code]"), line_code(&c.path, old, new)));
+            fields.push((format!("{at}[type]"), ty.into()));
+            if new != 0 {
+                fields.push((format!("{at}[new_line]"), new.to_string()));
+            }
+            if old != 0 {
+                fields.push((format!("{at}[old_line]"), old.to_string()));
+            }
         }
     }
     fields
@@ -1451,25 +1455,28 @@ mod tests {
     fn a_multi_line_draft_note_carries_a_line_range_at_each_end() {
         use crate::forge::LineSpan;
         let req = parse_mr(&mr_view()).unwrap();
-        let mut c = comment("f4", "new", 20, Some(18), "a run of lines");
-        // Line 18 is unchanged (old 18, new 18); lines 19-20 are added, so
-        // their old side is the position they sit at, line 18.
+        let mut c = comment("f4", "new", 34, Some(15), "a run of lines");
+        // Lines 15-34 are all added: `0` on the old side, the real number on
+        // the new side. This is the shape the GitLab web UI sends.
         c.span = Some(LineSpan {
-            start: (18, 18),
-            end: (18, 20),
+            start: (0, 15),
+            end: (0, 34),
         });
         let pos: std::collections::HashMap<String, String> =
             draft_note_position(&req, &c).into_iter().collect();
         let code = |old: u32, new: u32| line_code("src/lib.rs", old, new);
-        assert_eq!(pos["position[line_range][start][line_code]"], code(18, 18));
+        assert_eq!(pos["position[line_range][start][line_code]"], code(0, 15));
         assert_eq!(pos["position[line_range][start][type]"], "new");
-        assert_eq!(pos["position[line_range][end][line_code]"], code(18, 20));
-        assert_eq!(pos["position[line_range][end][type]"], "new");
+        assert_eq!(pos["position[line_range][start][new_line]"], "15");
+        assert!(!pos.contains_key("position[line_range][start][old_line]"));
+        assert_eq!(pos["position[line_range][end][line_code]"], code(0, 34));
+        assert_eq!(pos["position[line_range][end][new_line]"], "34");
         // The last line is still the anchor position.
-        assert_eq!(pos["position[new_line]"], "20");
-        // A line_code is the path's sha1, then the two numbers.
-        assert!(code(18, 20).ends_with("_18_20"), "{}", code(18, 20));
-        assert_eq!(code(18, 20).len(), 40 + "_18_20".len());
+        assert_eq!(pos["position[new_line]"], "34");
+        // A line_code is the path's sha1, then the two numbers, `0` for the
+        // side an added line is missing from.
+        assert!(code(0, 34).ends_with("_0_34"), "{}", code(0, 34));
+        assert_eq!(code(0, 34).len(), 40 + "_0_34".len());
     }
 
     #[test]
