@@ -11,7 +11,7 @@
 //! the pane edge is a width question, and row counts must never depend on
 //! width or every resize would rebuild.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use differential_engine::forge::RemoteThread;
@@ -638,7 +638,7 @@ pub struct RowsContext<'a> {
     pub expansion: &'a HashMap<usize, Expansion>,
     /// Resolved threads the reader has opened; a resolved thread not here is
     /// drawn collapsed to its header.
-    pub expanded_threads: &'a std::collections::HashSet<String>,
+    pub expanded_threads: &'a HashSet<String>,
 }
 
 /// The group view's extras on top of the shared core.
@@ -1173,7 +1173,9 @@ fn thread_rows(theme: &Theme, t: &RemoteThread, hunk: usize, collapsed: bool) ->
             hunk,
         };
         // A blank rail row before every comment but the first: air between
-        // one comment and the next, the rail carrying the eye across it.
+        // one comment and the next, the rail carrying the eye across it. It
+        // carries the FOLLOWING comment's kind, so it belongs to what it
+        // introduces.
         if i > 0 {
             rows.push(Row::full(
                 kind.clone(),

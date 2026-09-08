@@ -388,8 +388,6 @@ impl App {
         self.status = "deleting the comment on the request…".into();
     }
 
-    /// `x`: flip the thread under the cursor on the forge. The forge answers
-    /// on a worker thread; the local copy changes when it has.
     /// Open or close the resolved thread under the cursor. A resolved thread
     /// is collapsed to its header by default; this is a local reading toggle,
     /// nothing reaches the forge.
@@ -408,6 +406,8 @@ impl App {
         self.rebuild_rows();
     }
 
+    /// `x`: flip the thread under the cursor on the forge. The forge answers
+    /// on a worker thread; the local copy changes when it has.
     pub(super) fn toggle_thread_resolved(&mut self) {
         let Some(t) = self.thread_at_cursor() else {
             self.status = "x resolves the review thread under the cursor".into();
