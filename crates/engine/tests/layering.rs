@@ -36,7 +36,13 @@ const ADAPTERS: &[(&str, &str)] = &[
 /// The adapters themselves. The rule constrains what depends on what; these
 /// are the modules allowed to know about the outside world, and they may
 /// depend on the domain freely — that is the direction the rule wants.
-const ADAPTER_MODULES: &[&str] = &["gitio.rs", "llm.rs", "store.rs"];
+const ADAPTER_MODULES: &[&str] = &[
+    "gitio.rs",
+    "forgeio.rs",
+    "llm.rs",
+    "store.rs",
+    "subprocess.rs",
+];
 
 /// Domain modules that still reach for an adapter.
 ///

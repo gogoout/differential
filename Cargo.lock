@@ -502,6 +502,7 @@ dependencies = [
  "globset",
  "hex",
  "memchr",
+ "percent-encoding",
  "petgraph",
  "regex",
  "serde",

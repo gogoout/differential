@@ -60,8 +60,20 @@ impl App {
                 editor: textarea, ..
             } => {
                 // A float over the diff, not a strip pinned to the bottom: a
-                // finding is about the lines you can still see around it.
-                let area = centered_rect(panes.body, panes.body.width * 3 / 5, 10);
+                // finding is about the lines you can still see around it. It
+                // grows with the text — borders, footer and a spare row on top
+                // of the lines — up to the body, and the text area scrolls
+                // beyond that.
+                let width = panes.body.width * 3 / 5;
+                // Rows as wrapped, not lines as typed; the text area scrolls
+                // beyond the body anyway.
+                let rows = wrapped_rows(
+                    textarea.lines().iter().map(String::as_str),
+                    usize::from(width.saturating_sub(2)),
+                );
+                let wanted = u16::try_from(rows).unwrap_or(u16::MAX).saturating_add(4);
+                let height = wanted.clamp(10, panes.body.height.max(10));
+                let area = centered_rect(panes.body, width, height);
                 clear_to_ground(frame, &self.theme, area);
                 frame.render_widget(&**textarea, area);
                 // The keys go INSIDE the box, on its last row, where a footer
@@ -90,9 +102,140 @@ impl App {
                 );
             }
             Mode::Help => {
-                let area = centered_rect(panes.body, 62, 23);
-                clear_to_ground(frame, &self.theme, area);
-                frame.render_widget(help_paragraph(&self.theme), area);
+                // As tall as its own table: a fixed height cut the footer off
+                // the first time the table grew a row.
+                let lines = help_lines(&self.theme);
+                let height = lines.len() as u16 + 2;
+                self.float(
+                    frame,
+                    panes.body,
+                    62,
+                    height,
+                    " help ",
+                    Paragraph::new(lines),
+                );
+            }
+            Mode::Notice { title, text } => {
+                // Wrapped, and as tall as it needs: an error is read once and
+                // in full, or it is not read at all. The rows are counted with
+                // the same word wrap the paragraph draws with, so the box and
+                // its text cannot disagree; borders, two blank rows and the
+                // footer make five more.
+                let width = panes.body.width.saturating_sub(6).clamp(20, 100);
+                let rows = wrapped_rows(text.lines(), usize::from(width.saturating_sub(4)));
+                let height = u16::try_from(rows + 5).unwrap_or(u16::MAX);
+                let mut lines: Vec<Line> = vec![Line::from("")];
+                lines.extend(text.lines().map(|l| {
+                    Line::from(Span::styled(
+                        format!(" {l}"),
+                        Style::default().fg(self.theme.context_fg),
+                    ))
+                }));
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    " press any key to close",
+                    Style::default().fg(self.theme.gutter_fg),
+                )));
+                self.float(
+                    frame,
+                    panes.body,
+                    width,
+                    height,
+                    &format!(" {title} "),
+                    Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
+                );
+            }
+            Mode::DeleteComment { own } => {
+                let key = Style::default().fg(self.theme.header_fg);
+                let text = Style::default().fg(self.theme.context_fg);
+                let at = &own.at;
+                let lines = vec![
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        format!("  delete your comment at {at} on the pull request?"),
+                        text,
+                    )),
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled("  y", key),
+                        Span::styled(
+                            " deletes it there and here  ·  any other key keeps it",
+                            Style::default().fg(self.theme.gutter_fg),
+                        ),
+                    ]),
+                ];
+                let width = panes.body.width.saturating_sub(6).min(80);
+                let height = lines.len() as u16 + 2;
+                self.float(
+                    frame,
+                    panes.body,
+                    width,
+                    height,
+                    " delete ",
+                    Paragraph::new(lines),
+                );
+            }
+            Mode::Publish { plan } => {
+                // What leaves, what stays, and why — before anything leaves.
+                // The one outward act in this reviewer, so it reads its whole
+                // consequence back before asking (ADR 0029).
+                let key = Style::default().fg(self.theme.header_fg);
+                let text = Style::default().fg(self.theme.context_fg);
+                let dim = Style::default().fg(self.theme.gutter_fg);
+                let (comments, replies) = (plan.batch.comments.len(), plan.batch.replies.len());
+                let mut lines = vec![Line::from("")];
+                let mut what = Vec::new();
+                if comments > 0 {
+                    what.push(format!("{comments} new comment{}", plural(comments)));
+                }
+                if replies > 0 {
+                    what.push(format!(
+                        "{replies} repl{}",
+                        if replies == 1 { "y" } else { "ies" }
+                    ));
+                }
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  {} go to the pull request as one review",
+                        what.join(" and ")
+                    ),
+                    text,
+                )));
+                if !plan.excluded.is_empty() {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        format!("  {} stay local:", plan.excluded.len()),
+                        text,
+                    )));
+                    // The reason on its own line under the place: side by side
+                    // they overran the box on any path of ordinary length, and
+                    // a float clips rather than wraps.
+                    for ex in &plan.excluded {
+                        lines.push(Line::from(Span::styled(
+                            format!("    {}:{}", ex.file, ex.lines),
+                            key,
+                        )));
+                        lines.push(Line::from(Span::styled(
+                            format!("      {}", ex.reason),
+                            dim,
+                        )));
+                    }
+                }
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![
+                    Span::styled("  y", key),
+                    Span::styled(" publishes  ·  any other key keeps them local", dim),
+                ]));
+                let width = panes.body.width.saturating_sub(6).min(90);
+                let height = lines.len() as u16 + 2;
+                self.float(
+                    frame,
+                    panes.body,
+                    width,
+                    height,
+                    " publish ",
+                    Paragraph::new(lines),
+                );
             }
             Mode::Findings {
                 entries,
@@ -101,18 +244,17 @@ impl App {
                 confirming,
             } => {
                 let orphans = entries.iter().filter(|e| e.orphaned).count();
-                // The rule between the two groups is drawn, not stored, so it
-                // costs a row on screen and nothing in the model.
-                let rule_at = (orphans > 0).then(|| entries.len() - orphans);
-                let extra = usize::from(rule_at.is_some());
+                let threads = entries.iter().filter(|e| e.thread).count();
+                let notes = entries.len() - threads;
+                let rules = section_rules(entries);
                 let body_rows = panes.body.height as usize;
-                let height = (entries.len() + extra + 4).min(body_rows) as u16;
+                let height = (entries.len() + rules.len() + 4).min(body_rows) as u16;
                 let area = centered_rect(panes.body, 74, height);
                 let inner_w = area.width.saturating_sub(2) as usize;
                 // The same number `j`/`k` scroll against, from the same
                 // function, so the window a list moves in is the window it is
                 // drawn in.
-                let inner_h = findings_rows(entries.len(), rule_at.is_some(), body_rows);
+                let inner_h = findings_rows(entries.len(), rules.len(), body_rows);
 
                 let dim = Style::default().fg(self.theme.gutter_fg);
                 // A BUDGET, not a measurement. `{:<width$}` pads and never
@@ -127,14 +269,21 @@ impl App {
                     .min(inner_w / 3);
                 let mut lines: Vec<Line> = Vec::new();
                 for (i, e) in entries.iter().enumerate() {
-                    if rule_at == Some(i) {
+                    if rules.contains(&i) {
+                        let label = match e.section() {
+                            1 => "review threads",
+                            _ => "orphaned",
+                        };
                         lines.push(Line::from(Span::styled(
-                            format!(" ── orphaned {} ", "─".repeat(inner_w.saturating_sub(14))),
+                            format!(
+                                " ── {label} {} ",
+                                "─".repeat(inner_w.saturating_sub(label.len() + 6))
+                            ),
                             dim,
                         )));
                     }
                     let on = i == *selected;
-                    let base = Style::default().fg(if e.orphaned {
+                    let base = Style::default().fg(if e.orphaned || e.resolved {
                         self.theme.gutter_fg
                     } else {
                         self.theme.context_fg
@@ -151,7 +300,12 @@ impl App {
                             st
                         }
                     };
-                    let moved = if e.moved { " (moved)" } else { "" };
+                    let moved = match (e.moved, e.published, e.resolved) {
+                        (true, _, _) => " (moved)",
+                        (_, true, _) => " (published)",
+                        (_, _, true) => " (resolved)",
+                        _ => "",
+                    };
                     let at_text = elide_head(&e.at, at_col);
                     // Padded by DISPLAY width, not by `{:<width$}`, which
                     // counts chars — one wide character in a path and the
@@ -177,8 +331,8 @@ impl App {
                     }
                     lines.push(line);
                 }
-                // The rule is a row too, so scrolling counts drawn rows.
-                let skip = *scroll + usize::from(rule_at.is_some_and(|r| r <= *scroll));
+                // A rule is a row too, so scrolling counts drawn rows.
+                let skip = *scroll + rules.iter().filter(|r| **r <= *scroll).count();
                 let shown: Vec<Line> = lines.into_iter().skip(skip).take(inner_h).collect();
 
                 // The keys go in a footer inside the box, as the composer's
@@ -186,11 +340,23 @@ impl App {
                 // carrying four keys is longer than the box.
                 let key = Style::default().fg(self.theme.header_fg);
                 let text = Style::default().fg(self.theme.context_fg);
+                // Counts what `y` would take: the local notes. A published
+                // note and a thread are listed here but are not up for this.
+                let local = entries.iter().filter(|e| !e.thread && !e.published).count();
+                // The same number the status after `y` reports: every record on
+                // the request, whether it is listed as a note or as its thread.
+                let kept = self.published_count();
                 let footer = if *confirming {
                     Line::from(Span::styled(
-                        match entries.len() {
-                            1 => "  delete this finding?  y / n".to_string(),
-                            n => format!("  delete all {n} findings?  y / n"),
+                        match (local, kept) {
+                            (1, 0) => "  delete this note?  y / n".to_string(),
+                            (n, 0) => format!("  delete all {n} notes?  y / n"),
+                            (1, k) => {
+                                format!("  delete this note? ({k} on the request stay)  y / n")
+                            }
+                            (n, k) => format!(
+                                "  delete all {n} local notes? ({k} on the request stay)  y / n"
+                            ),
                         },
                         Style::default()
                             .fg(self.theme.finding_fg)
@@ -203,15 +369,20 @@ impl App {
                         Span::styled("  ·  dd ", key),
                         Span::styled("delete", text),
                         Span::styled("  ·  D ", key),
-                        Span::styled("delete all", text),
+                        Span::styled("clear local", text),
+                        Span::styled("  ·  P ", key),
+                        Span::styled("publish", text),
                         Span::styled("  ·  esc ", key),
                         Span::styled("close", text),
                     ])
                 };
-                let title = match orphans {
-                    0 => format!(" findings · {} ", entries.len()),
-                    n => format!(" findings · {} · {n} orphaned ", entries.len()),
-                };
+                let mut title = format!(" findings · {notes} ");
+                if threads > 0 {
+                    title.push_str(&format!("· threads · {threads} "));
+                }
+                if orphans > 0 {
+                    title.push_str(&format!("· {orphans} orphaned "));
+                }
                 clear_to_ground(frame, &self.theme, area);
                 frame.render_widget(
                     Paragraph::new(shown).block(pane(&self.theme, title, true)),
@@ -792,10 +963,7 @@ impl App {
                     MapRow::Folded { name, files, .. } => Line::from(vec![
                         lead,
                         Span::styled(format!("▸ {name}/"), dim),
-                        Span::styled(
-                            format!("  {files} file{}", if *files == 1 { "" } else { "s" }),
-                            dim,
-                        ),
+                        Span::styled(format!("  {files} file{}", plural(*files)), dim),
                     ]),
                     MapRow::More { files, .. } => {
                         Line::from(vec![lead, Span::styled(format!("… {files} more"), dim)])
@@ -1007,6 +1175,26 @@ impl App {
         out
     }
 
+    /// One float over the body: cleared to the theme's ground, framed as a
+    /// pane with `title`, sized as asked and clamped to the body. Every modal
+    /// but the composer and the two lists draws through here.
+    fn float(
+        &self,
+        frame: &mut Frame,
+        body: Rect,
+        width: u16,
+        height: u16,
+        title: &str,
+        paragraph: Paragraph,
+    ) {
+        let area = centered_rect(body, width, height);
+        clear_to_ground(frame, &self.theme, area);
+        frame.render_widget(
+            paragraph.block(pane(&self.theme, title.to_string(), true)),
+            area,
+        );
+    }
+
     pub(super) fn draw_diff(&self, frame: &mut Frame, area: Rect) {
         let inner_h = area.height.saturating_sub(2) as usize;
         let inner_w = area.width.saturating_sub(2) as usize;
@@ -1051,7 +1239,7 @@ impl App {
                     b.active_style.fg.map_or(Marker::Idle(&r.idle), Marker::Lit)
                 }
                 (_, RowKind::HunkHeader { .. }) => Marker::Idle(&r.idle),
-                (_, RowKind::Finding(..)) if in_note(i) => Marker::Note,
+                (_, RowKind::Finding(..) | RowKind::Thread { .. }) if in_note(i) => Marker::Note,
                 _ => Marker::None,
             };
             // How to work this row, on the one row it can be worked from.
@@ -1218,12 +1406,9 @@ impl App {
     pub(super) fn draw_status(&self, frame: &mut Frame, area: Rect) {
         let total: usize = self.groups().iter().map(|g| g.hunks.len()).sum();
         let done = self.session.reviewed_count().min(total);
-        let open = self
-            .session
-            .findings()
-            .iter()
-            .filter(|f| f.status == FindingStatus::Open)
-            .count();
+        // Open and not yet on the request: what `y` copies and `P` sends. A
+        // published note is the forge's now and is counted among its threads.
+        let open = self.session.unpublished().count();
 
         let bar = Style::default().bg(self.theme.status_bg);
         let (ink, fill) = self.theme.pill();
@@ -1249,7 +1434,7 @@ impl App {
                 pill(
                     vec![(
                         self.theme.header_fg,
-                        format!("selecting {n} line{}", if n == 1 { "" } else { "s" }),
+                        format!("selecting {n} line{}", plural(n)),
                     )],
                     fill,
                 )
@@ -1282,8 +1467,25 @@ impl App {
         left.extend(tally(
             open > 0,
             self.theme.finding_fg,
-            format!("{open} finding{}", if open == 1 { "" } else { "s" }),
+            format!("{open} finding{}", plural(open)),
         ));
+        // The forge's threads are a fact about the request, worn the same way
+        // — and only on a review that is of a request, since a range has none.
+        if self.has_forge() {
+            let threads = self.session.threads().len();
+            left.push(Span::styled(" ", bar));
+            left.extend(tally(
+                threads > 0,
+                self.theme.header_fg,
+                format!("{threads} thread{}", plural(threads)),
+            ));
+            // A call is out. The pill IS the state, as `selecting` is: it
+            // appears while the answer is awaited and goes when it lands.
+            if self.syncing() {
+                left.push(Span::styled(" ", bar));
+                left.extend(tally(true, self.theme.header_fg, "syncing".to_string()));
+            }
+        }
         if !self.status.is_empty() {
             left.push(Span::styled(
                 format!("  {}", self.status),
@@ -1793,6 +1995,14 @@ pub(super) fn pane(theme: &Theme, title: String, focused: bool) -> Block<'static
         ))
 }
 
+/// Rows `lines` take when word-wrapped inside `inner` columns, one at least
+/// per line. The same wrap the paragraphs draw with, so a box sized by it
+/// holds its text.
+fn wrapped_rows<'a>(lines: impl Iterator<Item = &'a str>, inner: usize) -> usize {
+    let inner = inner.max(1);
+    lines.map(|l| textwrap::wrap(l, inner).len().max(1)).sum()
+}
+
 pub(super) fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
     let w = width.min(area.width);
     let h = height.min(area.height);
@@ -1804,7 +2014,7 @@ pub(super) fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
-pub(super) fn help_paragraph(theme: &Theme) -> Paragraph<'static> {
+pub(super) fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     // Nothing but keys. Five lines of prose about the plan pane and the diff's
     // colours used to sit between `n/N` and `s`, splitting the table in half —
     // and a legend is not what anyone opens `?` to find.
@@ -1840,11 +2050,23 @@ pub(super) fn help_paragraph(theme: &Theme) -> Paragraph<'static> {
         row("space", "mark the hunk's class reviewed"),
         row("v", "select lines · j/k extends · v or esc drops"),
         row("c  ·  dd", "add finding · delete the one under the cursor"),
+        row(
+            "",
+            "on a review thread: c replies · on your own comment: c edits, dd deletes",
+        ),
+        row(
+            "x  ·  R",
+            "resolve / reopen the thread · refetch review threads",
+        ),
+        row(
+            "P",
+            "publish the open findings to the pull request (asks first)",
+        ),
         row("F", "every finding, in one list"),
         row("y  ·  q", "copy findings · quit (state is saved)"),
         Line::from(""),
         Line::from(Span::styled("  press any key to close", dim)),
     ];
     lines.insert(0, Line::from(""));
-    Paragraph::new(lines).block(pane(theme, " help ".to_string(), true))
+    lines
 }

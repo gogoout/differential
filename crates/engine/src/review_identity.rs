@@ -47,8 +47,12 @@ pub fn resolve<C: ReviewCatalogue, G: Ancestry>(
         // A name is the identity. No alias, no scan, no git call — and no
         // adoption in either direction, because the reader has already said
         // which review this is.
-        ReviewIdentity::Named(name) => {
-            let id = plan::review_id_named(name);
+        ReviewIdentity::Named(_) | ReviewIdentity::Remote(_) => {
+            let id = match opened_as {
+                ReviewIdentity::Named(name) => plan::review_id_named(name),
+                ReviewIdentity::Remote(remote) => plan::review_id_remote(remote),
+                ReviewIdentity::Range { .. } => unreachable!("matched above"),
+            };
             if !catalogue.filed_reviews()?.iter().any(|r| r.id == id) {
                 catalogue.file_identity(&id, opened_as)?;
             }

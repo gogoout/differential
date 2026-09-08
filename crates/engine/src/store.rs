@@ -11,9 +11,11 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::EngineError;
+use crate::forge::RemoteThread;
 use crate::plan;
 use crate::ports;
 use crate::review_state::{Finding, ReviewState};
+use crate::schema;
 
 fn io_err(path: &Path, source: std::io::Error) -> EngineError {
     EngineError::Cache {
@@ -274,35 +276,52 @@ impl ports::ReviewStore for FsReviewStore {
     }
 
     fn load_findings(&self) -> Result<Vec<Finding>, EngineError> {
-        let path = self.dir.join("findings.jsonl");
-        let text = match std::fs::read_to_string(&path) {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(io_err(&path, e)),
-        };
-        let mut out = Vec::new();
-        for (n, line) in text.lines().enumerate() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            let f: Finding = serde_json::from_str(line).map_err(|e| EngineError::Cache {
-                path: format!("{}:{}", path.display(), n + 1),
-                source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-            })?;
-            out.push(f);
-        }
-        Ok(out)
+        read_jsonl(&self.dir.join("findings.jsonl"))
     }
 
     fn save_findings(&self, findings: &[Finding]) -> Result<(), EngineError> {
-        let path = self.dir.join("findings.jsonl");
-        let mut text = String::new();
-        for f in findings {
-            text.push_str(&serde_json::to_string(f).expect("serialises"));
-            text.push('\n');
-        }
-        write_atomic(&path, text.as_bytes())
+        write_jsonl(&self.dir.join("findings.jsonl"), findings)
     }
+
+    fn load_threads(&self) -> Result<Vec<RemoteThread>, EngineError> {
+        read_jsonl(&self.dir.join("comments.jsonl"))
+    }
+
+    fn save_threads(&self, threads: &[RemoteThread]) -> Result<(), EngineError> {
+        write_jsonl(&self.dir.join("comments.jsonl"), threads)
+    }
+}
+
+/// One record per line. A missing file is an empty store, not an error: the
+/// file appears on the first save.
+fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Vec<T>, EngineError> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(io_err(path, e)),
+    };
+    let mut out = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let record: T = serde_json::from_str(line).map_err(|e| EngineError::Cache {
+            path: format!("{}:{}", path.display(), n + 1),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+        })?;
+        out.push(record);
+    }
+    Ok(out)
+}
+
+/// The whole set, rewritten. Small sets; simplicity beats cleverness.
+fn write_jsonl<T: serde::Serialize>(path: &Path, records: &[T]) -> Result<(), EngineError> {
+    let mut text = String::new();
+    for r in records {
+        text.push_str(&serde_json::to_string(r).expect("serialises"));
+        text.push('\n');
+    }
+    write_atomic(path, text.as_bytes())
 }
 
 // ------------------------------------------------------------ config source
@@ -362,13 +381,18 @@ struct IdentityFile {
     base: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     head_spec: Option<String>,
+    /// A request (ADR 0029): the forge, its project and the number. All
+    /// three or none; a partial record answers nothing, like a half range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    remote: Option<schema::Remote>,
 }
 
 impl IdentityFile {
     fn read(&self) -> Option<ports::ReviewIdentity> {
-        match (&self.name, &self.base, &self.head_spec) {
-            (Some(name), _, _) => Some(ports::ReviewIdentity::Named(name.clone())),
-            (None, Some(base), Some(head_spec)) => Some(ports::ReviewIdentity::Range {
+        match (&self.name, &self.remote, &self.base, &self.head_spec) {
+            (Some(name), _, _, _) => Some(ports::ReviewIdentity::Named(name.clone())),
+            (None, Some(remote), _, _) => Some(ports::ReviewIdentity::Remote(remote.clone())),
+            (None, None, Some(base), Some(head_spec)) => Some(ports::ReviewIdentity::Range {
                 base: base.clone(),
                 head_spec: head_spec.clone(),
             }),
@@ -383,11 +407,19 @@ impl IdentityFile {
                 name: Some(name.clone()),
                 base: None,
                 head_spec: None,
+                remote: None,
+            },
+            ports::ReviewIdentity::Remote(remote) => IdentityFile {
+                name: None,
+                base: None,
+                head_spec: None,
+                remote: Some(remote.clone()),
             },
             ports::ReviewIdentity::Range { base, head_spec } => IdentityFile {
                 name: None,
                 base: Some(base.clone()),
                 head_spec: Some(head_spec.clone()),
+                remote: None,
             },
         }
     }

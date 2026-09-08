@@ -26,7 +26,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::EngineError;
+use crate::forge::RemoteThread;
 use crate::review_state::{Finding, ReviewState};
+use crate::schema;
 
 // ---------------------------------------------------------------- objects
 
@@ -95,6 +97,20 @@ pub trait Ancestry {
 
     /// Is `older` reachable from `newer`?
     fn is_ancestor(&self, older: &str, newer: &str) -> Result<bool, EngineError>;
+}
+
+/// Bringing a request's commits into this clone (ADR 0029, decision 4 as
+/// reversed by the author).
+///
+/// The one port that reaches the network, and the one git command here that
+/// is porcelain rather than plumbing: `git fetch` has no plumbing form worth
+/// the name, and a reviewer who typed a request number should not be told to
+/// go and type a fetch as well. Kept apart from every other port so a bound
+/// list still says which function may go online.
+pub trait Fetcher {
+    /// `git fetch <remote> <refspec>…`, and nothing about what came back: the
+    /// caller asks `Ancestry::commit_of` afterwards, as it did before.
+    fn fetch(&self, remote: &str, refspecs: &[&str]) -> Result<(), EngineError>;
 }
 
 /// Peeling an endpoint to its tree oid — the one thing invariant 3 compares
@@ -339,6 +355,9 @@ pub enum ReviewIdentity {
     /// A session the reader named. The name IS the identity, so neither
     /// endpoint is in the key and rebasing either cannot strand it.
     Named(String),
+    /// A pull request or merge request (ADR 0029). Keyed like a name: the
+    /// request is an object whose endpoints are allowed to move under it.
+    Remote(schema::Remote),
 }
 
 /// One review as the catalogue sees it.
@@ -391,6 +410,11 @@ pub trait ReviewStore {
     /// Rewrites the whole set (status changes, deletions, re-anchor results).
     /// The set is small; simplicity beats cleverness.
     fn save_findings(&self, findings: &[Finding]) -> Result<(), EngineError>;
+
+    /// The forge's threads as last fetched. A cache: every fetch replaces it,
+    /// and a failed fetch leaves it as it was (ADR 0029).
+    fn load_threads(&self) -> Result<Vec<RemoteThread>, EngineError>;
+    fn save_threads(&self, threads: &[RemoteThread]) -> Result<(), EngineError>;
 }
 
 /// Where configuration comes from.

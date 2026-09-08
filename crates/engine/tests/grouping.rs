@@ -1,5 +1,6 @@
 //! Grouping-stage tests: real temp repos, fake LLM backend. No model runs.
 
+use differential_engine::plan::ReviewSource;
 use differential_engine::schema::{Effort, PlanDocument, ReadAction};
 use differential_engine::store::FsGroupingCache;
 use differential_testutil::{
@@ -598,7 +599,6 @@ fn progress_reports_stages_and_cache_state() {
     use differential_engine::grouping::Progress;
     use differential_engine::lang::LanguageRegistry;
     use differential_engine::pipeline::run_grouped_pipeline;
-    use differential_engine::schema::SourceKind;
     use std::sync::Mutex;
 
     let r = TestRepo::new();
@@ -619,9 +619,7 @@ fn progress_reports_stages_and_cache_state() {
         let cb = |p: Progress| seen.lock().unwrap().push(p);
         run_grouped_pipeline(
             &r.repo(),
-            &base,
-            &head,
-            SourceKind::Range,
+            &ReviewSource::range(base.clone(), head.clone(), head.clone()),
             &Config::default(),
             &LanguageRegistry::builtin(),
             &differential_testutil::stub_readers(),

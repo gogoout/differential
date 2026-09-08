@@ -397,8 +397,13 @@ list belongs; the footer's job is to point at it.
 | `v` | start a line selection at the cursor · `j`/`k` extend it · `v` or `esc` drops it · `c` writes a finding over it |
 | `c` | write a finding — on the line under the cursor, on the lines `v` selected, or on the whole hunk from a row that is not a line; on a line that already carries one, rewrite that one |
 | `dd` | delete the finding under the cursor |
-| `y` | copy the open-findings summary — a markdown list of `file:lines: note`, and nothing about groups: a group is how this reviewer chose to READ the branch, and the summary is pasted somewhere that has no idea what `g7` was. `dfr findings <range> --summary` prints the same text |
-| `F` | every finding in one list — `enter` jumps to one, `dd` deletes it, `D` clears them all, `esc` closes |
+| `y` | copy the summary of open findings not yet on the request — a markdown list of `file:lines: note`, and nothing about groups: a group is how this reviewer chose to READ the branch, and the summary is pasted somewhere that has no idea what `g7` was. `dfr findings <range> --summary` prints the same text |
+| `F` | every finding and every review thread in one list — `enter` jumps to one, `dd` deletes a note, `D` clears the notes not on the request (published notes and threads stay), `P` publishes, `esc` closes |
+| `c` on a review thread | draft a reply under it — a finding carrying the thread's id until `P` publishes it ([forge.md](forge.md)); on a comment of yours — by author, marker or address — rewrite it on the forge |
+| `dd` on a comment of yours | delete it on the forge and here — asks first, only `y` means yes; on anyone else's, the footer says `not your comment` |
+| `x` | resolve or reopen the review thread under the cursor, on the forge, at once |
+| `R` | fetch the request's review threads again |
+| `P` | publish the open findings to the request as one review — a float first says what goes and what stays and why; `y` sends, any other key keeps them local |
 | `?` | help — the keys, as one uninterrupted table |
 | `q` | quit — state is saved on every change, quitting never loses anything |
 
@@ -580,9 +585,12 @@ the way, since a note whose line is hidden hangs off its hunk's header instead; 
 skim remainder is, and is opened. An orphan has no row at any depth of unfolding and says
 so. `dd` deletes the selected
 note and the list stays open — a reviewer clearing up has more than one to clear. `D` asks
-`delete all 4 findings?  y / n`, and only `y` means yes: `dd` deletes one without asking
-because a note is one line and rewriting it is `c`, while clearing the lot is the only
-irreversible thing in this reviewer.
+`delete all 4 local notes? (2 on the request stay)  y / n`, and only `y` means yes: `dd`
+deletes one without asking because a note is one line and rewriting it is `c`, while
+clearing every local note is the only irreversible thing in this reviewer. Published notes
+and threads stay: a published note is the request's, and deleting it is `dd`, which asks
+and reaches the forge ([forge.md](forge.md)). With nothing local to clear, `D` says so
+instead of asking.
 
 **Orphans have their own section**, under a rule, and for them the list is not a
 convenience but the only door. An orphaned note matches no line and no hunk digest, so no
@@ -592,7 +600,9 @@ them, which is the signpost that sends a reader to `F`.
 
 **Writing a finding** opens a float over the diff rather than a strip pinned to its foot:
 a note is about lines you should still be able to see. Its border carries the file and line
-range it will anchor to, and its footer the keys.
+range it will anchor to, and its footer the keys. The text **soft-wraps at word boundaries**
+and the box grows with it, up to the body: a note is prose, and a line the reader cannot see
+the end of is a line they cannot finish. The footer row stays clear of the text.
 
 **`enter` saves.** A finding is usually one line, and the key that ends a line is the key a
 reader reaches for to be done with it. A newline is `shift+enter` where the terminal
@@ -606,14 +616,66 @@ A **paste** lands in the box whole. Bracketed paste is on precisely so a multi-l
 arrives as one event instead of a run of keys each driving a normal-mode action; the event
 was being dropped, which read as the box being broken.
 
+## Review threads
+
+When a forge call fails, the footer says so in a few words and a **notice** float shows the
+forge's whole answer — the command, the exit code, its own message — wrapped; any key closes
+it. A footer holds one line, and the rest of an error is what tells the reader what to do.
+
+A review opened with `--pr` shows the request's review threads ([forge.md](forge.md)). They
+are fetched on a worker thread the moment the reviewer opens, and again on `R`; the footer
+wears a `syncing` pill while a forge call is out, and a `N threads` pill on every request
+review. The loop draws nothing while a key handler runs, so no handler calls the forge:
+every call goes out on a worker and lands between keys, one call at a time.
+
+A thread is **drawn where a note is drawn**: under the last line it annotates, through the
+same placement, behind the same rail. It wears a different ink because it is somebody
+else's — each comment opens with `author · date` in bold, then its lines in the ordinary
+text colour rather than a note's italics; a reply steps in one indent; a resolved thread is
+dimmed throughout and its header says `resolved`, an outdated one `outdated`. A thread
+whose line the plan does not hold hangs off its hunk's header like an orphaned-to-hunk
+note; one nothing holds is counted in the footer's message and drawn nowhere. The date is
+the day, not an age: an age needs a clock, and `2026-09-03` stays true tomorrow.
+
+A thread's comment **always wraps**, as a note and a group's description do: it is prose,
+and a comment cut at the pane edge is one the reader cannot answer. `w` governs code only.
+Every row of a thread is a `Thread` row, so `c` and `x` work from any line of it, and the
+cursor in one lights the cluster — the thread, its reply drafts, and the lines its anchor
+covers — the way a note's cluster lights. `dd` on a thread refuses and names the two keys
+that do work: a thread is the forge's. A **reply draft** is a finding that carries the
+thread's id; it is drawn straight after the thread it answers, stepped in like a reply, in
+the note's own look, so what is on the request and what is not yet are told apart at a
+glance. A published finding whose fetched twin is present is not drawn at all: the thread
+is it now, and `y` leaves it out for the same reason.
+
+**The list holds the threads too.** `F` lists the notes first, then the request's review
+threads under a rule, then the orphans: what the reader has to say, what others have said,
+and what has lost its line. A thread's row is `file:line  author: first line`, dimmed and
+marked `(resolved)` when the forge says so; a published note whose twin is fetched is
+listed once, as the thread, and one whose twin is not fetched yet is marked
+`(published)`. `enter` on a thread lands on its rows; `dd` on one refuses as it does in
+the diff. `P` works from the list as it does from the diff, and sends everything not yet
+on the request.
+
+**`P` publishes, and asks first.** It is the one outward act in this reviewer, so the float
+reads its whole consequence back before the question: how many new comments and replies go
+to the request as one review, and which notes stay local and why — a line the request's
+diff does not show, a reply whose thread is gone. Only a bare `y` sends; any other key
+leaves everything where it was, with `nothing published` in the footer. The send is a
+worker call like every other: the footer says `publishing N comments…`, then `published N
+comments` when the forge has answered and the refetched threads have replaced the notes.
+If the request's head moved since the review was built, nothing is sent and the footer
+says where it moved to; the review has to be opened again on the new head.
+
 ## Findings contract
 
 `dfr findings <range>` re-anchors and prints the findings as JSON — each record carries
 `{id, created, body, status, moved, plan_hash, anchor: {file, side, line, end_line, offset,
-span, hunk_digest, line_text, end_line_text}}`. `line`/`end_line` are the resolved numbers
+span, hunk_digest, line_text, end_line_text}, reply_to, upstream}` (the last two are the
+forge consumer's, [forge.md](forge.md)). `line`/`end_line` are the resolved numbers
 for a consumer that only reads; `offset`/`span` are what survive a regeneration. All five
-are additive with defaults, so an older `findings.jsonl` loads unchanged. `hunk_digest` keys back into the plan document's `hunks[].digest` and from
-there to `forge_position`, which is how agent tooling and the future forge consumer act on
-them. The `y` clipboard summary is the human-readable projection: one markdown bullet per
-open finding, `file:lines: note`. No group: a group is how this reviewer chose to READ the
+are additive with defaults, so an older `findings.jsonl` loads unchanged. `hunk_digest` keys back into the plan document's `hunks[].digest`, which is how agent
+tooling acts on them; the forge consumer posts from the anchor itself. The `y` clipboard
+summary is the human-readable projection: one markdown bullet per open finding not yet on
+the request, `file:lines: note`. No group: a group is how this reviewer chose to READ the
 branch, and the summary is pasted somewhere that has no idea what `g7` was.

@@ -9,10 +9,10 @@ use differential_engine::config::Config;
 use differential_engine::gitio::Repo;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::run_grouped_pipeline;
+use differential_engine::plan::ReviewSource;
 use differential_engine::ports::ReviewStore;
-use differential_engine::schema::SourceKind;
 use differential_engine::store::{FsArtefactStore, FsGroupingCache, FsReviewStore};
-use differential_testutil::{FakeBackend, TestRepo, json_group};
+use differential_testutil::{FakeBackend, TestRepo, github_request, json_group, remote_comment};
 use differential_tui::app::{App, Effect, Focus, Mode, ReviewOptions, ViewMode, Viewport};
 use differential_tui::rows::{BoxStyle, RowFactory, RowKind};
 use differential_tui::theme::Theme;
@@ -67,9 +67,7 @@ fn open_app_with_opts(
     let head = r.git(&["rev-parse", "HEAD"]);
     let out = run_grouped_pipeline(
         &repo,
-        &base,
-        &head,
-        SourceKind::Range,
+        &ReviewSource::range(base.clone(), head.clone(), head.clone()),
         &Config::default(),
         &LanguageRegistry::builtin(),
         &differential_testutil::stub_readers(),
@@ -945,12 +943,17 @@ fn drawn(app: &mut App) -> String {
 /// The whole screen as rows, in row order — for assertions about text that
 /// has to sit on one line.
 fn drawn_rows(app: &mut App) -> Vec<String> {
-    let backend = ratatui::backend::TestBackend::new(100, 40);
+    screen(app, 100, 40)
+}
+
+/// The screen at `w` by `h`, one string per row.
+fn screen(app: &App, w: u16, h: u16) -> Vec<String> {
+    let backend = ratatui::backend::TestBackend::new(w, h);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|f| app.draw(f)).unwrap();
     let buf = terminal.backend().buffer().clone();
-    (0..40u16)
-        .map(|y| (0..100u16).map(|x| buf[(x, y)].symbol()).collect())
+    (0..h)
+        .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect())
         .collect()
 }
 
@@ -1443,9 +1446,7 @@ fn highlighting_is_windowed_not_whole_file() {
     let backend = skim_first_backend();
     let out = run_grouped_pipeline(
         &repo,
-        &base,
-        &head,
-        SourceKind::Range,
+        &ReviewSource::range(base.clone(), head.clone(), head.clone()),
         &Config::default(),
         &LanguageRegistry::builtin(),
         &differential_testutil::stub_readers(),
@@ -4139,7 +4140,7 @@ fn d_clears_everything_but_only_after_a_yes() {
     assert!(
         drawn_rows(&mut app)
             .iter()
-            .any(|r| r.contains("delete this finding?")),
+            .any(|r| r.contains("delete this note?")),
         "the confirmation should be on screen"
     );
 
@@ -5711,5 +5712,1404 @@ fn render_dump_wrap() {
     eprintln!("=== split, w ON ===");
     for row in drawn_rows(&mut app) {
         eprintln!("{row}");
+    }
+}
+
+// ------------------------------------------------------------ forge threads
+
+mod forge_threads {
+    //! The forge's review threads in the reviewer (ADR 0029, spec/forge.md):
+    //! fetched on a worker, drawn under their lines, replied to, resolved.
+
+    use std::sync::{Arc, Mutex};
+
+    use differential_engine::forge::{
+        Batch, Forge, ForgeError, ForgeKind, Published, RemoteComment, RemoteThread, Request, Sent,
+    };
+    use differential_tui::app::ForgeLink;
+
+    use super::*;
+
+    /// A forge that answers from memory. Allowed where a fake git is not: the
+    /// forge is a `dyn` seam chosen at run time, and nothing here is an
+    /// invariant that would compare the fake with itself.
+    struct FakeForge {
+        threads: Mutex<Vec<RemoteThread>>,
+        resolved: Mutex<Vec<(String, bool)>>,
+        /// What `request` reports as the head. The review's own by default;
+        /// a test moves it to stand for a push since the review was built.
+        head: Mutex<String>,
+        published: Mutex<Vec<Batch>>,
+        /// When set, `threads` fails: a refetch that breaks after a publish.
+        fail_threads: Mutex<bool>,
+        /// When set, `publish` records the batch and creates nothing: a
+        /// send the forge silently dropped.
+        swallow: Mutex<bool>,
+        /// When set, `publish` creates nothing and reports a failure after
+        /// the fact: a forge that broke part-way.
+        stop_part_way: Mutex<bool>,
+        /// When set, `publish` refuses outright with a long error: a forge
+        /// that said no, at length.
+        refuse: Mutex<bool>,
+    }
+
+    impl FakeForge {
+        fn new(threads: Vec<RemoteThread>, head: &str) -> Arc<Self> {
+            Arc::new(FakeForge {
+                threads: Mutex::new(threads),
+                resolved: Mutex::new(Vec::new()),
+                head: Mutex::new(head.to_string()),
+                published: Mutex::new(Vec::new()),
+                fail_threads: Mutex::new(false),
+                swallow: Mutex::new(false),
+                stop_part_way: Mutex::new(false),
+                refuse: Mutex::new(false),
+            })
+        }
+    }
+
+    impl Forge for FakeForge {
+        fn kind(&self) -> ForgeKind {
+            ForgeKind::Github
+        }
+        fn whoami(&self) -> Result<String, ForgeError> {
+            Ok("me".into())
+        }
+        fn request(&self, _id: Option<&str>) -> Result<Request, ForgeError> {
+            Ok(Request {
+                head: self.head.lock().unwrap().clone(),
+                ..github_request("7")
+            })
+        }
+        fn threads(&self, _req: &Request) -> Result<Vec<RemoteThread>, ForgeError> {
+            if *self.fail_threads.lock().unwrap() {
+                return Err(ForgeError::NoRequest("the forge is down".into()));
+            }
+            Ok(self.threads.lock().unwrap().clone())
+        }
+        /// Takes everything: each new comment becomes a thread of its own on
+        /// the same line, each reply a comment in its thread — what the real
+        /// forge's refetch would then show, marker read and stripped like a
+        /// real adapter does. Answers with NOTHING, as GitHub did the first
+        /// time this ran for real: the reviewer must learn what landed from
+        /// the threads, not from this answer.
+        fn publish(&self, _req: &Request, batch: &Batch) -> Result<Sent, ForgeError> {
+            use differential_engine::forge::strip_marker;
+            if *self.refuse.lock().unwrap() {
+                return Err(ForgeError::Failed {
+                    command: "fakeforge api --method POST projects/:id/merge_requests/1/discussions/abc/notes --input -".into(),
+                    code: Some(1),
+                    output: "{\"message\":\"400 Bad Request - the forge's own words, at length, which the footer could never hold\"}".into(),
+                });
+            }
+            self.published.lock().unwrap().push(batch.clone());
+            if *self.swallow.lock().unwrap() {
+                return Ok(Sent::default());
+            }
+            if *self.stop_part_way.lock().unwrap() {
+                // The forge took the batch and then broke before it could say
+                // what it made of it. Nothing to name; the error to report.
+                return Ok(Sent {
+                    published: Vec::new(),
+                    threads: None,
+                    failed: Some(ForgeError::NoRequest("the forge fell over after".into())),
+                });
+            }
+            let mut threads = self.threads.lock().unwrap();
+            for c in &batch.comments {
+                let (tid, cid) = (format!("T-{}", c.finding), format!("C-{}", c.finding));
+                let mut t = thread(&tid, &cid);
+                t.comments.truncate(1);
+                let (body, finding) = strip_marker(&c.body);
+                t.comments[0].body = body;
+                t.comments[0].finding = finding;
+                t.comments[0].author = "me".into();
+                t.line = Some(c.line);
+                threads.push(t);
+            }
+            for r in &batch.replies {
+                let cid = format!("C-{}", r.finding);
+                if let Some(t) = threads.iter_mut().find(|t| t.id == r.thread) {
+                    let (body, finding) = strip_marker(&r.body);
+                    t.comments.push(RemoteComment {
+                        id: cid.clone(),
+                        author: "me".into(),
+                        created: "2026-09-04T09:00:00Z".into(),
+                        body,
+                        finding,
+                    });
+                }
+            }
+            Ok(Sent::default())
+        }
+        fn set_resolved(
+            &self,
+            _req: &Request,
+            thread: &str,
+            resolved: bool,
+        ) -> Result<(), ForgeError> {
+            self.resolved
+                .lock()
+                .unwrap()
+                .push((thread.to_string(), resolved));
+            Ok(())
+        }
+        fn edit_comment(
+            &self,
+            _req: &Request,
+            thread: &str,
+            comment: &str,
+            body: &str,
+        ) -> Result<(), ForgeError> {
+            use differential_engine::forge::strip_marker;
+            let mut threads = self.threads.lock().unwrap();
+            let c = threads
+                .iter_mut()
+                .find(|t| t.id == thread)
+                .and_then(|t| t.comments.iter_mut().find(|c| c.id == comment))
+                .ok_or_else(|| ForgeError::NoRequest("no such comment".into()))?;
+            let (text, finding) = strip_marker(body);
+            c.body = text;
+            c.finding = finding;
+            Ok(())
+        }
+        fn delete_comment(
+            &self,
+            _req: &Request,
+            thread: &str,
+            comment: &str,
+        ) -> Result<(), ForgeError> {
+            let mut threads = self.threads.lock().unwrap();
+            let t = threads
+                .iter_mut()
+                .find(|t| t.id == thread)
+                .ok_or_else(|| ForgeError::NoRequest("no such thread".into()))?;
+            t.comments.retain(|c| c.id != comment);
+            threads.retain(|t| !t.comments.is_empty());
+            Ok(())
+        }
+    }
+
+    /// A thread on the one changed line of `src/main.txt`.
+    fn thread(id: &str, root_comment: &str) -> RemoteThread {
+        RemoteThread {
+            id: id.to_string(),
+            resolved: false,
+            outdated: false,
+            path: "src/main.txt".into(),
+            side: "new".into(),
+            line: Some(1),
+            start_line: None,
+            line_text: Some("fn main() { run_with_retries(3) }".into()),
+            anchor: None,
+            comments: vec![
+                remote_comment(root_comment, "alice", "2026-09-03T20:53:12Z", "why three?"),
+                remote_comment(
+                    &format!("{root_comment}-r"),
+                    "bob",
+                    "2026-09-03T21:00:00Z",
+                    "it was two before",
+                ),
+            ],
+        }
+    }
+
+    /// Wait for the one forge call that is out to land. The fake answers at
+    /// once; the wait is for the worker thread to be scheduled.
+    fn settle(app: &mut App) {
+        for _ in 0..400 {
+            if app.poll_forge() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("the forge call never landed");
+    }
+
+    /// `make_app` with a fake forge linked and its threads fetched, parked on
+    /// the group that holds `src/main.txt`.
+    fn app_with_threads(threads: Vec<RemoteThread>) -> (TestRepo, App, Arc<FakeForge>) {
+        let (r, mut app) = make_app();
+        let fake = FakeForge::new(threads, &app.session.doc().source.head);
+        app.link_forge(ForgeLink {
+            forge: Arc::clone(&fake) as Arc<dyn Forge>,
+            request: github_request("7"),
+        });
+        app.start_fetch();
+        assert!(app.syncing());
+        settle(&mut app);
+        assert!(!app.syncing());
+        assert!(app.status.contains("review thread"), "{}", app.status);
+        select_group_of(&mut app, "src/main.txt");
+        (r, app, fake)
+    }
+
+    /// Park the reviewer on the group that holds `path`, by pressing keys in
+    /// the plan pane: the plan's order is the engine's to decide.
+    fn select_group_of(app: &mut App, path: &str) {
+        let want = app
+            .groups()
+            .iter()
+            .position(|g| {
+                g.hunks
+                    .iter()
+                    .any(|h| app.session.doc().hunks[h.index()].file == path)
+            })
+            .expect("a group holds the file");
+        app.focus = Focus::Groups;
+        for _ in 0..app.groups().len() {
+            app.handle_key(key('k'));
+        }
+        for _ in 0..want {
+            app.handle_key(key('j'));
+        }
+        assert_eq!(app.selected_group, want);
+        app.focus = Focus::Detail;
+    }
+
+    /// Park the cursor on the one changed line of `src/main.txt`.
+    fn cursor_to_changed_line(app: &mut App) {
+        app.cursor = app
+            .rows
+            .iter()
+            .position(|r| r.line.as_ref().is_some_and(|l| l.holds("new", 1)))
+            .unwrap();
+    }
+
+    fn thread_rows(app: &App, id: &str) -> Vec<usize> {
+        app.rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| matches!(&r.kind, RowKind::Thread { thread: t, .. } if t == id))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    #[test]
+    fn threads_arrive_on_a_worker_and_sit_under_their_line() {
+        let (_r, app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        assert_eq!(app.session.threads().len(), 1);
+
+        let rows = thread_rows(&app, "T1");
+        // Root header, root body, reply header, reply body.
+        assert_eq!(rows.len(), 4, "{rows:?}");
+        let first = rows[0];
+        let above = &app.rows[first - 1];
+        assert!(matches!(above.kind, RowKind::Diff(_)));
+        assert!(above.line.as_ref().unwrap().holds("new", 1));
+        // A thread is a selectable row like a note, and belongs to the hunk.
+        assert!(app.rows[first].kind.selectable());
+        assert_eq!(app.rows[first].kind.hunk(), above.kind.hunk());
+    }
+
+    #[test]
+    fn c_on_a_thread_drafts_a_reply_that_sits_under_it() {
+        let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        let rows = thread_rows(&app, "T1");
+        app.cursor = rows[0];
+        app.handle_key(key('c'));
+        assert!(matches!(app.mode, Mode::Editing { reply_to: Some(ref t), .. } if t == "T1"));
+        app.handle_paste("agreed, two was enough");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let reply = app
+            .session
+            .findings()
+            .iter()
+            .find(|f| f.reply_to.as_deref() == Some("T1"))
+            .expect("the reply is a finding");
+        assert_eq!(reply.body, "agreed, two was enough");
+        assert!(app.status.contains("P publishes"), "{}", app.status);
+
+        // Directly after the thread's last row, stepped in like a reply.
+        let last_thread = *thread_rows(&app, "T1").last().unwrap();
+        let note = &app.rows[last_thread + 1];
+        assert!(matches!(&note.kind, RowKind::Finding(id, _) if id == &reply.id));
+        // And nowhere else: a reply is not also a loose note on the line.
+        let notes = app
+            .rows
+            .iter()
+            .filter(|r| matches!(&r.kind, RowKind::Finding(id, _) if id == &reply.id))
+            .count();
+        assert_eq!(notes, 1);
+        // `y` counts it: it is not yet on the request.
+        assert!(app.findings_summary().contains("agreed, two was enough"));
+    }
+
+    #[test]
+    fn x_resolves_the_thread_through_the_forge_and_dims_it_once_answered() {
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        app.cursor = thread_rows(&app, "T1")[0];
+        app.handle_key(key('x'));
+        assert!(app.syncing(), "the forge is asked on a worker");
+        assert!(
+            !app.session.threads()[0].resolved,
+            "not before the forge says so"
+        );
+        settle(&mut app);
+        assert_eq!(
+            fake.resolved.lock().unwrap().as_slice(),
+            &[("T1".to_string(), true)]
+        );
+        assert!(app.session.threads()[0].resolved);
+        assert_eq!(app.status, "thread resolved");
+        // The header row now says so.
+        let first = thread_rows(&app, "T1")[0];
+        let text: String = match &app.rows[first].content {
+            differential_tui::rows::RowContent::Unified(half) => {
+                half.pairs.iter().map(|(_, t)| t.as_str()).collect()
+            }
+            _ => String::new(),
+        };
+        assert!(text.contains("resolved"), "{text}");
+
+        // And back.
+        app.cursor = first;
+        app.handle_key(key('x'));
+        settle(&mut app);
+        assert!(!app.session.threads()[0].resolved);
+        assert_eq!(app.status, "thread reopened");
+    }
+
+    #[test]
+    fn x_off_a_thread_says_what_it_is_for() {
+        let (_r, mut app, _fake) = app_with_threads(vec![]);
+        app.cursor = app.rows.iter().position(|r| r.line.is_some()).unwrap();
+        app.handle_key(key('x'));
+        assert!(!app.syncing());
+        assert!(app.status.contains("x resolves"), "{}", app.status);
+    }
+
+    #[test]
+    fn r_fetches_again_and_the_answer_replaces_the_cache() {
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        fake.threads.lock().unwrap().push(thread("T2", "C2"));
+        app.handle_key(key('R'));
+        assert!(app.syncing());
+        // A second call while one is out is refused, not queued.
+        app.handle_key(key('R'));
+        assert_eq!(app.status, "still syncing with the forge");
+        settle(&mut app);
+        assert_eq!(app.session.threads().len(), 2);
+        assert_eq!(thread_rows(&app, "T2").len(), 4);
+    }
+
+    #[test]
+    fn a_published_note_draws_as_its_fetched_twin_not_twice() {
+        let (_r, mut app) = make_app();
+        select_group_of(&mut app, "src/main.txt");
+        cursor_to_changed_line(&mut app);
+        app.handle_key(key('c'));
+        app.handle_paste("why three?");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let id = app.session.findings()[0].id.clone();
+        app.session
+            .mark_published(&[Published {
+                finding: id.clone(),
+                thread: "T1".into(),
+                comment: "C1".into(),
+                url: None,
+            }])
+            .unwrap();
+        // Published but not yet fetched: the note still shows.
+        app.rebuild_rows();
+        assert!(
+            app.rows
+                .iter()
+                .any(|r| matches!(&r.kind, RowKind::Finding(f, _) if f == &id))
+        );
+
+        let fake = FakeForge::new(vec![thread("T1", "C1")], &app.session.doc().source.head);
+        app.link_forge(ForgeLink {
+            forge: fake as Arc<dyn Forge>,
+            request: github_request("7"),
+        });
+        app.start_fetch();
+        settle(&mut app);
+        assert!(
+            !app.rows
+                .iter()
+                .any(|r| matches!(&r.kind, RowKind::Finding(f, _) if f == &id)),
+            "the thread is the note now"
+        );
+        assert_eq!(thread_rows(&app, "T1").len(), 4);
+        // Published: not in the summary either.
+        assert!(!app.findings_summary().contains("why three?"));
+    }
+
+    #[test]
+    fn the_footer_counts_threads_only_on_a_request_review() {
+        let footer = |app: &mut App| -> String { screen(app, 120, 30)[29].clone() };
+        let (_r, mut plain) = make_app();
+        assert!(!footer(&mut plain).contains("thread"));
+
+        let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        let line = footer(&mut app);
+        assert!(line.contains("1 thread"), "{line}");
+        assert!(!line.contains("syncing"), "{line}");
+        app.handle_key(key('R'));
+        assert!(footer(&mut app).contains("syncing"));
+        settle(&mut app);
+    }
+
+    /// A thread with a reply and a reply draft under it, then the resolved look.
+    ///
+    /// `cargo test -p differential-tui --test tui render_dump_threads -- --ignored --nocapture`
+    #[test]
+    #[ignore = "prints the pane for a human to look at"]
+    fn render_dump_threads() {
+        let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        app.cursor = thread_rows(&app, "T1")[0];
+        app.handle_key(key('c'));
+        app.handle_paste("agreed, two was enough");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.cursor = thread_rows(&app, "T1")[0];
+        println!("\n=== a thread, a reply, a reply draft; cursor on the thread ===");
+        println!("{}", ansi_dump(&mut app, 120, 24));
+        app.handle_key(key('x'));
+        settle(&mut app);
+        app.cursor = app.rows.iter().position(|r| r.line.is_some()).unwrap();
+        println!("\n=== resolved; cursor elsewhere ===");
+        println!("{}", ansi_dump(&mut app, 120, 24));
+    }
+
+    // ---------------------------------------------------------------- publish
+
+    /// Write a note on the changed line and a reply under the thread.
+    fn draft_two(app: &mut App) {
+        cursor_to_changed_line(app);
+        app.handle_key(key('c'));
+        app.handle_paste("three is a magic number");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.cursor = thread_rows(app, "T1")[0];
+        app.handle_key(key('c'));
+        app.handle_paste("agreed");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn p_shows_the_plan_and_only_y_sends_it() {
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        draft_two(&mut app);
+        assert_eq!(app.session.unpublished().count(), 2);
+
+        app.handle_key(key('P'));
+        let Mode::Publish { plan } = &app.mode else {
+            panic!("P opens the publish modal");
+        };
+        assert_eq!(
+            (plan.batch.comments.len(), plan.batch.replies.len()),
+            (1, 1)
+        );
+        assert!(plan.excluded.is_empty());
+        // Any other key keeps it all local.
+        app.handle_key(key('n'));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.status, "nothing published");
+        assert!(fake.published.lock().unwrap().is_empty());
+        assert!(!app.syncing());
+
+        app.handle_key(key('P'));
+        app.handle_key(key('y'));
+        assert!(app.syncing(), "the send is a worker call");
+        assert!(app.status.starts_with("publishing 2"), "{}", app.status);
+        settle(&mut app);
+        assert_eq!(fake.published.lock().unwrap().len(), 1);
+        assert_eq!(app.status, "published 2 comments");
+        // Both findings carry their upstream address; neither is open work.
+        assert_eq!(app.session.unpublished().count(), 0);
+        assert!(app.session.findings().iter().all(|f| f.upstream.is_some()));
+        assert_eq!(app.findings_summary().trim(), "(no open findings)");
+        // The refetch shows the twins: the note is a thread now, and the
+        // reply is the thread's third comment.
+        assert!(
+            !app.rows
+                .iter()
+                .any(|r| matches!(r.kind, RowKind::Finding(..)))
+        );
+        assert_eq!(app.session.threads().len(), 2);
+        assert_eq!(app.session.thread("T1").unwrap().comments.len(), 3);
+        // A second P has nothing left to send.
+        app.handle_key(key('P'));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(
+            app.status.starts_with("nothing to publish"),
+            "{}",
+            app.status
+        );
+    }
+
+    #[test]
+    fn a_moved_head_refuses_the_whole_publish() {
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        draft_two(&mut app);
+        *fake.head.lock().unwrap() = "f".repeat(40);
+        app.handle_key(key('P'));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        assert!(
+            fake.published.lock().unwrap().is_empty(),
+            "nothing was sent"
+        );
+        assert!(
+            app.status.starts_with("nothing published"),
+            "{}",
+            app.status
+        );
+        assert!(
+            matches!(&app.mode, Mode::Notice { text, .. } if text.contains("moved to ffffffffffff")),
+            "the whole answer is on screen"
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(
+            app.session.unpublished().count(),
+            2,
+            "still the reader's to send"
+        );
+    }
+
+    #[test]
+    fn a_note_the_diff_cannot_hold_stays_local_and_is_named() {
+        let (_r, mut app, fake) = app_with_threads(vec![]);
+        // Far from any change: line 40 of a one-line file.
+        let h = app
+            .session
+            .doc()
+            .hunks
+            .iter()
+            .position(|h| h.file == "src/main.txt")
+            .unwrap();
+        app.session
+            .add_finding(
+                h,
+                Some(differential_engine::review_state::Lines {
+                    side: "new".into(),
+                    start: 40,
+                    end: 40,
+                    start_text: String::new(),
+                    end_text: String::new(),
+                }),
+                "far away".into(),
+            )
+            .unwrap();
+        app.rebuild_rows();
+        app.handle_key(key('P'));
+        assert!(
+            matches!(app.mode, Mode::Normal),
+            "nothing sendable: no modal"
+        );
+        assert!(app.status.contains("cannot hold"), "{}", app.status);
+
+        // With one sendable note beside it, the modal lists the one that stays.
+        draft_one_note(&mut app);
+        app.handle_key(key('P'));
+        let Mode::Publish { plan } = &app.mode else {
+            panic!("P opens the publish modal");
+        };
+        assert_eq!(plan.batch.len(), 1);
+        assert_eq!(plan.excluded.len(), 1);
+        assert_eq!(plan.excluded[0].lines, "40");
+        let screen = screen(&app, 120, 30);
+        assert!(
+            screen
+                .iter()
+                .any(|l| l.contains("1 new comment go to the pull request")),
+            "{screen:#?}"
+        );
+        assert!(
+            screen.iter().any(|l| l.contains("1 stay local")),
+            "{screen:#?}"
+        );
+        assert!(
+            screen.iter().any(|l| l.contains("src/main.txt:40")),
+            "{screen:#?}"
+        );
+        app.handle_key(key('y'));
+        settle(&mut app);
+        assert_eq!(fake.published.lock().unwrap()[0].comments.len(), 1);
+        assert_eq!(
+            app.session.unpublished().count(),
+            1,
+            "the far note is still open"
+        );
+    }
+
+    /// Write one note on the changed line and nothing under the thread.
+    fn draft_one_note(app: &mut App) {
+        cursor_to_changed_line(app);
+        app.handle_key(key('c'));
+        app.handle_paste("on the change");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn p_off_a_request_review_says_so() {
+        let (_r, mut app) = make_app();
+        app.handle_key(key('P'));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.status, "this review is not of a pull request");
+    }
+
+    /// The publish modal with one comment, one reply and one note that stays.
+    ///
+    /// `cargo test -p differential-tui --test tui render_dump_publish -- --ignored --nocapture`
+    #[test]
+    #[ignore = "prints the pane for a human to look at"]
+    fn render_dump_publish() {
+        let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        draft_two(&mut app);
+        let h = app
+            .session
+            .doc()
+            .hunks
+            .iter()
+            .position(|h| h.file == "src/main.txt")
+            .unwrap();
+        app.session
+            .add_finding(
+                h,
+                Some(differential_engine::review_state::Lines {
+                    side: "new".into(),
+                    start: 40,
+                    end: 41,
+                    start_text: String::new(),
+                    end_text: String::new(),
+                }),
+                "far away".into(),
+            )
+            .unwrap();
+        app.rebuild_rows();
+        app.handle_key(key('P'));
+        println!("\n=== P: the publish modal ===");
+        println!("{}", ansi_dump(&mut app, 120, 24));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        println!("\n=== after y: the twins, and the footer ===");
+        println!("{}", ansi_dump(&mut app, 120, 24));
+    }
+
+    // ---------------------------------------------------------- the F list
+
+    /// The findings list with a note, a published note's thread, a published
+    /// reply and a review thread.
+    ///
+    /// `cargo test -p differential-tui --test tui render_dump_findings_and_threads -- --ignored --nocapture`
+    #[test]
+    #[ignore = "prints the pane for a human to look at"]
+    fn render_dump_findings_and_threads() {
+        let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        draft_two(&mut app);
+        app.handle_key(key('P'));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        draft_one_note(&mut app);
+        app.handle_key(key('F'));
+        println!("\n=== F: notes, then review threads ===");
+        println!("{}", ansi_dump(&mut app, 120, 20));
+    }
+
+    #[test]
+    fn the_findings_list_holds_threads_too_and_enter_reaches_one() {
+        let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        draft_one_note(&mut app);
+        app.cursor = 0;
+        app.handle_key(key('F'));
+        let Mode::Findings { entries, .. } = &app.mode else {
+            panic!("F opens the list");
+        };
+        assert_eq!(entries.len(), 2);
+        assert!(!entries[0].thread, "notes first");
+        assert!(entries[1].thread);
+        assert_eq!(entries[1].id, "T1");
+        assert!(
+            entries[1].body.starts_with("alice: why three?"),
+            "{}",
+            entries[1].body
+        );
+        assert_eq!(entries[1].at, "src/main.txt:1");
+
+        // The rule between the sections, and the title, are drawn.
+        let screen = screen(&app, 120, 30);
+        assert!(
+            screen.iter().any(|l| l.contains("review threads")),
+            "{screen:#?}"
+        );
+        assert!(
+            screen
+                .iter()
+                .any(|l| l.contains("findings · 1 · threads · 1")),
+            "{screen:#?}"
+        );
+        assert!(
+            screen.iter().any(|l| l.contains("P publish")),
+            "{screen:#?}"
+        );
+
+        // enter on the thread lands on its rows.
+        app.handle_key(key('j'));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(
+            matches!(&app.rows[app.cursor].kind, RowKind::Thread { thread: t, .. } if t == "T1")
+        );
+
+        // dd on a thread in the list refuses, as it does in the diff.
+        app.handle_key(key('F'));
+        app.handle_key(key('j'));
+        app.handle_key(key('d'));
+        app.handle_key(key('d'));
+        assert_eq!(app.session.threads().len(), 1);
+        assert!(app.status.contains("not your comment"), "{}", app.status);
+    }
+
+    #[test]
+    fn p_from_the_findings_list_publishes_everything_unpublished() {
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        draft_two(&mut app);
+        app.handle_key(key('F'));
+        app.handle_key(key('P'));
+        assert!(
+            matches!(app.mode, Mode::Publish { .. }),
+            "the same float as P in the diff"
+        );
+        app.handle_key(key('y'));
+        settle(&mut app);
+        assert_eq!(fake.published.lock().unwrap()[0].len(), 2);
+        assert_eq!(app.session.unpublished().count(), 0);
+    }
+
+    #[test]
+    fn a_lost_publish_answer_is_recovered_from_the_markers() {
+        // The fake answers the publish with nothing, as the real forge did.
+        // The refetched threads carry each finding's marker, so the reviewer
+        // still knows what landed, hides the notes and sends nothing twice.
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        draft_two(&mut app);
+        app.handle_key(key('P'));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        assert_eq!(
+            app.status, "published 2 comments",
+            "counted from the threads"
+        );
+        assert!(app.session.findings().iter().all(|f| f.upstream.is_some()));
+        assert!(
+            !app.rows
+                .iter()
+                .any(|r| matches!(r.kind, RowKind::Finding(..)))
+        );
+        // The published finding is listed once, as its thread.
+        app.handle_key(key('F'));
+        let Mode::Findings { entries, .. } = &app.mode else {
+            panic!("F opens the list");
+        };
+        assert!(
+            entries.iter().all(|e| e.thread),
+            "{:?}",
+            entries.iter().map(|e| &e.body).collect::<Vec<_>>()
+        );
+        assert_eq!(entries.len(), 2);
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        // And the bodies the forge holds carry the marker, not the reader.
+        let sent = &fake.published.lock().unwrap()[0];
+        assert!(sent.comments[0].body.contains("<!-- differential:finding "));
+        assert!(
+            !app.session.thread("T1").unwrap().comments[2]
+                .body
+                .contains("differential:finding")
+        );
+        // A second publish has nothing to send.
+        app.handle_key(key('P'));
+        assert!(
+            app.status.starts_with("nothing to publish"),
+            "{}",
+            app.status
+        );
+    }
+
+    #[test]
+    fn capital_d_clears_local_notes_only_and_counts_only_those() {
+        let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        published_and_parked(&mut app);
+        draft_one_note(&mut app);
+        // One local note, two published (one a reply), one foreign thread.
+        assert_eq!(app.session.unpublished().count(), 1);
+        assert_eq!(app.session.findings().len(), 3);
+
+        app.handle_key(key('F'));
+        app.handle_key(key('D'));
+        let screen = screen(&app, 120, 30).join("\n");
+        assert!(
+            screen.contains("delete this note? (2 on the request stay)"),
+            "{screen}"
+        );
+        assert!(
+            !screen.contains("findings?"),
+            "threads and published notes are not counted"
+        );
+
+        app.handle_key(key('y'));
+        assert_eq!(app.session.unpublished().count(), 0);
+        assert_eq!(
+            app.session.findings().len(),
+            2,
+            "the published records stay"
+        );
+        assert_eq!(app.session.threads().len(), 2, "threads are untouched");
+        assert!(app.status.contains("1 note deleted"), "{}", app.status);
+        assert!(
+            app.status.contains("2 on the request kept"),
+            "{}",
+            app.status
+        );
+
+        // Nothing local left: D says so instead of asking.
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.handle_key(key('F'));
+        app.handle_key(key('D'));
+        assert!(matches!(
+            &app.mode,
+            Mode::Findings {
+                confirming: false,
+                ..
+            }
+        ));
+        assert!(
+            app.status.starts_with("nothing local to delete"),
+            "{}",
+            app.status
+        );
+    }
+
+    #[test]
+    fn a_failed_refetch_after_a_publish_keeps_what_was_sent() {
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        draft_two(&mut app);
+        // The fake creates the comments and then cannot list them back. It
+        // answers the publish with nothing, so only the markers in a refetch
+        // could confirm — and the refetch fails. Nothing must be lost or
+        // resent: the comments are on the request.
+        *fake.fail_threads.lock().unwrap() = true;
+        app.handle_key(key('P'));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        assert!(
+            app.status.contains("threads could not be fetched back"),
+            "{}",
+            app.status
+        );
+        assert!(app.status.contains("R to retry"), "{}", app.status);
+        assert_eq!(fake.published.lock().unwrap().len(), 1);
+        // The next fetch reconciles by marker and the plan is empty.
+        *fake.fail_threads.lock().unwrap() = false;
+        app.handle_key(key('R'));
+        settle(&mut app);
+        assert_eq!(app.session.unpublished().count(), 0);
+        app.handle_key(key('P'));
+        assert!(
+            app.status.starts_with("nothing to publish"),
+            "{}",
+            app.status
+        );
+        assert_eq!(fake.published.lock().unwrap().len(), 1, "sent once");
+    }
+
+    #[test]
+    fn the_published_count_is_of_this_batch_not_of_every_batch_before() {
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        draft_two(&mut app);
+        app.handle_key(key('P'));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        // A second note, and a forge that takes the send and creates nothing.
+        draft_one_note(&mut app);
+        *fake.swallow.lock().unwrap() = true;
+        app.handle_key(key('P'));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        assert!(app.status.starts_with("published 0 of 1"), "{}", app.status);
+        assert_eq!(
+            app.session.unpublished().count(),
+            1,
+            "still the reader's to send"
+        );
+    }
+
+    #[test]
+    fn a_published_note_whose_twin_is_not_fetched_yet_is_still_editable() {
+        let (_r, mut app, fake) = app_with_threads(vec![]);
+        draft_one_note(&mut app);
+        let id = app.session.findings()[0].id.clone();
+        // Published, address recorded, but the reviewer has not fetched the
+        // thread back: the note still draws as a note.
+        let mut on_forge = my_unmarked_thread("T", "on the change");
+        on_forge.comments[0].id = "C".into();
+        fake.threads.lock().unwrap().push(on_forge);
+        app.session
+            .mark_published(&[Published {
+                finding: id.clone(),
+                thread: "T".into(),
+                comment: "C".into(),
+                url: None,
+            }])
+            .unwrap();
+        app.rebuild_rows();
+        let row = app
+            .rows
+            .iter()
+            .position(|r| matches!(&r.kind, RowKind::Finding(f, _) if f == &id))
+            .expect("drawn as a note");
+        app.cursor = row;
+        app.handle_key(key('c'));
+        assert!(matches!(&app.mode, Mode::Editing { own: Some(own), .. } if own.comment == "C"));
+        app.handle_paste(" — edited");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        settle(&mut app);
+        assert_eq!(app.status, "comment rewritten on the request");
+        assert_eq!(app.session.findings()[0].body, "on the change — edited");
+        assert_eq!(
+            fake.threads.lock().unwrap()[0].root().unwrap().body,
+            "on the change — edited"
+        );
+        // And dd from the note's row.
+        app.cursor = app
+            .rows
+            .iter()
+            .position(|r| matches!(&r.kind, RowKind::Finding(f, _) if f == &id))
+            .unwrap();
+        app.handle_key(key('d'));
+        app.handle_key(key('d'));
+        assert!(
+            matches!(&app.mode, Mode::DeleteComment { own } if own.finding.as_deref() == Some(id.as_str()))
+        );
+        app.handle_key(key('y'));
+        settle(&mut app);
+        assert!(app.session.findings().is_empty());
+        assert!(fake.threads.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_forge_that_stops_part_way_is_reported_and_what_landed_is_kept() {
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        draft_two(&mut app);
+        *fake.stop_part_way.lock().unwrap() = true;
+        app.handle_key(key('P'));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        assert!(app.status.contains("stopped part-way"), "{}", app.status);
+        assert!(app.status.contains("P to send the rest"), "{}", app.status);
+        assert!(matches!(&app.mode, Mode::Notice { text, .. } if text.contains("fell over")));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        // Nothing was named and the fake made nothing, so both notes are
+        // still the reader's — and the next P offers exactly them.
+        assert_eq!(app.session.unpublished().count(), 2);
+        *fake.stop_part_way.lock().unwrap() = false;
+        app.handle_key(key('P'));
+        assert!(matches!(&app.mode, Mode::Publish { plan } if plan.batch.len() == 2));
+    }
+
+    #[test]
+    fn a_threads_comment_wraps_whatever_w_says() {
+        let long = "this comment runs on and on well past the width of any pane a reviewer \
+                    would open, and every word of it has to be readable end to end";
+        let mut t = thread("T1", "C1");
+        t.comments.truncate(1);
+        t.comments[0].body = long.into();
+        let (_r, app, _fake) = app_with_threads(vec![t]);
+        assert!(!app.wrap_on_for_test(), "soft wrap is off for code");
+        let screen = screen(&app, 100, 30);
+        let first = screen
+            .iter()
+            .position(|l| l.contains("this comment runs on"))
+            .expect("the comment starts");
+        assert!(
+            screen[first + 1..first + 4]
+                .iter()
+                .any(|l| l.contains("end to end")),
+            "the tail is on a following line, not cut: {:?}",
+            &screen[first..first + 4]
+        );
+        // The continuation lines keep the rail, so the panel stays a panel.
+        assert!(screen[first + 1].contains('▍'), "{}", screen[first + 1]);
+    }
+
+    #[test]
+    fn a_long_note_in_the_composer_stays_above_the_key_footer() {
+        let (_r, mut app, _fake) = app_with_threads(vec![]);
+        cursor_to_changed_line(&mut app);
+        app.handle_key(key('c'));
+        let text: Vec<String> = (1..=30)
+            .map(|i| format!("line {i} of a long note"))
+            .collect();
+        app.handle_paste(&text.join("\n"));
+        let screen = screen(&app, 120, 30);
+        let footer = screen
+            .iter()
+            .position(|l| l.contains("enter") && l.contains("save"))
+            .expect("the key footer is drawn");
+        assert!(
+            !screen[footer].contains("of a long note"),
+            "the footer row carries no text: {}",
+            screen[footer]
+        );
+        assert!(
+            screen[footer - 1].contains("of a long note"),
+            "the row above the footer is the note's last visible line: {}",
+            screen[footer - 1]
+        );
+        // The box grew to the body: more of the note is visible than the old
+        // ten-row box could show.
+        let shown = screen
+            .iter()
+            .filter(|l| l.contains("of a long note"))
+            .count();
+        assert!(shown > 6, "{shown} lines shown");
+    }
+
+    #[test]
+    fn c_on_someone_elses_reply_in_your_own_thread_drafts_a_reply() {
+        // The reader's root, published from here; a reply by someone else;
+        // the cursor on that reply.
+        let (_r, mut app, fake) = app_with_threads(vec![]);
+        draft_one_note(&mut app);
+        app.handle_key(key('P'));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        let mine = app.session.findings()[0].id.clone();
+        let tid = format!("T-{mine}");
+        {
+            let mut threads = fake.threads.lock().unwrap();
+            let t = threads.iter_mut().find(|t| t.id == tid).unwrap();
+            t.comments.push(RemoteComment {
+                id: "theirs".into(),
+                author: "bob".into(),
+                created: "2026-09-08T09:00:00Z".into(),
+                body: "are you sure?".into(),
+                finding: None,
+            });
+        }
+        app.handle_key(key('R'));
+        settle(&mut app);
+        let rows = thread_rows(&app, &tid);
+        assert_eq!(
+            rows.len(),
+            4,
+            "root header, root body, reply header, reply body"
+        );
+        // On their reply: not mine, so c replies.
+        app.cursor = rows[3];
+        app.handle_key(key('c'));
+        assert!(
+            matches!(&app.mode, Mode::Editing { reply_to: Some(t), own: None, .. } if t == &tid),
+            "a reply to the thread, not an edit of my root"
+        );
+        app.handle_paste("yes, because");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let reply = app
+            .session
+            .findings()
+            .iter()
+            .find(|f| f.reply_to.as_deref() == Some(tid.as_str()))
+            .expect("filed as a reply");
+        assert_eq!(reply.body, "yes, because");
+        // Drawn stepped in under their reply, not as a loose note on the line.
+        let last = *thread_rows(&app, &tid).last().unwrap();
+        assert!(matches!(&app.rows[last + 1].kind, RowKind::Finding(id, _) if id == &reply.id));
+        // And on my own root, c edits.
+        app.cursor = thread_rows(&app, &tid)[0];
+        app.handle_key(key('c'));
+        assert!(
+            matches!(&app.mode, Mode::Editing { own: Some(o), .. } if o.comment == format!("C-{mine}"))
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        // Publishing the reply sends it into the thread, not as a new comment.
+        app.handle_key(key('P'));
+        let Mode::Publish { plan } = &app.mode else {
+            panic!("P offers the reply");
+        };
+        assert_eq!(
+            (plan.batch.comments.len(), plan.batch.replies.len()),
+            (0, 1)
+        );
+        assert_eq!(plan.batch.replies[0].thread, tid);
+    }
+
+    #[test]
+    fn a_long_line_in_the_composer_wraps_instead_of_running_off() {
+        let (_r, mut app, _fake) = app_with_threads(vec![]);
+        cursor_to_changed_line(&mut app);
+        app.handle_key(key('c'));
+        let long = (1..=30)
+            .map(|i| format!("word{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        app.handle_paste(&long);
+        let screen = screen(&app, 100, 30);
+        let first = screen
+            .iter()
+            .position(|l| l.contains("word1 "))
+            .expect("the note starts");
+        assert!(
+            !screen[first].contains("word30"),
+            "one row cannot hold it all at this width: {}",
+            screen[first]
+        );
+        assert!(
+            screen[first + 1..first + 4]
+                .iter()
+                .any(|l| l.contains("word30")),
+            "the tail is on a following row, not off the edge: {:?}",
+            &screen[first..first + 4]
+        );
+    }
+
+    #[test]
+    fn a_forge_refusal_is_shown_in_full_not_cut_by_the_footer() {
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        draft_one_note(&mut app);
+        *fake.refuse.lock().unwrap() = true;
+        app.handle_key(key('P'));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        let Mode::Notice { title, text } = &app.mode else {
+            panic!("a refusal opens the notice, mode is elsewhere");
+        };
+        assert_eq!(title, "nothing published");
+        assert!(text.contains("exited with Some(1)"), "{text}");
+        assert!(text.contains("the forge's own words, at length"), "{text}");
+        assert!(
+            app.status.contains("details are on screen"),
+            "{}",
+            app.status
+        );
+
+        // Drawn whole: the forge's words reach the screen, wrapped.
+        let screen = screen(&app, 100, 30).join("\n");
+        assert!(screen.contains("nothing published"), "{screen}");
+        assert!(screen.contains("could never hold"), "{screen}");
+
+        // Any key closes it; the note is still the reader's to send.
+        app.handle_key(key('j'));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.session.unpublished().count(), 1);
+    }
+
+    // ------------------------------------------------------ your own comment
+
+    /// A thread by the reader, as the forge reports it, with no marker: one
+    /// sent before markers existed, or written on the forge's own page.
+    fn my_unmarked_thread(id: &str, body: &str) -> RemoteThread {
+        let mut t = thread(id, &format!("{id}-root"));
+        t.comments.truncate(1);
+        t.comments[0].author = "me".into();
+        t.comments[0].body = body.into();
+        t
+    }
+
+    #[test]
+    fn a_comment_by_you_with_no_marker_is_yours_by_author() {
+        let (_r, mut app, fake) =
+            app_with_threads(vec![my_unmarked_thread("M1", "mine, from the web")]);
+        app.cursor = thread_rows(&app, "M1")[0];
+        assert_eq!(app.session.findings().len(), 0, "no local record at all");
+
+        // c edits it on the forge; the cache follows, no record is invented.
+        app.handle_key(key('c'));
+        assert!(matches!(&app.mode, Mode::Editing { own: Some(own), .. } if own.thread == "M1"));
+        app.handle_paste(" and edited here");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        settle(&mut app);
+        assert_eq!(app.status, "comment rewritten on the request");
+        assert_eq!(
+            app.session.thread("M1").unwrap().root().unwrap().body,
+            "mine, from the web and edited here"
+        );
+        assert_eq!(
+            fake.threads.lock().unwrap()[0].root().unwrap().body,
+            "mine, from the web and edited here"
+        );
+        assert!(app.session.findings().is_empty());
+
+        // dd asks, then deletes it there and here.
+        app.cursor = thread_rows(&app, "M1")[0];
+        app.handle_key(key('d'));
+        app.handle_key(key('d'));
+        assert!(matches!(&app.mode, Mode::DeleteComment { own } if own.finding.is_none()));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        assert_eq!(app.status, "comment deleted on the request");
+        assert!(app.session.thread("M1").is_none());
+        assert!(fake.threads.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_unmarked_comment_by_you_heals_the_note_it_came_from() {
+        // The note was published before markers existed and its answer was
+        // lost: a local note with no address, and a comment by the reader on
+        // the same line with the same words and no marker.
+        let (_r, mut app) = make_app();
+        select_group_of(&mut app, "src/main.txt");
+        draft_one_note(&mut app);
+        assert_eq!(app.session.unpublished().count(), 1);
+        let fake = FakeForge::new(
+            vec![my_unmarked_thread("M1", "on the change")],
+            &app.session.doc().source.head,
+        );
+        app.link_forge(ForgeLink {
+            forge: fake as Arc<dyn Forge>,
+            request: github_request("7"),
+        });
+        app.start_fetch();
+        settle(&mut app);
+        assert!(
+            app.status.contains("1 finding found already published"),
+            "{}",
+            app.status
+        );
+        let f = &app.session.findings()[0];
+        assert_eq!(
+            f.upstream
+                .as_ref()
+                .map(|u| (u.thread.as_str(), u.comment.as_str())),
+            Some(("M1", "M1-root"))
+        );
+        assert_eq!(
+            app.session.unpublished().count(),
+            0,
+            "P has nothing to send"
+        );
+        assert!(app.session.is_twinned(f), "listed once, as the thread");
+        // Not healed: a different text on the same line stays a note.
+        cursor_to_changed_line(&mut app);
+        app.handle_key(key('c'));
+        app.handle_paste("something else");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(key('R'));
+        settle(&mut app);
+        assert_eq!(app.session.unpublished().count(), 1);
+    }
+
+    /// Publish two notes and land the cursor on the header row of the thread
+    /// the first one became.
+    fn published_and_parked(app: &mut App) -> String {
+        draft_two(app);
+        app.handle_key(key('P'));
+        app.handle_key(key('y'));
+        settle(app);
+        let mine = app
+            .session
+            .findings()
+            .iter()
+            .find(|f| f.body == "three is a magic number")
+            .unwrap()
+            .id
+            .clone();
+        let tid = format!("T-{mine}");
+        app.cursor = thread_rows(app, &tid)[0];
+        mine
+    }
+
+    #[test]
+    fn c_on_your_own_published_comment_edits_it_on_the_forge() {
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        let mine = published_and_parked(&mut app);
+        app.handle_key(key('c'));
+        let Mode::Editing { own, reply_to, .. } = &app.mode else {
+            panic!("c opens the composer");
+        };
+        assert_eq!(
+            own.as_ref().and_then(|o| o.finding.as_deref()),
+            Some(mine.as_str()),
+            "a rewrite of the comment, not a reply"
+        );
+        assert!(reply_to.is_none());
+        app.handle_paste(", or is it");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.syncing(), "the forge first");
+        settle(&mut app);
+        assert_eq!(app.status, "comment rewritten on the request");
+        let f = app
+            .session
+            .findings()
+            .iter()
+            .find(|f| f.id == mine)
+            .unwrap();
+        assert_eq!(f.body, "three is a magic number, or is it");
+        assert!(f.upstream.is_some(), "still published");
+        {
+            let on_forge = fake.threads.lock().unwrap();
+            let c = on_forge
+                .iter()
+                .find(|t| t.id == format!("T-{mine}"))
+                .unwrap()
+                .root()
+                .unwrap()
+                .clone();
+            assert_eq!(c.body, "three is a magic number, or is it");
+            assert_eq!(
+                c.finding.as_deref(),
+                Some(mine.as_str()),
+                "the marker travelled"
+            );
+        }
+        // And the cached thread shows the new text without a refetch.
+        assert_eq!(
+            app.session
+                .thread(&format!("T-{mine}"))
+                .unwrap()
+                .root()
+                .unwrap()
+                .body,
+            "three is a magic number, or is it"
+        );
+    }
+
+    #[test]
+    fn dd_on_your_own_published_comment_asks_then_deletes_it_there_and_here() {
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        let mine = published_and_parked(&mut app);
+        app.handle_key(key('d'));
+        app.handle_key(key('d'));
+        assert!(
+            matches!(&app.mode, Mode::DeleteComment { own } if own.finding.as_deref() == Some(mine.as_str()))
+        );
+        app.handle_key(key('n'));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.status, "nothing deleted");
+        assert_eq!(app.session.findings().len(), 2);
+
+        app.handle_key(key('d'));
+        app.handle_key(key('d'));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        assert_eq!(app.status, "comment deleted on the request");
+        assert!(app.session.findings().iter().all(|f| f.id != mine));
+        assert!(
+            app.session.thread(&format!("T-{mine}")).is_none(),
+            "its thread went with it"
+        );
+        assert!(
+            fake.threads
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|t| t.id != format!("T-{mine}"))
+        );
+        assert_eq!(app.session.findings().len(), 1, "the reply is untouched");
+    }
+
+    #[test]
+    fn someone_elses_comment_is_still_reply_only() {
+        let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        app.cursor = thread_rows(&app, "T1")[0];
+        app.handle_key(key('c'));
+        assert!(matches!(&app.mode, Mode::Editing { reply_to: Some(t), .. } if t == "T1"));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.cursor = thread_rows(&app, "T1")[1];
+        app.handle_key(key('d'));
+        app.handle_key(key('d'));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.session.threads().len(), 1, "nothing deleted");
+        assert_eq!(app.status, "not your comment · c replies · x resolves");
     }
 }

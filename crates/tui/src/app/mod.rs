@@ -17,6 +17,8 @@
 //! - [`text`] — measuring and cutting text to a column budget. A leaf: it
 //!   knows nothing about `App`, and both `keys` and `draw` read from it, which
 //!   is what keeps a list's scroll height equal to its drawn height.
+//! - [`forge`] — the forge's side: fetching review threads on a worker
+//!   thread, resolving one, drafting a reply (ADR 0029).
 //!
 //! `App`'s inherent methods are split across those files, so a method that
 //! was private to one file is `pub(super)` now. The scope is the same one it
@@ -183,9 +185,21 @@ pub enum Mode {
         lines: Option<Lines>,
         /// The finding being rewritten. `None` files a new one.
         rewriting: Option<String>,
+        /// The forge thread this answers. A reply is still a finding until a
+        /// publish sends it (ADR 0029).
+        reply_to: Option<String>,
+        /// A comment of the reader's on the forge being rewritten. Saving
+        /// sends the text there first.
+        own: Option<differential_engine::forge::OwnComment>,
         editor: Box<TextArea<'static>>,
     },
     Help,
+    /// Something the footer cannot hold: a forge's whole answer to a call
+    /// that failed. Any key closes it.
+    Notice {
+        title: String,
+        text: String,
+    },
     /// File-list modal over the current rows: jump to a file header.
     FileList {
         entries: Vec<FileListEntry>,
@@ -210,6 +224,16 @@ pub enum Mode {
         /// `D` was pressed and the next key answers.
         confirming: bool,
     },
+    /// `P` was pressed: what a publish would send and what it would leave,
+    /// shown before anything leaves the machine. `y` sends (ADR 0029).
+    Publish {
+        plan: differential_engine::forge::PublishPlan,
+    },
+    /// `dd` on a comment of the reader's: the next key answers, and only
+    /// `y` deletes it on the forge (ADR 0029).
+    DeleteComment {
+        own: differential_engine::forge::OwnComment,
+    },
 }
 
 pub struct FindingEntry {
@@ -220,6 +244,36 @@ pub struct FindingEntry {
     pub body: String,
     pub orphaned: bool,
     pub moved: bool,
+    /// A forge thread rather than a note: `id` is the thread's (ADR 0029).
+    pub thread: bool,
+    /// A note the request already has, whose twin was not fetched (yet).
+    pub published: bool,
+    /// A thread the forge marks resolved.
+    pub resolved: bool,
+}
+
+impl FindingEntry {
+    /// Which of the list's three sections this sits in, in list order:
+    /// notes, threads, orphaned.
+    pub fn section(&self) -> u8 {
+        match (self.orphaned, self.thread) {
+            (true, _) => 2,
+            (false, true) => 1,
+            (false, false) => 0,
+        }
+    }
+}
+
+/// Where the rules between the list's sections fall: the index of the first
+/// entry of each section after the first non-empty one. Drawn, not stored, so
+/// they cost a row on screen and nothing in the model.
+pub fn section_rules(entries: &[FindingEntry]) -> Vec<usize> {
+    entries
+        .windows(2)
+        .enumerate()
+        .filter(|(_, w)| w[0].section() != w[1].section())
+        .map(|(i, _)| i + 1)
+        .collect()
 }
 
 pub struct FileListEntry {
@@ -380,6 +434,10 @@ pub struct App {
     /// Measured geometry. An input to update, never a draw-time output.
     viewport: Viewport,
     pending_d: bool,
+    /// The forge this review is of, when it is of a request (ADR 0029).
+    forge: Option<forge::ForgeLink>,
+    /// The one forge call that may be out. See `app::forge`.
+    inflight: Option<forge::Inflight>,
 }
 
 impl App {
@@ -443,6 +501,8 @@ impl App {
             listed_files: Vec::new(),
             viewport: Viewport::default(),
             pending_d: false,
+            forge: None,
+            inflight: None,
         };
         // The document is fixed for the session's life, so this is built once
         // rather than found by scanning the file list per row.
@@ -490,6 +550,17 @@ impl App {
 
 mod draw;
 mod findings;
+mod forge;
 mod keys;
 mod state;
 mod text;
+
+pub use forge::ForgeLink;
+
+/// What the footer says on a key aimed at someone else's comment.
+pub(super) const NOT_YOURS: &str = "not your comment · c replies · x resolves";
+
+/// The `s` a count takes, or not.
+pub(super) fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}

@@ -72,6 +72,36 @@ impl App {
         if self.focus != Focus::Detail {
             return None;
         }
+        // A forge thread is a note too: its rows, its reply drafts, and the
+        // lines its anchor covers read as one thing.
+        if let Some(t) = self.thread_at_cursor() {
+            let anchor = t.anchor.as_ref();
+            let mut file = "";
+            let (mut lo, mut hi) = (usize::MAX, 0usize);
+            for (i, row) in self.rows.iter().enumerate() {
+                if let RowKind::FileHeader(p) = &row.kind {
+                    file = p;
+                }
+                let mine = match (&row.kind, &row.line) {
+                    (RowKind::Thread { thread: tid, .. }, _) => tid == &t.id,
+                    (RowKind::Finding(fid, _), _) => self
+                        .session
+                        .findings()
+                        .iter()
+                        .any(|f| &f.id == fid && f.reply_to.as_deref() == Some(t.id.as_str())),
+                    (_, Some(l)) => anchor.is_some_and(|a| {
+                        file == a.file
+                            && (a.line..=a.end_line.max(a.line)).any(|n| l.holds(&a.side, n))
+                    }),
+                    _ => false,
+                };
+                if mine {
+                    lo = lo.min(i);
+                    hi = hi.max(i);
+                }
+            }
+            return (lo <= hi).then_some((lo, hi));
+        }
         let f = self.finding_at_cursor()?;
         let (id, path) = (f.id.as_str(), f.anchor.file.as_str());
         let mut file = "";
@@ -106,6 +136,9 @@ impl App {
     /// "In", not "on": a note over a RANGE covers every line of it, and it is
     /// drawn under the last of them. Standing on the first line of a run is
     /// standing in the note about that run.
+    ///
+    /// A published note whose twin is fetched is not "in" anywhere: it is
+    /// drawn as its thread, and `c` on that thread replies (ADR 0029).
     pub(super) fn finding_at_cursor(&self) -> Option<&Finding> {
         let by_id = |id: &str| self.session.findings().iter().find(|f| f.id == id);
         // On the note itself.
@@ -115,11 +148,9 @@ impl App {
         // On a line the note covers.
         if let Some(l) = self.rows.get(self.cursor).and_then(|r| r.line.as_ref())
             && let Some(path) = self.file_path_above(self.cursor)
-            && let Some(f) = self
-                .session
-                .findings()
-                .iter()
-                .find(|f| f.anchor.file == path && self.anchor_covers(f, l))
+            && let Some(f) = self.session.findings().iter().find(|f| {
+                f.anchor.file == path && self.anchor_covers(f, l) && !self.session.is_twinned(f)
+            })
         {
             return Some(f);
         }
@@ -144,7 +175,22 @@ impl App {
         }
     }
 
+    /// Records on the request: what `D` keeps, and what its prompt says stays.
+    pub(super) fn published_count(&self) -> usize {
+        self.session
+            .findings()
+            .iter()
+            .filter(|f| f.upstream.is_some())
+            .count()
+    }
+
     pub(super) fn rewrite_finding(&mut self, id: &str, body: String) {
+        // Published: the forge holds the comment, so it is rewritten there
+        // first and the record follows its answer.
+        if let Some(own) = self.session.own_of_finding(id) {
+            self.start_edit_comment(own, body);
+            return;
+        }
         match self.session.edit_finding(id, body) {
             Ok(true) => self.status = "finding rewritten".into(),
             Ok(false) => self.status = "that finding is gone".into(),
@@ -296,6 +342,53 @@ impl App {
         }
     }
 
+    /// The first row a thread was laid into, if this view holds one.
+    pub(super) fn row_of_thread(&self, id: &str) -> Option<usize> {
+        self.rows
+            .iter()
+            .position(|r| matches!(&r.kind, RowKind::Thread { thread: tid, .. } if tid == id))
+    }
+
+    /// Put the cursor on a forge thread, wherever in the review it lives —
+    /// the same navigation `jump_to_finding` makes, keyed on the thread's
+    /// anchor.
+    pub(super) fn jump_to_thread(&mut self, id: &str) -> bool {
+        if let Some(row) = self.row_of_thread(id) {
+            self.land_on(row);
+            return true;
+        }
+        let Some((digest, path)) = self
+            .session
+            .thread(id)
+            .and_then(|t| t.anchor.as_ref())
+            .map(|a| (a.hunk_digest.clone(), a.file.clone()))
+        else {
+            return false;
+        };
+        let owner = match self.view_mode {
+            ViewMode::Groups => {
+                let plan = self.session.plan();
+                plan.hunk_by_digest(&digest)
+                    .and_then(|h| plan.group_of_hunk(h))
+                    .map(|g| g.id.clone())
+                    .and_then(|gid| self.session.plan().group_position(&gid))
+            }
+            ViewMode::Files => self.reveal_path(&path),
+        };
+        let Some(owner) = owner else { return false };
+        self.select_entry(owner);
+        if self.row_of_thread(id).is_none() {
+            self.toggle_group_fold();
+        }
+        match self.row_of_thread(id) {
+            Some(row) => {
+                self.land_on(row);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Park the cursor on a row and bring it into view.
     pub(super) fn land_on(&mut self, row: usize) {
         self.cursor = self.next_selectable(row, 1).unwrap_or(row);
@@ -319,8 +412,15 @@ impl App {
     }
 
     pub(super) fn clear_findings(&mut self) {
+        let published = self.published_count();
         match self.session.clear_findings() {
-            Ok(n) => self.status = format!("{n} finding(s) deleted"),
+            Ok(n) if published > 0 => {
+                self.status = format!(
+                    "{n} note{} deleted · {published} on the request kept, dd deletes one there",
+                    plural(n)
+                )
+            }
+            Ok(n) => self.status = format!("{n} note{} deleted", plural(n)),
             Err(e) => self.status = format!("save failed: {e:#}"),
         }
         self.rebuild_rows();
@@ -352,6 +452,21 @@ impl App {
     }
 
     pub(super) fn delete_finding_at_cursor(&mut self) {
+        // A comment of the reader's is theirs to delete, on the forge: the
+        // next key answers, because it is outward and gone for good.
+        if let Some(own) = self.own_comment_at_cursor() {
+            self.mode = Mode::DeleteComment { own };
+            return;
+        }
+        // Anyone else's comment is not. The two things a reader can do to it
+        // are both on other keys, and the footer names them.
+        if matches!(
+            self.rows.get(self.cursor).map(|r| &r.kind),
+            Some(RowKind::Thread { .. })
+        ) {
+            self.status = NOT_YOURS.into();
+            return;
+        }
         if let Some(RowKind::Finding(id, _)) = self.rows.get(self.cursor).map(|r| r.kind.clone()) {
             match self.session.delete_finding(&id) {
                 Ok(_) => self.status = "finding deleted".into(),

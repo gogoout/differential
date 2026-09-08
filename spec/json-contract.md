@@ -15,6 +15,10 @@ not (readers tolerate unknown fields, and must reject versions they do not know)
   written to or read from a document is the `h<N>` string described here (ADR 0020).
 - `base`/`head` are fully resolved commit shas — except for `source.kind` of `staged` or
   `worktree` (ADR 0017), where they are the synthesized snapshot **tree** oids.
+- `source.kind` is `range`, `commit`, `staged`, `worktree`, `pr` or `mr`. For `pr` and `mr`
+  the range came from a forge and `source.remote` is `{forge, project, id}` — `github` or
+  `gitlab`, the project path (`owner/repo`), and the request number as a string
+  ([forge.md](forge.md), ADR 0029). For every other kind `source.remote` is `null`.
 
 ## `generator`
 
@@ -60,9 +64,12 @@ Canonical enumeration from `git diff -U0 --no-renames`, every file, no exclusion
   [persistence.md](persistence.md)).
 - `nonl_old` / `nonl_new` — the `\ No newline at end of file` marker, per side. Worth exactly
   one byte each in reconstruction.
-- `forge_position` — `{new_line, old_line}` for posting comments against a forge's
-  rename-detected diff. `new_line` is null for deletion-only hunks; `old_line` for
-  insertion-only.
+- `forge_position` — `{new_line, old_line}`: the hunk's first line on each side, in the
+  canonical `--no-renames` view. `new_line` is null for deletion-only hunks; `old_line` for
+  insertion-only. **Not a posting anchor.** A renamed-and-edited file is a whole-file delete
+  plus add in this view, so both read `1` there; the forge consumer positions a comment by a
+  finding's anchor and the file entry's `old_path` instead ([forge.md](forge.md)). The field
+  stays because the schema is frozen (ADR 0022).
 
 ## `classes[]`
 

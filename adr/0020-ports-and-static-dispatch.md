@@ -70,6 +70,11 @@ Everything else in this refactor is inversion and takes a generic.
 > query, a Java file one with generic rules, a shell script the crude one. That is a
 > run-time answer to a run-time question, which is exactly what this section reserves
 > `dyn` for.
+>
+> **Since amended: a fourth seam.** ADR 0029 added `forge::Forge`, and it is `dyn` for the
+> same reason: which forge a repository is on — GitHub through `gh`, GitLab through `glab` —
+> is a run-time answer the flag gives, and the reviewer, the CLI and the publish sequence
+> share one value of it. The git ports stay exactly as this ADR left them.
 
 **One type parameter per provider, with a bound list that is the function's budget.**
 

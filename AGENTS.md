@@ -22,7 +22,7 @@ has a way of quietly reversing itself. **Open the file before you argue with the
 3. **Information is the most valuable thing analysis produces.** Do not discard it to keep
    a diff small. The tell: your reason for an approach was the size of its diff.
 4. **Business logic owns the trait; the adapter implements it** (ADR 0020). The domain
-   never names an adapter. Generics invert a dependency; `dyn` is for the three seams
+   never names an adapter. Generics invert a dependency; `dyn` is for the four seams
    whose implementation is a run-time answer.
 5. **Don't hand-roll utilities** — find the boring, widely-used crate.
 6. **Don't artificially minimise blast radius.** A narrow patch that leaves the design
@@ -42,7 +42,8 @@ has a way of quietly reversing itself. **Open the file before you argue with the
   parser.
 - **The schema is frozen** at version 3 (ADR 0022). Additive changes only.
 - **The generic normaliser is frozen** (ADR 0015). Improvements land as language plugins.
-- **Git is real git, plumbing only** (ADR 0002, 0011, 0020). One implementation of the
+- **Git is real git, plumbing only** (ADR 0002, 0011, 0020), bar `git fetch` of a request's
+  refs behind the `Fetcher` port (ADR 0029). One implementation of the
   ports, `gitio::Repo`. A fake git for tests is forbidden.
 - **The core is a library** (ADR 0014, 0018). `crates/cli` is presentation and dispatch.
 
@@ -70,6 +71,7 @@ cargo clippy --all-targets && cargo fmt     # keep both clean
 cargo run -q --bin dfr -- check <base>..<head>    # invariant runner
 cargo run -q --bin dfr -- stack <base>..<head>    # review stack (needs an LLM CLI on a cache miss)
 cargo run -q --bin dfr -- review <base>..<head>   # terminal reviewer (same cache rule)
+cargo run -q --bin dfr -- review --pr <N>         # a GitHub pull request (needs gh); --mr for GitLab
 cargo run -q --bin dfr -- agent --doc <path>          # what the grouping model sees
 cargo run -p differential-symbols --example group -- <base>..<head> # grouped document JSON (dev)
 DIFFERENTIAL_FIXTURE_CONFIG=$PWD/fixtures.local.toml cargo test -- --ignored  # parity (local)

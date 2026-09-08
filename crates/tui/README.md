@@ -158,7 +158,11 @@ diff cursor.
 | `c` | either | Write a finding. See below. |
 | `dd` | either | Delete the finding under the diff cursor. |
 | `F` | either | Open the findings list. |
-| `y` | either | Copy the open-findings summary to the clipboard. |
+| `y` | either | Copy the summary of open findings not yet on the request to the clipboard. |
+| `c` | either, on a review thread | Draft a reply under it. A finding until `P` publishes it. |
+| `x` | either, on a review thread | Resolve or reopen the thread on the forge. |
+| `R` | either | Fetch the request's review threads again. |
+| `P` | either | Publish the open findings to the request. A float says what goes and what stays; `y` sends. |
 | `?` | either | Open the help modal. |
 | `q` | either | Quit. State is saved on every change, so quitting never loses anything. |
 
@@ -296,7 +300,18 @@ An orphan revives when its content comes back.
 
 `line` and `end_line` are the resolved numbers, for a consumer that only reads.
 `offset` and `span` are what survive a regeneration. `hunk_digest` keys back into the plan
-document's `hunks[].digest`, and from there to `forge_position`.
+document's `hunks[].digest`. Two more fields belong to the forge consumer: `reply_to`, the
+thread a drafted reply answers, and `upstream`, where a published finding landed.
+
+## Review threads
+
+A review opened with `--pr` or `--mr` shows the request's review threads under their
+lines, behind the same rail a finding wears and in a different ink: `author · date`, then
+the comment, replies stepped in, a resolved thread dimmed. They are fetched on a worker
+thread when the reviewer opens and on `R`; the footer wears `syncing` while a forge call is
+out and `N threads` on every request review. `c` on a thread drafts a reply, `x` resolves
+or reopens it, `dd` refuses. `P` publishes the open findings as one review after showing
+what goes and what stays. The spec is [spec/forge.md](../../spec/forge.md).
 
 ## Review state
 

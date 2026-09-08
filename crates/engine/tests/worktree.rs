@@ -4,6 +4,7 @@
 use differential_engine::config::Config;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::run_pipeline;
+use differential_engine::plan::ReviewSource;
 use differential_engine::ports::ObjectReader;
 use differential_engine::ports::TreeResolver;
 use differential_engine::schema::SourceKind;
@@ -90,9 +91,10 @@ fn full_pipeline_passes_invariants_over_synthesized_trees() {
     ] {
         let mut out = run_pipeline(
             &repo,
-            base,
-            head_rev,
-            kind,
+            &ReviewSource {
+                kind,
+                ..ReviewSource::range(base.to_string(), head_rev.to_string(), head_rev.to_string())
+            },
             &Config::default(),
             &LanguageRegistry::builtin(),
             &differential_testutil::stub_readers(),

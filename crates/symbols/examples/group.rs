@@ -94,9 +94,7 @@ fn main() -> ExitCode {
 
     let out = match run_grouped_pipeline(
         &repo,
-        &source.base,
-        &source.head,
-        source.kind,
+        &source,
         &config,
         &LanguageRegistry::builtin(),
         &differential_symbols::readers(),

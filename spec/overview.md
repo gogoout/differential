@@ -21,7 +21,8 @@ must not influence its shape:
 1. **Shadow branch** ([stack.md](stack.md)) — the diff rewritten as a synthetic commit stack,
    reviewed natively in an IDE or `tig`. `git log --oneline` alone shows the shape of the change.
 2. **TUI** — a dedicated reviewer emitting structured findings keyed by hunk.
-3. **Forge review** — grouped comments posted to a GitLab MR / GitHub PR.
+3. **Forge review** ([forge.md](forge.md)) — the request's review threads shown under their
+   lines, and findings published back as review comments.
 
 ## The two-layer architecture
 

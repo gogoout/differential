@@ -45,6 +45,21 @@ pub fn review_id_named(name: &str) -> String {
     short_hash(h)
 }
 
+/// A review of a pull request or merge request (ADR 0029). The request is
+/// the identity, the way a name is: no endpoint is in the key, so a
+/// force-push reopens the same review. Its own tag byte keeps it out of both
+/// other spaces.
+pub fn review_id_remote(remote: &crate::schema::Remote) -> String {
+    let mut h = Sha1::new();
+    h.update([2]);
+    h.update(remote.forge.as_bytes());
+    h.update([0]);
+    h.update(remote.project.as_bytes());
+    h.update([0]);
+    h.update(remote.id.as_bytes());
+    short_hash(h)
+}
+
 /// A plan document's content hash — its immutable identity, and what findings
 /// record so re-anchoring knows which document they were written against.
 pub fn plan_hash(json: &str) -> String {

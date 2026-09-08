@@ -60,6 +60,7 @@ pub struct SourceInfo {
     pub kind: schema::SourceKind,
     pub base: String,
     pub head: String,
+    pub remote: Option<schema::Remote>,
 }
 
 /// Build the document. Fails on a non-UTF-8 path (deferred support — a hard
@@ -165,7 +166,7 @@ pub fn assemble(
             kind: source.kind,
             base: source.base.clone(),
             head: source.head.clone(),
-            remote: None,
+            remote: source.remote.clone(),
         },
         stats: schema::Stats {
             files: view.files.len() as u32,

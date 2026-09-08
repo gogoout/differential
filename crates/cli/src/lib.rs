@@ -13,6 +13,8 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 use differential_engine::config::{Agent, Config};
+use differential_engine::forge::{self, Forge, ForgeKind, Request};
+use differential_engine::forgeio::{GhForge, GlabForge};
 use differential_engine::gitio::Repo;
 use differential_engine::grouping::GroupingOptions;
 use differential_engine::lang::LanguageRegistry;
@@ -67,7 +69,7 @@ enum Command {
         /// same name to resume it, with any range and from the picker.
         ///
         ///   dfr review --name "$(git branch --show-current)" main..HEAD
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["pr", "mr"])]
         name: Option<String>,
         /// Bypass the grouping cache (forces a fresh LLM call).
         #[arg(long)]
@@ -79,8 +81,13 @@ enum Command {
         common: Common,
         /// Read the named review session rather than the one filed under the
         /// range. Must match the name `dfr review --name` was given.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["pr", "mr"])]
         name: Option<String>,
+        /// Publish the open findings to the request as review comments
+        /// (ADR 0029). Needs `--pr` or `--mr`. Prints one line per finding:
+        /// published with its URL, or skipped with the reason.
+        #[arg(long, conflicts_with = "summary")]
+        post: bool,
         /// Print the open findings as markdown instead — the same text the
         /// reviewer's `y` copies, for pasting into an agent or a PR.
         #[arg(long)]
@@ -147,6 +154,17 @@ struct Common {
     /// without a range opens a picker (recent commits / staged / worktree).
     #[arg(num_args = 0..=2)]
     range: Vec<String>,
+    /// A GitHub pull request instead of a range: its merge-base diff, filed
+    /// under the request itself so a force-push reopens the same review
+    /// (ADR 0029). Without a number, the current branch's.
+    ///
+    /// Asks `gh`, which must be installed and logged in. Never fetches: when
+    /// the request's commits are not local it prints the `git fetch` to run.
+    #[arg(long, value_name = "N", conflicts_with = "range")]
+    pr: Option<Option<String>>,
+    /// A GitLab merge request instead of a range: as `--pr`, through `glab`.
+    #[arg(long, value_name = "N", conflicts_with_all = ["range", "pr"])]
+    mr: Option<Option<String>>,
 }
 
 /// Shared entry point for the `differential` and `dfr` binaries.
@@ -196,8 +214,28 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Ok(c) => c,
         Err(e) => return usage_error(&e.to_string()),
     };
+    // A request names both the range and the review (ADR 0029). The forge is
+    // asked once, here; everything after reads the answer. Which forge is the
+    // flag's to say, and a run-time answer, hence `dyn` (ADR 0020).
+    let forge: Option<Arc<dyn Forge>> = match (&common.pr, &common.mr) {
+        (Some(_), _) => Some(Arc::new(GhForge::new(repo.root()))),
+        (None, Some(_)) => Some(Arc::new(GlabForge::new(repo.root()))),
+        (None, None) => None,
+    };
+    let request = match (&forge, common.pr.as_ref().or(common.mr.as_ref())) {
+        (Some(forge), Some(id)) => match forge.request(id.as_deref()) {
+            Ok(req) => Some(req),
+            Err(e) => return usage_error(&e.to_string()),
+        },
+        _ => None,
+    };
     // Only `review` may omit the range (it opens the picker instead).
-    let resolved = if common.range.is_empty() {
+    let resolved = if let Some(req) = &request {
+        match forge::source_for(&repo, req) {
+            Ok(s) => Some(s),
+            Err(e) => return usage_error(&e.to_string()),
+        }
+    } else if common.range.is_empty() {
         if !matches!(cli.command, Command::Review { .. }) {
             return usage_error(
                 "a revision range is required: <base>..<head>, <a>...<b>, or two revs",
@@ -292,7 +330,18 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 theme: config.review.theme,
                 // As TYPED, so the footer can hand it straight back. Empty
                 // when the picker chose the source, which has no spelling.
-                range: (!common.range.is_empty()).then(|| common.range.join(" ")),
+                range: match &request {
+                    Some(req) => Some(format!(
+                        "--{} {}",
+                        if req.kind == ForgeKind::Github {
+                            "pr"
+                        } else {
+                            "mr"
+                        },
+                        req.id
+                    )),
+                    None => (!common.range.is_empty()).then(|| common.range.join(" ")),
+                },
             };
             differential_tui::review(&repo, pick, opts, move |picked, tx, cancel| {
                 // Which resolver runs is dispatch; what each one decides is
@@ -307,9 +356,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 };
                 let out = differential_engine::run_grouped_pipeline(
                     &worker_repo,
-                    &source.base,
-                    &source.head,
-                    source.kind,
+                    &source,
                     &config,
                     &langs,
                     &symbols,
@@ -324,13 +371,29 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     },
                 )
                 .context("grouped pipeline failed")?;
-                let identity = review_identity_of(&source, session_name, &out.base);
-                Ok(differential_tui::Prepared { out, identity })
+                let identity =
+                    review_identity_of(&source, request.as_ref(), session_name, &out.base);
+                // The reviewer fetches and posts through this; composed here
+                // because which forge is a run-time answer (ADR 0020, 0029).
+                let forge = request.and_then(|req| {
+                    Some(differential_tui::ForgeLink {
+                        forge: forge?,
+                        request: req,
+                    })
+                });
+                Ok(differential_tui::Prepared {
+                    out,
+                    identity,
+                    forge,
+                })
             })?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Findings {
-            summary, no_cache, ..
+            summary,
+            post,
+            no_cache,
+            ..
         } => {
             let source = resolved.expect("range checked above");
             let out = grouped(&repo, &source, &config, &langs, &symbols, no_cache)?;
@@ -339,10 +402,18 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 .context("invariants failed; no plan available")?;
             // The same resolution the reviewer's session makes, so `findings`
             // reads the review they are looking at and not an empty namesake.
-            let identity = review_identity_of(&source, session_name, &out.base);
+            let identity = review_identity_of(&source, request.as_ref(), session_name, &out.base);
             let id = review_identity::resolve(&FsReviewCatalogue::new(&repo)?, &repo, &identity)?;
             let store = FsReviewStore::for_review(&repo, &id)?;
             let session = differential_engine::ReviewSession::open(store, doc, out.view)?;
+            if post {
+                // Declared to clap as well; checked here because a panic is
+                // the wrong answer to a flag.
+                let (Some(req), Some(forge)) = (request.as_ref(), forge.as_deref()) else {
+                    return usage_error("--post publishes to a request; give --pr or --mr");
+                };
+                return publish(forge, req, session);
+            }
             // Two projections of one store, both the engine's: JSON for a
             // consumer, markdown for a person. The reviewer's `y` copies the
             // second one, so the two cannot drift.
@@ -355,16 +426,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }
         Command::Check { json, .. } => {
             let source = resolved.expect("range checked above");
-            let mut out = run_pipeline(
-                &repo,
-                &source.base,
-                &source.head,
-                source.kind,
-                &config,
-                &langs,
-                &symbols,
-            )
-            .context("pipeline failed")?;
+            let mut out = run_pipeline(&repo, &source, &config, &langs, &symbols)
+                .context("pipeline failed")?;
             // Running invariants 3 and 4 is this command's entire job, so it
             // always asks for them. They write to the odb; nothing else does.
             differential_engine::verify(&repo, &mut out).context("verify failed")?;
@@ -395,8 +458,8 @@ fn open_repo(named: Option<&Path>) -> Result<Repo, String> {
     Repo::open(&dir).map_err(|e| e.to_string())
 }
 
-/// Which review this run opens: the name if one was given, otherwise the
-/// endpoints (ADR 0026, ADR 0027).
+/// Which review this run opens: the request if one was named, else the name
+/// if one was given, otherwise the endpoints (ADR 0026, 0027, 0029).
 ///
 /// One function because `review` and `findings` must answer identically — a
 /// `findings` that resolved differently would print an empty namesake of the
@@ -404,12 +467,15 @@ fn open_repo(named: Option<&Path>) -> Result<Repo, String> {
 /// copies already differed in whether they cloned.
 fn review_identity_of(
     source: &plan::ReviewSource,
+    request: Option<&Request>,
     name: Option<String>,
     resolved_base: &str,
 ) -> ReviewIdentity {
-    match name {
-        Some(name) => ReviewIdentity::Named(name),
-        None => ReviewIdentity::Range {
+    match (request, name) {
+        // The request is the identity, the way a name is (ADR 0029).
+        (Some(req), _) => req.identity(),
+        (None, Some(name)) => ReviewIdentity::Named(name),
+        (None, None) => ReviewIdentity::Range {
             base: source
                 .identity_base
                 .clone()
@@ -417,6 +483,81 @@ fn review_identity_of(
             head_spec: source.head_spec.clone(),
         },
     }
+}
+
+/// `dfr findings --pr N --post`: send the open findings the request's diff can
+/// hold, and say what happened to each.
+///
+/// `forge::publish` checks the head before anything is sent and refuses
+/// everything if it moved: both forges reject a comment against a commit that
+/// is not the request's (ADR 0029). The plan is printed first so a refusal
+/// still says what would have gone.
+fn publish(
+    forge: &dyn Forge,
+    req: &Request,
+    mut session: differential_engine::FsReviewSession,
+) -> anyhow::Result<ExitCode> {
+    let plan = session.publish_plan(req.kind);
+    for ex in &plan.excluded {
+        println!("skipped    {}:{}  {}", ex.file, ex.lines, ex.reason);
+    }
+    if plan.batch.is_empty() {
+        println!("nothing to publish");
+        return Ok(ExitCode::SUCCESS);
+    }
+    // The same sequence the reviewer's `P` runs — head check, send, refetch —
+    // from one function, so the two cannot order it differently.
+    let outcome = match forge::publish(forge, req, &session.doc().source.head, &plan.batch) {
+        Ok(o) => o,
+        Err(e @ differential_engine::forge::ForgeError::HeadMoved { .. }) => {
+            eprintln!("error: {e}");
+            return Ok(ExitCode::from(1));
+        }
+        Err(e) => return Err(e).with_context(|| format!("publishing to {}", req.url)),
+    };
+    let sent: Vec<String> = plan
+        .batch
+        .comments
+        .iter()
+        .map(|c| c.finding.clone())
+        .chain(plan.batch.replies.iter().map(|r| r.finding.clone()))
+        .collect();
+    let published = outcome.published;
+    session.mark_published(&published)?;
+    if let Some(e) = &outcome.failed {
+        eprintln!(
+            "note: the forge stopped part-way: {e}; what landed is recorded, run again for the rest"
+        );
+    }
+    // The CLI has no login to heal by; the marker still does its work. A
+    // refetch that fails is said, not fatal: the comments are already there.
+    match outcome.threads {
+        Ok(threads) => {
+            let reconciled = session.set_threads(threads)?;
+            if reconciled > 0 {
+                println!("{reconciled} found already published by marker");
+            }
+        }
+        Err(e) => eprintln!("note: the threads could not be fetched back: {e}"),
+    }
+    for p in &published {
+        let at = session
+            .own_of_finding(&p.finding)
+            .map(|o| o.at)
+            .unwrap_or_default();
+        println!("published  {at}  {}", p.url.as_deref().unwrap_or(""));
+    }
+    // Counted as the reviewer counts: this batch's findings that now have an
+    // address, whether the answer or the refetched markers gave it.
+    let landed = sent
+        .iter()
+        .filter(|id| session.own_of_finding(id).is_some())
+        .count();
+    let unconfirmed = sent.len().saturating_sub(landed);
+    if unconfirmed > 0 {
+        println!("{unconfirmed} not confirmed by the forge; run again to retry");
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn usage_error(msg: &str) -> anyhow::Result<ExitCode> {
@@ -578,9 +719,7 @@ fn grouped(
     let backend = backend_from(&config.grouping, repo.root(), None);
     differential_engine::run_grouped_pipeline(
         repo,
-        &source.base,
-        &source.head,
-        source.kind,
+        source,
         config,
         langs,
         symbols,

@@ -22,6 +22,7 @@ toml = { workspace = true }
 globset = { workspace = true }
 etcetera = { workspace = true }
 memchr = { workspace = true }
+percent-encoding = { workspace = true }
 petgraph = { workspace = true }
 
 [dev-dependencies]

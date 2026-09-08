@@ -18,6 +18,41 @@ use super::*;
 /// was following.
 const SHIFT_STEP: isize = 8;
 
+/// A bare `y`, and nothing else, answers a question here. Some terminals
+/// report ctrl-y as `Char('y')` with a modifier, and the irreversible actions
+/// in this reviewer must not answer to a chord nobody aimed.
+fn is_yes(key: KeyEvent) -> bool {
+    (key.code, key.modifiers) == (KeyCode::Char('y'), KeyModifiers::NONE)
+}
+
+impl App {
+    /// The composer, opened on `body` with the cursor at its end.
+    ///
+    /// One place for the three keys that open it — a note, a reply, a
+    /// rewrite — so they cannot drift on what a composer is. It soft-wraps at
+    /// word boundaries: a note is prose, and a line the reader cannot see the
+    /// end of is a line they cannot finish. The key footer lives on the
+    /// block's last inner row, and the padding keeps the text above it: a long
+    /// note used to scroll into the footer and the two overwrote each other.
+    fn composer(&self, body: &str, title: String) -> Box<TextArea<'static>> {
+        let mut ta = if body.is_empty() {
+            TextArea::default()
+        } else {
+            TextArea::new(body.lines().map(str::to_string).collect::<Vec<_>>())
+        };
+        ta.move_cursor(tui_textarea::CursorMove::End);
+        ta.set_wrap_mode(tui_textarea::WrapMode::Word);
+        ta.set_block(
+            Block::default()
+                .borders(Borders::ALL)
+                .padding(ratatui::widgets::Padding::new(0, 0, 0, 1))
+                .border_style(Style::default().fg(self.theme.header_fg))
+                .title(title),
+        );
+        Box::new(ta)
+    }
+}
+
 impl App {
     /// Text pasted into the terminal.
     ///
@@ -46,7 +81,7 @@ impl App {
         // used to clear it, which made every one-off message permanent.
         self.status.clear();
         match &mut self.mode {
-            Mode::Help => {
+            Mode::Help | Mode::Notice { .. } => {
                 self.mode = Mode::Normal;
                 return Vec::new();
             }
@@ -88,19 +123,15 @@ impl App {
                 // be the thing that empties the store.
                 if *confirming {
                     *confirming = false;
-                    // A bare `y`, like every other single-character key here.
-                    // Some terminals report ctrl-y as `Char('y')` with a
-                    // modifier, and the one irreversible action in this
-                    // reviewer should not answer to a chord nobody aimed.
-                    if (key.code, key.modifiers) == (KeyCode::Char('y'), KeyModifiers::NONE) {
+                    if is_yes(key) {
                         self.clear_findings();
                     } else {
                         self.status = "nothing deleted".into();
                     }
                     return Vec::new();
                 }
-                let ruled = entries.iter().any(|e| e.orphaned);
-                let rows = findings_rows(entries.len(), ruled, self.viewport.body_rows);
+                let rules = section_rules(entries).len();
+                let rows = findings_rows(entries.len(), rules, self.viewport.body_rows);
                 match (key.code, key.modifiers) {
                     (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
                         step_list(selected, scroll, entries.len(), rows, true);
@@ -108,23 +139,63 @@ impl App {
                     (KeyCode::Char('k'), _) | (KeyCode::Up, _) => {
                         step_list(selected, scroll, entries.len(), rows, false);
                     }
-                    (KeyCode::Char('D'), _) => *confirming = true,
+                    // Only the local notes are up for this: a published note is
+                    // the request's, and a thread is somebody else's.
+                    (KeyCode::Char('D'), _) => {
+                        if entries.iter().any(|e| !e.thread && !e.published) {
+                            *confirming = true;
+                        } else {
+                            self.status = "nothing local to delete · dd deletes a published note on the forge".into();
+                        }
+                    }
                     (KeyCode::Char('d'), KeyModifiers::NONE) => {
                         if pending_d {
-                            let id = entries[*selected].id.clone();
-                            self.delete_finding(&id);
+                            let (id, thread, published) = {
+                                let e = &entries[*selected];
+                                (e.id.clone(), e.thread, e.published)
+                            };
+                            // Whose the comment is, the session says; see
+                            // `delete_finding_at_cursor` for the same rule.
+                            let own = if thread {
+                                self.session.own_root(&id)
+                            } else if published {
+                                self.session.own_of_finding(&id)
+                            } else {
+                                None
+                            };
+                            match (own, thread) {
+                                (Some(own), _) => self.mode = Mode::DeleteComment { own },
+                                (None, true) => self.status = NOT_YOURS.into(),
+                                (None, false) => self.delete_finding(&id),
+                            }
                         } else {
                             self.pending_d = true;
                         }
                     }
+                    // Publish from here too: the list is where the reader sees
+                    // what is not yet on the request, and it sends everything
+                    // that is not, exactly as P in the diff does.
+                    (KeyCode::Char('P'), _) => {
+                        self.mode = Mode::Normal;
+                        self.offer_publish();
+                    }
                     (KeyCode::Enter, _) => {
                         let id = entries[*selected].id.clone();
-                        let orphaned = entries[*selected].orphaned;
+                        let (orphaned, thread) =
+                            (entries[*selected].orphaned, entries[*selected].thread);
                         // Assign the mode first: it is what drops the borrow
                         // this arm holds on it.
                         self.mode = Mode::Normal;
                         if orphaned {
-                            self.status = "that finding has no line any more".into();
+                            self.status = if thread {
+                                "that thread has no line in this diff".into()
+                            } else {
+                                "that finding has no line any more".into()
+                            };
+                        } else if thread {
+                            if !self.jump_to_thread(&id) {
+                                self.status = "could not reach that thread".into();
+                            }
                         } else if !self.jump_to_finding(&id) {
                             self.status = "could not reach that finding".into();
                         }
@@ -136,13 +207,39 @@ impl App {
                 }
                 return Vec::new();
             }
+            Mode::DeleteComment { .. } => {
+                let Mode::DeleteComment { own } = std::mem::replace(&mut self.mode, Mode::Normal)
+                else {
+                    unreachable!("matched above");
+                };
+                if is_yes(key) {
+                    self.start_delete_comment(own);
+                } else {
+                    self.status = "nothing deleted".into();
+                }
+                return Vec::new();
+            }
+            Mode::Publish { .. } => {
+                // Only `y` sends. Anything else keeps every note local, which
+                // is where it was: a slip must not be what notifies the author.
+                let Mode::Publish { plan } = std::mem::replace(&mut self.mode, Mode::Normal) else {
+                    unreachable!("matched above");
+                };
+                if is_yes(key) {
+                    self.start_publish(plan);
+                } else {
+                    self.status = "nothing published".into();
+                }
+                return Vec::new();
+            }
             Mode::Editing {
                 hunk,
                 lines,
                 rewriting,
+                reply_to,
+                own,
                 editor: textarea,
             } => {
-                let (hunk, lines, rewriting) = (*hunk, lines.clone(), rewriting.clone());
                 match (key.code, key.modifiers) {
                     (KeyCode::Esc, _) => {
                         self.mode = Mode::Normal;
@@ -183,15 +280,35 @@ impl App {
                     }
                     (KeyCode::Enter, _) | (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
                         let body = textarea.lines().join("\n").trim().to_string();
+                        // Read out before the mode is dropped; only the save
+                        // needs them, so only the save pays for the clones.
+                        let (hunk, lines, rewriting, reply_to, own) = (
+                            *hunk,
+                            lines.clone(),
+                            rewriting.clone(),
+                            reply_to.clone(),
+                            own.clone(),
+                        );
                         self.mode = Mode::Normal;
-                        match (rewriting, body.is_empty()) {
+                        // A comment on the forge: the text goes there first, and
+                        // emptying the box leaves it as it was, as with a note.
+                        if let Some(own) = own {
+                            if body.is_empty() {
+                                self.status = "comment left as it was".into();
+                            } else {
+                                self.start_edit_comment(own, body);
+                            }
+                            return Vec::new();
+                        }
+                        match (rewriting, reply_to, body.is_empty()) {
                             // Emptying the box does NOT delete the note. That
                             // is `dd`, which is a deliberate press; a note lost
                             // to a stray `ctrl-u` and an `enter` is not.
-                            (Some(_), true) => self.status = "finding left as it was".into(),
-                            (Some(id), false) => self.rewrite_finding(&id, body),
-                            (None, true) => self.status = "empty finding discarded".into(),
-                            (None, false) => self.add_finding(hunk, lines, body),
+                            (Some(_), _, true) => self.status = "finding left as it was".into(),
+                            (Some(id), _, false) => self.rewrite_finding(&id, body),
+                            (None, _, true) => self.status = "empty finding discarded".into(),
+                            (None, Some(thread), false) => self.add_reply(&thread, body),
+                            (None, None, false) => self.add_finding(hunk, lines, body),
                         }
                         return Vec::new();
                     }
@@ -342,8 +459,44 @@ impl App {
             (KeyCode::Esc, _) if self.visual.is_some() => {
                 self.visual = None;
             }
+            // `c` writes, and what it writes depends on the row. On a comment of
+            // the reader's it rewrites that comment: the box opens with its
+            // text, and saving sends the new text to the forge. On anyone
+            // else's thread it answers: the composer opens as a reply, and what
+            // it saves is a finding carrying the thread's id until a publish
+            // sends it (ADR 0029). Anywhere else it files a note.
             (KeyCode::Char('c'), KeyModifiers::NONE) => {
-                if let Some(h) = self.current_hunk() {
+                if let Some(own) = self.own_comment_at_cursor() {
+                    let hunk = self.current_hunk().unwrap_or(0);
+                    let ta = self.composer(&own.body, format!(" {} · on the request ", own.at));
+                    self.visual = None;
+                    self.mode = Mode::Editing {
+                        hunk,
+                        lines: None,
+                        rewriting: None,
+                        reply_to: None,
+                        own: Some(own),
+                        editor: ta,
+                    };
+                } else if let Some(t) = self.thread_at_cursor() {
+                    let (id, author, path) = (
+                        t.id.clone(),
+                        t.root().map(|c| c.author.clone()).unwrap_or_default(),
+                        t.path.clone(),
+                    );
+                    let hunk = self.current_hunk().unwrap_or(0);
+                    let ta =
+                        self.composer("", format!(" {} · reply to {author} ", basename(&path)));
+                    self.visual = None;
+                    self.mode = Mode::Editing {
+                        hunk,
+                        lines: None,
+                        rewriting: None,
+                        reply_to: Some(id),
+                        own: None,
+                        editor: ta,
+                    };
+                } else if let Some(h) = self.current_hunk() {
                     // A line already carrying a note opens THAT note. Two
                     // notes on one line would each be half the story, and
                     // there was no way to correct a typo but delete and
@@ -376,25 +529,16 @@ impl App {
                         ),
                         (None, None) => format!("L{}", hunk.new_start),
                     };
-                    let mut ta = match &existing {
-                        Some((_, body, _)) => {
-                            TextArea::new(body.lines().map(str::to_string).collect::<Vec<_>>())
-                        }
-                        None => TextArea::default(),
-                    };
-                    ta.move_cursor(tui_textarea::CursorMove::End);
-                    ta.set_block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(Style::default().fg(self.theme.header_fg))
-                            .title(format!(" {file} · {at} ")),
-                    );
+                    let body = existing.as_ref().map(|(_, b, _)| b.as_str()).unwrap_or("");
+                    let ta = self.composer(body, format!(" {file} · {at} "));
                     self.visual = None;
                     self.mode = Mode::Editing {
                         hunk: h,
                         lines,
                         rewriting: existing.map(|(id, _, _)| id),
-                        editor: Box::new(ta),
+                        reply_to: None,
+                        own: None,
+                        editor: ta,
                     };
                 } else {
                     self.status = "move onto a hunk first".into();
@@ -410,6 +554,12 @@ impl App {
             (KeyCode::Char('y'), _) => {
                 return vec![Effect::CopySummary(self.findings_summary())];
             }
+            // The forge's threads (ADR 0029): resolve the one under the cursor,
+            // or fetch them all again. Both go out on a worker thread and
+            // land through `poll_forge`.
+            (KeyCode::Char('x'), KeyModifiers::NONE) => self.toggle_thread_resolved(),
+            (KeyCode::Char('R'), _) => self.start_fetch(),
+            (KeyCode::Char('P'), _) => self.offer_publish(),
             _ => {}
         }
         Vec::new()

@@ -181,7 +181,7 @@ use differential_engine::{gitio::Repo, config::Config, lang::LanguageRegistry,
 let repo = Repo::open(path)?;
 let config = Config::load(&OsConfigSource, repo.root(), None, None)?;
 let src = resolve_range(&repo, &["main..feature"])?;   // a ReviewSource
-let out = run_pipeline(&repo, &src.base, &src.head, src.kind, &config,
+let out = run_pipeline(&repo, &src, &config,
                        &LanguageRegistry::builtin(),
                        &differential_symbols::readers())?;   // the symbol readers
 // out.report   — the invariant report, always present
@@ -282,8 +282,11 @@ Dependency direction is strict: `cli → {tui, stack} → engine`.
 Shipped: the full pipeline, the review TUI (`dfr review`) with findings that survive
 regeneration, and the shadow-branch renderer (`dfr stack`).
 
-Planned: posting grouped review comments to a GitLab merge request or a GitHub pull
-request.
+Shipped, first cut: reviewing a GitHub pull request or a GitLab merge request in place —
+`dfr review --pr 123` / `--mr 123` shows the request's review threads under their lines,
+`P` publishes the open findings back as one review, `x` resolves a thread. It runs `gh` or
+`glab`, which must be installed and logged in ([spec/forge.md](spec/forge.md)). GitLab is
+not yet verified against a live instance.
 
 ## Name
 

@@ -153,13 +153,11 @@ pub(super) fn pad_to_width(line: &mut Line<'static>, width: usize, bg: ratatui::
 /// be two different numbers — `viewport.detail_rows` for the scroll, the box's
 /// own inner height for the draw — and a long findings list scrolled against a
 /// window it was never drawn in.
-pub(super) fn findings_rows(entries: usize, ruled: bool, body_rows: usize) -> usize {
-    // The box is the list plus the orphan rule, a border pair, a title row and
-    // the key footer; the paragraph then gets everything but the border pair
-    // and that footer.
-    (entries + usize::from(ruled) + 4)
-        .min(body_rows)
-        .saturating_sub(3)
+pub(super) fn findings_rows(entries: usize, rules: usize, body_rows: usize) -> usize {
+    // The box is the list plus its section rules, a border pair, a title row
+    // and the key footer; the paragraph then gets everything but the border
+    // pair and that footer.
+    (entries + rules + 4).min(body_rows).saturating_sub(3)
 }
 
 /// The same, for the file list — a plain bordered box with no footer row.
@@ -263,14 +261,14 @@ mod tests {
     #[test]
     pub(super) fn a_modal_scrolls_against_the_window_it_is_drawn_in() {
         // Room to spare: every entry shows, so nothing scrolls.
-        assert_eq!(findings_rows(3, false, 40), 4);
+        assert_eq!(findings_rows(3, 0, 40), 4);
         assert_eq!(file_list_rows(3, 40), 3);
         // Capped by the body: the box stops growing and the window is what is
         // left inside its chrome.
-        assert_eq!(findings_rows(100, false, 20), 17);
+        assert_eq!(findings_rows(100, 0, 20), 17);
         assert_eq!(file_list_rows(100, 20), 18);
         // A body too short for any chrome must not underflow.
-        assert_eq!(findings_rows(100, true, 2), 0);
+        assert_eq!(findings_rows(100, 1, 2), 0);
         assert_eq!(file_list_rows(100, 1), 0);
     }
 }

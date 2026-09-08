@@ -99,7 +99,7 @@ to order — disappeared entirely.
 // each reader ranks itself for a given path.
 let symbols = differential_symbols::readers();
 
-let out = run_pipeline(&repo, &src.base, &src.head, src.kind, &config,
+let out = run_pipeline(&repo, &src, &config,
                        &LanguageRegistry::builtin(), &symbols)?;
 ```
 

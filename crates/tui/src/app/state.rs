@@ -197,6 +197,7 @@ impl App {
                             doc: self.session.doc(),
                             plan: self.session.plan(),
                             findings: self.session.findings(),
+                            threads: self.session.threads(),
                             reviewed: &self.reviewed,
                             mode: self.diff_mode(),
                             show_group_labels: false,
@@ -226,6 +227,7 @@ impl App {
                         doc: self.session.doc(),
                         plan: self.session.plan(),
                         findings: self.session.findings(),
+                        threads: self.session.threads(),
                         reviewed: &self.reviewed,
                         mode: self.diff_mode(),
                         show_group_labels: true,
@@ -507,23 +509,56 @@ impl App {
         // built, so one captured here would be stale the moment the reader
         // navigates — `jump_to_finding` re-finds it by id after selecting the
         // group or file that owns it.
+        // Notes first, then the forge's threads, then orphans. A published
+        // note whose twin is fetched IS a thread now and is listed once, as
+        // the thread (ADR 0029).
         let mut entries: Vec<FindingEntry> = self
             .session
             .findings()
             .iter()
+            .filter(|f| !self.session.is_twinned(f))
             .map(|f| FindingEntry {
-                at: format!("{}:{}", f.anchor.file, f.anchor.line_span()),
+                at: f.anchor.at(),
                 body: f.body.lines().next().unwrap_or("").to_string(),
                 orphaned: f.status == FindingStatus::Orphaned,
                 moved: f.moved,
                 id: f.id.clone(),
+                thread: false,
+                published: f.upstream.is_some(),
+                resolved: false,
             })
             .collect();
+        entries.extend(self.session.threads().iter().map(|t| {
+            let at = match &t.anchor {
+                Some(a) => a.at(),
+                None => match t.line {
+                    Some(l) => format!("{}:{l}", t.path),
+                    None => t.path.clone(),
+                },
+            };
+            let root = t.root();
+            FindingEntry {
+                at,
+                body: format!(
+                    "{}: {}",
+                    root.map(|c| c.author.as_str()).unwrap_or("?"),
+                    root.and_then(|c| c.body.lines().next()).unwrap_or("")
+                ),
+                // A thread nothing in this plan holds is listed like an
+                // orphan: it can be read here and reached nowhere.
+                orphaned: t.anchor.is_none(),
+                moved: false,
+                id: t.id.clone(),
+                thread: true,
+                published: false,
+                resolved: t.resolved,
+            }
+        }));
         if entries.is_empty() {
             self.status = "no findings yet — c writes one".into();
             return;
         }
-        entries.sort_by_key(|e| e.orphaned);
+        entries.sort_by_key(FindingEntry::section);
         self.mode = Mode::Findings {
             entries,
             selected: 0,
@@ -702,15 +737,22 @@ impl App {
         self.session.wrap().unwrap_or(false)
     }
 
+    /// Test-only read of the code-wrap switch.
+    #[doc(hidden)]
+    pub fn wrap_on_for_test(&self) -> bool {
+        self.wrap_on()
+    }
+
     /// Does this row wrap right now?
     ///
-    /// Prose always does. A group's description and a reviewer's note are the
-    /// reasons a plan and a finding exist, they are never code, and a reader
-    /// who cannot see the end of one is missing the point of the pane. File
-    /// content is the reader's call, because wrapping code is often unwanted.
+    /// Prose always does. A group's description, a reviewer's note and a
+    /// forge thread's comment are the reasons a plan, a finding and a review
+    /// exist, they are never code, and a reader who cannot see the end of one
+    /// is missing the point of the pane. File content is the reader's call,
+    /// because wrapping code is often unwanted.
     pub(super) fn wraps(&self, row: &Row) -> bool {
         match row.kind {
-            RowKind::GroupHeader | RowKind::Finding(..) => true,
+            RowKind::GroupHeader | RowKind::Finding(..) | RowKind::Thread { .. } => true,
             RowKind::Diff(_) => self.wrap_on(),
             _ => false,
         }

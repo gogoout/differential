@@ -15,7 +15,7 @@ use differential_engine::artefact::symbols::{FileSymbols, SymbolReaders, SymbolS
 use differential_engine::config::Config;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::run_pipeline;
-use differential_engine::schema::SourceKind;
+use differential_engine::plan::ReviewSource;
 use differential_testutil::{StubSymbols, TestRepo};
 
 /// What a reader was handed, per call: the path, and the content length.
@@ -100,9 +100,7 @@ fn corpus() -> (TestRepo, String, String) {
 fn graph(symbols: &SymbolReaders, r: &TestRepo, base: &str, head: &str) -> (usize, Vec<String>) {
     let out = run_pipeline(
         &r.repo(),
-        base,
-        head,
-        SourceKind::Range,
+        &ReviewSource::range(base.to_string(), head.to_string(), head.to_string()),
         &Config::default(),
         &LanguageRegistry::builtin(),
         symbols,
