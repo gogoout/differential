@@ -106,8 +106,24 @@ impl Tool {
         }
     }
 
+    /// One REST call through `<tool> api` with the body as the tool's own
+    /// field flags — `-f` for a string, `-F` for a number, a bool or a JSON
+    /// object — which the tool sends as JSON with the content type set. A raw
+    /// body on stdin is sent as-is: `gh` labels it JSON, `glab` does not, and
+    /// GitLab answered `HTTP 415` on the first live write.
+    fn rest_fields(
+        &self,
+        method: &str,
+        path: &str,
+        fields: &[(&str, &Value)],
+    ) -> Result<Value, ForgeError> {
+        let args = field_args(method, path, fields);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        self.json(&refs, None)
+    }
+
     /// One REST call through `<tool> api`, a JSON body on stdin when there is
-    /// one, the JSON answer back.
+    /// one, the JSON answer back. For `gh`, which labels the body as JSON.
     fn rest(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value, ForgeError> {
         let mut args = vec!["api", "--method", method, path];
         let text;
@@ -121,6 +137,25 @@ impl Tool {
         };
         self.json(&args, stdin)
     }
+}
+
+/// The argv of one `api` call with its body as field flags: `-f name=text`
+/// for a string, `-F name=value` for anything the tool should type — a
+/// number, a bool, a JSON object or array.
+fn field_args(method: &str, path: &str, fields: &[(&str, &Value)]) -> Vec<String> {
+    let mut args: Vec<String> = ["api", "--method", method, path]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    for (name, value) in fields {
+        let (flag, text) = match value {
+            Value::String(s) => ("-f", s.clone()),
+            other => ("-F", other.to_string()),
+        };
+        args.push(flag.to_string());
+        args.push(format!("{name}={text}"));
+    }
+    args
 }
 
 /// Without a number the question was "which request is this branch", and
@@ -668,10 +703,11 @@ impl Forge for GlabForge {
         // which the spec names as a limit.
         if !batch.comments.is_empty() {
             for c in &batch.comments {
-                self.tool.rest(
+                let body = draft_note_body(req, c);
+                self.tool.rest_fields(
                     "POST",
                     &Self::mr(req, "/draft_notes"),
-                    Some(&draft_note_body(req, c)),
+                    &[("note", &body["note"]), ("position", &body["position"])],
                 )?;
             }
             self.tool.run(
@@ -691,10 +727,11 @@ impl Forge for GlabForge {
         // `in_reply_to_discussion_id` came out as a new discussion on the
         // first live run.
         for r in &batch.replies {
-            let v = match self.tool.rest(
+            let body = json!(r.body);
+            let v = match self.tool.rest_fields(
                 "POST",
                 &Self::mr(req, &format!("/discussions/{}/notes", r.thread)),
-                Some(&json!({ "body": r.body })),
+                &[("body", &body)],
             ) {
                 Ok(v) => v,
                 Err(e) if sent.published.is_empty() && batch.comments.is_empty() => return Err(e),
@@ -735,10 +772,10 @@ impl Forge for GlabForge {
     }
 
     fn set_resolved(&self, req: &Request, thread: &str, resolved: bool) -> Result<(), ForgeError> {
-        self.tool.rest(
+        self.tool.rest_fields(
             "PUT",
             &Self::mr(req, &format!("/discussions/{thread}")),
-            Some(&json!({ "resolved": resolved })),
+            &[("resolved", &json!(resolved))],
         )?;
         Ok(())
     }
@@ -750,10 +787,10 @@ impl Forge for GlabForge {
         comment: &str,
         body: &str,
     ) -> Result<(), ForgeError> {
-        self.tool.rest(
+        self.tool.rest_fields(
             "PUT",
             &Self::mr(req, &format!("/discussions/{thread}/notes/{comment}")),
-            Some(&json!({ "body": body })),
+            &[("body", &json!(body))],
         )?;
         Ok(())
     }
@@ -1138,6 +1175,35 @@ mod tests {
         );
         assert_eq!(got[1].url.as_deref(), Some("https://x/9"));
         assert!(got[0].thread.is_empty(), "REST never names the thread");
+    }
+
+    #[test]
+    fn a_gitlab_write_goes_as_field_flags_typed_by_shape() {
+        let position = json!({"new_line": 3, "new_path": "a.rs"});
+        let args = field_args(
+            "POST",
+            "projects/:id/merge_requests/7/draft_notes",
+            &[
+                ("note", &json!("why?\n\n<!-- m -->")),
+                ("position", &position),
+                ("resolved", &json!(true)),
+            ],
+        );
+        assert_eq!(
+            args,
+            vec![
+                "api",
+                "--method",
+                "POST",
+                "projects/:id/merge_requests/7/draft_notes",
+                "-f",
+                "note=why?\n\n<!-- m -->",
+                "-F",
+                "position={\"new_line\":3,\"new_path\":\"a.rs\"}",
+                "-F",
+                "resolved=true",
+            ]
+        );
     }
 
     #[test]
