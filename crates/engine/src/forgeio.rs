@@ -762,7 +762,7 @@ impl Forge for GlabForge {
             // which carries newlines and the marker, stays a body field.
             let query = encode_query(&draft_note_position(req, c));
             let path = Self::mr(req, &format!("/draft_notes?{query}"));
-            let note = json!(ranged_note(c));
+            let note = json!(c.body);
             if let Err(e) = self.tool.rest_fields("POST", &path, &[("note", &note)]) {
                 return stop(sent, e);
             }
@@ -950,15 +950,6 @@ fn parse_discussion(d: &Value, head: &str) -> Option<RemoteThread> {
         anchor: None,
         comments,
     })
-}
-
-/// The text of a note that carries a range: the range first, since the
-/// position names only the last line.
-fn ranged_note(c: &NewComment) -> String {
-    match c.start_line {
-        Some(start) => format!("(lines {start}-{})\n\n{}", c.line, c.body),
-        None => c.body.clone(),
-    }
 }
 
 /// `key=value&…`, each side percent-encoded. Building a query string by hand
@@ -1414,7 +1405,6 @@ mod tests {
         c.old_path = Some("src/old.rs".into());
         let pos: std::collections::HashMap<String, String> =
             draft_note_position(&req, &c).into_iter().collect();
-        assert_eq!(ranged_note(&c), "one line");
         assert_eq!(pos["position[position_type]"], "text");
         assert_eq!(pos["position[base_sha]"], "2".repeat(40));
         assert_eq!(pos["position[start_sha]"], "3".repeat(40));
@@ -1432,9 +1422,9 @@ mod tests {
         assert_eq!(both["position[new_line]"], "12");
         assert_eq!(both["position[old_line]"], "11");
 
-        // A range is positioned at its last line and says so in the note.
+        // A range is positioned at its last line; the range itself rides in
+        // line_range, so the note is the body verbatim with no prefix.
         let ranged = comment("f2", "old", 8, Some(6), "a range");
-        assert_eq!(ranged_note(&ranged), "(lines 6-8)\n\na range");
         let rpos: std::collections::HashMap<String, String> =
             draft_note_position(&req, &ranged).into_iter().collect();
         assert_eq!(rpos["position[old_line]"], "8");

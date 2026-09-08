@@ -228,8 +228,7 @@ on stderr — `glab: HTTP 400` — and the forge's own answer, which is the reas
 target branch's tip when the diff was computed, `base_sha` the merge base; both come from
 the request and travel in every position. `old_path` is the file entry's `old_path` when
 it has one, else the path. Two limits, until the adapter has met a live instance: a
-**multi-line finding is positioned at its last line**, opens its note with `(lines a-b)`,
-and carries a `position[line_range]`: a `[start]` and an `[end]`, each a `line_code`, a
+**multi-line finding is positioned at its last line** and carries a `position[line_range]`: a `[start]` and an `[end]`, each a `line_code`, a
 `type`, and the real line number on each side the line exists. A `line_code` is
 `<sha>_<old>_<new>` — the path's sha1, then the two numbers — and the three kinds differ, as
 the forge's own web UI sends them. A line missing from one side takes, on that side, the
