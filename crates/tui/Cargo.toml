@@ -24,6 +24,7 @@ tui-textarea = { package = "tui-textarea-2", version = "0.13" }
 arboard = "3"
 palette = { workspace = true }
 textwrap = { version = "0.16", default-features = false, features = ["unicode-width"] }
+pulldown-cmark = { version = "0.13", default-features = false }
 
 [dev-dependencies]
 differential-testutil = { workspace = true }

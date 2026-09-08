@@ -388,7 +388,7 @@ list belongs; the footer's job is to point at it.
 | `ctrl-d`/`ctrl-u` | half page |
 | `g`/`G` | top / bottom |
 | `n`/`N` | next / previous hunk (skipping hunks crossed in from other groups) |
-| `z` | show what is being withheld, in the pane you are in — diff pane: on a `──` context boundary row, more of the file, or the hunk it names · elsewhere, the skim remainder or noise group · plan pane, file view: a directory |
+| `z` | show what is being withheld, in the pane you are in — diff pane: on a `──` context boundary row, more of the file, or the hunk it names · on a resolved review thread, open or close it · elsewhere, the skim remainder or noise group · plan pane, file view: a directory |
 | `s` | toggle side-by-side / unified diff layout (persisted) |
 | `w` | soft wrap long lines (persisted) |
 | `h`/`l`, `0` | shift the diff pane eight columns sideways · back to the left edge. Diff pane only; refused while `w` is on |
@@ -399,7 +399,8 @@ list belongs; the footer's job is to point at it.
 | `dd` | delete the finding under the cursor |
 | `y` | copy the summary of open findings not yet on the request — a markdown list of `file:lines: note`, and nothing about groups: a group is how this reviewer chose to READ the branch, and the summary is pasted somewhere that has no idea what `g7` was. `dfr findings <range> --summary` prints the same text |
 | `F` | every finding and every review thread in one list — `enter` jumps to one, `dd` deletes a note, `D` clears the notes not on the request (published notes and threads stay), `P` publishes, `esc` closes |
-| `c` on a review thread | draft a reply under it — a finding carrying the thread's id until `P` publishes it ([forge.md](forge.md)); on a comment of yours — by author, marker or address — rewrite it on the forge |
+| `r` on a review thread | draft a reply under it — the reader's own thread or anyone's — a finding carrying the thread's id until `P` publishes it ([forge.md](forge.md)) |
+| `c` on a comment of yours | rewrite it on the forge — yours by author, marker or address; on anyone else's, the footer says `not your comment` |
 | `dd` on a comment of yours | delete it on the forge and here — asks first, only `y` means yes; on anyone else's, the footer says `not your comment` |
 | `x` | resolve or reopen the review thread under the cursor, on the forge, at once |
 | `R` | fetch the request's review threads again |
@@ -630,19 +631,24 @@ every call goes out on a worker and lands between keys, one call at a time.
 
 A thread is **drawn where a note is drawn**: under the last line it annotates, through the
 same placement, behind the same rail. It wears a different ink because it is somebody
-else's — each comment opens with `author · date` in bold, then its lines in the ordinary
-text colour rather than a note's italics; a reply steps in one indent; a resolved thread is
-dimmed throughout and its header says `resolved`, an outdated one `outdated`. A thread
+else's — each comment opens with `author · date` in bold, then its body **rendered as
+markdown** (headings, emphasis, inline code, lists, links, and fenced code blocks run
+through the diff's own syntect highlighter) in the ordinary text colour rather than a
+note's italics; a reply steps in one indent. A **resolved thread is collapsed** to a single
+header — `author · date · resolved · N comments · z to open` — and `z` opens or closes it;
+opened, it renders dimmed throughout, markdown and all. An outdated thread's header says
+`outdated`. A thread
 whose line the plan does not hold hangs off its hunk's header like an orphaned-to-hunk
 note; one nothing holds is counted in the footer's message and drawn nowhere. The date is
 the day, not an age: an age needs a clock, and `2026-09-03` stays true tomorrow.
 
 A thread's comment **always wraps**, as a note and a group's description do: it is prose,
 and a comment cut at the pane edge is one the reader cannot answer. `w` governs code only.
-Every row of a thread is a `Thread` row, so `c` and `x` work from any line of it, and the
+Every row of a thread is a `Thread` row, so `r` and `x` work from any line of it, and the
 cursor in one lights the cluster — the thread, its reply drafts, and the lines its anchor
-covers — the way a note's cluster lights. `dd` on a thread refuses and names the two keys
-that do work: a thread is the forge's. A **reply draft** is a finding that carries the
+covers — the way a note's cluster lights. `c` and `dd` on a comment that is not the
+reader's own refuse and name the keys that do work: a thread is the forge's, and `r`
+replies to it. A **reply draft** is a finding that carries the
 thread's id; it is drawn straight after the thread it answers, stepped in like a reply, in
 the note's own look, so what is on the request and what is not yet are told apart at a
 glance. A published finding whose fetched twin is present is not drawn at all: the thread

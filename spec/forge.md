@@ -105,9 +105,13 @@ Both files render into one diff through the placement findings already use: unde
 whose file and side hold their line, or under the hunk header when no row does.
 
 A **remote thread** shows each comment with its author and date in a header row, each
-reply indented one step under the root, and a resolved thread in the dimmed style. It is
-reply-only: edit and delete do nothing on it and the status line says so. `x` toggles
-resolved, on the forge, at once; the local copy follows when the forge has answered.
+reply indented one step under the root. A comment body is rendered as markdown (headings,
+emphasis, inline code, lists, links, and fenced code blocks highlighted by the diff's own
+syntect highlighter). A **resolved thread is collapsed** to its header until `z` opens it,
+and renders dimmed throughout when open. The keys on a thread
+are the same whoever wrote it: `r` replies, `x` resolves, and `c`/`dd` act on a comment
+only when it is the reader's own — otherwise the status line says `not your comment`. `x`
+toggles resolved, on the forge, at once; the local copy follows when the forge has answered.
 
 A **finding** keeps the look it has. A **published** finding is hidden when its fetched
 twin is present, matched on `upstream.comment` or the marker; the record stays in
@@ -125,15 +129,15 @@ thread follows when the forge has answered, and the record too when a finding is
 `dd` on one asks — `y` deletes it there and here, any other key keeps it — and the thread
 goes with it when nothing is left. Both reach the forge through `edit_comment` and
 `delete_comment` on the trait, keyed by thread and comment, so a comment written on the
-forge's own page is as editable as one published from here. Anyone else's comment stays
-reply-only, and the footer says `not your comment`.
+forge's own page is as editable as one published from here. On anyone else's comment `c`
+and `dd` do nothing but say `not your comment`; `r` replies there.
 
 ## Writing
 
-`c` behaves as [tui.md](tui.md) describes, with one addition: with the cursor on a remote
-thread's rows, the composer opens as a reply, titled with the thread's file and lines, and
-the saved finding carries `reply_to: "<thread id>"` and the thread's anchor. Nothing here
-reaches the forge.
+`c` behaves as [tui.md](tui.md) describes. **`r`** replies to the thread under the cursor —
+the reader's own thread or anyone's: the composer opens titled with the thread's file and
+lines, and the saved finding carries `reply_to: "<thread id>"` and the thread's anchor.
+Nothing here reaches the forge until a publish.
 
 ## Publishing
 

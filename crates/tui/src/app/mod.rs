@@ -411,6 +411,10 @@ pub struct App {
     /// reading aid for this sitting, not a finding, so nothing here reaches the
     /// sidecar store.
     expanded: HashMap<usize, Expansion>,
+    /// Resolved threads the reader has opened with `z`. A resolved thread is
+    /// collapsed to its header by default; the rest is settled reading, shown
+    /// on demand. Transient, like `folds_open`.
+    expanded_threads: HashSet<String>,
     opts: ReviewOptions,
     /// The palette, built once. Held rather than rebuilt per frame because
     /// building one parses the syntax set, and because rows bake their colours
@@ -492,6 +496,7 @@ impl App {
             group_scroll: 0,
             folds_open: HashSet::new(),
             expanded: HashMap::new(),
+            expanded_threads: HashSet::new(),
             opts,
             status: String::new(),
             file_index: HashMap::new(),
@@ -558,7 +563,7 @@ mod text;
 pub use forge::ForgeLink;
 
 /// What the footer says on a key aimed at someone else's comment.
-pub(super) const NOT_YOURS: &str = "not your comment · c replies · x resolves";
+pub(super) const NOT_YOURS: &str = "not your comment · r replies · x resolves";
 
 /// The `s` a count takes, or not.
 pub(super) fn plural(n: usize) -> &'static str {

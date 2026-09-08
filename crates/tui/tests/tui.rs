@@ -5991,8 +5991,8 @@ mod forge_threads {
         assert_eq!(app.session.threads().len(), 1);
 
         let rows = thread_rows(&app, "T1");
-        // Root header, root body, reply header, reply body.
-        assert_eq!(rows.len(), 4, "{rows:?}");
+        // Root header, body, a spacer, then the reply's header and body.
+        assert_eq!(rows.len(), 5, "{rows:?}");
         let first = rows[0];
         let above = &app.rows[first - 1];
         assert!(matches!(above.kind, RowKind::Diff(_)));
@@ -6003,11 +6003,11 @@ mod forge_threads {
     }
 
     #[test]
-    fn c_on_a_thread_drafts_a_reply_that_sits_under_it() {
+    fn r_on_a_thread_drafts_a_reply_that_sits_under_it() {
         let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
         let rows = thread_rows(&app, "T1");
         app.cursor = rows[0];
-        app.handle_key(key('c'));
+        app.handle_key(key('r'));
         assert!(matches!(app.mode, Mode::Editing { reply_to: Some(ref t), .. } if t == "T1"));
         app.handle_paste("agreed, two was enough");
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -6034,6 +6034,34 @@ mod forge_threads {
         assert_eq!(notes, 1);
         // `y` counts it: it is not yet on the request.
         assert!(app.findings_summary().contains("agreed, two was enough"));
+    }
+
+    #[test]
+    fn a_comment_body_renders_as_markdown() {
+        let mut t = thread("T1", "C1");
+        t.comments[0].body = "**bold** and `code`".into();
+        let (_r, app, _fake) = app_with_threads(vec![t]);
+        let pairs: Vec<(ratatui::style::Style, String)> = thread_rows(&app, "T1")
+            .iter()
+            .flat_map(|&i| match &app.rows[i].content {
+                differential_tui::rows::RowContent::Unified(h) => h.pairs.clone(),
+                _ => Vec::new(),
+            })
+            .collect();
+        assert!(
+            pairs.iter().any(|(s, txt)| txt.contains("bold")
+                && s.add_modifier.contains(ratatui::style::Modifier::BOLD)),
+            "bold span: {pairs:?}"
+        );
+        assert!(
+            pairs
+                .iter()
+                .any(|(s, txt)| txt == "code" && s.fg == Some(theme().hint_fg)),
+            "code span: {pairs:?}"
+        );
+        // The markers themselves are gone.
+        let text: String = pairs.iter().map(|(_, t)| t.as_str()).collect();
+        assert!(!text.contains("**") && !text.contains('`'), "{text}");
     }
 
     #[test]
@@ -6080,6 +6108,50 @@ mod forge_threads {
         assert!(app.status.contains("x resolves"), "{}", app.status);
     }
 
+    /// The plain text of a row.
+    fn row_text(app: &App, i: usize) -> String {
+        match &app.rows[i].content {
+            differential_tui::rows::RowContent::Unified(h) => {
+                h.pairs.iter().map(|(_, t)| t.as_str()).collect()
+            }
+            _ => String::new(),
+        }
+    }
+
+    #[test]
+    fn a_resolved_thread_is_collapsed_until_z_opens_it() {
+        let mut t = thread("T1", "C1");
+        t.resolved = true;
+        let (_r, mut app, _fake) = app_with_threads(vec![t]);
+        // Collapsed: one header row, naming the count and the key that opens it.
+        let rows = thread_rows(&app, "T1");
+        assert_eq!(rows.len(), 1, "collapsed to its header");
+        let header = row_text(&app, rows[0]);
+        assert!(
+            header.contains("resolved") && header.contains("z to open"),
+            "{header}"
+        );
+        assert!(!header.contains("why three?"), "body is withheld: {header}");
+
+        // z opens it: the body shows.
+        app.cursor = rows[0];
+        app.handle_key(key('z'));
+        assert_eq!(app.status, "thread expanded");
+        let open = thread_rows(&app, "T1");
+        assert!(open.len() > 1, "expanded shows the body");
+        assert!(
+            open.iter()
+                .any(|&i| row_text(&app, i).contains("why three?")),
+            "the body is shown when open"
+        );
+
+        // z again collapses it.
+        app.cursor = thread_rows(&app, "T1")[0];
+        app.handle_key(key('z'));
+        assert_eq!(app.status, "thread collapsed");
+        assert_eq!(thread_rows(&app, "T1").len(), 1);
+    }
+
     #[test]
     fn r_fetches_again_and_the_answer_replaces_the_cache() {
         let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
@@ -6091,7 +6163,7 @@ mod forge_threads {
         assert_eq!(app.status, "still syncing with the forge");
         settle(&mut app);
         assert_eq!(app.session.threads().len(), 2);
-        assert_eq!(thread_rows(&app, "T2").len(), 4);
+        assert_eq!(thread_rows(&app, "T2").len(), 5);
     }
 
     #[test]
@@ -6132,7 +6204,7 @@ mod forge_threads {
                 .any(|r| matches!(&r.kind, RowKind::Finding(f, _) if f == &id)),
             "the thread is the note now"
         );
-        assert_eq!(thread_rows(&app, "T1").len(), 4);
+        assert_eq!(thread_rows(&app, "T1").len(), 5);
         // Published: not in the summary either.
         assert!(!app.findings_summary().contains("why three?"));
     }
@@ -6157,10 +6229,40 @@ mod forge_threads {
     /// `cargo test -p differential-tui --test tui render_dump_threads -- --ignored --nocapture`
     #[test]
     #[ignore = "prints the pane for a human to look at"]
+    fn render_dump_resolved_collapsed() {
+        let mut t = thread("T1", "C1");
+        t.resolved = true;
+        t.comments[0].body = "## Why three?\n\nSee `run_with_retries`.".into();
+        let (_r, mut app, _fake) = app_with_threads(vec![t]);
+        app.cursor = thread_rows(&app, "T1")[0];
+        println!("\n=== resolved thread, collapsed by default ===");
+        println!("{}", ansi_dump(&mut app, 100, 16));
+        app.handle_key(key('z'));
+        println!("\n=== after z: opened, dimmed markdown ===");
+        println!("{}", ansi_dump(&mut app, 100, 20));
+    }
+
+    #[test]
+    #[ignore = "prints the pane for a human to look at"]
+    fn render_dump_markdown_comment() {
+        let mut t = thread("T1", "C1");
+        t.comments[0].body = "## Why three?\n\nRetries should be **bounded** but not \
+             *too* tight. Use `run_with_retries`:\n\n```rust\nfn retry(n: u32) -> bool {\n    \
+             n < 3 // cap\n}\n```\n\n- keeps latency low\n- see [the RFC](https://example.invalid)\n\n\
+             > was two before"
+            .into();
+        let (_r, mut app, _fake) = app_with_threads(vec![t]);
+        app.cursor = thread_rows(&app, "T1")[0];
+        println!("\n=== a comment body rendered as markdown ===");
+        println!("{}", ansi_dump(&mut app, 100, 26));
+    }
+
+    #[test]
+    #[ignore = "prints the pane for a human to look at"]
     fn render_dump_threads() {
         let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
         app.cursor = thread_rows(&app, "T1")[0];
-        app.handle_key(key('c'));
+        app.handle_key(key('r'));
         app.handle_paste("agreed, two was enough");
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.cursor = thread_rows(&app, "T1")[0];
@@ -6182,7 +6284,7 @@ mod forge_threads {
         app.handle_paste("three is a magic number");
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.cursor = thread_rows(app, "T1")[0];
-        app.handle_key(key('c'));
+        app.handle_key(key('r'));
         app.handle_paste("agreed");
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     }
@@ -6767,7 +6869,7 @@ mod forge_threads {
     }
 
     #[test]
-    fn c_on_someone_elses_reply_in_your_own_thread_drafts_a_reply() {
+    fn r_replies_and_c_edits_within_your_own_thread() {
         // The reader's root, published from here; a reply by someone else;
         // the cursor on that reply.
         let (_r, mut app, fake) = app_with_threads(vec![]);
@@ -6793,12 +6895,12 @@ mod forge_threads {
         let rows = thread_rows(&app, &tid);
         assert_eq!(
             rows.len(),
-            4,
-            "root header, root body, reply header, reply body"
+            5,
+            "root header, body, spacer, reply header, reply body"
         );
-        // On their reply: not mine, so c replies.
+        // On their reply: not mine, so r replies (c would error).
         app.cursor = rows[3];
-        app.handle_key(key('c'));
+        app.handle_key(key('r'));
         assert!(
             matches!(&app.mode, Mode::Editing { reply_to: Some(t), own: None, .. } if t == &tid),
             "a reply to the thread, not an edit of my root"
@@ -7099,17 +7201,25 @@ mod forge_threads {
     }
 
     #[test]
-    fn someone_elses_comment_is_still_reply_only() {
+    fn someone_elses_comment_takes_r_to_reply_not_c_to_edit() {
         let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        // c on a comment that is not yours edits nothing and says so.
         app.cursor = thread_rows(&app, "T1")[0];
         app.handle_key(key('c'));
-        assert!(matches!(&app.mode, Mode::Editing { reply_to: Some(t), .. } if t == "T1"));
+        assert!(matches!(app.mode, Mode::Normal), "c opens no composer");
+        assert_eq!(app.status, "not your comment · r replies · x resolves");
+        // r on it opens a reply to the thread.
+        app.handle_key(key('r'));
+        assert!(
+            matches!(&app.mode, Mode::Editing { reply_to: Some(t), own: None, .. } if t == "T1")
+        );
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        // dd on it deletes nothing and says so.
         app.cursor = thread_rows(&app, "T1")[1];
         app.handle_key(key('d'));
         app.handle_key(key('d'));
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(app.session.threads().len(), 1, "nothing deleted");
-        assert_eq!(app.status, "not your comment · c replies · x resolves");
+        assert_eq!(app.status, "not your comment · r replies · x resolves");
     }
 }

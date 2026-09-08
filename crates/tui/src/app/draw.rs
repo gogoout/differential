@@ -2038,7 +2038,10 @@ pub(super) fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         row("ctrl-d/u", "half page"),
         row("g/G", "top / bottom"),
         row("z", "boundary: show more, or cross into the hunk"),
-        row("", "elsewhere: unfold skim remainder / noise"),
+        row(
+            "",
+            "resolved thread: open / close it · elsewhere: unfold skim / noise",
+        ),
         row("s", "unified / split diff"),
         row("w", "soft wrap long lines"),
         row(
@@ -2052,7 +2055,7 @@ pub(super) fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         row("c  ·  dd", "add finding · delete the one under the cursor"),
         row(
             "",
-            "on a review thread: c replies · on your own comment: c edits, dd deletes",
+            "your own comment: c edits, dd deletes · anyone's thread: r replies",
         ),
         row(
             "x  ·  R",
