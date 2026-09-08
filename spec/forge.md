@@ -213,7 +213,7 @@ and until then `event` is always `COMMENT`.
 | request | `glab mr view [<iid>] --output json` — `iid`, `target_branch`, `web_url`, `diff_refs.{base_sha, start_sha, head_sha}` |
 | threads | `glab api --paginate projects/:id/merge_requests/<iid>/discussions` — a discussion is a thread when its first non-system note is a `DiffNote` with a `text` position; `notes[]` give `author.username`, `created_at`, `resolved` |
 | publish, new | one `POST …/merge_requests/<iid>/draft_notes` per finding, as `glab`'s field flags — `-f note=…` and `-F position={…}` with `position_type: text, base_sha, start_sha, head_sha, old_path, new_path, old_line and/or new_line`, one number for a changed line, both for an unchanged one — then one `POST …/draft_notes/bulk_publish`; the discussions are fetched again to learn each note's id |
-| publish, reply | `POST …/merge_requests/<iid>/discussions/<id>/notes -f body=…`, one per reply, after the bulk publish; the note comes back with its id. A draft note with `in_reply_to_discussion_id` came out as a new discussion on the first live run |
+| publish, reply | `POST …/merge_requests/<iid>/discussions/<id>/notes -f body=…`, one per reply, **before** the draft notes; the note comes back with its id, so each reply is on record as it lands, and a reply that fails stops the batch before any new comment has gone up. A draft note with `in_reply_to_discussion_id` came out as a new discussion on the first live run |
 | resolve | `PUT …/merge_requests/<iid>/discussions/<id> -F resolved=true|false` |
 | who am I | `glab api user` → `username` |
 | edit, delete own | `PUT …/discussions/<id>/notes/<note id> -f body=…` / `DELETE` the same path |

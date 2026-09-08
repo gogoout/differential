@@ -27,7 +27,8 @@ use crate::subprocess;
 /// The root, because both tools resolve the remote from the directory they
 /// run in, exactly as `git` does.
 struct Tool {
-    program: &'static str,
+    /// The name on the path, or a path to the executable.
+    program: String,
     working_dir: PathBuf,
 }
 
@@ -36,16 +37,16 @@ struct Tool {
 const TOOL_TIMEOUT: Duration = Duration::from_secs(60);
 
 impl Tool {
-    fn new(program: &'static str, root: &Path) -> Self {
+    fn new(program: &str, root: &Path) -> Self {
         Tool {
-            program,
+            program: program.to_string(),
             working_dir: root.to_path_buf(),
         }
     }
 
     /// Run the tool with these arguments and return its stdout.
     fn run(&self, args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>, ForgeError> {
-        let argv: Vec<String> = std::iter::once(self.program)
+        let argv: Vec<String> = std::iter::once(self.program.as_str())
             .chain(args.iter().copied())
             .map(str::to_string)
             .collect();
@@ -653,8 +654,13 @@ pub struct GlabForge {
 
 impl GlabForge {
     pub fn new(root: &Path) -> Self {
+        Self::with_tool("glab", root)
+    }
+
+    /// The same adapter over another executable: a scripted `glab` in a test.
+    fn with_tool(program: &str, root: &Path) -> Self {
         GlabForge {
-            tool: Tool::new("glab", root),
+            tool: Tool::new(program, root),
         }
     }
 
@@ -701,37 +707,24 @@ impl Forge for GlabForge {
             return Ok(Sent::default());
         }
         let mut sent = Sent::default();
-
-        // New comments: draft notes, then one publish, so the author is
-        // notified once, as a GitHub review notifies once. A draft is not
-        // live, so a failure before the publish is still "nothing published"
-        // — though the drafts already made stay on the request, unpublished,
-        // which the spec names as a limit.
-        if !batch.comments.is_empty() {
-            for c in &batch.comments {
-                let body = draft_note_body(req, c);
-                self.tool.rest_fields(
-                    "POST",
-                    &Self::mr(req, "/draft_notes"),
-                    &[("note", &body["note"]), ("position", &body["position"])],
-                )?;
+        // Nothing is live until the first reply lands or the drafts are
+        // published; an error before that is `Err`. After it, the error
+        // rides in `sent.failed` behind whatever is already recorded.
+        let stop = |mut sent: Sent, e: ForgeError| {
+            if sent.published.is_empty() {
+                return Err(e);
             }
-            self.tool.run(
-                &[
-                    "api",
-                    "--method",
-                    "POST",
-                    &Self::mr(req, "/draft_notes/bulk_publish"),
-                ],
-                None,
-            )?;
-        }
+            sent.failed = Some(e);
+            Ok(sent)
+        };
 
-        // Replies go straight into their discussion, one call each: the note
+        // Replies first, one call each into their discussion: the note
         // endpoint is the documented way to add to a thread, and it answers
-        // with the note, so nothing has to be matched back. A draft note with
-        // `in_reply_to_discussion_id` came out as a new discussion on the
-        // first live run.
+        // with the note, so each reply is on record the moment it lands and
+        // needs no fetch to be found again. A reply that fails stops the
+        // batch before any new comment has gone up, so nothing live is ever
+        // unrecorded. (A draft note with `in_reply_to_discussion_id` came out
+        // as a new discussion on the first live run.)
         for r in &batch.replies {
             let body = json!(r.body);
             let v = match self.tool.rest_fields(
@@ -740,19 +733,48 @@ impl Forge for GlabForge {
                 &[("body", &body)],
             ) {
                 Ok(v) => v,
-                Err(e) if sent.published.is_empty() && batch.comments.is_empty() => return Err(e),
-                Err(e) => {
-                    sent.failed = Some(e);
-                    return Ok(sent);
-                }
+                Err(e) => return stop(sent, e),
             };
             sent.published.push(reply_published(r, &v));
         }
+        if batch.comments.is_empty() {
+            return Ok(sent);
+        }
+
+        // New comments: draft notes, then one publish, so the author is
+        // notified once, as a GitHub review notifies once. A draft is not
+        // live, so a failure before the publish leaves nothing to record —
+        // though the drafts already made stay on the request, unpublished,
+        // which the spec names as a limit.
+        for c in &batch.comments {
+            let body = draft_note_body(req, c);
+            let r = self.tool.rest_fields(
+                "POST",
+                &Self::mr(req, "/draft_notes"),
+                &[("note", &body["note"]), ("position", &body["position"])],
+            );
+            if let Err(e) = r {
+                return stop(sent, e);
+            }
+        }
+        let bulk = self.tool.run(
+            &[
+                "api",
+                "--method",
+                "POST",
+                &Self::mr(req, "/draft_notes/bulk_publish"),
+            ],
+            None,
+        );
+        if let Err(e) = bulk {
+            return stop(sent, e);
+        }
 
         // Live from here. The bulk publish answers with nothing; the
-        // discussions, fetched again, hold every note that landed — and are
+        // discussions, fetched once, hold every note that landed — and are
         // the fresh set the caller wants, so they are handed back rather than
-        // fetched twice.
+        // fetched twice. If this fetch fails the notes are live and unnamed,
+        // and the markers name them on the next fetch.
         match self.discussions(req) {
             Ok(pages) => {
                 sent.published
@@ -1377,5 +1399,115 @@ mod tests {
             ),
             ("f2", "d1", "102")
         );
+    }
+
+    /// A `glab` that is a shell script: it logs each call to `calls`, reads
+    /// which step fails from `mode`, and answers the discussions fetch with
+    /// `discussion_pages()`. The adapter's ordering is the thing under test,
+    /// and only a tool that fails on cue can show it.
+    #[cfg(unix)]
+    fn scripted_glab(dir: &Path) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let pages: Vec<String> = discussion_pages()
+            .iter()
+            .map(|p| serde_json::to_string(p).unwrap())
+            .collect();
+        std::fs::write(dir.join("pages.json"), pages.join("\n")).unwrap();
+        let script = dir.join("glab");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+dir=$(dirname "$0")
+printf '%s\n' "$*" >> "$dir/calls"
+mode=$(cat "$dir/mode")
+case "$*" in
+  *"/discussions/bad/notes"*) echo "glab: HTTP 500" >&2; exit 1 ;;
+  *"/discussions/"*"/notes"*) echo '{"id": 555, "body": "because"}' ;;
+  *"/draft_notes/bulk_publish"*)
+    if [ "$mode" = "bulk-fails" ]; then echo "glab: HTTP 500" >&2; exit 1; fi ;;
+  *"/draft_notes"*) echo '{"id": 9}' ;;
+  *"--paginate"*) cat "$dir/pages.json" ;;
+  *) echo "unexpected: $*" >&2; exit 2 ;;
+esac
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script.to_string_lossy().into_owned()
+    }
+
+    #[cfg(unix)]
+    fn calls(dir: &Path) -> String {
+        std::fs::read_to_string(dir.join("calls")).unwrap_or_default()
+    }
+
+    #[cfg(unix)]
+    fn mixed_batch(reply_thread: &str) -> Batch {
+        Batch {
+            comments: vec![comment("f1", "new", 3, None, &with_marker("why?", "f1"))],
+            replies: vec![NewReply {
+                finding: "f2".into(),
+                thread: reply_thread.into(),
+                root_comment: "101".into(),
+                body: with_marker("because", "f2"),
+            }],
+        }
+    }
+
+    /// Whatever step fails, nothing that went live is left off the record:
+    /// that record is what keeps the next publish from sending it again.
+    #[test]
+    #[cfg(unix)]
+    fn a_gitlab_publish_records_everything_live_before_it_reports_a_failure() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let glab = scripted_glab(dir.path());
+        let forge = GlabForge::with_tool(&glab, dir.path());
+        let req = parse_mr(&mr_view()).unwrap();
+
+        // The reply fails: nothing has gone up, so nothing is recorded and
+        // the comments were never sent.
+        std::fs::write(dir.path().join("mode"), "ok").unwrap();
+        let err = forge.publish(&req, &mixed_batch("bad")).unwrap_err();
+        assert!(err.to_string().contains("HTTP 500"), "{err}");
+        assert!(
+            !calls(dir.path()).contains("draft_notes"),
+            "{}",
+            calls(dir.path())
+        );
+
+        // The bulk publish fails after the reply landed: the reply is on
+        // record, the failure rides behind it, and no fetch was made for
+        // notes that never went live.
+        std::fs::remove_file(dir.path().join("calls")).unwrap();
+        std::fs::write(dir.path().join("mode"), "bulk-fails").unwrap();
+        let sent = forge.publish(&req, &mixed_batch("d1")).unwrap();
+        assert_eq!(sent.published.len(), 1);
+        assert_eq!(
+            (
+                sent.published[0].finding.as_str(),
+                sent.published[0].thread.as_str()
+            ),
+            ("f2", "d1")
+        );
+        assert_eq!(sent.published[0].comment, "555");
+        assert!(sent.failed.is_some());
+        assert!(sent.threads.is_none());
+        let log = calls(dir.path());
+        assert!(log.contains("draft_notes/bulk_publish"), "{log}");
+        assert!(!log.contains("--paginate"), "{log}");
+
+        // Everything lands: the reply from its answer, the comment from the
+        // discussions fetched once, which are also handed back.
+        std::fs::write(dir.path().join("mode"), "ok").unwrap();
+        let sent = forge.publish(&req, &mixed_batch("d1")).unwrap();
+        assert!(sent.failed.is_none());
+        let mut named: Vec<(&str, &str, &str)> = sent
+            .published
+            .iter()
+            .map(|p| (p.finding.as_str(), p.thread.as_str(), p.comment.as_str()))
+            .collect();
+        named.sort();
+        assert_eq!(named, vec![("f1", "d1", "101"), ("f2", "d1", "555")]);
+        assert_eq!(sent.threads.as_ref().map(Vec::len), Some(4));
     }
 }

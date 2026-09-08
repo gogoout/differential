@@ -85,7 +85,6 @@ pub fn run(spec: &Run<'_>) -> Result<Output, Failure> {
     let deadline = Instant::now() + spec.timeout;
     let cancelled = || spec.cancel.is_some_and(|c| c.load(Ordering::Relaxed));
     let status = loop {
-        // Decide first, tear down once.
         // Decide first, tear down once — a `try_wait` error included, or
         // the child and its three threads would outlive this call.
         let give_up = match child.try_wait() {
