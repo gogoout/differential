@@ -15,7 +15,7 @@ use differential_engine::store::{
     FsArtefactStore, FsGroupingCache, FsReviewCatalogue, FsReviewStore,
 };
 use differential_engine::{FsReviewSession, ReviewSession};
-use differential_testutil::{FakeBackend, TestRepo, json_group};
+use differential_testutil::{FakeBackend, TestRepo, github_request, json_group, remote_comment};
 
 fn focus_all_backend() -> FakeBackend {
     FakeBackend::new("fake", |ids| {
@@ -27,19 +27,26 @@ fn focus_all_backend() -> FakeBackend {
     })
 }
 
-/// Ten lines; the head changes line 3 and line 8, which `-U0` keeps as two
-/// hunks with unchanged lines between them.
-fn two_hunk_repo() -> (TestRepo, String, String) {
+/// Ten lines `line_N = N` in `src/lib.rs`; the head is the same file after
+/// `edit` has had its way with the lines.
+fn ten_line_repo(edit: impl FnOnce(&mut Vec<String>)) -> (TestRepo, String, String) {
     let r = TestRepo::new();
-    let lines: Vec<String> = (1..=10).map(|i| format!("line_{i} = {i}")).collect();
+    let mut lines: Vec<String> = (1..=10).map(|i| format!("line_{i} = {i}")).collect();
     r.write("src/lib.rs", format!("{}\n", lines.join("\n")).as_bytes());
     let base = r.commit_all("base");
-    let mut changed = lines.clone();
-    changed[2] = "line_3 = 300".to_string();
-    changed[7] = "line_8 = 800".to_string();
-    r.write("src/lib.rs", format!("{}\n", changed.join("\n")).as_bytes());
+    edit(&mut lines);
+    r.write("src/lib.rs", format!("{}\n", lines.join("\n")).as_bytes());
     let head = r.commit_all("head");
     (r, base, head)
+}
+
+/// The head changes line 3 and line 8, which `-U0` keeps as two hunks with
+/// unchanged lines between them.
+fn two_hunk_repo() -> (TestRepo, String, String) {
+    ten_line_repo(|lines| {
+        lines[2] = "line_3 = 300".to_string();
+        lines[7] = "line_8 = 800".to_string();
+    })
 }
 
 fn doc_and_view(
@@ -77,13 +84,12 @@ fn thread(id: &str, path: &str, side: &str, line: Option<u32>) -> RemoteThread {
         start_line: None,
         line_text: None,
         anchor: None,
-        comments: vec![RemoteComment {
-            id: format!("{id}-root"),
-            author: "alice".into(),
-            created: "2026-09-03T20:53:12Z".into(),
-            body: "why?".into(),
-            finding: None,
-        }],
+        comments: vec![remote_comment(
+            &format!("{id}-root"),
+            "alice",
+            "2026-09-03T20:53:12Z",
+            "why?",
+        )],
     }
 }
 
@@ -322,16 +328,13 @@ fn threads_persist_beside_findings_and_are_placed_again_on_open() {
         assert!(!s.set_thread_resolved("nope", true).unwrap());
     }
     assert!(tmp.path().join("comments.jsonl").exists());
+    // The forge never wrote into the findings; a missing file loads as none.
     assert!(
-        !tmp.path().join("findings.jsonl").exists() || {
-            // Findings were saved (empty) on open; either way the forge never
-            // wrote into them.
-            FsReviewStore::at(tmp.path().to_path_buf())
-                .unwrap()
-                .load_findings()
-                .unwrap()
-                .is_empty()
-        }
+        FsReviewStore::at(tmp.path().to_path_buf())
+            .unwrap()
+            .load_findings()
+            .unwrap()
+            .is_empty()
     );
     let s = session(&r, &base, &head, tmp.path());
     assert_eq!(s.threads().len(), 1);
@@ -354,22 +357,9 @@ fn a_reply_draft_sits_where_its_thread_does() {
 
 // ----------------------------------------------------------------- identity
 
-fn request() -> Request {
-    Request {
-        kind: forge::ForgeKind::Github,
-        project: "owner/repo".into(),
-        id: "123".into(),
-        base_ref: "main".into(),
-        base_tip: "b".repeat(40),
-        head: "h".repeat(40),
-        merge_base: None,
-        url: "https://example.invalid/pull/123".into(),
-    }
-}
-
 #[test]
 fn a_request_is_a_review_identity_keyed_on_the_request_alone() {
-    let req = request();
+    let req = github_request("123");
     let remote = Remote {
         forge: "github".into(),
         project: "owner/repo".into(),
@@ -407,12 +397,15 @@ fn a_request_review_is_filed_once_and_found_again_without_git() {
     r.write("f.txt", b"one\n");
     r.commit_all("base");
     let cat = FsReviewCatalogue::at(r.root.join(".git"));
-    let identity = request().identity();
+    let identity = github_request("123").identity();
 
     let first = resolve(&cat, &r.repo(), &identity).unwrap();
     let again = resolve(&cat, &r.repo(), &identity).unwrap();
     assert_eq!(first, again);
-    assert_eq!(first, plan::review_id_remote(&request().remote()));
+    assert_eq!(
+        first,
+        plan::review_id_remote(&github_request("123").remote())
+    );
 
     let filed = cat.filed_reviews().unwrap();
     assert_eq!(filed.len(), 1);
@@ -426,14 +419,13 @@ fn a_request_review_is_filed_once_and_found_again_without_git() {
 #[test]
 fn a_request_source_writes_the_remote_into_the_document() {
     let (r, base, head) = two_hunk_repo();
-    let req = request();
+    let req = github_request("123");
     let source = ReviewSource::request(
         base.clone(),
         head.clone(),
         req.kind.source_kind(),
         req.remote(),
     );
-    assert_eq!(source.head_spec, head);
     let out = differential_engine::run_pipeline(
         &r.repo(),
         &source,
@@ -445,11 +437,12 @@ fn a_request_source_writes_the_remote_into_the_document() {
     let doc = out.document.unwrap();
     assert_eq!(doc.source.kind, schema::SourceKind::Pr);
     assert_eq!(doc.source.remote, Some(req.remote()));
+    assert_eq!(doc.source.head, head);
+    // The request's own head is a placeholder, so it does not match; a
+    // request at this head does. That check is what guards every publish.
+    assert!(!forge::head_matches(&req, &doc.source.head));
     assert!(forge::head_matches(
-        &Request {
-            head: head.clone(),
-            ..req
-        },
+        &Request { head, ..req },
         &doc.source.head
     ));
 }
@@ -683,34 +676,23 @@ fn a_linked_record_follows_an_edit_or_delete_even_before_its_twin_is_fetched() {
 fn gitlab_is_not_held_to_the_three_line_rule_and_an_unchanged_line_carries_both_numbers() {
     // Head inserts a line at the top and edits line 3 (now 4): every later
     // unchanged line is one higher on the new side than on the old.
-    let r = TestRepo::new();
-    let lines: Vec<String> = (1..=10).map(|i| format!("line_{i} = {i}")).collect();
-    r.write("src/lib.rs", format!("{}\n", lines.join("\n")).as_bytes());
-    let base = r.commit_all("base");
-    let mut changed = lines.clone();
-    changed[2] = "line_3 = 300".to_string();
-    changed.insert(0, "inserted = 0".to_string());
-    r.write("src/lib.rs", format!("{}\n", changed.join("\n")).as_bytes());
-    let head = r.commit_all("head");
+    let (r, base, head) = ten_line_repo(|lines| {
+        lines[2] = "line_3 = 300".to_string();
+        lines.insert(0, "inserted = 0".to_string());
+    });
     let tmp = tempfile::TempDir::new().unwrap();
     let mut s = session(&r, &base, &head, tmp.path());
-    let (doc, _) = doc_and_view(&r, &base, &head);
+    let doc = s.doc();
 
     // A changed line has one number; an unchanged line far below has both.
-    assert_eq!(forge::other_side_line(&doc, "src/lib.rs", "new", 1), None);
-    assert_eq!(forge::other_side_line(&doc, "src/lib.rs", "new", 4), None);
-    assert_eq!(
-        forge::other_side_line(&doc, "src/lib.rs", "new", 9),
-        Some(8)
-    );
-    assert_eq!(
-        forge::other_side_line(&doc, "src/lib.rs", "old", 8),
-        Some(9)
-    );
-    assert_eq!(forge::other_side_line(&doc, "src/lib.rs", "old", 3), None);
+    assert_eq!(forge::other_side_line(doc, "src/lib.rs", "new", 1), None);
+    assert_eq!(forge::other_side_line(doc, "src/lib.rs", "new", 4), None);
+    assert_eq!(forge::other_side_line(doc, "src/lib.rs", "new", 9), Some(8));
+    assert_eq!(forge::other_side_line(doc, "src/lib.rs", "old", 8), Some(9));
+    assert_eq!(forge::other_side_line(doc, "src/lib.rs", "old", 3), None);
 
-    let h = s.doc().hunks.iter().position(|h| h.new_start == 4).unwrap();
-    s.add_finding(h, Some(lines_at("new", 9, 9)), "far below".into())
+    let h = doc.hunks.iter().position(|h| h.new_start == 4).unwrap();
+    s.add_finding(h, Some(lines("new", 9, 9)), "far below".into())
         .unwrap();
     let github = s.publish_plan(forge::ForgeKind::Github);
     assert!(
@@ -723,10 +705,6 @@ fn gitlab_is_not_held_to_the_three_line_rule_and_an_unchanged_line_carries_both_
     assert!(gitlab.excluded.is_empty());
     assert_eq!(gitlab.batch.comments[0].line, 9);
     assert_eq!(gitlab.batch.comments[0].other_line, Some(8));
-}
-
-fn lines_at(side: &str, start: u32, end: u32) -> Lines {
-    lines(side, start, end)
 }
 
 #[test]

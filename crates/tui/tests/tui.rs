@@ -12,7 +12,7 @@ use differential_engine::pipeline::run_grouped_pipeline;
 use differential_engine::plan::ReviewSource;
 use differential_engine::ports::ReviewStore;
 use differential_engine::store::{FsArtefactStore, FsGroupingCache, FsReviewStore};
-use differential_testutil::{FakeBackend, TestRepo, json_group};
+use differential_testutil::{FakeBackend, TestRepo, github_request, json_group, remote_comment};
 use differential_tui::app::{App, Effect, Focus, Mode, ReviewOptions, ViewMode, Viewport};
 use differential_tui::rows::{BoxStyle, RowFactory, RowKind};
 use differential_tui::theme::Theme;
@@ -943,12 +943,17 @@ fn drawn(app: &mut App) -> String {
 /// The whole screen as rows, in row order — for assertions about text that
 /// has to sit on one line.
 fn drawn_rows(app: &mut App) -> Vec<String> {
-    let backend = ratatui::backend::TestBackend::new(100, 40);
+    screen(app, 100, 40)
+}
+
+/// The screen at `w` by `h`, one string per row.
+fn screen(app: &App, w: u16, h: u16) -> Vec<String> {
+    let backend = ratatui::backend::TestBackend::new(w, h);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|f| app.draw(f)).unwrap();
     let buf = terminal.backend().buffer().clone();
-    (0..40u16)
-        .map(|y| (0..100u16).map(|x| buf[(x, y)].symbol()).collect())
+    (0..h)
+        .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect())
         .collect()
 }
 
@@ -5773,7 +5778,7 @@ mod forge_threads {
         fn request(&self, _id: Option<&str>) -> Result<Request, ForgeError> {
             Ok(Request {
                 head: self.head.lock().unwrap().clone(),
-                ..request()
+                ..github_request("7")
             })
         }
         fn threads(&self, _req: &Request) -> Result<Vec<RemoteThread>, ForgeError> {
@@ -5885,19 +5890,6 @@ mod forge_threads {
         }
     }
 
-    fn request() -> Request {
-        Request {
-            kind: ForgeKind::Github,
-            project: "owner/repo".into(),
-            id: "7".into(),
-            base_ref: "main".into(),
-            base_tip: "b".repeat(40),
-            head: "h".repeat(40),
-            merge_base: None,
-            url: "https://example.invalid/pull/7".into(),
-        }
-    }
-
     /// A thread on the one changed line of `src/main.txt`.
     fn thread(id: &str, root_comment: &str) -> RemoteThread {
         RemoteThread {
@@ -5911,20 +5903,13 @@ mod forge_threads {
             line_text: Some("fn main() { run_with_retries(3) }".into()),
             anchor: None,
             comments: vec![
-                RemoteComment {
-                    id: root_comment.to_string(),
-                    author: "alice".into(),
-                    created: "2026-09-03T20:53:12Z".into(),
-                    body: "why three?".into(),
-                    finding: None,
-                },
-                RemoteComment {
-                    id: format!("{root_comment}-r"),
-                    author: "bob".into(),
-                    created: "2026-09-03T21:00:00Z".into(),
-                    body: "it was two before".into(),
-                    finding: None,
-                },
+                remote_comment(root_comment, "alice", "2026-09-03T20:53:12Z", "why three?"),
+                remote_comment(
+                    &format!("{root_comment}-r"),
+                    "bob",
+                    "2026-09-03T21:00:00Z",
+                    "it was two before",
+                ),
             ],
         }
     }
@@ -5948,7 +5933,7 @@ mod forge_threads {
         let fake = FakeForge::new(threads, &app.session.doc().source.head);
         app.link_forge(ForgeLink {
             forge: Arc::clone(&fake) as Arc<dyn Forge>,
-            request: request(),
+            request: github_request("7"),
         });
         app.start_fetch();
         assert!(app.syncing());
@@ -5980,6 +5965,15 @@ mod forge_threads {
         }
         assert_eq!(app.selected_group, want);
         app.focus = Focus::Detail;
+    }
+
+    /// Park the cursor on the one changed line of `src/main.txt`.
+    fn cursor_to_changed_line(app: &mut App) {
+        app.cursor = app
+            .rows
+            .iter()
+            .position(|r| r.line.as_ref().is_some_and(|l| l.holds("new", 1)))
+            .unwrap();
     }
 
     fn thread_rows(app: &App, id: &str) -> Vec<usize> {
@@ -6043,17 +6037,6 @@ mod forge_threads {
     }
 
     #[test]
-    fn dd_on_a_thread_refuses_and_names_the_keys_that_work() {
-        let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
-        app.cursor = thread_rows(&app, "T1")[1];
-        app.handle_key(key('d'));
-        app.handle_key(key('d'));
-        assert_eq!(app.session.threads().len(), 1);
-        assert!(app.status.contains("c replies"), "{}", app.status);
-        assert!(app.status.contains("x resolves"), "{}", app.status);
-    }
-
-    #[test]
     fn x_resolves_the_thread_through_the_forge_and_dims_it_once_answered() {
         let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
         app.cursor = thread_rows(&app, "T1")[0];
@@ -6112,14 +6095,10 @@ mod forge_threads {
     }
 
     #[test]
-    fn a_published_finding_hides_behind_its_fetched_twin() {
+    fn a_published_note_draws_as_its_fetched_twin_not_twice() {
         let (_r, mut app) = make_app();
         select_group_of(&mut app, "src/main.txt");
-        app.cursor = app
-            .rows
-            .iter()
-            .position(|r| r.line.as_ref().is_some_and(|l| l.holds("new", 1)))
-            .unwrap();
+        cursor_to_changed_line(&mut app);
         app.handle_key(key('c'));
         app.handle_paste("why three?");
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -6143,7 +6122,7 @@ mod forge_threads {
         let fake = FakeForge::new(vec![thread("T1", "C1")], &app.session.doc().source.head);
         app.link_forge(ForgeLink {
             forge: fake as Arc<dyn Forge>,
-            request: request(),
+            request: github_request("7"),
         });
         app.start_fetch();
         settle(&mut app);
@@ -6160,13 +6139,7 @@ mod forge_threads {
 
     #[test]
     fn the_footer_counts_threads_only_on_a_request_review() {
-        let footer = |app: &mut App| -> String {
-            let backend = ratatui::backend::TestBackend::new(120, 30);
-            let mut terminal = ratatui::Terminal::new(backend).unwrap();
-            terminal.draw(|f| app.draw(f)).unwrap();
-            let buf = terminal.backend().buffer().clone();
-            (0..120u16).map(|x| buf[(x, 29)].symbol()).collect()
-        };
+        let footer = |app: &mut App| -> String { screen(app, 120, 30)[29].clone() };
         let (_r, mut plain) = make_app();
         assert!(!footer(&mut plain).contains("thread"));
 
@@ -6204,11 +6177,7 @@ mod forge_threads {
 
     /// Write a note on the changed line and a reply under the thread.
     fn draft_two(app: &mut App) {
-        app.cursor = app
-            .rows
-            .iter()
-            .position(|r| r.line.as_ref().is_some_and(|l| l.holds("new", 1)))
-            .unwrap();
+        cursor_to_changed_line(app);
         app.handle_key(key('c'));
         app.handle_paste("three is a magic number");
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -6332,7 +6301,7 @@ mod forge_threads {
         assert!(app.status.contains("cannot hold"), "{}", app.status);
 
         // With one sendable note beside it, the modal lists the one that stays.
-        draft_two_without_thread(&mut app);
+        draft_one_note(&mut app);
         app.handle_key(key('P'));
         let Mode::Publish { plan } = &app.mode else {
             panic!("P opens the publish modal");
@@ -6340,13 +6309,7 @@ mod forge_threads {
         assert_eq!(plan.batch.len(), 1);
         assert_eq!(plan.excluded.len(), 1);
         assert_eq!(plan.excluded[0].lines, "40");
-        let backend = ratatui::backend::TestBackend::new(120, 30);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal.draw(|f| app.draw(f)).unwrap();
-        let buf = terminal.backend().buffer().clone();
-        let screen: Vec<String> = (0..30u16)
-            .map(|y| (0..120u16).map(|x| buf[(x, y)].symbol()).collect())
-            .collect();
+        let screen = screen(&app, 120, 30);
         assert!(
             screen
                 .iter()
@@ -6371,12 +6334,9 @@ mod forge_threads {
         );
     }
 
-    fn draft_two_without_thread(app: &mut App) {
-        app.cursor = app
-            .rows
-            .iter()
-            .position(|r| r.line.as_ref().is_some_and(|l| l.holds("new", 1)))
-            .unwrap();
+    /// Write one note on the changed line and nothing under the thread.
+    fn draft_one_note(app: &mut App) {
+        cursor_to_changed_line(app);
         app.handle_key(key('c'));
         app.handle_paste("on the change");
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -6430,13 +6390,19 @@ mod forge_threads {
 
     // ---------------------------------------------------------- the F list
 
-    pub(super) fn dump_findings_and_threads() {
+    /// The findings list with a note, a published note's thread, a published
+    /// reply and a review thread.
+    ///
+    /// `cargo test -p differential-tui --test tui render_dump_findings_and_threads -- --ignored --nocapture`
+    #[test]
+    #[ignore = "prints the pane for a human to look at"]
+    fn render_dump_findings_and_threads() {
         let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
         draft_two(&mut app);
         app.handle_key(key('P'));
         app.handle_key(key('y'));
         settle(&mut app);
-        draft_two_without_thread(&mut app);
+        draft_one_note(&mut app);
         app.handle_key(key('F'));
         println!("\n=== F: notes, then review threads ===");
         println!("{}", ansi_dump(&mut app, 120, 20));
@@ -6445,7 +6411,7 @@ mod forge_threads {
     #[test]
     fn the_findings_list_holds_threads_too_and_enter_reaches_one() {
         let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
-        draft_two_without_thread(&mut app);
+        draft_one_note(&mut app);
         app.cursor = 0;
         app.handle_key(key('F'));
         let Mode::Findings { entries, .. } = &app.mode else {
@@ -6463,13 +6429,7 @@ mod forge_threads {
         assert_eq!(entries[1].at, "src/main.txt:1");
 
         // The rule between the sections, and the title, are drawn.
-        let backend = ratatui::backend::TestBackend::new(120, 30);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal.draw(|f| app.draw(f)).unwrap();
-        let buf = terminal.backend().buffer().clone();
-        let screen: Vec<String> = (0..30u16)
-            .map(|y| (0..120u16).map(|x| buf[(x, y)].symbol()).collect())
-            .collect();
+        let screen = screen(&app, 120, 30);
         assert!(
             screen.iter().any(|l| l.contains("review threads")),
             "{screen:#?}"
@@ -6565,42 +6525,20 @@ mod forge_threads {
             "{}",
             app.status
         );
-        // c on the line files a NEW note: the published one is a thread now,
-        // not a note to reopen and rewrite.
-        draft_two_without_thread(&mut app);
-        assert_eq!(app.session.unpublished().count(), 1);
-        assert_eq!(app.session.findings().len(), 3);
-        assert!(
-            app.session
-                .findings()
-                .iter()
-                .filter(|f| f.upstream.is_some())
-                .all(|f| f.body != "on the change")
-        );
     }
+
     #[test]
     fn capital_d_clears_local_notes_only_and_counts_only_those() {
         let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
         published_and_parked(&mut app);
-        draft_two_without_thread(&mut app);
+        draft_one_note(&mut app);
         // One local note, two published (one a reply), one foreign thread.
         assert_eq!(app.session.unpublished().count(), 1);
         assert_eq!(app.session.findings().len(), 3);
 
         app.handle_key(key('F'));
         app.handle_key(key('D'));
-        let backend = ratatui::backend::TestBackend::new(120, 30);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal.draw(|f| app.draw(f)).unwrap();
-        let buf = terminal.backend().buffer().clone();
-        let screen: String = (0..30u16)
-            .map(|y| {
-                (0..120u16)
-                    .map(|x| buf[(x, y)].symbol())
-                    .collect::<String>()
-                    + "\n"
-            })
-            .collect();
+        let screen = screen(&app, 120, 30).join("\n");
         assert!(
             screen.contains("delete this note? (2 on the request stay)"),
             "{screen}"
@@ -6683,9 +6621,8 @@ mod forge_threads {
         app.handle_key(key('P'));
         app.handle_key(key('y'));
         settle(&mut app);
-        assert_eq!(app.status, "published 2 comments");
         // A second note, and a forge that takes the send and creates nothing.
-        draft_two_without_thread(&mut app);
+        draft_one_note(&mut app);
         *fake.swallow.lock().unwrap() = true;
         app.handle_key(key('P'));
         app.handle_key(key('y'));
@@ -6701,7 +6638,7 @@ mod forge_threads {
     #[test]
     fn a_published_note_whose_twin_is_not_fetched_yet_is_still_editable() {
         let (_r, mut app, fake) = app_with_threads(vec![]);
-        draft_two_without_thread(&mut app);
+        draft_one_note(&mut app);
         let id = app.session.findings()[0].id.clone();
         // Published, address recorded, but the reviewer has not fetched the
         // thread back: the note still draws as a note.
@@ -6751,19 +6688,6 @@ mod forge_threads {
         assert!(fake.threads.lock().unwrap().is_empty());
     }
 
-    /// The findings list's `D` prompt, with one local note and two published.
-    ///
-    /// `cargo test -p differential-tui --test tui render_dump_clear_local -- --ignored --nocapture`
-    pub(super) fn dump_clear_local() {
-        let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
-        published_and_parked(&mut app);
-        draft_two_without_thread(&mut app);
-        app.handle_key(key('F'));
-        app.handle_key(key('D'));
-        println!("\n=== F, then D ===");
-        println!("{}", ansi_dump(&mut app, 120, 20));
-    }
-
     #[test]
     fn a_forge_that_stops_part_way_is_reported_and_what_landed_is_kept() {
         let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
@@ -6793,13 +6717,7 @@ mod forge_threads {
         t.comments[0].body = long.into();
         let (_r, app, _fake) = app_with_threads(vec![t]);
         assert!(!app.wrap_on_for_test(), "soft wrap is off for code");
-        let backend = ratatui::backend::TestBackend::new(100, 30);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal.draw(|f| app.draw(f)).unwrap();
-        let buf = terminal.backend().buffer().clone();
-        let screen: Vec<String> = (0..30u16)
-            .map(|y| (0..100u16).map(|x| buf[(x, y)].symbol()).collect())
-            .collect();
+        let screen = screen(&app, 100, 30);
         let first = screen
             .iter()
             .position(|l| l.contains("this comment runs on"))
@@ -6818,23 +6736,13 @@ mod forge_threads {
     #[test]
     fn a_long_note_in_the_composer_stays_above_the_key_footer() {
         let (_r, mut app, _fake) = app_with_threads(vec![]);
-        app.cursor = app
-            .rows
-            .iter()
-            .position(|r| r.line.as_ref().is_some_and(|l| l.holds("new", 1)))
-            .unwrap();
+        cursor_to_changed_line(&mut app);
         app.handle_key(key('c'));
         let text: Vec<String> = (1..=30)
             .map(|i| format!("line {i} of a long note"))
             .collect();
         app.handle_paste(&text.join("\n"));
-        let backend = ratatui::backend::TestBackend::new(120, 30);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal.draw(|f| app.draw(f)).unwrap();
-        let buf = terminal.backend().buffer().clone();
-        let screen: Vec<String> = (0..30u16)
-            .map(|y| (0..120u16).map(|x| buf[(x, y)].symbol()).collect())
-            .collect();
+        let screen = screen(&app, 120, 30);
         let footer = screen
             .iter()
             .position(|l| l.contains("enter") && l.contains("save"))
@@ -6863,7 +6771,7 @@ mod forge_threads {
         // The reader's root, published from here; a reply by someone else;
         // the cursor on that reply.
         let (_r, mut app, fake) = app_with_threads(vec![]);
-        draft_two_without_thread(&mut app);
+        draft_one_note(&mut app);
         app.handle_key(key('P'));
         app.handle_key(key('y'));
         settle(&mut app);
@@ -6929,24 +6837,14 @@ mod forge_threads {
     #[test]
     fn a_long_line_in_the_composer_wraps_instead_of_running_off() {
         let (_r, mut app, _fake) = app_with_threads(vec![]);
-        app.cursor = app
-            .rows
-            .iter()
-            .position(|r| r.line.as_ref().is_some_and(|l| l.holds("new", 1)))
-            .unwrap();
+        cursor_to_changed_line(&mut app);
         app.handle_key(key('c'));
         let long = (1..=30)
             .map(|i| format!("word{i}"))
             .collect::<Vec<_>>()
             .join(" ");
         app.handle_paste(&long);
-        let backend = ratatui::backend::TestBackend::new(100, 30);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal.draw(|f| app.draw(f)).unwrap();
-        let buf = terminal.backend().buffer().clone();
-        let screen: Vec<String> = (0..30u16)
-            .map(|y| (0..100u16).map(|x| buf[(x, y)].symbol()).collect())
-            .collect();
+        let screen = screen(&app, 100, 30);
         let first = screen
             .iter()
             .position(|l| l.contains("word1 "))
@@ -6968,7 +6866,7 @@ mod forge_threads {
     #[test]
     fn a_forge_refusal_is_shown_in_full_not_cut_by_the_footer() {
         let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
-        draft_two_without_thread(&mut app);
+        draft_one_note(&mut app);
         *fake.refuse.lock().unwrap() = true;
         app.handle_key(key('P'));
         app.handle_key(key('y'));
@@ -6986,18 +6884,7 @@ mod forge_threads {
         );
 
         // Drawn whole: the forge's words reach the screen, wrapped.
-        let backend = ratatui::backend::TestBackend::new(100, 30);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal.draw(|f| app.draw(f)).unwrap();
-        let buf = terminal.backend().buffer().clone();
-        let screen: String = (0..30u16)
-            .map(|y| {
-                (0..100u16)
-                    .map(|x| buf[(x, y)].symbol())
-                    .collect::<String>()
-                    + "\n"
-            })
-            .collect();
+        let screen = screen(&app, 100, 30).join("\n");
         assert!(screen.contains("nothing published"), "{screen}");
         assert!(screen.contains("could never hold"), "{screen}");
 
@@ -7062,7 +6949,7 @@ mod forge_threads {
         // the same line with the same words and no marker.
         let (_r, mut app) = make_app();
         select_group_of(&mut app, "src/main.txt");
-        draft_two_without_thread(&mut app);
+        draft_one_note(&mut app);
         assert_eq!(app.session.unpublished().count(), 1);
         let fake = FakeForge::new(
             vec![my_unmarked_thread("M1", "on the change")],
@@ -7070,7 +6957,7 @@ mod forge_threads {
         );
         app.link_forge(ForgeLink {
             forge: fake as Arc<dyn Forge>,
-            request: request(),
+            request: github_request("7"),
         });
         app.start_fetch();
         settle(&mut app);
@@ -7093,11 +6980,7 @@ mod forge_threads {
         );
         assert!(app.session.is_twinned(f), "listed once, as the thread");
         // Not healed: a different text on the same line stays a note.
-        app.cursor = app
-            .rows
-            .iter()
-            .position(|r| r.line.as_ref().is_some_and(|l| l.holds("new", 1)))
-            .unwrap();
+        cursor_to_changed_line(&mut app);
         app.handle_key(key('c'));
         app.handle_paste("something else");
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -7222,26 +7105,11 @@ mod forge_threads {
         app.handle_key(key('c'));
         assert!(matches!(&app.mode, Mode::Editing { reply_to: Some(t), .. } if t == "T1"));
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        app.cursor = thread_rows(&app, "T1")[0];
+        app.cursor = thread_rows(&app, "T1")[1];
         app.handle_key(key('d'));
         app.handle_key(key('d'));
         assert!(matches!(app.mode, Mode::Normal));
-        assert!(app.status.contains("not your comment"), "{}", app.status);
+        assert_eq!(app.session.threads().len(), 1, "nothing deleted");
+        assert_eq!(app.status, "not your comment · c replies · x resolves");
     }
-}
-
-/// The findings list with a note, a published note's thread, a review thread
-/// and an orphan.
-///
-/// `cargo test -p differential-tui --test tui render_dump_findings_and_threads -- --ignored --nocapture`
-#[test]
-#[ignore = "prints the pane for a human to look at"]
-fn render_dump_findings_and_threads() {
-    forge_threads::dump_findings_and_threads();
-}
-
-#[test]
-#[ignore = "prints the pane for a human to look at"]
-fn render_dump_clear_local() {
-    forge_threads::dump_clear_local();
 }

@@ -370,3 +370,33 @@ pub fn grouped_with_cache(
     .unwrap();
     out.document.expect("grouped document")
 }
+
+// ------------------------------------------------------------------- forge
+
+use differential_engine::forge::{ForgeKind, RemoteComment, Request};
+
+/// A GitHub pull request `id` on `owner/repo`, with placeholder SHAs: the
+/// shape every forge test starts from.
+pub fn github_request(id: &str) -> Request {
+    Request {
+        kind: ForgeKind::Github,
+        project: "owner/repo".into(),
+        id: id.to_string(),
+        base_ref: "main".into(),
+        base_tip: "b".repeat(40),
+        head: "h".repeat(40),
+        merge_base: None,
+        url: format!("https://example.invalid/pull/{id}"),
+    }
+}
+
+/// One comment as the forge returns it, carrying no finding marker.
+pub fn remote_comment(id: &str, author: &str, created: &str, body: &str) -> RemoteComment {
+    RemoteComment {
+        id: id.to_string(),
+        author: author.to_string(),
+        created: created.to_string(),
+        body: body.to_string(),
+        finding: None,
+    }
+}
