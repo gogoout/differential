@@ -65,15 +65,12 @@ impl App {
                 // of the lines — up to the body, and the text area scrolls
                 // beyond that.
                 let width = panes.body.width * 3 / 5;
-                // Rows as wrapped, not lines as typed: a long line takes as many
-                // rows as the box is narrow. A floor, since word wrap can take
-                // one more; the text area scrolls beyond the body anyway.
-                let inner = usize::from(width.saturating_sub(2)).max(1);
-                let rows: usize = textarea
-                    .lines()
-                    .iter()
-                    .map(|l| UnicodeWidthStr::width(l.as_str()).div_ceil(inner).max(1))
-                    .sum();
+                // Rows as wrapped, not lines as typed; the text area scrolls
+                // beyond the body anyway.
+                let rows = wrapped_rows(
+                    textarea.lines().iter().map(String::as_str),
+                    usize::from(width.saturating_sub(2)),
+                );
                 let wanted = u16::try_from(rows).unwrap_or(u16::MAX).saturating_add(4);
                 let height = wanted.clamp(10, panes.body.height.max(10));
                 let area = centered_rect(panes.body, width, height);
@@ -108,27 +105,25 @@ impl App {
                 // As tall as its own table: a fixed height cut the footer off
                 // the first time the table grew a row.
                 let lines = help_lines(&self.theme);
-                let area = centered_rect(panes.body, 62, lines.len() as u16 + 2);
-                clear_to_ground(frame, &self.theme, area);
-                frame.render_widget(
-                    Paragraph::new(lines).block(pane(&self.theme, " help ".to_string(), true)),
-                    area,
+                let height = lines.len() as u16 + 2;
+                self.float(
+                    frame,
+                    panes.body,
+                    62,
+                    height,
+                    " help ",
+                    Paragraph::new(lines),
                 );
             }
             Mode::Notice { title, text } => {
                 // Wrapped, and as tall as it needs: an error is read once and
-                // in full, or it is not read at all.
+                // in full, or it is not read at all. The rows are counted with
+                // the same word wrap the paragraph draws with, so the box and
+                // its text cannot disagree; borders, two blank rows and the
+                // footer make five more.
                 let width = panes.body.width.saturating_sub(6).clamp(20, 100);
-                let inner = usize::from(width.saturating_sub(4)).max(1);
-                let rows: usize = text
-                    .lines()
-                    .map(|l| UnicodeWidthStr::width(l).div_ceil(inner).max(1))
-                    .sum();
-                let height = u16::try_from(rows + 4)
-                    .unwrap_or(u16::MAX)
-                    .min(panes.body.height);
-                let area = centered_rect(panes.body, width, height);
-                clear_to_ground(frame, &self.theme, area);
+                let rows = wrapped_rows(text.lines(), usize::from(width.saturating_sub(4)));
+                let height = u16::try_from(rows + 5).unwrap_or(u16::MAX);
                 let mut lines: Vec<Line> = vec![Line::from("")];
                 lines.extend(text.lines().map(|l| {
                     Line::from(Span::styled(
@@ -141,11 +136,13 @@ impl App {
                     " press any key to close",
                     Style::default().fg(self.theme.gutter_fg),
                 )));
-                frame.render_widget(
-                    Paragraph::new(lines)
-                        .wrap(ratatui::widgets::Wrap { trim: false })
-                        .block(pane(&self.theme, format!(" {title} "), true)),
-                    area,
+                self.float(
+                    frame,
+                    panes.body,
+                    width,
+                    height,
+                    &format!(" {title} "),
+                    Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
                 );
             }
             Mode::DeleteComment { own } => {
@@ -168,11 +165,14 @@ impl App {
                     ]),
                 ];
                 let width = panes.body.width.saturating_sub(6).min(80);
-                let area = centered_rect(panes.body, width, lines.len() as u16 + 2);
-                clear_to_ground(frame, &self.theme, area);
-                frame.render_widget(
-                    Paragraph::new(lines).block(pane(&self.theme, " delete ".to_string(), true)),
-                    area,
+                let height = lines.len() as u16 + 2;
+                self.float(
+                    frame,
+                    panes.body,
+                    width,
+                    height,
+                    " delete ",
+                    Paragraph::new(lines),
                 );
             }
             Mode::Publish { plan } => {
@@ -186,10 +186,7 @@ impl App {
                 let mut lines = vec![Line::from("")];
                 let mut what = Vec::new();
                 if comments > 0 {
-                    what.push(format!(
-                        "{comments} new comment{}",
-                        if comments == 1 { "" } else { "s" }
-                    ));
+                    what.push(format!("{comments} new comment{}", plural(comments)));
                 }
                 if replies > 0 {
                     what.push(format!(
@@ -230,12 +227,14 @@ impl App {
                     Span::styled(" publishes  ·  any other key keeps them local", dim),
                 ]));
                 let width = panes.body.width.saturating_sub(6).min(90);
-                let height = (lines.len() as u16 + 2).min(panes.body.height);
-                let area = centered_rect(panes.body, width, height);
-                clear_to_ground(frame, &self.theme, area);
-                frame.render_widget(
-                    Paragraph::new(lines).block(pane(&self.theme, " publish ".to_string(), true)),
-                    area,
+                let height = lines.len() as u16 + 2;
+                self.float(
+                    frame,
+                    panes.body,
+                    width,
+                    height,
+                    " publish ",
+                    Paragraph::new(lines),
                 );
             }
             Mode::Findings {
@@ -247,8 +246,6 @@ impl App {
                 let orphans = entries.iter().filter(|e| e.orphaned).count();
                 let threads = entries.iter().filter(|e| e.thread).count();
                 let notes = entries.len() - threads;
-                // The rules between the sections are drawn, not stored, so
-                // they cost a row on screen and nothing in the model.
                 let rules = section_rules(entries);
                 let body_rows = panes.body.height as usize;
                 let height = (entries.len() + rules.len() + 4).min(body_rows) as u16;
@@ -348,12 +345,7 @@ impl App {
                 let local = entries.iter().filter(|e| !e.thread && !e.published).count();
                 // The same number the status after `y` reports: every record on
                 // the request, whether it is listed as a note or as its thread.
-                let kept = self
-                    .session
-                    .findings()
-                    .iter()
-                    .filter(|f| f.upstream.is_some())
-                    .count();
+                let kept = self.published_count();
                 let footer = if *confirming {
                     Line::from(Span::styled(
                         match (local, kept) {
@@ -971,10 +963,7 @@ impl App {
                     MapRow::Folded { name, files, .. } => Line::from(vec![
                         lead,
                         Span::styled(format!("▸ {name}/"), dim),
-                        Span::styled(
-                            format!("  {files} file{}", if *files == 1 { "" } else { "s" }),
-                            dim,
-                        ),
+                        Span::styled(format!("  {files} file{}", plural(*files)), dim),
                     ]),
                     MapRow::More { files, .. } => {
                         Line::from(vec![lead, Span::styled(format!("… {files} more"), dim)])
@@ -1184,6 +1173,26 @@ impl App {
             }
         }
         out
+    }
+
+    /// One float over the body: cleared to the theme's ground, framed as a
+    /// pane with `title`, sized as asked and clamped to the body. Every modal
+    /// but the composer and the two lists draws through here.
+    fn float(
+        &self,
+        frame: &mut Frame,
+        body: Rect,
+        width: u16,
+        height: u16,
+        title: &str,
+        paragraph: Paragraph,
+    ) {
+        let area = centered_rect(body, width, height);
+        clear_to_ground(frame, &self.theme, area);
+        frame.render_widget(
+            paragraph.block(pane(&self.theme, title.to_string(), true)),
+            area,
+        );
     }
 
     pub(super) fn draw_diff(&self, frame: &mut Frame, area: Rect) {
@@ -1425,7 +1434,7 @@ impl App {
                 pill(
                     vec![(
                         self.theme.header_fg,
-                        format!("selecting {n} line{}", if n == 1 { "" } else { "s" }),
+                        format!("selecting {n} line{}", plural(n)),
                     )],
                     fill,
                 )
@@ -1458,7 +1467,7 @@ impl App {
         left.extend(tally(
             open > 0,
             self.theme.finding_fg,
-            format!("{open} finding{}", if open == 1 { "" } else { "s" }),
+            format!("{open} finding{}", plural(open)),
         ));
         // The forge's threads are a fact about the request, worn the same way
         // — and only on a review that is of a request, since a range has none.
@@ -1468,7 +1477,7 @@ impl App {
             left.extend(tally(
                 threads > 0,
                 self.theme.header_fg,
-                format!("{threads} thread{}", if threads == 1 { "" } else { "s" }),
+                format!("{threads} thread{}", plural(threads)),
             ));
             // A call is out. The pill IS the state, as `selecting` is: it
             // appears while the answer is awaited and goes when it lands.
@@ -1984,6 +1993,14 @@ pub(super) fn pane(theme: &Theme, title: String, focused: bool) -> Block<'static
             title,
             Style::default().fg(ink).add_modifier(Modifier::BOLD),
         ))
+}
+
+/// Rows `lines` take when word-wrapped inside `inner` columns, one at least
+/// per line. The same wrap the paragraphs draw with, so a box sized by it
+/// holds its text.
+fn wrapped_rows<'a>(lines: impl Iterator<Item = &'a str>, inner: usize) -> usize {
+    let inner = inner.max(1);
+    lines.map(|l| textwrap::wrap(l, inner).len().max(1)).sum()
 }
 
 pub(super) fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {

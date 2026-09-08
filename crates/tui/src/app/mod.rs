@@ -550,9 +550,17 @@ impl App {
 
 mod draw;
 mod findings;
-pub mod forge;
+mod forge;
 mod keys;
 mod state;
 mod text;
 
 pub use forge::ForgeLink;
+
+/// What the footer says on a key aimed at someone else's comment.
+pub(super) const NOT_YOURS: &str = "not your comment · c replies · x resolves";
+
+/// The `s` a count takes, or not.
+pub(super) fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}

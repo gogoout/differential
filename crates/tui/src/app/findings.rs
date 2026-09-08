@@ -175,6 +175,15 @@ impl App {
         }
     }
 
+    /// Records on the request: what `D` keeps, and what its prompt says stays.
+    pub(super) fn published_count(&self) -> usize {
+        self.session
+            .findings()
+            .iter()
+            .filter(|f| f.upstream.is_some())
+            .count()
+    }
+
     pub(super) fn rewrite_finding(&mut self, id: &str, body: String) {
         // Published: the forge holds the comment, so it is rewritten there
         // first and the record follows its answer.
@@ -403,20 +412,15 @@ impl App {
     }
 
     pub(super) fn clear_findings(&mut self) {
-        let published = self
-            .session
-            .findings()
-            .iter()
-            .filter(|f| f.upstream.is_some())
-            .count();
+        let published = self.published_count();
         match self.session.clear_findings() {
             Ok(n) if published > 0 => {
                 self.status = format!(
                     "{n} note{} deleted · {published} on the request kept, dd deletes one there",
-                    if n == 1 { "" } else { "s" }
+                    plural(n)
                 )
             }
-            Ok(n) => self.status = format!("{n} note{} deleted", if n == 1 { "" } else { "s" }),
+            Ok(n) => self.status = format!("{n} note{} deleted", plural(n)),
             Err(e) => self.status = format!("save failed: {e:#}"),
         }
         self.rebuild_rows();
@@ -460,7 +464,7 @@ impl App {
             self.rows.get(self.cursor).map(|r| &r.kind),
             Some(RowKind::Thread { .. })
         ) {
-            self.status = "not your comment · c replies · x resolves".into();
+            self.status = NOT_YOURS.into();
             return;
         }
         if let Some(RowKind::Finding(id, _)) = self.rows.get(self.cursor).map(|r| r.kind.clone()) {

@@ -1075,12 +1075,10 @@ fn hunk_header_rows(ctx: &RowsContext, hi: usize, foreign: bool, rows: &mut Vec<
 /// line, one step for a reply drafted under a forge thread, where it takes
 /// the place a reply will have once it is published.
 fn finding_rows(theme: &Theme, f: &Finding, hunk: usize, indent: usize) -> Vec<Row> {
-    let rail = Style::default().fg(theme.gutter_fg);
     let prose = Style::default()
         .fg(theme.hint_fg)
         .add_modifier(Modifier::ITALIC);
     let moved = if f.moved { " (moved)" } else { "" };
-    let pad = " ".repeat(indent);
     let mut lines: Vec<String> = f.body.lines().map(str::to_string).collect();
     if lines.is_empty() {
         lines.push(String::new());
@@ -1097,10 +1095,7 @@ fn finding_rows(theme: &Theme, f: &Finding, hunk: usize, indent: usize) -> Vec<R
             };
             Row::full(
                 RowKind::Finding(f.id.clone(), hunk),
-                Line::from(vec![
-                    Span::styled(format!("  {RAIL} {pad}"), rail),
-                    Span::styled(text, prose),
-                ]),
+                Line::from(vec![rail(theme, indent), Span::styled(text, prose)]),
             )
         })
         .collect()
@@ -1108,6 +1103,14 @@ fn finding_rows(theme: &Theme, f: &Finding, hunk: usize, indent: usize) -> Vec<R
 
 /// Columns a reply sits inside its thread's rail.
 const REPLY_INDENT: usize = 2;
+
+/// The rail a note or a thread's line sits behind, and the indent inside it.
+fn rail(theme: &Theme, indent: usize) -> Span<'static> {
+    Span::styled(
+        format!("  {RAIL} {}", " ".repeat(indent)),
+        Style::default().fg(theme.gutter_fg),
+    )
+}
 
 /// One forge review thread, as the rows that show it (ADR 0029).
 ///
@@ -1120,7 +1123,6 @@ const REPLY_INDENT: usize = 2;
 /// Every row is a `Thread` row carrying the thread's id, so `c` replies and
 /// `x` resolves from any line of it.
 fn thread_rows(theme: &Theme, t: &RemoteThread, hunk: usize) -> Vec<Row> {
-    let rail = Style::default().fg(theme.gutter_fg);
     let (meta, prose) = if t.resolved {
         let dim = Style::default().fg(theme.noise_fg);
         (dim, dim)
@@ -1132,7 +1134,12 @@ fn thread_rows(theme: &Theme, t: &RemoteThread, hunk: usize) -> Vec<Row> {
     };
     let mut rows = Vec::new();
     for (i, c) in t.comments.iter().enumerate() {
-        let pad = " ".repeat(if i == 0 { 0 } else { REPLY_INDENT });
+        let indent = if i == 0 { 0 } else { REPLY_INDENT };
+        let kind = RowKind::Thread {
+            thread: t.id.clone(),
+            comment: c.id.clone(),
+            hunk,
+        };
         let mut head = format!("{} · {}", c.author, comment_date(&c.created));
         if i == 0 {
             if t.resolved {
@@ -1143,13 +1150,9 @@ fn thread_rows(theme: &Theme, t: &RemoteThread, hunk: usize) -> Vec<Row> {
             }
         }
         rows.push(Row::full(
-            RowKind::Thread {
-                thread: t.id.clone(),
-                comment: c.id.clone(),
-                hunk,
-            },
+            kind.clone(),
             Line::from(vec![
-                Span::styled(format!("  {RAIL} {pad}"), rail),
+                rail(theme, indent),
                 Span::styled(head, meta.add_modifier(Modifier::BOLD)),
             ]),
         ));
@@ -1159,13 +1162,9 @@ fn thread_rows(theme: &Theme, t: &RemoteThread, hunk: usize) -> Vec<Row> {
         }
         for text in lines {
             rows.push(Row::full(
-                RowKind::Thread {
-                    thread: t.id.clone(),
-                    comment: c.id.clone(),
-                    hunk,
-                },
+                kind.clone(),
                 Line::from(vec![
-                    Span::styled(format!("  {RAIL} {pad}"), rail),
+                    rail(theme, indent),
                     Span::styled(text.to_string(), prose),
                 ]),
             ));
@@ -1217,7 +1216,7 @@ fn place_notes(ctx: &RowsContext, rows: &mut Vec<Row>) {
             None => true,
         })
         .collect();
-    let mut left: Vec<&RemoteThread> = threads.clone();
+    let mut left = threads;
     if left.is_empty() && loose.is_empty() {
         return;
     }

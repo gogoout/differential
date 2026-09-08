@@ -123,10 +123,6 @@ impl App {
                 // be the thing that empties the store.
                 if *confirming {
                     *confirming = false;
-                    // A bare `y`, like every other single-character key here.
-                    // Some terminals report ctrl-y as `Char('y')` with a
-                    // modifier, and the one irreversible action in this
-                    // reviewer should not answer to a chord nobody aimed.
                     if is_yes(key) {
                         self.clear_findings();
                     } else {
@@ -154,13 +150,12 @@ impl App {
                     }
                     (KeyCode::Char('d'), KeyModifiers::NONE) => {
                         if pending_d {
-                            let (id, thread, published) = (
-                                entries[*selected].id.clone(),
-                                entries[*selected].thread,
-                                entries[*selected].published,
-                            );
-                            // A comment of the reader's is theirs to delete,
-                            // on the forge; anyone else's is not.
+                            let (id, thread, published) = {
+                                let e = &entries[*selected];
+                                (e.id.clone(), e.thread, e.published)
+                            };
+                            // Whose the comment is, the session says; see
+                            // `delete_finding_at_cursor` for the same rule.
                             let own = if thread {
                                 self.session.own_root(&id)
                             } else if published {
@@ -170,10 +165,7 @@ impl App {
                             };
                             match (own, thread) {
                                 (Some(own), _) => self.mode = Mode::DeleteComment { own },
-                                (None, true) => {
-                                    self.status =
-                                        "not your comment · c replies · x resolves".into();
-                                }
+                                (None, true) => self.status = NOT_YOURS.into(),
                                 (None, false) => self.delete_finding(&id),
                             }
                         } else {
@@ -215,9 +207,11 @@ impl App {
                 }
                 return Vec::new();
             }
-            Mode::DeleteComment { own } => {
-                let own = own.clone();
-                self.mode = Mode::Normal;
+            Mode::DeleteComment { .. } => {
+                let Mode::DeleteComment { own } = std::mem::replace(&mut self.mode, Mode::Normal)
+                else {
+                    unreachable!("matched above");
+                };
                 if is_yes(key) {
                     self.start_delete_comment(own);
                 } else {
@@ -246,13 +240,6 @@ impl App {
                 own,
                 editor: textarea,
             } => {
-                let (hunk, lines, rewriting, reply_to, own) = (
-                    *hunk,
-                    lines.clone(),
-                    rewriting.clone(),
-                    reply_to.clone(),
-                    own.clone(),
-                );
                 match (key.code, key.modifiers) {
                     (KeyCode::Esc, _) => {
                         self.mode = Mode::Normal;
@@ -293,6 +280,15 @@ impl App {
                     }
                     (KeyCode::Enter, _) | (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
                         let body = textarea.lines().join("\n").trim().to_string();
+                        // Read out before the mode is dropped; only the save
+                        // needs them, so only the save pays for the clones.
+                        let (hunk, lines, rewriting, reply_to, own) = (
+                            *hunk,
+                            lines.clone(),
+                            rewriting.clone(),
+                            reply_to.clone(),
+                            own.clone(),
+                        );
                         self.mode = Mode::Normal;
                         // A comment on the forge: the text goes there first, and
                         // emptying the box leaves it as it was, as with a note.
@@ -463,48 +459,44 @@ impl App {
             (KeyCode::Esc, _) if self.visual.is_some() => {
                 self.visual = None;
             }
-            // On a comment of the reader's, `c` rewrites it: the box opens
-            // with its text, and saving sends the new text to the forge.
-            // A published note whose twin is not fetched yet is the same case
-            // from its own row: the comment is on the forge either way.
-            (KeyCode::Char('c'), KeyModifiers::NONE) if self.own_comment_at_cursor().is_some() => {
-                let own = self.own_comment_at_cursor().expect("guarded");
-                let hunk = self.current_hunk().unwrap_or(0);
-                let ta = self.composer(&own.body, format!(" {} · on the request ", own.at));
-                self.visual = None;
-                self.mode = Mode::Editing {
-                    hunk,
-                    lines: None,
-                    rewriting: None,
-                    reply_to: None,
-                    own: Some(own),
-                    editor: ta,
-                };
-            }
-            // On a forge thread, `c` answers it: the composer opens as a reply,
-            // and what it saves is a finding carrying the thread's id until a
-            // publish sends it (ADR 0029).
-            (KeyCode::Char('c'), KeyModifiers::NONE) if self.thread_at_cursor().is_some() => {
-                let t = self.thread_at_cursor().expect("guarded");
-                let (id, author, path) = (
-                    t.id.clone(),
-                    t.root().map(|c| c.author.clone()).unwrap_or_default(),
-                    t.path.clone(),
-                );
-                let hunk = self.current_hunk().unwrap_or(0);
-                let ta = self.composer("", format!(" {} · reply to {author} ", basename(&path)));
-                self.visual = None;
-                self.mode = Mode::Editing {
-                    hunk,
-                    lines: None,
-                    rewriting: None,
-                    reply_to: Some(id),
-                    own: None,
-                    editor: ta,
-                };
-            }
+            // `c` writes, and what it writes depends on the row. On a comment of
+            // the reader's it rewrites that comment: the box opens with its
+            // text, and saving sends the new text to the forge. On anyone
+            // else's thread it answers: the composer opens as a reply, and what
+            // it saves is a finding carrying the thread's id until a publish
+            // sends it (ADR 0029). Anywhere else it files a note.
             (KeyCode::Char('c'), KeyModifiers::NONE) => {
-                if let Some(h) = self.current_hunk() {
+                if let Some(own) = self.own_comment_at_cursor() {
+                    let hunk = self.current_hunk().unwrap_or(0);
+                    let ta = self.composer(&own.body, format!(" {} · on the request ", own.at));
+                    self.visual = None;
+                    self.mode = Mode::Editing {
+                        hunk,
+                        lines: None,
+                        rewriting: None,
+                        reply_to: None,
+                        own: Some(own),
+                        editor: ta,
+                    };
+                } else if let Some(t) = self.thread_at_cursor() {
+                    let (id, author, path) = (
+                        t.id.clone(),
+                        t.root().map(|c| c.author.clone()).unwrap_or_default(),
+                        t.path.clone(),
+                    );
+                    let hunk = self.current_hunk().unwrap_or(0);
+                    let ta =
+                        self.composer("", format!(" {} · reply to {author} ", basename(&path)));
+                    self.visual = None;
+                    self.mode = Mode::Editing {
+                        hunk,
+                        lines: None,
+                        rewriting: None,
+                        reply_to: Some(id),
+                        own: None,
+                        editor: ta,
+                    };
+                } else if let Some(h) = self.current_hunk() {
                     // A line already carrying a note opens THAT note. Two
                     // notes on one line would each be half the story, and
                     // there was no way to correct a typo but delete and

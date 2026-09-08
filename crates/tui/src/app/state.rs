@@ -518,7 +518,7 @@ impl App {
             .iter()
             .filter(|f| !self.session.is_twinned(f))
             .map(|f| FindingEntry {
-                at: format!("{}:{}", f.anchor.file, f.anchor.line_span()),
+                at: f.anchor.at(),
                 body: f.body.lines().next().unwrap_or("").to_string(),
                 orphaned: f.status == FindingStatus::Orphaned,
                 moved: f.moved,
@@ -530,7 +530,7 @@ impl App {
             .collect();
         entries.extend(self.session.threads().iter().map(|t| {
             let at = match &t.anchor {
-                Some(a) => format!("{}:{}", a.file, a.line_span()),
+                Some(a) => a.at(),
                 None => match t.line {
                     Some(l) => format!("{}:{l}", t.path),
                     None => t.path.clone(),

@@ -72,66 +72,86 @@ impl App {
         self.forge.is_some()
     }
 
-    /// Fetch the request's review threads on a worker thread.
-    pub fn start_fetch(&mut self) {
+    /// The forge and the request, when a call may go out: this review is of
+    /// a request, and no call is already in flight. Otherwise the footer says
+    /// which, and the caller returns. Every starter below opens with this.
+    fn ready(&mut self) -> Option<(Arc<dyn Forge>, Request)> {
         let Some(link) = &self.forge else {
             self.status = "this review is not of a pull request".into();
-            return;
+            return None;
         };
         if self.inflight.is_some() {
             self.status = "still syncing with the forge".into();
-            return;
+            return None;
         }
-        let (forge, req) = (Arc::clone(&link.forge), link.request.clone());
+        Some((Arc::clone(&link.forge), link.request.clone()))
+    }
+
+    /// Fetch the request's review threads on a worker thread.
+    pub fn start_fetch(&mut self) {
+        let Some((forge, req)) = self.ready() else {
+            return;
+        };
         // Who the reader is, asked once: the answer does not change while
         // the reviewer is open, and it is what makes a comment theirs.
         let ask_me = self.session.me().is_none();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+        self.inflight = Some(Inflight::Fetch(spawn(move || {
             let me = ask_me.then(|| forge.whoami().ok()).flatten();
-            let _ = tx.send((forge.threads(&req), me));
-        });
-        self.inflight = Some(Inflight::Fetch(rx));
+            (forge.threads(&req), me)
+        })));
     }
 
     /// Take a finished forge call, if one has finished. `true` when the
     /// screen changed.
     pub fn poll_forge(&mut self) -> bool {
-        let Some(inflight) = &self.inflight else {
+        // Taken, then put back if the answer is not in yet: owning the value
+        // lets each arm move its fields into the answer instead of cloning
+        // them to drop the original a line later.
+        let Some(inflight) = self.inflight.take() else {
             return false;
         };
-        let answer = match inflight {
+        let (answer, waiting) = match inflight {
             Inflight::Fetch(rx) => match rx.try_recv() {
-                Ok((result, me)) => Answer::Fetched(result, me),
-                Err(TryRecvError::Empty) => return false,
-                Err(TryRecvError::Disconnected) => Answer::Lost,
+                Ok((result, me)) => (Answer::Fetched(result, me), None),
+                Err(TryRecvError::Empty) => (Answer::Lost, Some(Inflight::Fetch(rx))),
+                Err(TryRecvError::Disconnected) => (Answer::Lost, None),
             },
             Inflight::Resolve {
                 thread,
                 resolved,
                 rx,
             } => match rx.try_recv() {
-                Ok(result) => Answer::Resolved(thread.clone(), *resolved, result),
-                Err(TryRecvError::Empty) => return false,
-                Err(TryRecvError::Disconnected) => Answer::Lost,
+                Ok(result) => (Answer::Resolved(thread, resolved, result), None),
+                Err(TryRecvError::Empty) => (
+                    Answer::Lost,
+                    Some(Inflight::Resolve {
+                        thread,
+                        resolved,
+                        rx,
+                    }),
+                ),
+                Err(TryRecvError::Disconnected) => (Answer::Lost, None),
             },
             Inflight::Publish { sent, rx } => match rx.try_recv() {
-                Ok(result) => Answer::Published(sent.clone(), result),
-                Err(TryRecvError::Empty) => return false,
-                Err(TryRecvError::Disconnected) => Answer::Lost,
+                Ok(result) => (Answer::Published(sent, result), None),
+                Err(TryRecvError::Empty) => (Answer::Lost, Some(Inflight::Publish { sent, rx })),
+                Err(TryRecvError::Disconnected) => (Answer::Lost, None),
             },
             Inflight::Edit { own, body, rx } => match rx.try_recv() {
-                Ok(result) => Answer::Edited(own.clone(), body.clone(), result),
-                Err(TryRecvError::Empty) => return false,
-                Err(TryRecvError::Disconnected) => Answer::Lost,
+                Ok(result) => (Answer::Edited(own, body, result), None),
+                Err(TryRecvError::Empty) => (Answer::Lost, Some(Inflight::Edit { own, body, rx })),
+                Err(TryRecvError::Disconnected) => (Answer::Lost, None),
             },
             Inflight::Delete { own, rx } => match rx.try_recv() {
-                Ok(result) => Answer::Deleted(own.clone(), result),
-                Err(TryRecvError::Empty) => return false,
-                Err(TryRecvError::Disconnected) => Answer::Lost,
+                Ok(result) => (Answer::Deleted(own, result), None),
+                Err(TryRecvError::Empty) => (Answer::Lost, Some(Inflight::Delete { own, rx })),
+                Err(TryRecvError::Disconnected) => (Answer::Lost, None),
             },
         };
-        self.inflight = None;
+        if let Some(still) = waiting {
+            self.inflight = Some(still);
+            return false;
+        }
         match answer {
             Answer::Fetched(Ok(threads), me) => {
                 if let Some(me) = me {
@@ -269,16 +289,10 @@ impl App {
 
     /// `P`: show what would go and what would stay, and wait for `y`.
     pub(super) fn offer_publish(&mut self) {
-        if self.forge.is_none() {
-            self.status = "this review is not of a pull request".into();
+        let Some((_, req)) = self.ready() else {
             return;
-        }
-        if self.inflight.is_some() {
-            self.status = "still syncing with the forge".into();
-            return;
-        }
-        let kind = self.forge.as_ref().expect("checked above").request.kind;
-        let plan = self.session.publish_plan(kind);
+        };
+        let plan = self.session.publish_plan(req.kind);
         if plan.batch.is_empty() {
             self.status = match plan.excluded.len() {
                 0 => "nothing to publish: every open finding is on the request".into(),
@@ -294,10 +308,9 @@ impl App {
 
     /// `y` in the publish modal: send the batch on a worker thread.
     pub(super) fn start_publish(&mut self, plan: forge::PublishPlan) {
-        let Some(link) = &self.forge else {
+        let Some((forge, req)) = self.ready() else {
             return;
         };
-        let (forge, req) = (Arc::clone(&link.forge), link.request.clone());
         let head = self.session.doc().source.head.clone();
         let sent: Vec<String> = plan
             .batch
@@ -307,10 +320,7 @@ impl App {
             .chain(plan.batch.replies.iter().map(|r| r.finding.clone()))
             .collect();
         let n = sent.len();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(forge::publish(forge.as_ref(), &req, &head, &plan.batch));
-        });
+        let rx = spawn(move || forge::publish(forge.as_ref(), &req, &head, &plan.batch));
         self.inflight = Some(Inflight::Publish { sent, rx });
         self.status = format!("publishing {n} comment{}…", plural(n));
     }
@@ -354,44 +364,26 @@ impl App {
     /// its marker with the new body, so a comment healed by author carries
     /// one from here on.
     pub(super) fn start_edit_comment(&mut self, own: OwnComment, body: String) {
-        let Some(link) = &self.forge else {
-            self.status = "this review is not of a pull request".into();
+        let Some((forge, req)) = self.ready() else {
             return;
         };
-        if self.inflight.is_some() {
-            self.status = "still syncing with the forge".into();
-            return;
-        }
-        let (forge, req) = (Arc::clone(&link.forge), link.request.clone());
         let sent = match &own.finding {
             Some(id) => forge::with_marker(&body, id),
             None => body.clone(),
         };
         let (thread, comment) = (own.thread.clone(), own.comment.clone());
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(forge.edit_comment(&req, &thread, &comment, &sent));
-        });
+        let rx = spawn(move || forge.edit_comment(&req, &thread, &comment, &sent));
         self.inflight = Some(Inflight::Edit { own, body, rx });
         self.status = "rewriting the comment on the request…".into();
     }
 
     /// Delete a comment of the reader's: on the forge first.
     pub(super) fn start_delete_comment(&mut self, own: OwnComment) {
-        let Some(link) = &self.forge else {
-            self.status = "this review is not of a pull request".into();
+        let Some((forge, req)) = self.ready() else {
             return;
         };
-        if self.inflight.is_some() {
-            self.status = "still syncing with the forge".into();
-            return;
-        }
-        let (forge, req) = (Arc::clone(&link.forge), link.request.clone());
         let (thread, comment) = (own.thread.clone(), own.comment.clone());
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(forge.delete_comment(&req, &thread, &comment));
-        });
+        let rx = spawn(move || forge.delete_comment(&req, &thread, &comment));
         self.inflight = Some(Inflight::Delete { own, rx });
         self.status = "deleting the comment on the request…".into();
     }
@@ -404,20 +396,11 @@ impl App {
             return;
         };
         let (id, resolved) = (t.id.clone(), !t.resolved);
-        let Some(link) = &self.forge else {
-            self.status = "this review is not of a pull request".into();
+        let Some((forge, req)) = self.ready() else {
             return;
         };
-        if self.inflight.is_some() {
-            self.status = "still syncing with the forge".into();
-            return;
-        }
-        let (forge, req) = (Arc::clone(&link.forge), link.request.clone());
-        let (tx, rx) = std::sync::mpsc::channel();
         let thread = id.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(forge.set_resolved(&req, &thread, resolved));
-        });
+        let rx = spawn(move || forge.set_resolved(&req, &thread, resolved));
         self.inflight = Some(Inflight::Resolve {
             thread: id,
             resolved,
@@ -444,6 +427,12 @@ enum Answer {
     Lost,
 }
 
-fn plural(n: usize) -> &'static str {
-    if n == 1 { "" } else { "s" }
+/// Run one forge call on a worker thread and keep the receiving end. The
+/// loop asks `poll_forge` whether the answer has come.
+fn spawn<T: Send + 'static>(job: impl FnOnce() -> T + Send + 'static) -> Receiver<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(job());
+    });
+    rx
 }
