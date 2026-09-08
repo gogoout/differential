@@ -165,8 +165,8 @@ impl SymbolSource for AstTier2Symbols {
 fn walk(tree: &Tree, content: &[u8], out: &mut FileSymbols) {
     /// What a node inherits from the level above it.
     #[derive(Clone, Copy)]
-    struct Above {
-        parent_kind: &'static str,
+    struct Above<'tree> {
+        parent_kind: &'tree str,
         in_callee: bool,
         in_comment: bool,
         /// Inside a string, and no interpolation since — `"${resolve(id)}"`
