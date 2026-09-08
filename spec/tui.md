@@ -415,7 +415,10 @@ already selected is `enter`; a click on a row the cursor cannot land on — the 
 a blank — leaves the cursor where it was. The two floating overviews are maps, and a click
 on one does nothing. In the file-list and findings modals the wheel steps the list, a click
 selects an entry, a second click is `enter`, and a click outside the box closes it. Help and
-a notice close on a click. The composer and the two `y`-only questions ignore the mouse.
+a notice close on a click. **A modal's footer names its keys, and each is a button**: a click
+on `enter save`, `esc close`, `dd delete` or the `y` of a question presses that key, through
+the same handler a hand reaches — so in the composer and the two `y`-only questions the
+footer is the one thing the mouse can touch.
 
 One notch is one row because the reviewer **captures the mouse**. Without capture a terminal
 fakes the wheel as arrow keys on an alternate screen, usually three per notch, and one notch

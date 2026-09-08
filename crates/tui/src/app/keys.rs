@@ -9,8 +9,15 @@ use ratatui::layout::{Position, Rect};
 
 use crate::rows::RowKind;
 
-use super::draw::{file_list_modal_area, findings_modal_area};
-use super::text::{basename, file_list_rows, findings_entry_at_line, findings_rows, step_list};
+use super::draw::{
+    composer_area, composer_footer, delete_comment_area, delete_comment_footer,
+    file_list_modal_area, findings_footer, findings_modal_area, footer_row, publish_area,
+    publish_footer,
+};
+use super::text::{
+    Hint, basename, file_list_rows, findings_entry_at_line, findings_rows, hint_at, hints_width,
+    step_list,
+};
 use super::*;
 
 /// Columns one press of `h`/`l` moves the diff pane.
@@ -143,13 +150,20 @@ impl App {
         // answers "what did that just do", and this is the next thing done.
         self.status.clear();
         let panes = layout(self.viewport.area);
+        // A modal's footer names its keys, and each is a button: a click on
+        // one presses it. Looked for first, and over the model read-only, so
+        // the presses are in hand before any arm below borrows it to change.
+        if click && let Some(presses) = self.footer_presses_at(&panes, at) {
+            return self.press_each(presses);
+        }
         match &mut self.mode {
             Mode::Help | Mode::Notice { .. } => {
                 if click {
                     self.mode = Mode::Normal;
                 }
             }
-            // A question only `y` answers, and a box the caret owns.
+            // A box the caret owns, and two questions only `y` answers: their
+            // footers took the click above, and nothing else in them does.
             Mode::Editing { .. } | Mode::Publish { .. } | Mode::DeleteComment { .. } => {}
             Mode::FileList {
                 entries,
@@ -185,8 +199,10 @@ impl App {
                 scroll,
                 confirming,
             } => {
-                // The wheel is not an answer; a click is `n`, as any key but
-                // `y` is.
+                let rules = section_rules(entries);
+                let area = findings_modal_area(panes.body, entries.len(), rules.len());
+                // While `D` waits for its answer the wheel is not one, and a
+                // click off the footer is `n`, as any key but `y` is.
                 if *confirming {
                     if click {
                         *confirming = false;
@@ -194,7 +210,6 @@ impl App {
                     }
                     return Vec::new();
                 }
-                let rules = section_rules(entries);
                 if step != 0 {
                     let rows = findings_rows(entries.len(), rules.len(), self.viewport.body_rows);
                     step_list(selected, scroll, entries.len(), rows, step > 0);
@@ -203,7 +218,6 @@ impl App {
                 if !click {
                     return Vec::new();
                 }
-                let area = findings_modal_area(panes.body, entries.len(), rules.len());
                 match content_line(area, at) {
                     None => self.mode = Mode::Normal,
                     Some(line) => {
@@ -275,6 +289,50 @@ impl App {
             }
         }
         Vec::new()
+    }
+
+    /// The keys a click at `at` presses on the open modal's footer, if it has
+    /// one and the click is on a button of it.
+    fn footer_presses_at(&self, panes: &Panes, at: Position) -> Option<Vec<KeyEvent>> {
+        match &self.mode {
+            Mode::Editing { editor, .. } => {
+                let row = footer_row(composer_area(panes.body, editor));
+                footer_presses(&composer_footer(), row, true, at)
+            }
+            // The `y` the footer shows is a `y` when clicked, and the clause
+            // about every other key is one of those.
+            Mode::Publish { plan } => {
+                let lines = self.publish_lines(plan).len();
+                let area = publish_area(panes.body, lines);
+                float_footer_presses(&publish_footer(), area, lines, at)
+            }
+            Mode::DeleteComment { own } => {
+                let lines = self.delete_comment_lines(own).len();
+                let area = delete_comment_area(panes.body, lines);
+                float_footer_presses(&delete_comment_footer(), area, lines, at)
+            }
+            Mode::Findings {
+                entries,
+                confirming,
+                ..
+            } => {
+                let rules = section_rules(entries).len();
+                let area = findings_modal_area(panes.body, entries.len(), rules);
+                let local = entries.iter().filter(|e| !e.thread && !e.published).count();
+                let hints = findings_footer(*confirming, local, self.published_count());
+                footer_presses(&hints, footer_row(area), false, at)
+            }
+            _ => None,
+        }
+    }
+
+    /// A click on a footer hint presses the keys it names, one after another
+    /// — `dd` is two — through the same handler a hand would reach.
+    fn press_each(&mut self, presses: Vec<KeyEvent>) -> Vec<Effect> {
+        presses
+            .into_iter()
+            .flat_map(|k| self.handle_key(k))
+            .collect()
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Vec<Effect> {
@@ -769,4 +827,41 @@ fn content_line(area: Rect, at: Position) -> Option<usize> {
         height: area.height.saturating_sub(2),
     };
     inner.contains(at).then(|| usize::from(at.y - inner.y))
+}
+
+/// The presses a click at `at` on a footer makes, or `None` off the footer
+/// or on words that only read. `row` is where the footer is drawn; a centred
+/// footer starts where ratatui's centre alignment starts it.
+fn footer_presses(
+    hints: &[Hint],
+    row: Rect,
+    centered: bool,
+    at: Position,
+) -> Option<Vec<KeyEvent>> {
+    if !row.contains(at) {
+        return None;
+    }
+    let x0 = if centered {
+        let slack = usize::from(row.width).saturating_sub(hints_width(hints));
+        row.x + u16::try_from(slack / 2).unwrap_or(0)
+    } else {
+        row.x
+    };
+    hint_at(hints, x0, at.x)
+        .filter(|h| !h.presses.is_empty())
+        .map(|h| h.presses.clone())
+}
+
+/// The same, for a float whose footer is the last of its `lines` — which a
+/// box clamped to the body may have cut off, in which case nothing is there
+/// to click.
+fn float_footer_presses(
+    hints: &[Hint],
+    area: Rect,
+    lines: usize,
+    at: Position,
+) -> Option<Vec<KeyEvent>> {
+    let fits = usize::from(area.height) >= lines + 2;
+    fits.then(|| footer_presses(hints, footer_row(area), false, at))
+        .flatten()
 }

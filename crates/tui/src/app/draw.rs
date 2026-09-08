@@ -18,10 +18,11 @@ use crate::theme::Theme;
 use crate::vendor::text_utils::{drop_columns, slice_pairs, truncate_or_pad_spans, wrap_pairs};
 
 use super::text::{
-    basename, counts_columns, elide_head, file_list_rows, findings_rows, pad_to_width,
+    Hint, Ink, basename, counts_columns, elide_head, file_list_rows, findings_rows, pad_to_width,
     truncate_width,
 };
 use super::*;
+use crossterm::event::KeyCode;
 
 impl App {
     // ------------------------------------------------------------- drawing
@@ -59,46 +60,15 @@ impl App {
             Mode::Editing {
                 editor: textarea, ..
             } => {
-                // A float over the diff, not a strip pinned to the bottom: a
-                // finding is about the lines you can still see around it. It
-                // grows with the text — borders, footer and a spare row on top
-                // of the lines — up to the body, and the text area scrolls
-                // beyond that.
-                let width = panes.body.width * 3 / 5;
-                // Rows as wrapped, not lines as typed; the text area scrolls
-                // beyond the body anyway.
-                let rows = wrapped_rows(
-                    textarea.lines().iter().map(String::as_str),
-                    usize::from(width.saturating_sub(2)),
-                );
-                let wanted = u16::try_from(rows).unwrap_or(u16::MAX).saturating_add(4);
-                let height = wanted.clamp(10, panes.body.height.max(10));
-                let area = centered_rect(panes.body, width, height);
+                let area = composer_area(panes.body, textarea);
                 clear_to_ground(frame, &self.theme, area);
                 frame.render_widget(&**textarea, area);
                 // The keys go INSIDE the box, on its last row, where a footer
                 // belongs — the title says what you are annotating.
-                let footer = Rect {
-                    x: area.x + 1,
-                    y: area.y + area.height.saturating_sub(2),
-                    width: area.width.saturating_sub(2),
-                    height: 1,
-                };
                 frame.render_widget(
-                    Paragraph::new(Line::from(vec![
-                        Span::styled("  enter ", Style::default().fg(self.theme.header_fg)),
-                        Span::styled("save", Style::default().fg(self.theme.context_fg)),
-                        Span::styled("  │  ", Style::default().fg(self.theme.gutter_fg)),
-                        Span::styled("shift+enter ", Style::default().fg(self.theme.header_fg)),
-                        Span::styled("or", Style::default().fg(self.theme.context_fg)),
-                        Span::styled(" \\↵ ", Style::default().fg(self.theme.header_fg)),
-                        Span::styled("newline", Style::default().fg(self.theme.context_fg)),
-                        Span::styled("  │  ", Style::default().fg(self.theme.gutter_fg)),
-                        Span::styled("esc ", Style::default().fg(self.theme.header_fg)),
-                        Span::styled("cancel", Style::default().fg(self.theme.context_fg)),
-                    ]))
-                    .alignment(ratatui::layout::Alignment::Center),
-                    footer,
+                    footer_line(&self.theme, &composer_footer())
+                        .alignment(ratatui::layout::Alignment::Center),
+                    footer_row(area),
                 );
             }
             Mode::Help => {
@@ -106,14 +76,8 @@ impl App {
                 // the first time the table grew a row.
                 let lines = help_lines(&self.theme);
                 let height = lines.len() as u16 + 2;
-                self.float(
-                    frame,
-                    panes.body,
-                    62,
-                    height,
-                    " help ",
-                    Paragraph::new(lines),
-                );
+                let area = centered_rect(panes.body, 62, height);
+                self.float(frame, area, " help ", Paragraph::new(lines));
             }
             Mode::Notice { title, text } => {
                 // Wrapped, and as tall as it needs: an error is read once and
@@ -138,104 +102,20 @@ impl App {
                 )));
                 self.float(
                     frame,
-                    panes.body,
-                    width,
-                    height,
+                    centered_rect(panes.body, width, height),
                     &format!(" {title} "),
                     Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
                 );
             }
             Mode::DeleteComment { own } => {
-                let key = Style::default().fg(self.theme.header_fg);
-                let text = Style::default().fg(self.theme.context_fg);
-                let at = &own.at;
-                let lines = vec![
-                    Line::from(""),
-                    Line::from(Span::styled(
-                        format!("  delete your comment at {at} on the pull request?"),
-                        text,
-                    )),
-                    Line::from(""),
-                    Line::from(vec![
-                        Span::styled("  y", key),
-                        Span::styled(
-                            " deletes it there and here  ·  any other key keeps it",
-                            Style::default().fg(self.theme.gutter_fg),
-                        ),
-                    ]),
-                ];
-                let width = panes.body.width.saturating_sub(6).min(80);
-                let height = lines.len() as u16 + 2;
-                self.float(
-                    frame,
-                    panes.body,
-                    width,
-                    height,
-                    " delete ",
-                    Paragraph::new(lines),
-                );
+                let lines = self.delete_comment_lines(own);
+                let area = delete_comment_area(panes.body, lines.len());
+                self.float(frame, area, " delete ", Paragraph::new(lines));
             }
             Mode::Publish { plan } => {
-                // What leaves, what stays, and why — before anything leaves.
-                // The one outward act in this reviewer, so it reads its whole
-                // consequence back before asking (ADR 0029).
-                let key = Style::default().fg(self.theme.header_fg);
-                let text = Style::default().fg(self.theme.context_fg);
-                let dim = Style::default().fg(self.theme.gutter_fg);
-                let (comments, replies) = (plan.batch.comments.len(), plan.batch.replies.len());
-                let mut lines = vec![Line::from("")];
-                let mut what = Vec::new();
-                if comments > 0 {
-                    what.push(format!("{comments} new comment{}", plural(comments)));
-                }
-                if replies > 0 {
-                    what.push(format!(
-                        "{replies} repl{}",
-                        if replies == 1 { "y" } else { "ies" }
-                    ));
-                }
-                lines.push(Line::from(Span::styled(
-                    format!(
-                        "  {} go to the pull request as one review",
-                        what.join(" and ")
-                    ),
-                    text,
-                )));
-                if !plan.excluded.is_empty() {
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(Span::styled(
-                        format!("  {} stay local:", plan.excluded.len()),
-                        text,
-                    )));
-                    // The reason on its own line under the place: side by side
-                    // they overran the box on any path of ordinary length, and
-                    // a float clips rather than wraps.
-                    for ex in &plan.excluded {
-                        lines.push(Line::from(Span::styled(
-                            format!("    {}:{}", ex.file, ex.lines),
-                            key,
-                        )));
-                        lines.push(Line::from(Span::styled(
-                            format!("      {}", ex.reason),
-                            dim,
-                        )));
-                    }
-                }
-                lines.push(Line::from(""));
-                lines.push(Line::from(vec![
-                    Span::styled("  y", key),
-                    Span::styled(" publishes  ·  any other key keeps them local", dim),
-                ]));
-                let width = panes.body.width.saturating_sub(6).min(90);
-                let height = lines.len() as u16 + 2;
-                self.float(
-                    frame,
-                    panes.body,
-                    width,
-                    height,
-                    " publish ",
-                    Paragraph::new(lines),
-                );
+                let lines = self.publish_lines(plan);
+                let area = publish_area(panes.body, lines.len());
+                self.float(frame, area, " publish ", Paragraph::new(lines));
             }
             Mode::Findings {
                 entries,
@@ -337,44 +217,13 @@ impl App {
                 // The keys go in a footer inside the box, as the composer's
                 // do: the confirmation needs that row anyway, and a title
                 // carrying four keys is longer than the box.
-                let key = Style::default().fg(self.theme.header_fg);
-                let text = Style::default().fg(self.theme.context_fg);
                 // Counts what `y` would take: the local notes. A published
                 // note and a thread are listed here but are not up for this.
                 let local = entries.iter().filter(|e| !e.thread && !e.published).count();
                 // The same number the status after `y` reports: every record on
                 // the request, whether it is listed as a note or as its thread.
                 let kept = self.published_count();
-                let footer = if *confirming {
-                    Line::from(Span::styled(
-                        match (local, kept) {
-                            (1, 0) => "  delete this note?  y / n".to_string(),
-                            (n, 0) => format!("  delete all {n} notes?  y / n"),
-                            (1, k) => {
-                                format!("  delete this note? ({k} on the request stay)  y / n")
-                            }
-                            (n, k) => format!(
-                                "  delete all {n} local notes? ({k} on the request stay)  y / n"
-                            ),
-                        },
-                        Style::default()
-                            .fg(self.theme.finding_fg)
-                            .add_modifier(Modifier::BOLD),
-                    ))
-                } else {
-                    Line::from(vec![
-                        Span::styled("  enter ", key),
-                        Span::styled("jump", text),
-                        Span::styled("  ·  dd ", key),
-                        Span::styled("delete", text),
-                        Span::styled("  ·  D ", key),
-                        Span::styled("clear local", text),
-                        Span::styled("  ·  P ", key),
-                        Span::styled("publish", text),
-                        Span::styled("  ·  esc ", key),
-                        Span::styled("close", text),
-                    ])
-                };
+                let footer = footer_line(&self.theme, &findings_footer(*confirming, local, kept));
                 let mut title = format!(" findings · {notes} ");
                 if threads > 0 {
                     title.push_str(&format!("· threads · {threads} "));
@@ -387,15 +236,7 @@ impl App {
                     Paragraph::new(shown).block(pane(&self.theme, title, true)),
                     area,
                 );
-                frame.render_widget(
-                    Paragraph::new(footer),
-                    Rect {
-                        x: area.x + 1,
-                        y: area.y + area.height.saturating_sub(2),
-                        width: area.width.saturating_sub(2),
-                        height: 1,
-                    },
-                );
+                frame.render_widget(Paragraph::new(footer), footer_row(area));
             }
             Mode::FileList {
                 entries,
@@ -1180,19 +1021,82 @@ impl App {
         out
     }
 
-    /// One float over the body: cleared to the theme's ground, framed as a
-    /// pane with `title`, sized as asked and clamped to the body. Every modal
-    /// but the composer and the two lists draws through here.
-    fn float(
+    /// The publish modal's text: what leaves, what stays, and why — before
+    /// anything leaves. The one outward act in this reviewer, so it reads its
+    /// whole consequence back before asking (ADR 0029).
+    pub(super) fn publish_lines(
         &self,
-        frame: &mut Frame,
-        body: Rect,
-        width: u16,
-        height: u16,
-        title: &str,
-        paragraph: Paragraph,
-    ) {
-        let area = centered_rect(body, width, height);
+        plan: &differential_engine::forge::PublishPlan,
+    ) -> Vec<Line<'static>> {
+        let key = Style::default().fg(self.theme.header_fg);
+        let text = Style::default().fg(self.theme.context_fg);
+        let dim = Style::default().fg(self.theme.gutter_fg);
+        let (comments, replies) = (plan.batch.comments.len(), plan.batch.replies.len());
+        let mut lines = vec![Line::from("")];
+        let mut what = Vec::new();
+        if comments > 0 {
+            what.push(format!("{comments} new comment{}", plural(comments)));
+        }
+        if replies > 0 {
+            what.push(format!(
+                "{replies} repl{}",
+                if replies == 1 { "y" } else { "ies" }
+            ));
+        }
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  {} go to the pull request as one review",
+                what.join(" and ")
+            ),
+            text,
+        )));
+        if !plan.excluded.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!("  {} stay local:", plan.excluded.len()),
+                text,
+            )));
+            // The reason on its own line under the place: side by side
+            // they overran the box on any path of ordinary length, and
+            // a float clips rather than wraps.
+            for ex in &plan.excluded {
+                lines.push(Line::from(Span::styled(
+                    format!("    {}:{}", ex.file, ex.lines),
+                    key,
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!("      {}", ex.reason),
+                    dim,
+                )));
+            }
+        }
+        lines.push(Line::from(""));
+        lines.push(footer_line(&self.theme, &publish_footer()));
+        lines
+    }
+
+    /// The delete-comment modal's text.
+    pub(super) fn delete_comment_lines(
+        &self,
+        own: &differential_engine::forge::OwnComment,
+    ) -> Vec<Line<'static>> {
+        let text = Style::default().fg(self.theme.context_fg);
+        let at = &own.at;
+        vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("  delete your comment at {at} on the pull request?"),
+                text,
+            )),
+            Line::from(""),
+            footer_line(&self.theme, &delete_comment_footer()),
+        ]
+    }
+
+    /// One float over the body: cleared to the theme's ground and framed as a
+    /// pane with `title`, in the `area` its caller measured. Every modal but
+    /// the composer and the two lists draws through here.
+    fn float(&self, frame: &mut Frame, area: Rect, title: &str, paragraph: Paragraph) {
         clear_to_ground(frame, &self.theme, area);
         frame.render_widget(
             paragraph.block(pane(&self.theme, title.to_string(), true)),
@@ -2006,6 +1910,145 @@ pub(super) fn pane(theme: &Theme, title: String, focused: bool) -> Block<'static
 fn wrapped_rows<'a>(lines: impl Iterator<Item = &'a str>, inner: usize) -> usize {
     let inner = inner.max(1);
     lines.map(|l| textwrap::wrap(l, inner).len().max(1)).sum()
+}
+
+/// The composer's box: three fifths of the body wide, and as tall as its
+/// text — borders, footer and a spare row on top of the lines — up to the
+/// body, beyond which the text area scrolls. A float over the diff, not a
+/// strip pinned to the bottom: a finding is about the lines you can still see
+/// around it. Shared with the hit test.
+pub(super) fn composer_area(body: Rect, textarea: &TextArea<'_>) -> Rect {
+    let width = body.width * 3 / 5;
+    // Rows as wrapped, not lines as typed; the text area scrolls beyond the
+    // body anyway.
+    let rows = wrapped_rows(
+        textarea.lines().iter().map(String::as_str),
+        usize::from(width.saturating_sub(2)),
+    );
+    let wanted = u16::try_from(rows).unwrap_or(u16::MAX).saturating_add(4);
+    let height = wanted.clamp(10, body.height.max(10));
+    centered_rect(body, width, height)
+}
+
+/// The publish modal's box, around `lines` of text.
+pub(super) fn publish_area(body: Rect, lines: usize) -> Rect {
+    let width = body.width.saturating_sub(6).min(90);
+    centered_rect(body, width, lines as u16 + 2)
+}
+
+/// The delete-comment modal's box, around `lines` of text.
+pub(super) fn delete_comment_area(body: Rect, lines: usize) -> Rect {
+    let width = body.width.saturating_sub(6).min(80);
+    centered_rect(body, width, lines as u16 + 2)
+}
+
+/// A box's footer: its last content row, inside the border.
+pub(super) fn footer_row(area: Rect) -> Rect {
+    Rect {
+        x: area.x + 1,
+        y: area.y + area.height.saturating_sub(2),
+        width: area.width.saturating_sub(2),
+        height: 1,
+    }
+}
+
+/// The composer's keys. The newline hint reads and does nothing on a click:
+/// a caret is where a newline goes, and a click has none.
+pub(super) fn composer_footer() -> Vec<Hint> {
+    vec![
+        Hint::button("  enter ", "save", vec![Hint::press(KeyCode::Enter)]),
+        Hint::note("  │  ", Ink::Dim),
+        Hint {
+            pieces: vec![
+                ("shift+enter ".into(), Ink::Key),
+                ("or".into(), Ink::Text),
+                (" \\↵ ".into(), Ink::Key),
+                ("newline".into(), Ink::Text),
+            ],
+            presses: Vec::new(),
+        },
+        Hint::note("  │  ", Ink::Dim),
+        Hint::button("esc ", "cancel", vec![Hint::press(KeyCode::Esc)]),
+    ]
+}
+
+/// The findings modal's keys — or, while `D` waits for its answer, the
+/// question, with `y` and `n` the two things a click can say.
+pub(super) fn findings_footer(confirming: bool, local: usize, kept: usize) -> Vec<Hint> {
+    let press = |c: char| vec![Hint::press(KeyCode::Char(c))];
+    if confirming {
+        let question = match (local, kept) {
+            (1, 0) => "  delete this note?  ".to_string(),
+            (n, 0) => format!("  delete all {n} notes?  "),
+            (1, k) => format!("  delete this note? ({k} on the request stay)  "),
+            (n, k) => format!("  delete all {n} local notes? ({k} on the request stay)  "),
+        };
+        return vec![
+            Hint::note(&question, Ink::Warn),
+            Hint {
+                pieces: vec![("y".into(), Ink::Warn)],
+                presses: press('y'),
+            },
+            Hint::note(" / ", Ink::Warn),
+            Hint {
+                pieces: vec![("n".into(), Ink::Warn)],
+                presses: press('n'),
+            },
+        ];
+    }
+    vec![
+        Hint::button("  enter ", "jump", vec![Hint::press(KeyCode::Enter)]),
+        Hint::button(
+            "  ·  dd ",
+            "delete",
+            vec![Hint::press(KeyCode::Char('d')); 2],
+        ),
+        Hint::button("  ·  D ", "clear local", press('D')),
+        Hint::button("  ·  P ", "publish", press('P')),
+        Hint::button("  ·  esc ", "close", vec![Hint::press(KeyCode::Esc)]),
+    ]
+}
+
+/// A `y`-only question's footer: `y` does the thing, and a click on the
+/// clause about every other key is one of them.
+fn yes_or_keep_footer(does: &str, keeps: &str) -> Vec<Hint> {
+    vec![
+        Hint {
+            pieces: vec![("  y".into(), Ink::Key), (format!(" {does}"), Ink::Dim)],
+            presses: vec![Hint::press(KeyCode::Char('y'))],
+        },
+        Hint {
+            pieces: vec![(format!("  ·  any other key {keeps}"), Ink::Dim)],
+            presses: vec![Hint::press(KeyCode::Esc)],
+        },
+    ]
+}
+
+pub(super) fn publish_footer() -> Vec<Hint> {
+    yes_or_keep_footer("publishes", "keeps them local")
+}
+
+pub(super) fn delete_comment_footer() -> Vec<Hint> {
+    yes_or_keep_footer("deletes it there and here", "keeps it")
+}
+
+/// A footer as drawn: each piece in the palette's ink for it.
+pub(super) fn footer_line(theme: &Theme, hints: &[Hint]) -> Line<'static> {
+    let ink = |ink: Ink| match ink {
+        Ink::Key => Style::default().fg(theme.header_fg),
+        Ink::Text => Style::default().fg(theme.context_fg),
+        Ink::Dim => Style::default().fg(theme.gutter_fg),
+        Ink::Warn => Style::default()
+            .fg(theme.finding_fg)
+            .add_modifier(Modifier::BOLD),
+    };
+    Line::from(
+        hints
+            .iter()
+            .flat_map(|h| h.pieces.iter())
+            .map(|(text, i)| Span::styled(text.clone(), ink(*i)))
+            .collect::<Vec<_>>(),
+    )
 }
 
 /// The file-list modal's box: as tall as its entries and as wide as its

@@ -6306,6 +6306,36 @@ mod forge_threads {
     }
 
     #[test]
+    fn a_click_on_the_publish_footers_y_sends() {
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        sized(&mut app);
+        draft_two(&mut app);
+        app.handle_key(key('P'));
+        assert!(matches!(app.mode, Mode::Publish { .. }));
+        // Four lines — blank, the sentence, blank, the footer — make a six-row
+        // box, 90 wide, centred on the 39-row body: x 5, y 16. The footer is
+        // its last content row.
+        let footer = footer_y(16, 6);
+        let x0 = 6u16;
+
+        // A click in the box, off the footer, is nothing.
+        app.handle_mouse(click(x0 + 3, 17));
+        assert!(matches!(app.mode, Mode::Publish { .. }));
+
+        // `  ·  any other key keeps them local` starts after `  y publishes`.
+        app.handle_mouse(click(x0 + 13 + 5, footer));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.status, "nothing published");
+        assert!(fake.published.lock().unwrap().is_empty());
+
+        app.handle_key(key('P'));
+        app.handle_mouse(click(x0 + 2, footer));
+        assert!(app.syncing(), "the `y` sends");
+        settle(&mut app);
+        assert_eq!(fake.published.lock().unwrap().len(), 1);
+    }
+
+    #[test]
     fn p_shows_the_plan_and_only_y_sends_it() {
         let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
         draft_two(&mut app);
@@ -7457,4 +7487,111 @@ fn the_viewport_records_the_screen_the_panes_are_laid_out_on() {
     assert_eq!(panes.plan.width, 40);
     assert_eq!(panes.detail.x, 40);
     assert_eq!(panes.status.y, 39);
+}
+
+/// Where a box's footer row is drawn: one row inside its bottom border.
+fn footer_y(top: u16, height: u16) -> u16 {
+    top + height - 2
+}
+
+#[test]
+fn the_composer_footer_buttons_save_and_cancel() {
+    let (_r, mut app) = make_app();
+    sized(&mut app);
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(key('c'));
+    assert!(matches!(app.mode, Mode::Editing { .. }));
+    for ch in "off by one".chars() {
+        app.handle_key(key(ch));
+    }
+    // The box is three fifths of the body wide (60 of 100) and ten rows tall
+    // for a one-line note, centred on the 39-row body: x 20..80, y 14..24.
+    let (x, y, w, h) = (20u16, 14u16, 60u16, 10u16);
+    let footer = footer_y(y, h);
+    // Its footer is 57 columns, centred in the 58 inside the border, so it
+    // starts at x+1. `  enter save` is the first 12; `esc cancel` the last 10.
+    let x0 = x + 1;
+    let save = x0 + 3;
+    let cancel = x0 + 57 - 5;
+    assert!(cancel < x + w - 1);
+
+    // A click in the text does nothing; the caret owns the box.
+    app.handle_mouse(click(x + 10, y + 3));
+    assert!(matches!(app.mode, Mode::Editing { .. }));
+
+    app.handle_mouse(click(save, footer));
+    assert!(matches!(app.mode, Mode::Normal), "save closes the composer");
+    assert_eq!(app.session.findings().len(), 1);
+    assert_eq!(app.session.findings()[0].body, "off by one");
+
+    app.handle_key(key('c'));
+    for ch in "second thought".chars() {
+        app.handle_key(key(ch));
+    }
+    app.handle_mouse(click(cancel, footer));
+    assert!(
+        matches!(app.mode, Mode::Normal),
+        "cancel closes the composer"
+    );
+    assert_eq!(app.session.findings().len(), 1, "and keeps nothing");
+}
+
+#[test]
+fn the_findings_footer_buttons_jump_and_close() {
+    let (_r, mut app) = make_app();
+    sized(&mut app);
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(key('c'));
+    for ch in "off by one".chars() {
+        app.handle_key(key(ch));
+    }
+    app.handle_key(ctrl('s'));
+    app.handle_key(key('g'));
+    let top_row = app.cursor;
+
+    app.handle_key(key('F'));
+    assert!(matches!(app.mode, Mode::Findings { .. }));
+    // One entry, no rules: a five-row box, 74 wide, centred: x 13, y 17.
+    let (x, y, h) = (13u16, 17u16, 5u16);
+    let footer = footer_y(y, h);
+    let x0 = x + 1;
+    // `  enter jump` 12 · `  ·  dd delete` 14 · `  ·  D clear local` 18 ·
+    // `  ·  P publish` 14 · `  ·  esc close` 14.
+    let close = x0 + 12 + 14 + 18 + 14 + 6;
+    app.handle_mouse(click(close, footer));
+    assert!(matches!(app.mode, Mode::Normal), "esc close closes");
+
+    app.handle_key(key('F'));
+    app.handle_mouse(click(x0 + 4, footer));
+    assert!(matches!(app.mode, Mode::Normal), "enter jump closes");
+    assert!(
+        matches!(app.rows[app.cursor].kind, RowKind::Finding(_, _)),
+        "and lands on the note"
+    );
+    assert_ne!(app.cursor, top_row);
+
+    // `D` asks; the `n` in the question answers no.
+    app.handle_key(key('F'));
+    app.handle_mouse(click(x0 + 12 + 14 + 8, footer));
+    assert!(matches!(
+        app.mode,
+        Mode::Findings {
+            confirming: true,
+            ..
+        }
+    ));
+    // `  delete this note?  ` is 21 columns, then `y`, ` / `, `n`.
+    app.handle_mouse(click(x0 + 21 + 4, footer));
+    assert!(matches!(
+        app.mode,
+        Mode::Findings {
+            confirming: false,
+            ..
+        }
+    ));
+    assert_eq!(app.session.findings().len(), 1);
+    // And the `y` answers yes.
+    app.handle_mouse(click(x0 + 12 + 14 + 8, footer));
+    app.handle_mouse(click(x0 + 21, footer));
+    assert!(app.session.findings().is_empty());
 }
