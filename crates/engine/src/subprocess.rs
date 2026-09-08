@@ -46,11 +46,6 @@ pub enum Failure {
     Cancelled,
 }
 
-/// The argv as a reader debugs it.
-pub fn describe(argv: &[String]) -> String {
-    argv.join(" ")
-}
-
 pub fn run(spec: &Run<'_>) -> Result<Output, Failure> {
     let mut cmd = Command::new(&spec.argv[0]);
     if let Some(dir) = spec.working_dir {

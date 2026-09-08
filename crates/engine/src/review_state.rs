@@ -111,6 +111,11 @@ impl Anchor {
         .max(1)
     }
 
+    /// Where this is, as a reader writes it: `src/app.rs:47-52`.
+    pub fn at(&self) -> String {
+        format!("{}:{}", self.file, self.line_span())
+    }
+
     /// The lines this annotates, as a reader writes them: `47`, or `47-52`.
     ///
     /// One place decides it, because `end_line` is `0` on a record written

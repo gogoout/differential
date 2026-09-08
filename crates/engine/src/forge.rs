@@ -127,12 +127,10 @@ impl Request {
 pub struct RemoteComment {
     pub id: String,
     pub author: String,
-    /// As the forge gives it, ISO 8601. Displayed as an age, never parsed
+    /// As the forge gives it, ISO 8601. Shown as its date, never parsed
     /// for anything else.
     pub created: String,
     pub body: String,
-    #[serde(default)]
-    pub reply_to: Option<String>,
     /// The finding this comment was published from, when its body carried
     /// the marker `with_marker` writes. What makes a publish idempotent: a
     /// comment that says which finding it is can be matched without trusting
@@ -143,7 +141,7 @@ pub struct RemoteComment {
 
 /// The marker a published body ends with: an HTML comment, which neither
 /// forge renders, carrying the finding's id.
-pub fn marker(finding: &str) -> String {
+pub(crate) fn marker(finding: &str) -> String {
     format!("<!-- differential:finding {finding} -->")
 }
 
@@ -421,6 +419,16 @@ pub trait Forge: Send + Sync {
 
 // ------------------------------------------------------------------ placing
 
+/// One side of a hunk as `(first line, lines)`, in that side's numbering. The
+/// three places that need it used to spell it out, one `if` each.
+fn side_range(h: &schema::HunkEntry, old: bool) -> (u32, u32) {
+    if old {
+        (h.old_start.max(1), h.old_count)
+    } else {
+        (h.new_start.max(1), h.new_count)
+    }
+}
+
 /// Where a fetched thread lands in this plan.
 ///
 /// Three tries, cheapest and most certain first. A line the forge gave that a
@@ -437,21 +445,14 @@ pub fn place(doc: &schema::PlanDocument, view: &DiffView, thread: &mut RemoteThr
 
     if let Some(line) = thread.line {
         let start = thread.start_line.unwrap_or(line).min(line);
-        let side_range = |h: &schema::HunkEntry| -> (u32, u32) {
-            if old {
-                (h.old_start.max(1), h.old_count)
-            } else {
-                (h.new_start.max(1), h.new_count)
-            }
-        };
         // Exact: a hunk whose changed lines on this side hold the last line.
         let holds = |h: &&schema::HunkEntry| {
-            let (s, n) = side_range(h);
+            let (s, n) = side_range(h, old);
             n > 0 && line >= s && line < s.saturating_add(n)
         };
         // Otherwise the nearest hunk in the file on this side.
         let distance = |h: &schema::HunkEntry| -> u32 {
-            let (s, n) = side_range(h);
+            let (s, n) = side_range(h, old);
             let end = s.saturating_add(n.max(1)) - 1;
             if line < s {
                 s - line
@@ -475,7 +476,7 @@ pub fn place(doc: &schema::PlanDocument, view: &DiffView, thread: &mut RemoteThr
         let Some((hi, h)) = hit else {
             return;
         };
-        let (s, n) = side_range(h);
+        let (s, n) = side_range(h, old);
         let vh = &view.hunks[hi];
         let side_lines = if old { &vh.removed } else { &vh.added };
         let text_at = |l: u32| -> Option<String> {
@@ -523,12 +524,7 @@ pub fn place(doc: &schema::PlanDocument, view: &DiffView, thread: &mut RemoteThr
                 .or_else(|| at(&vh.removed).map(|p| ("old", p)))
         };
         if let Some((side, offset)) = found {
-            let s = if side == "old" {
-                h.old_start
-            } else {
-                h.new_start
-            }
-            .max(1);
+            let (s, _) = side_range(h, side == "old");
             let line = s + offset as u32;
             thread.anchor = Some(Anchor {
                 file: thread.path.clone(),
@@ -551,7 +547,7 @@ pub fn place(doc: &schema::PlanDocument, view: &DiffView, thread: &mut RemoteThr
 /// Lines of context a request diff shows around each hunk, on both forges'
 /// web diffs. A comment further out than this is refused by the forge, and on
 /// GitHub it fails the whole review.
-pub const REQUEST_CONTEXT: u32 = 3;
+const REQUEST_CONTEXT: u32 = 3;
 
 /// Which open findings a publish may send, and which it must leave.
 ///
@@ -593,7 +589,7 @@ pub fn publish_plan(
         {
             out.excluded.push(excluded(
                 f,
-                "outside the request's diff: more than 3 lines from a change",
+                &format!("outside the request's diff: more than {context} lines from a change"),
             ));
             continue;
         }
@@ -643,29 +639,15 @@ pub fn other_side_line(
     line: u32,
 ) -> Option<u32> {
     let old = side == "old";
-    let range = |h: &schema::HunkEntry| -> ((u32, u32), (u32, u32)) {
-        let mine = if old {
-            (h.old_start.max(1), h.old_count)
-        } else {
-            (h.new_start.max(1), h.new_count)
-        };
-        let other = if old {
-            (h.new_start.max(1), h.new_count)
-        } else {
-            (h.old_start.max(1), h.old_count)
-        };
-        (mine, other)
-    };
-    let hunks: Vec<&schema::HunkEntry> = doc.hunks.iter().filter(|h| h.file == file).collect();
-    if hunks.iter().any(|h| {
-        let ((s, n), _) = range(h);
+    let in_file = || doc.hunks.iter().filter(|h| h.file == file);
+    if in_file().any(|h| {
+        let (s, n) = side_range(h, old);
         n > 0 && line >= s && line < s.saturating_add(n)
     }) {
         return None;
     }
-    let shift = hunks
-        .iter()
-        .map(|h| range(h))
+    let shift = in_file()
+        .map(|h| (side_range(h, old), side_range(h, !old)))
         .filter(|((s, n), _)| s.saturating_add(*n) <= line)
         .max_by_key(|((s, _), _)| *s)
         .map(|((s, n), (os, on))| i64::from(os + on) - i64::from(s + n))
@@ -680,11 +662,7 @@ fn in_request_diff(doc: &schema::PlanDocument, a: &Anchor, context: u32) -> bool
     let first = a.line;
     let last = a.end_line.max(a.line);
     doc.hunks.iter().filter(|h| h.file == a.file).any(|h| {
-        let (s, n) = if old {
-            (h.old_start.max(1), h.old_count)
-        } else {
-            (h.new_start.max(1), h.new_count)
-        };
+        let (s, n) = side_range(h, old);
         let lo = s.saturating_sub(context);
         let hi = s
             .saturating_add(n)

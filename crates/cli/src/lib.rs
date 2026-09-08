@@ -515,6 +515,13 @@ fn publish(
         }
         Err(e) => return Err(e).with_context(|| format!("publishing to {}", req.url)),
     };
+    let sent: Vec<String> = plan
+        .batch
+        .comments
+        .iter()
+        .map(|c| c.finding.clone())
+        .chain(plan.batch.replies.iter().map(|r| r.finding.clone()))
+        .collect();
     let published = outcome.published;
     session.mark_published(&published)?;
     if let Some(e) = &outcome.failed {
@@ -526,20 +533,27 @@ fn publish(
     // refetch that fails is said, not fatal: the comments are already there.
     match outcome.threads {
         Ok(threads) => {
-            session.set_threads(threads)?;
+            let reconciled = session.set_threads(threads)?;
+            if reconciled > 0 {
+                println!("{reconciled} found already published by marker");
+            }
         }
         Err(e) => eprintln!("note: the threads could not be fetched back: {e}"),
     }
     for p in &published {
         let at = session
-            .findings()
-            .iter()
-            .find(|f| f.id == p.finding)
-            .map(|f| format!("{}:{}", f.anchor.file, f.anchor.line_span()))
+            .own_of_finding(&p.finding)
+            .map(|o| o.at)
             .unwrap_or_default();
         println!("published  {at}  {}", p.url.as_deref().unwrap_or(""));
     }
-    let unconfirmed = plan.batch.len().saturating_sub(published.len());
+    // Counted as the reviewer counts: this batch's findings that now have an
+    // address, whether the answer or the refetched markers gave it.
+    let landed = sent
+        .iter()
+        .filter(|id| session.own_of_finding(id).is_some())
+        .count();
+    let unconfirmed = sent.len().saturating_sub(landed);
     if unconfirmed > 0 {
         println!("{unconfirmed} not confirmed by the forge; run again to retry");
     }

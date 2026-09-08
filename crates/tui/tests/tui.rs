@@ -5831,7 +5831,6 @@ mod forge_threads {
                         author: "me".into(),
                         created: "2026-09-04T09:00:00Z".into(),
                         body,
-                        reply_to: t.comments.first().map(|c| c.id.clone()),
                         finding,
                     });
                 }
@@ -5917,7 +5916,6 @@ mod forge_threads {
                     author: "alice".into(),
                     created: "2026-09-03T20:53:12Z".into(),
                     body: "why three?".into(),
-                    reply_to: None,
                     finding: None,
                 },
                 RemoteComment {
@@ -5925,7 +5923,6 @@ mod forge_threads {
                     author: "bob".into(),
                     created: "2026-09-03T21:00:00Z".into(),
                     body: "it was two before".into(),
-                    reply_to: Some(root_comment.to_string()),
                     finding: None,
                 },
             ],
@@ -6880,7 +6877,6 @@ mod forge_threads {
                 author: "bob".into(),
                 created: "2026-09-08T09:00:00Z".into(),
                 body: "are you sure?".into(),
-                reply_to: Some(t.comments[0].id.clone()),
                 finding: None,
             });
         }

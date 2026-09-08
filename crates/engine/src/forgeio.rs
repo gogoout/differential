@@ -17,8 +17,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::forge::{
-    Batch, Forge, ForgeError, ForgeKind, NewComment, Published, RemoteComment, RemoteThread,
-    Request, Sent, marker, strip_marker,
+    Batch, Forge, ForgeError, ForgeKind, NewComment, NewReply, Published, RemoteComment,
+    RemoteThread, Request, Sent, marker, strip_marker,
 };
 use crate::subprocess;
 
@@ -29,7 +29,6 @@ use crate::subprocess;
 struct Tool {
     program: &'static str,
     working_dir: PathBuf,
-    timeout: Duration,
 }
 
 /// Long enough for a paginated read of a large request over a slow link;
@@ -41,7 +40,6 @@ impl Tool {
         Tool {
             program,
             working_dir: root.to_path_buf(),
-            timeout: TOOL_TIMEOUT,
         }
     }
 
@@ -51,12 +49,12 @@ impl Tool {
             .chain(args.iter().copied())
             .map(str::to_string)
             .collect();
-        let command = || subprocess::describe(&argv);
+        let command = || argv.join(" ");
         let out = subprocess::run(&subprocess::Run {
             argv: &argv,
             stdin,
             working_dir: Some(&self.working_dir),
-            timeout: self.timeout,
+            timeout: TOOL_TIMEOUT,
             cancel: None,
         })
         .map_err(|f| match f {
@@ -70,7 +68,7 @@ impl Tool {
             },
             subprocess::Failure::Timeout => ForgeError::Timeout {
                 command: command(),
-                timeout: self.timeout,
+                timeout: TOOL_TIMEOUT,
             },
             subprocess::Failure::Cancelled => ForgeError::Cancelled { command: command() },
         })?;
@@ -104,6 +102,12 @@ impl Tool {
             command: format!("{} {}", self.program, args.join(" ")),
             msg,
         }
+    }
+
+    /// `DELETE` at a path. Not read as JSON: a delete answers with no body.
+    fn delete_at(&self, path: &str) -> Result<(), ForgeError> {
+        self.run(&["api", "--method", "DELETE", path], None)
+            .map(|_| ())
     }
 
     /// One REST call through `<tool> api` with the body as the tool's own
@@ -184,6 +188,35 @@ fn str_of<'a>(v: &'a Value, key: &str) -> Result<&'a str, ForgeError> {
 
 fn u32_at(v: &Value, pointer: &str) -> Option<u32> {
     v.pointer(pointer).and_then(Value::as_u64).map(|n| n as u32)
+}
+
+fn u32_of(v: &Value, key: &str) -> Option<u32> {
+    v.get(key).and_then(Value::as_u64).map(|n| n as u32)
+}
+
+/// Whether a forge's record of a comment carries this marker in its body.
+fn has_marker(v: &Value, mark: &str) -> bool {
+    v.get("body")
+        .and_then(Value::as_str)
+        .is_some_and(|b| b.contains(mark))
+}
+
+/// A reply's record from the forge's answer to posting it, keyed back to its
+/// finding and thread.
+fn reply_published(r: &NewReply, answer: &Value) -> Published {
+    Published {
+        finding: r.finding.clone(),
+        thread: r.thread.clone(),
+        comment: answer
+            .get("id")
+            .and_then(Value::as_i64)
+            .map(|n| n.to_string())
+            .unwrap_or_default(),
+        url: answer
+            .get("html_url")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    }
 }
 
 // ===================================================================== GitHub
@@ -330,6 +363,9 @@ impl Forge for GhForge {
     }
 
     fn publish(&self, req: &Request, batch: &Batch) -> Result<Sent, ForgeError> {
+        if batch.is_empty() {
+            return Ok(Sent::default());
+        }
         let mut sent = Sent::default();
 
         // New comments: one review, so the author gets one notification. Up
@@ -367,19 +403,7 @@ impl Forge for GhForge {
                     return Ok(sent);
                 }
             };
-            sent.published.push(Published {
-                finding: r.finding.clone(),
-                thread: r.thread.clone(),
-                comment: v
-                    .get("id")
-                    .and_then(Value::as_i64)
-                    .map(|n| n.to_string())
-                    .unwrap_or_default(),
-                url: v
-                    .get("html_url")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-            });
+            sent.published.push(reply_published(r, &v));
         }
 
         // A new comment's thread id is GraphQL's, which REST never says. One
@@ -433,17 +457,8 @@ impl Forge for GhForge {
         _thread: &str,
         comment: &str,
     ) -> Result<(), ForgeError> {
-        // A delete answers with no body, so it is not read as JSON.
-        self.tool.run(
-            &[
-                "api",
-                "--method",
-                "DELETE",
-                &format!("repos/{}/pulls/comments/{comment}", req.project),
-            ],
-            None,
-        )?;
-        Ok(())
+        self.tool
+            .delete_at(&format!("repos/{}/pulls/comments/{comment}", req.project))
     }
 }
 
@@ -451,11 +466,10 @@ impl Forge for GhForge {
 ///
 /// The project comes from the URL: the request lives in the base repository,
 /// and `gh pr view` names the head repository only.
-pub fn parse_request(v: &Value) -> Result<Request, ForgeError> {
+fn parse_request(v: &Value) -> Result<Request, ForgeError> {
     let url = str_of(v, "url")?;
-    let mut segments = url.trim_end_matches('/').rsplit('/');
-    let _number = segments.next();
-    let _pull = segments.next();
+    // `…/owner/repo/pull/123`, read from the right.
+    let mut segments = url.trim_end_matches('/').rsplit('/').skip(2);
     let repo = segments
         .next()
         .ok_or_else(|| parse_err("url has no repo"))?;
@@ -479,7 +493,7 @@ pub fn parse_request(v: &Value) -> Result<Request, ForgeError> {
 }
 
 /// One `reviewThreads` page: the threads, and the cursor of the next page.
-pub fn parse_threads_page(v: &Value) -> Result<(Vec<RemoteThread>, Option<String>), ForgeError> {
+fn parse_threads_page(v: &Value) -> Result<(Vec<RemoteThread>, Option<String>), ForgeError> {
     let conn = v
         .pointer("/data/repository/pullRequest/reviewThreads")
         .ok_or_else(|| parse_err("no reviewThreads in the answer"))?;
@@ -535,8 +549,8 @@ fn parse_gh_thread(t: &Value) -> Result<RemoteThread, ForgeError> {
             .unwrap_or(false),
         path: str_of(t, "path")?.to_string(),
         side: side.to_string(),
-        line: u32_at(t, "/line"),
-        start_line: u32_at(t, "/startLine"),
+        line: u32_of(t, "line"),
+        start_line: u32_of(t, "startLine"),
         line_text,
         anchor: None,
         comments,
@@ -558,10 +572,6 @@ fn parse_gh_comment(c: &Value) -> Result<RemoteComment, ForgeError> {
             .to_string(),
         created: str_of(c, "createdAt")?.to_string(),
         body,
-        reply_to: c
-            .pointer("/replyTo/databaseId")
-            .and_then(Value::as_i64)
-            .map(|n| n.to_string()),
         finding,
     })
 }
@@ -578,7 +588,7 @@ fn last_diff_line(hunk: &str) -> Option<String> {
 /// The body of `POST /pulls/{n}/reviews`: a pending review submitted at once
 /// as a plain comment (a verdict is later work), against the head this review
 /// was opened on.
-pub fn review_body(req: &Request, comments: &[NewComment]) -> Value {
+fn review_body(req: &Request, comments: &[NewComment]) -> Value {
     let side = |s: &str| if s == "old" { "LEFT" } else { "RIGHT" };
     let items: Vec<Value> = comments
         .iter()
@@ -610,18 +620,14 @@ pub fn review_body(req: &Request, comments: &[NewComment]) -> Value {
 /// and body: an equality on the stored text matched nothing the first time
 /// this ran against the real forge, and a publish that cannot find what it
 /// sent is a publish that sends it again.
-pub fn match_published(sent: &[NewComment], posted: &Value) -> Vec<Published> {
+fn match_published(sent: &[NewComment], posted: &Value) -> Vec<Published> {
     let Some(posted) = posted.as_array() else {
         return Vec::new();
     };
     sent.iter()
         .filter_map(|c| {
             let mark = marker(&c.finding);
-            let hit = posted.iter().find(|p| {
-                p.get("body")
-                    .and_then(Value::as_str)
-                    .is_some_and(|b| b.contains(&mark))
-            })?;
+            let hit = posted.iter().find(|p| has_marker(p, &mark))?;
             Some(Published {
                 finding: c.finding.clone(),
                 thread: String::new(),
@@ -740,16 +746,7 @@ impl Forge for GlabForge {
                     return Ok(sent);
                 }
             };
-            sent.published.push(Published {
-                finding: r.finding.clone(),
-                thread: r.thread.clone(),
-                comment: v
-                    .get("id")
-                    .and_then(Value::as_i64)
-                    .map(|n| n.to_string())
-                    .unwrap_or_default(),
-                url: None,
-            });
+            sent.published.push(reply_published(r, &v));
         }
 
         // Live from here. The bulk publish answers with nothing; the
@@ -758,12 +755,8 @@ impl Forge for GlabForge {
         // fetched twice.
         match self.discussions(req) {
             Ok(pages) => {
-                let comments_only = Batch {
-                    comments: batch.comments.clone(),
-                    replies: Vec::new(),
-                };
                 sent.published
-                    .extend(match_gitlab_published(&comments_only, &pages));
+                    .extend(match_gitlab_published(&batch.comments, &pages));
                 sent.threads = Some(parse_discussions(&pages, &req.head));
             }
             Err(e) => sent.failed = Some(e),
@@ -796,16 +789,10 @@ impl Forge for GlabForge {
     }
 
     fn delete_comment(&self, req: &Request, thread: &str, comment: &str) -> Result<(), ForgeError> {
-        self.tool.run(
-            &[
-                "api",
-                "--method",
-                "DELETE",
-                &Self::mr(req, &format!("/discussions/{thread}/notes/{comment}")),
-            ],
-            None,
-        )?;
-        Ok(())
+        self.tool.delete_at(&Self::mr(
+            req,
+            &format!("/discussions/{thread}/notes/{comment}"),
+        ))
     }
 }
 
@@ -814,7 +801,7 @@ impl Forge for GlabForge {
 /// `diff_refs` is the three shas a position needs: the target branch tip when
 /// the diff was last computed (`start_sha`), the merge base (`base_sha`), and
 /// the head. The project is the URL's path up to `/-/`.
-pub fn parse_mr(v: &Value) -> Result<Request, ForgeError> {
+fn parse_mr(v: &Value) -> Result<Request, ForgeError> {
     let url = str_of(v, "web_url")?;
     let path = url
         .split_once("://")
@@ -852,7 +839,7 @@ pub fn parse_mr(v: &Value) -> Result<Request, ForgeError> {
 /// are dropped. A position recorded against another head is **outdated**: the
 /// REST answer carries no diff text to place it by, so it is counted, not
 /// drawn.
-pub fn parse_discussions(pages: &[Value], head: &str) -> Vec<RemoteThread> {
+fn parse_discussions(pages: &[Value], head: &str) -> Vec<RemoteThread> {
     pages
         .iter()
         .filter_map(Value::as_array)
@@ -876,8 +863,8 @@ fn parse_discussion(d: &Value, head: &str) -> Option<RemoteThread> {
     if pos.get("position_type").and_then(Value::as_str) != Some("text") {
         return None;
     }
-    let new_line = u32_at(pos, "/new_line");
-    let old_line = u32_at(pos, "/old_line");
+    let new_line = u32_of(pos, "new_line");
+    let old_line = u32_of(pos, "old_line");
     let (side, line) = match (new_line, old_line) {
         (Some(n), _) => ("new", n),
         (None, Some(o)) => ("old", o),
@@ -885,11 +872,10 @@ fn parse_discussion(d: &Value, head: &str) -> Option<RemoteThread> {
     };
     let start_line = u32_at(pos, &format!("/line_range/start/{side}_line")).filter(|s| *s < line);
     let outdated = pos.get("head_sha").and_then(Value::as_str) != Some(head);
-    let root_id = first.get("id").and_then(Value::as_i64)?.to_string();
+    first.get("id").and_then(Value::as_i64)?;
     let comments = notes
         .iter()
-        .enumerate()
-        .map(|(i, n)| {
+        .map(|n| {
             let (body, finding) =
                 strip_marker(n.get("body").and_then(Value::as_str).unwrap_or_default());
             RemoteComment {
@@ -909,7 +895,6 @@ fn parse_discussion(d: &Value, head: &str) -> Option<RemoteThread> {
                     .unwrap_or_default()
                     .to_string(),
                 body,
-                reply_to: (i > 0).then(|| root_id.clone()),
                 finding,
             }
         })
@@ -950,7 +935,7 @@ fn ranged_note(c: &NewComment) -> String {
 /// positioned at its last line and says its range in the note: GitLab's
 /// `line_range` wants a `line_code` built from a hash of the path and both
 /// sides' numbers, which is not confirmed against a live instance yet.
-pub fn draft_note_body(req: &Request, c: &NewComment) -> Value {
+fn draft_note_body(req: &Request, c: &NewComment) -> Value {
     let mut position = json!({
         "position_type": "text",
         "base_sha": req.merge_base.clone().unwrap_or_default(),
@@ -976,31 +961,24 @@ pub fn draft_note_body(req: &Request, c: &NewComment) -> Value {
 /// Pair each sent note with the discussion and note GitLab made of it, from
 /// the discussions fetched after the publish, by the marker each body
 /// carries.
-pub fn match_gitlab_published(batch: &Batch, pages: &[Value]) -> Vec<Published> {
+fn match_gitlab_published(sent: &[NewComment], pages: &[Value]) -> Vec<Published> {
     let discussions: Vec<&Value> = pages.iter().filter_map(Value::as_array).flatten().collect();
-    let find = |finding: &str| -> Option<(String, String)> {
-        let mark = marker(finding);
-        discussions.iter().find_map(|d| {
-            let note = d.get("notes")?.as_array()?.iter().find(|n| {
-                n.get("body")
-                    .and_then(Value::as_str)
-                    .is_some_and(|b| b.contains(&mark))
+    sent.iter()
+        .filter_map(|c| {
+            let mark = marker(&c.finding);
+            let (thread, comment) = discussions.iter().find_map(|d| {
+                let note = d
+                    .get("notes")?
+                    .as_array()?
+                    .iter()
+                    .find(|n| has_marker(n, &mark))?;
+                Some((
+                    d.get("id")?.as_str()?.to_string(),
+                    note.get("id")?.as_i64()?.to_string(),
+                ))
             })?;
-            Some((
-                d.get("id")?.as_str()?.to_string(),
-                note.get("id")?.as_i64()?.to_string(),
-            ))
-        })
-    };
-    batch
-        .comments
-        .iter()
-        .map(|c| c.finding.as_str())
-        .chain(batch.replies.iter().map(|r| r.finding.as_str()))
-        .filter_map(|finding| {
-            let (thread, comment) = find(finding)?;
             Some(Published {
-                finding: finding.to_string(),
+                finding: c.finding.clone(),
                 thread,
                 comment,
                 url: None,
@@ -1012,7 +990,7 @@ pub fn match_gitlab_published(batch: &Batch, pages: &[Value]) -> Vec<Published> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::forge::{NewReply, with_marker};
+    use crate::forge::with_marker;
 
     #[test]
     fn a_pull_request_is_read_from_gh_pr_view() {
@@ -1079,7 +1057,6 @@ mod tests {
         assert_eq!(a.root().unwrap().body, "root");
         assert_eq!(a.root().unwrap().finding.as_deref(), Some("abc123"));
         assert_eq!(a.comments[1].finding, None);
-        assert_eq!(a.comments[1].reply_to.as_deref(), Some("3928619949"));
         assert_eq!(a.comments[1].author, "bob");
 
         let b = &threads[1];
@@ -1323,7 +1300,6 @@ mod tests {
         );
         assert_eq!(d1.comments.len(), 2);
         assert_eq!(d1.root().unwrap().id, "101");
-        assert_eq!(d1.comments[1].reply_to.as_deref(), Some("101"));
         assert_eq!(d1.comments[1].author, "bob");
         // The marker is read and not shown.
         assert_eq!(d1.comments[0].body, "why?");
@@ -1379,16 +1355,11 @@ mod tests {
 
     #[test]
     fn published_notes_are_matched_from_the_refetched_discussions() {
-        let batch = Batch {
-            comments: vec![comment("f1", "new", 3, None, &with_marker("why?", "f1"))],
-            replies: vec![NewReply {
-                finding: "f2".into(),
-                thread: "d1".into(),
-                root_comment: "101".into(),
-                body: with_marker("because", "f2"),
-            }],
-        };
-        let got = match_gitlab_published(&batch, &discussion_pages());
+        let sent = vec![
+            comment("f1", "new", 3, None, &with_marker("why?", "f1")),
+            comment("f2", "new", 3, None, &with_marker("because", "f2")),
+        ];
+        let got = match_gitlab_published(&sent, &discussion_pages());
         assert_eq!(got.len(), 2);
         assert_eq!(
             (

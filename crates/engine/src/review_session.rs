@@ -114,16 +114,16 @@ impl<S: ReviewStore> ReviewSession<S> {
     pub fn own_comment(&self, thread: &str, comment: &str) -> Option<OwnComment> {
         let t = self.thread(thread)?;
         let c = t.comments.iter().find(|c| c.id == comment)?;
-        let linked = self.findings.iter().find(|f| {
-            c.finding.as_deref() == Some(f.id.as_str())
-                || f.upstream.as_ref().is_some_and(|u| u.comment == c.id)
-        });
+        let linked = self
+            .findings
+            .iter()
+            .find(|f| links(f, &c.id, c.finding.as_deref()));
         let mine = linked.is_some() || self.me.as_deref() == Some(c.author.as_str());
         if !mine {
             return None;
         }
         let at = match &t.anchor {
-            Some(a) => format!("{}:{}", a.file, a.line_span()),
+            Some(a) => a.at(),
             None => t.path.clone(),
         };
         Some(OwnComment {
@@ -151,7 +151,7 @@ impl<S: ReviewStore> ReviewSession<S> {
             comment: up.comment.clone(),
             finding: Some(f.id.clone()),
             body: f.body.clone(),
-            at: format!("{}:{}", f.anchor.file, f.anchor.line_span()),
+            at: f.anchor.at(),
         })
     }
 
@@ -478,46 +478,56 @@ impl<S: ReviewStore> ReviewSession<S> {
             }
         }
         // Then by author, place and words, for comments with no marker.
-        if let Some(me) = self.me.as_deref() {
-            let same =
-                |a: &str, b: &str| a.replace("\r\n", "\n").trim() == b.replace("\r\n", "\n").trim();
-            for t in &mut self.threads {
-                let Some(anchor) = t.anchor.clone() else {
-                    continue;
-                };
-                for (i, c) in t.comments.iter_mut().enumerate() {
-                    if c.finding.is_some() || c.author != me {
-                        continue;
-                    }
-                    let hit = self.findings.iter_mut().find(|f| {
-                        f.upstream.is_none()
-                            && same(&f.body, &c.body)
-                            && if i == 0 {
-                                f.reply_to.is_none()
-                                    && f.anchor.file == anchor.file
-                                    && f.anchor.side == anchor.side
-                                    && f.anchor.end_line.max(f.anchor.line)
-                                        == anchor.end_line.max(anchor.line)
-                            } else {
-                                f.reply_to.as_deref() == Some(t.id.as_str())
-                            }
-                    });
-                    if let Some(f) = hit {
-                        f.upstream = Some(Upstream {
-                            thread: t.id.clone(),
-                            comment: c.id.clone(),
-                        });
-                        c.finding = Some(f.id.clone());
-                        reconciled += 1;
-                    }
-                }
-            }
-        }
+        reconciled += self.heal_by_author();
         self.store.save_threads(&self.threads)?;
         if reconciled > 0 {
             self.store.save_findings(&self.findings)?;
         }
         Ok(reconciled)
+    }
+
+    /// Link a comment by the reader that carries no marker to the note it
+    /// came from: same author, same file, side and line, same words — or,
+    /// for a reply, same thread and words. Returns how many were linked.
+    fn heal_by_author(&mut self) -> usize {
+        let Some(me) = self.me.as_deref() else {
+            return 0;
+        };
+        let same =
+            |a: &str, b: &str| a.replace("\r\n", "\n").trim() == b.replace("\r\n", "\n").trim();
+        let mut linked = 0;
+        for t in &mut self.threads {
+            let Some(anchor) = t.anchor.clone() else {
+                continue;
+            };
+            for (i, c) in t.comments.iter_mut().enumerate() {
+                if c.finding.is_some() || c.author != me {
+                    continue;
+                }
+                let hit = self.findings.iter_mut().find(|f| {
+                    f.upstream.is_none()
+                        && same(&f.body, &c.body)
+                        && if i == 0 {
+                            f.reply_to.is_none()
+                                && f.anchor.file == anchor.file
+                                && f.anchor.side == anchor.side
+                                && f.anchor.end_line.max(f.anchor.line)
+                                    == anchor.end_line.max(anchor.line)
+                        } else {
+                            f.reply_to.as_deref() == Some(t.id.as_str())
+                        }
+                });
+                if let Some(f) = hit {
+                    f.upstream = Some(Upstream {
+                        thread: t.id.clone(),
+                        comment: c.id.clone(),
+                    });
+                    c.finding = Some(f.id.clone());
+                    linked += 1;
+                }
+            }
+        }
+        linked
     }
 
     /// Tell the session who the reader is on the forge. Asked of the forge
@@ -562,10 +572,11 @@ impl<S: ReviewStore> ReviewSession<S> {
             self.store.save_threads(&self.threads)?;
         }
         // The record, when one is linked — fetched twin or not.
-        if let Some(f) = self.findings.iter_mut().find(|f| {
-            linked.as_deref() == Some(f.id.as_str())
-                || f.upstream.as_ref().is_some_and(|u| u.comment == comment)
-        }) {
+        if let Some(f) = self
+            .findings
+            .iter_mut()
+            .find(|f| links(f, comment, linked.as_deref()))
+        {
             f.body = body;
             known = true;
             self.store.save_findings(&self.findings)?;
@@ -589,10 +600,8 @@ impl<S: ReviewStore> ReviewSession<S> {
             self.store.save_threads(&self.threads)?;
         }
         let before = self.findings.len();
-        self.findings.retain(|f| {
-            linked.as_deref() != Some(f.id.as_str())
-                && f.upstream.as_ref().is_none_or(|u| u.comment != comment)
-        });
+        self.findings
+            .retain(|f| !links(f, comment, linked.as_deref()));
         if self.findings.len() != before {
             known = true;
             self.store.save_findings(&self.findings)?;
@@ -638,4 +647,12 @@ impl<S: ReviewStore> ReviewSession<S> {
         self.store.save_findings(&self.findings)?;
         Ok(n)
     }
+}
+
+/// Whether `f` is the record of comment `comment`: the comment's marker names
+/// it, or the record's address names the comment. Three places asked this
+/// with three spellings.
+fn links(f: &Finding, comment: &str, marker_finding: Option<&str>) -> bool {
+    marker_finding == Some(f.id.as_str())
+        || f.upstream.as_ref().is_some_and(|u| u.comment == comment)
 }

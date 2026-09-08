@@ -72,9 +72,9 @@ One thread record, as fetched and as cached:
               "line_text": "…", "end_line_text": "…" },
   "comments": [
     { "id": "3928619949", "author": "alice", "created": "2026-09-03T20:53:12Z",
-      "body": "…", "reply_to": null },
+      "body": "…", "finding": null },
     { "id": "3928660390", "author": "bob",   "created": "…", "body": "…",
-      "reply_to": "3928619949" } ] }
+      "finding": null } ] }
 ```
 
 The anchor is the same type a finding has, computed on fetch from the forge's `path`,

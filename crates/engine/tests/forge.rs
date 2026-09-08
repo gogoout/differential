@@ -82,7 +82,6 @@ fn thread(id: &str, path: &str, side: &str, line: Option<u32>) -> RemoteThread {
             author: "alice".into(),
             created: "2026-09-03T20:53:12Z".into(),
             body: "why?".into(),
-            reply_to: None,
             finding: None,
         }],
     }
@@ -567,7 +566,6 @@ fn an_unmarked_reply_by_the_reader_heals_its_draft_and_the_side_is_checked() {
         author: "me".into(),
         created: "2026-09-07T10:00:00Z".into(),
         body: "agreed".into(),
-        reply_to: Some("T1-root".into()),
         finding: None,
     });
     assert_eq!(s.set_threads(vec![mine, t1]).unwrap(), 2);
@@ -609,7 +607,6 @@ fn whose_a_comment_is_is_the_sessions_call() {
         author: "me".into(),
         created: "2026-09-08T09:00:00Z".into(),
         body: "mine".into(),
-        reply_to: Some("T1-root".into()),
         finding: None,
     });
     let mut m1 = thread("M1", "src/lib.rs", "new", Some(8));
