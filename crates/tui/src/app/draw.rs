@@ -115,6 +115,39 @@ impl App {
                     area,
                 );
             }
+            Mode::Notice { title, text } => {
+                // Wrapped, and as tall as it needs: an error is read once and
+                // in full, or it is not read at all.
+                let width = panes.body.width.saturating_sub(6).clamp(20, 100);
+                let inner = usize::from(width.saturating_sub(4)).max(1);
+                let rows: usize = text
+                    .lines()
+                    .map(|l| UnicodeWidthStr::width(l).div_ceil(inner).max(1))
+                    .sum();
+                let height = u16::try_from(rows + 4)
+                    .unwrap_or(u16::MAX)
+                    .min(panes.body.height);
+                let area = centered_rect(panes.body, width, height);
+                clear_to_ground(frame, &self.theme, area);
+                let mut lines: Vec<Line> = vec![Line::from("")];
+                lines.extend(text.lines().map(|l| {
+                    Line::from(Span::styled(
+                        format!(" {l}"),
+                        Style::default().fg(self.theme.context_fg),
+                    ))
+                }));
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    " press any key to close",
+                    Style::default().fg(self.theme.gutter_fg),
+                )));
+                frame.render_widget(
+                    Paragraph::new(lines)
+                        .wrap(ratatui::widgets::Wrap { trim: false })
+                        .block(pane(&self.theme, format!(" {title} "), true)),
+                    area,
+                );
+            }
             Mode::DeleteComment { own } => {
                 let key = Style::default().fg(self.theme.header_fg);
                 let text = Style::default().fg(self.theme.context_fg);

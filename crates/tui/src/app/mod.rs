@@ -194,6 +194,12 @@ pub enum Mode {
         editor: Box<TextArea<'static>>,
     },
     Help,
+    /// Something the footer cannot hold: a forge's whole answer to a call
+    /// that failed. Any key closes it.
+    Notice {
+        title: String,
+        text: String,
+    },
     /// File-list modal over the current rows: jump to a file header.
     FileList {
         entries: Vec<FileListEntry>,

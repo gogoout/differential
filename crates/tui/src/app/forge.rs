@@ -182,7 +182,7 @@ impl App {
             Answer::Fetched(Err(e), _) => {
                 // The cache stands: the reader keeps what was fetched last time
                 // and is told why it is not fresher.
-                self.status = format!("could not fetch review threads: {e}");
+                self.notice("could not fetch review threads", &e);
             }
             Answer::Resolved(thread, resolved, Ok(())) => {
                 match self.session.set_thread_resolved(&thread, resolved) {
@@ -199,7 +199,7 @@ impl App {
                 self.rebuild_rows();
             }
             Answer::Resolved(_, _, Err(e)) => {
-                self.status = format!("could not resolve the thread: {e}");
+                self.notice("the thread was not resolved", &e);
             }
             Answer::Published(sent, Ok(outcome)) => {
                 // What the publish's answer named, then what the refetched
@@ -230,10 +230,15 @@ impl App {
                     // The forge took part of the batch and then stopped. What
                     // it took is recorded; the rest is still the reader's, and
                     // the next P sends only that.
-                    _ if outcome.failed.is_some() => format!(
-                        "published {landed} of {total} · the forge stopped part-way ({}) · R to check, P to send the rest",
-                        outcome.failed.as_ref().expect("guarded")
-                    ),
+                    _ if outcome.failed.is_some() => {
+                        self.notice(
+                            "the forge stopped part-way",
+                            outcome.failed.as_ref().expect("guarded"),
+                        );
+                        format!(
+                            "published {landed} of {total} · the forge stopped part-way · R to check, P to send the rest"
+                        )
+                    }
                     (_, Ok(Some(e))) => format!(
                         "published {landed} of {total} · the threads could not be fetched back ({e}) · R to retry"
                     ),
@@ -246,7 +251,7 @@ impl App {
                 self.rebuild_rows();
             }
             Answer::Published(_, Err(e)) => {
-                self.status = format!("nothing published: {e}");
+                self.notice("nothing published", &e);
             }
             Answer::Edited(own, body, Ok(())) => {
                 match self.session.edit_comment(&own.thread, &own.comment, body) {
@@ -257,7 +262,7 @@ impl App {
                 self.rebuild_rows();
             }
             Answer::Edited(_, _, Err(e)) => {
-                self.status = format!("the comment was not changed: {e}");
+                self.notice("the comment was not changed", &e);
             }
             Answer::Deleted(own, Ok(())) => {
                 match self.session.delete_comment(&own.thread, &own.comment) {
@@ -269,7 +274,7 @@ impl App {
                 self.reopen_findings();
             }
             Answer::Deleted(_, Err(e)) => {
-                self.status = format!("the comment was not deleted: {e}");
+                self.notice("the comment was not deleted", &e);
             }
             Answer::Lost => self.status = "the forge call was lost".into(),
         }
@@ -322,6 +327,18 @@ impl App {
         });
         self.inflight = Some(Inflight::Publish { sent, rx });
         self.status = format!("publishing {n} comment{}…", plural(n));
+    }
+
+    /// Show a forge failure in full. The footer holds one line and cuts the
+    /// rest, and the rest — the exit code, the forge's own words — is what a
+    /// reader needs to know what to do. The footer keeps the short form.
+    fn notice(&mut self, title: &str, error: &dyn std::fmt::Display) {
+        let text = error.to_string();
+        self.status = format!("{title} · the details are on screen");
+        self.mode = Mode::Notice {
+            title: title.to_string(),
+            text,
+        };
     }
 
     /// The thread whose rows the cursor is in, if any.

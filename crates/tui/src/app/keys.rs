@@ -81,7 +81,7 @@ impl App {
         // used to clear it, which made every one-off message permanent.
         self.status.clear();
         match &mut self.mode {
-            Mode::Help => {
+            Mode::Help | Mode::Notice { .. } => {
                 self.mode = Mode::Normal;
                 return Vec::new();
             }

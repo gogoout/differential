@@ -618,6 +618,10 @@ was being dropped, which read as the box being broken.
 
 ## Review threads
 
+When a forge call fails, the footer says so in a few words and a **notice** float shows the
+forge's whole answer — the command, the exit code, its own message — wrapped; any key closes
+it. A footer holds one line, and the rest of an error is what tells the reader what to do.
+
 A review opened with `--pr` shows the request's review threads ([forge.md](forge.md)). They
 are fetched on a worker thread the moment the reviewer opens, and again on `R`; the footer
 wears a `syncing` pill while a forge call is out, and a `N threads` pill on every request

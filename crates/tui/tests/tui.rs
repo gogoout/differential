@@ -5743,6 +5743,9 @@ mod forge_threads {
         /// When set, `publish` creates nothing and reports a failure after
         /// the fact: a forge that broke part-way.
         stop_part_way: Mutex<bool>,
+        /// When set, `publish` refuses outright with a long error: a forge
+        /// that said no, at length.
+        refuse: Mutex<bool>,
     }
 
     impl FakeForge {
@@ -5755,6 +5758,7 @@ mod forge_threads {
                 fail_threads: Mutex::new(false),
                 swallow: Mutex::new(false),
                 stop_part_way: Mutex::new(false),
+                refuse: Mutex::new(false),
             })
         }
     }
@@ -5786,6 +5790,13 @@ mod forge_threads {
         /// the threads, not from this answer.
         fn publish(&self, _req: &Request, batch: &Batch) -> Result<Sent, ForgeError> {
             use differential_engine::forge::strip_marker;
+            if *self.refuse.lock().unwrap() {
+                return Err(ForgeError::Failed {
+                    command: "fakeforge api --method POST projects/:id/merge_requests/1/discussions/abc/notes --input -".into(),
+                    code: Some(1),
+                    stderr: "{\"message\":\"400 Bad Request - the forge's own words, at length, which the footer could never hold\"}".into(),
+                });
+            }
             self.published.lock().unwrap().push(batch.clone());
             if *self.swallow.lock().unwrap() {
                 return Ok(Sent::default());
@@ -6275,11 +6286,15 @@ mod forge_threads {
             "nothing was sent"
         );
         assert!(
-            app.status
-                .starts_with("nothing published: the pull request moved to ffffffffffff"),
+            app.status.starts_with("nothing published"),
             "{}",
             app.status
         );
+        assert!(
+            matches!(&app.mode, Mode::Notice { text, .. } if text.contains("moved to ffffffffffff")),
+            "the whole answer is on screen"
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(
             app.session.unpublished().count(),
             2,
@@ -6762,6 +6777,8 @@ mod forge_threads {
         settle(&mut app);
         assert!(app.status.contains("stopped part-way"), "{}", app.status);
         assert!(app.status.contains("P to send the rest"), "{}", app.status);
+        assert!(matches!(&app.mode, Mode::Notice { text, .. } if text.contains("fell over")));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         // Nothing was named and the fake made nothing, so both notes are
         // still the reader's — and the next P offers exactly them.
         assert_eq!(app.session.unpublished().count(), 2);
@@ -6950,6 +6967,48 @@ mod forge_threads {
             "the tail is on a following row, not off the edge: {:?}",
             &screen[first..first + 4]
         );
+    }
+
+    #[test]
+    fn a_forge_refusal_is_shown_in_full_not_cut_by_the_footer() {
+        let (_r, mut app, fake) = app_with_threads(vec![thread("T1", "C1")]);
+        draft_two_without_thread(&mut app);
+        *fake.refuse.lock().unwrap() = true;
+        app.handle_key(key('P'));
+        app.handle_key(key('y'));
+        settle(&mut app);
+        let Mode::Notice { title, text } = &app.mode else {
+            panic!("a refusal opens the notice, mode is elsewhere");
+        };
+        assert_eq!(title, "nothing published");
+        assert!(text.contains("exited with Some(1)"), "{text}");
+        assert!(text.contains("the forge's own words, at length"), "{text}");
+        assert!(
+            app.status.contains("details are on screen"),
+            "{}",
+            app.status
+        );
+
+        // Drawn whole: the forge's words reach the screen, wrapped.
+        let backend = ratatui::backend::TestBackend::new(100, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let screen: String = (0..30u16)
+            .map(|y| {
+                (0..100u16)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    + "\n"
+            })
+            .collect();
+        assert!(screen.contains("nothing published"), "{screen}");
+        assert!(screen.contains("could never hold"), "{screen}");
+
+        // Any key closes it; the note is still the reader's to send.
+        app.handle_key(key('j'));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.session.unpublished().count(), 1);
     }
 
     // ------------------------------------------------------ your own comment
