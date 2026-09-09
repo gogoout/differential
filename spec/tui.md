@@ -399,9 +399,14 @@ gets them out, and one key that always works is worth more than a word on every 
 and `? help` are what is left: the keys are the convenience, and `?` is the way to every
 one that did not fit.
 
-**`?` answers for where the reader is standing.** The place's keys first, under its name,
-then the keys that mean the same thing anywhere in the review under a rule — `tab`, `s`,
-`w`, `F`, `y`, `P`, `R`, the movements, and `q  ·  ctrl-c`. Inside a modal the second
+**`?` answers for where the reader is standing.** Three sections: the place's own keys
+under its name, then **getting about in one run** — `j/k`, `J/K  { }`, `n/N`, `ctrl-d/u`,
+`g/G` and `tab` — then the keys that mean the same thing anywhere: `s`, `w`, `h/l  ·  0`,
+`F`, `y`, `P`, `R`, `?` and `q  ·  ctrl-c`. Movement is one run of rows because "how do I
+move" is one question; a reader who finds `j/k` under their place and `g/G` three sections
+later has to ask it twice. `j/k` is the exception that proves it, and says what it does in
+THIS pane. Keys only: a wheel is not something a reader presses, so the mouse is in
+[the paragraph below](#keys) and not in the modal. Inside a modal the second
 section is absent, because those keys do not work there; the modal's own keys are the
 whole answer. `?` can be pressed inside the file list and the findings list, and the list
 comes back when help closes, on the entry it was on.
@@ -432,7 +437,7 @@ The full reference. `?` shows the subset that applies where the reader is standi
 | `c` | write a finding — on the line under the cursor, on the lines `v` selected, or on the whole hunk from a row that is not a line; on a line that already carries one, rewrite that one |
 | `dd` | delete the finding under the cursor |
 | `y` | copy the summary of open findings not yet on the request — a markdown list of `file:lines: note`, and nothing about groups: a group is how this reviewer chose to READ the branch, and the summary is pasted somewhere that has no idea what `g7` was. `dfr findings <range> --summary` prints the same text |
-| `F` | every finding and every review thread in one list — `enter` jumps to one, `dd` deletes a note, `D` clears the notes not on the request (published notes and threads stay), `P` publishes, `esc` closes |
+| `F` | every finding and every review thread in one list — `enter` jumps to one, `dd` deletes a note, `D` clears the notes not on the request (published notes and threads stay), `y` copies, `P` publishes, `esc` closes |
 | `r` on a review thread | draft a reply under it — the reader's own thread or anyone's — a finding carrying the thread's id until `P` publishes it ([forge.md](forge.md)) |
 | `c` on a comment of yours | rewrite it on the forge — yours by author, marker or address; on anyone else's, the footer says `not your comment` |
 | `dd` on a comment of yours | delete it on the forge and here — asks first, only `y` means yes; on anyone else's, the footer says `not your comment` |
@@ -718,7 +723,8 @@ marked `(resolved)` when the forge says so; a published note whose twin is fetch
 listed once, as the thread, and one whose twin is not fetched yet is marked
 `(published)`. `enter` on a thread lands on its rows; `dd` on one refuses as it does in
 the diff. `P` works from the list as it does from the diff, and sends everything not yet
-on the request.
+on the request. So does `y`, for the same reason: the list is where the reader sees what
+the request does not have yet.
 
 **`P` publishes, and asks first.** It is the one outward act in this reviewer, so the float
 reads its whole consequence back before the question: how many new comments and replies go

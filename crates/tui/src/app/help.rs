@@ -151,14 +151,34 @@ pub struct HelpSection {
     pub acts: Vec<Act>,
 }
 
+/// Getting about, in one place. Every one of these works from either pane,
+/// so a reader hunting for "how do I move" reads one run of rows rather than
+/// finding `j/k` under the place they are in and `g/G` three sections later.
+///
+/// `j/k` is the exception that proves it: it is the pane's, so it says what
+/// it does in THIS pane. In a selection it is the selection's, and it stays
+/// up in that place's own rows.
+fn moving(area: Area) -> Vec<Act> {
+    let mut acts = match area {
+        Area::Selecting => Vec::new(),
+        Area::Plan => vec![Act::quiet("j/k", "switch group")],
+        _ => vec![Act::quiet("j/k", "move over rows")],
+    };
+    acts.extend([
+        Act::quiet("J/K  { }", "previous / next group"),
+        Act::quiet("n/N", "next / previous hunk"),
+        Act::quiet("ctrl-d/u", "half page"),
+        Act::quiet("g/G", "top / bottom"),
+        Act::quiet("tab", "switch pane focus"),
+    ]);
+    acts
+}
+
 /// The keys that mean the same thing wherever the reader stands in the
 /// review. They are why the footer can be three keys long: a key that is
 /// always there does not need saying on every row.
 fn everywhere() -> Vec<Act> {
     vec![
-        Act::quiet("tab", "switch pane focus"),
-        Act::quiet("ctrl-d/u", "half page"),
-        Act::quiet("g/G", "top / bottom"),
         Act::quiet("s", "unified / split diff"),
         Act::quiet("w", "soft wrap long lines"),
         Act::quiet(
@@ -169,10 +189,6 @@ fn everywhere() -> Vec<Act> {
         Act::quiet("y", "copy the open findings"),
         Act::quiet("P", "publish the open findings (asks first)"),
         Act::quiet("R", "fetch the review threads again"),
-        Act::quiet(
-            "mouse",
-            "wheel one row · alt+wheel sideways · click selects",
-        ),
         Act::quiet("?", "these keys"),
         Act::quiet("q  ·  ctrl-c", "quit — state is saved on every change"),
     ]
@@ -255,19 +271,12 @@ impl App {
                         Act::footer("f", "tree", "the file tree instead of the plan")
                     }
                 },
-                Act::quiet("j/k", "switch group"),
-                Act::quiet("J/K  { }", "previous / next group"),
-                Act::quiet(
-                    "z",
-                    "unfold the skim remainder or the noise group · file view: a directory",
-                ),
+                Act::quiet("z", "unfold a skim remainder, a noise group or a directory"),
             ],
             Area::Diff => vec![
                 Act::footer("c", "note", "write a finding on this line, or on the hunk"),
                 Act::footer("space", "reviewed", "mark this hunk's class reviewed"),
                 Act::footer("v", "select", "start a line selection here"),
-                Act::quiet("j/k", "move over rows"),
-                Act::quiet("n/N", "next / previous hunk"),
                 Act::quiet("dd", "delete the finding under the cursor"),
                 Act::quiet(
                     "z",
@@ -326,6 +335,7 @@ impl App {
                     "clear local",
                     "clear the notes not on the request (asks first)",
                 ),
+                Act::footer("y", "copy", "copy the open findings"),
                 Act::footer("P", "publish", "publish the open findings (asks first)"),
                 Act::footer("esc", "close", "close the list · so does F"),
                 Act::quiet("j/k", "move over the list"),
@@ -397,6 +407,10 @@ impl App {
             acts: self.acts_of(area),
         }];
         if !area.modal() {
+            sections.push(HelpSection {
+                title: "moving",
+                acts: moving(area),
+            });
             sections.push(HelpSection {
                 title: "anywhere",
                 acts: everywhere(),

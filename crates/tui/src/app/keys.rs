@@ -443,6 +443,7 @@ impl App {
                 }
                 let rules = section_rules(entries).len();
                 let rows = findings_rows(entries.len(), rules, self.viewport.body_rows);
+                let mut copy = false;
                 match (key.code, key.modifiers) {
                     (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
                         step_list(selected, scroll, entries.len(), rows, true);
@@ -483,6 +484,11 @@ impl App {
                             self.pending_d = true;
                         }
                     }
+                    // Copy from here too, for the same reason `P` sends from
+                    // here: the list is where the reader sees what is not yet
+                    // on the request. The clipboard call is the caller's, so
+                    // this arm only says the summary is wanted.
+                    (KeyCode::Char('y'), _) => copy = true,
                     // Publish from here too: the list is where the reader sees
                     // what is not yet on the request, and it sends everything
                     // that is not, exactly as P in the diff does.
@@ -495,6 +501,9 @@ impl App {
                         self.mode = Mode::Normal;
                     }
                     _ => {}
+                }
+                if copy {
+                    return vec![Effect::CopySummary(self.findings_summary())];
                 }
                 return Vec::new();
             }

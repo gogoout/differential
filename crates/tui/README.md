@@ -220,7 +220,8 @@ not a key in the composer, where it is a character, nor in a question, where eve
 | `enter` | Close and jump to that finding, wherever in the review it lives. |
 | `dd` | Delete the selected finding. The list stays open. |
 | `D` | Ask before clearing every finding: `delete all N findings?  y / n`, or `delete this finding?  y / n` when there is only one. |
-| `y` | Answer yes to that question. Only a bare `y` counts. Any other key cancels. |
+| `y` | Copy the summary of open findings not yet on the request. The list stays open. |
+| `y`, while `D` waits | Yes. Only a bare `y` counts, and any other key cancels. |
 | `P` | Publish the open findings. The float asks first. |
 | `?` | Open the help modal. The list comes back when help closes, on the same entry. |
 | `esc` / `F` / `q` | Close. |

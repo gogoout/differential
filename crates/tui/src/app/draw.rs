@@ -2160,7 +2160,9 @@ pub fn file_list_modal_area(body: Rect, entries: &[FileListEntry]) -> Rect {
 /// and the key footer, centred on the body. Shared with the hit test.
 pub fn findings_modal_area(body: Rect, entries: usize, rules: usize) -> Rect {
     let height = (entries + rules + 4).min(body.height as usize) as u16;
-    centered_rect(body, 74, height)
+    // Wide enough for the whole key footer: six keys is 83 columns, and a
+    // list whose footer is cut is a list with keys nobody can read.
+    centered_rect(body, 86, height)
 }
 
 pub(super) fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {

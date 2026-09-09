@@ -4346,19 +4346,27 @@ fn the_help_modal_names_the_place_and_its_keys() {
             .position(|r| r.contains(needle))
             .unwrap_or_else(|| panic!("{needle:?} missing from help"))
     };
-    // The plan pane's own keys, then the keys that work anywhere.
+    // The plan pane's own keys, then getting about, then the keys that work
+    // anywhere. Movement is one run of rows, not one row per section.
+    let moving = at("moving");
     let anywhere = at("anywhere");
-    assert!(at("the plan pane") < anywhere);
-    assert!(
-        at("switch group") < anywhere,
-        "j/k belongs to the plan pane"
-    );
+    assert!(at("the plan pane") < moving);
+    assert!(moving < anywhere);
     assert!(at("press any key") > anywhere);
-    for k in ["tab", "ctrl-c"] {
-        assert!(at(k) > anywhere, "{k:?} works anywhere");
+    for k in [
+        "switch group",
+        "next / previous hunk",
+        "top / bottom",
+        "tab",
+    ] {
+        assert!(
+            (moving..anywhere).contains(&at(k)),
+            "{k:?} is a movement key"
+        );
     }
+    assert!(at("ctrl-c") > anywhere, "quitting works anywhere");
     // The diff pane's keys are not the plan pane's answer.
-    for absent in ["next / previous hunk", "start a line selection"] {
+    for absent in ["start a line selection", "mark this hunk's class"] {
         assert!(
             !rows.iter().any(|r| r.contains(absent)),
             "{absent:?} is a diff-pane key: {rows:?}"
@@ -4386,7 +4394,7 @@ fn the_help_modal_follows_the_reader_into_the_diff() {
     let rows = drawn_rows(&mut app);
     let has = |needle: &str| rows.iter().any(|r| r.contains(needle));
     assert!(has("the diff pane"));
-    assert!(has("next / previous hunk"));
+    assert!(has("move over rows"), "j/k says what it does in THIS pane");
     assert!(!has("switch group"), "that is the plan pane's j/k");
 }
 
@@ -4458,6 +4466,42 @@ fn help_over_the_findings_list_gives_the_list_back() {
     assert_eq!(
         *selected, was,
         "the key that closed help is not a key in it"
+    );
+}
+
+/// `y` copies from the list, as `P` sends from it: the list is where the
+/// reader sees what is not yet on the request.
+#[test]
+fn y_copies_the_summary_from_the_findings_list() {
+    let (_r, mut app) = make_app();
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(key('c'));
+    for ch in "off by one".chars() {
+        app.handle_key(key(ch));
+    }
+    app.handle_key(ctrl('s'));
+
+    app.handle_key(key('F'));
+    let effects = app.handle_key(key('y'));
+    let [Effect::CopySummary(text)] = &effects[..] else {
+        panic!("y in the list should copy: {effects:?}");
+    };
+    assert!(text.contains("off by one"), "{text:?}");
+    assert!(
+        matches!(app.mode, Mode::Findings { .. }),
+        "and the list stays open"
+    );
+}
+
+/// The help modal is keys a reader can press. The wheel is not one of them.
+#[test]
+fn the_help_modal_does_not_name_the_mouse() {
+    let (_r, mut app) = make_app();
+    app.handle_key(key('?'));
+    let rows = drawn_rows(&mut app);
+    assert!(
+        !rows.iter().any(|r| r.contains("mouse")),
+        "the mouse is not a key: {rows:?}"
     );
 }
 
