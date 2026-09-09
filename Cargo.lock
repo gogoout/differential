@@ -519,7 +519,7 @@ dependencies = [
 
 [[package]]
 name = "differential"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -534,7 +534,7 @@ dependencies = [
 
 [[package]]
 name = "differential-engine"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "differential-testutil",
  "etcetera",
@@ -554,7 +554,7 @@ dependencies = [
 
 [[package]]
 name = "differential-stack"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "differential-engine",
  "differential-testutil",
@@ -563,7 +563,7 @@ dependencies = [
 
 [[package]]
 name = "differential-symbols"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "differential-engine",
  "petgraph",
@@ -585,7 +585,7 @@ dependencies = [
 
 [[package]]
 name = "differential-testutil"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "differential-engine",
  "tempfile",
@@ -593,7 +593,7 @@ dependencies = [
 
 [[package]]
 name = "differential-tui"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "arboard",
