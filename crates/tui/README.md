@@ -104,7 +104,12 @@ finding, so nothing about it is saved.
 
 ## Keys
 
-`?` opens a short list inside the app. The tables below are the complete list.
+`?` opens the keys of where the reader is standing, then the keys that work anywhere. The
+tables below are the complete list, which is what `spec/tui.md` also carries.
+
+Every place with keys of its own is a row of one table in `crates/tui/src/app/help.rs`.
+The footer reads it for its short words and the help modal for its long ones, so a key
+added in one place appears in both.
 
 ### Normal mode — moving
 
@@ -159,12 +164,18 @@ diff cursor.
 | `dd` | either | Delete the finding under the diff cursor. |
 | `F` | either | Open the findings list. |
 | `y` | either | Copy the summary of open findings not yet on the request to the clipboard. |
-| `c` | either, on a review thread | Draft a reply under it. A finding until `P` publishes it. |
+| `c` | either, on a comment of yours | Rewrite it on the forge. On anyone else's, it refuses and names `r`. |
+| `dd` | either, on a comment of yours | Delete it on the forge and here. It asks first, and only `y` means yes. |
 | `x` | either, on a review thread | Resolve or reopen the thread on the forge. |
 | `R` | either | Fetch the request's review threads again. |
 | `P` | either | Publish the open findings to the request. A float says what goes and what stays; `y` sends. |
+| `w` | either | Soft wrap long lines. Saved per review. |
+| `h` / `l` | diff | Shift the diff pane eight columns sideways. Refused while `w` is on. |
+| `0` | diff | Back to the left edge. |
+| `r` | either, on a review thread | Draft a reply under it. A finding until `P` publishes it. |
 | `?` | either | Open the help modal. |
 | `q` | either | Quit. State is saved on every change, so quitting never loses anything. |
+| `ctrl-c` | anywhere | Quit, from every mode, the composer included. A draft in the box is lost. |
 
 What `c` does depends on the row:
 
@@ -184,7 +195,11 @@ idea what `g7` was.
 
 | key | action |
 |---|---|
-| any key | Close it. |
+| any key | Close it, back to the mode `?` was pressed in. |
+
+`?` can be pressed in the review, in the file-list modal and in the findings list. It is
+not a key in the composer, where it is a character, nor in a question, where every key but
+`y` is the answer no.
 
 ### The file-list modal (`f` in the diff pane)
 
@@ -193,6 +208,7 @@ idea what `g7` was.
 | `j` / `↓` | Next file. |
 | `k` / `↑` | Previous file. |
 | `enter` | Close, jump the diff cursor to that file, and focus the diff pane. |
+| `?` | Open the help modal. The list comes back when help closes. |
 | `esc` / `f` / `q` | Close. |
 
 ### The findings list (`F`)
@@ -204,7 +220,10 @@ idea what `g7` was.
 | `enter` | Close and jump to that finding, wherever in the review it lives. |
 | `dd` | Delete the selected finding. The list stays open. |
 | `D` | Ask before clearing every finding: `delete all N findings?  y / n`, or `delete this finding?  y / n` when there is only one. |
-| `y` | Answer yes to that question. Only a bare `y` counts. Any other key cancels. |
+| `y` | Copy the summary of open findings not yet on the request. The list stays open. |
+| `y`, while `D` waits | Yes. Only a bare `y` counts, and any other key cancels. |
+| `P` | Publish the open findings. The float asks first. |
+| `?` | Open the help modal. The list comes back when help closes, on the same entry. |
 | `esc` / `F` / `q` | Close. |
 
 `D` is guarded because clearing every finding is the only irreversible thing in this
@@ -222,6 +241,7 @@ should not answer to a chord nobody aimed.
 | `shift+enter` | Insert a newline, where the terminal reports the modifier. |
 | `\` then `enter` | Insert a newline, where it does not. The `\` must sit just before the cursor. |
 | `esc` | Discard. |
+| `ctrl-c` | Quit the reviewer. The draft in the box is lost. |
 | anything else | Goes to the text box. |
 
 `enter` saves because a finding is usually one line, and `enter` is the key that ends a line.

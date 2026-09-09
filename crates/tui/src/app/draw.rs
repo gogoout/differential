@@ -19,7 +19,7 @@ use crate::vendor::text_utils::{drop_columns, slice_pairs, truncate_or_pad_spans
 
 use super::text::{
     Hint, Ink, basename, counts_columns, elide_head, file_list_rows, findings_rows, findings_skip,
-    pad_to_width, truncate_width,
+    joined, pad_to_width, plain, truncate_width,
 };
 use super::*;
 use crossterm::event::KeyCode;
@@ -77,12 +77,12 @@ impl App {
                     },
                 );
             }
-            Mode::Help => {
+            Mode::Help(_) => {
                 // As tall as its own table: a fixed height cut the footer off
                 // the first time the table grew a row.
-                let lines = help_lines(&self.theme);
+                let lines = help_lines(&self.theme, &self.help_sections());
                 let height = lines.len() as u16 + 2;
-                let area = centered_rect(panes.body, 62, height);
+                let area = centered_rect(panes.body, 74, height);
                 self.float(frame, area, " help ", Paragraph::new(lines));
             }
             Mode::Notice { title, text } => {
@@ -229,7 +229,11 @@ impl App {
                 // The same number the status after `y` reports: every record on
                 // the request, whether it is listed as a note or as its thread.
                 let kept = self.published_count();
-                let footer = footer_line(&self.theme, &findings_footer(*confirming, local, kept));
+                let hints = match *confirming {
+                    true => findings_question(local, kept),
+                    false => self.modal_footer(),
+                };
+                let footer = footer_line(&self.theme, &hints);
                 let mut title = format!(" findings · {notes} ");
                 if threads > 0 {
                     title.push_str(&format!("· threads · {threads} "));
@@ -298,7 +302,9 @@ impl App {
                 frame.render_widget(
                     Paragraph::new(lines).block(pane(
                         &self.theme,
-                        " files — enter jump · esc close ".to_string(),
+                        // The keys are the table's too, drawn in the title
+                        // because this box has no spare row for a footer.
+                        format!(" files — {} ", plain(&self.modal_hints())),
                         true,
                     )),
                     area,
@@ -1318,7 +1324,55 @@ impl App {
         }
     }
 
-    pub(super) fn draw_status(&self, frame: &mut Frame, area: Rect) {
+    /// The whole footer, in the order it is drawn: the pills and message, the
+    /// keys that fit beside them, and the column those keys start at. One
+    /// function for the draw and the hit test, as `centered_x` is for the
+    /// composer's footer: a footer laid out twice is how a button drifts off
+    /// the key under the pointer.
+    ///
+    /// A narrow terminal keeps the pills and `? help` and drops the rest: the
+    /// keys are the convenience, and the pills are the state of the review.
+    pub(super) fn status_row(&self, area: Rect) -> (Vec<Span<'static>>, Vec<Hint>, u16) {
+        let mut acts = self.footer_hints();
+        let left = self.status_left();
+        let width_of = |spans: &[Span]| -> usize {
+            spans
+                .iter()
+                .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                .sum()
+        };
+        let room = usize::from(area.width).saturating_sub(width_of(&left) + 1);
+        // Dropped one at a time, from the left: the last of them is `? help`,
+        // which is the way to every key that did not fit, so it goes last of
+        // all. A footer that dropped the lot at the first column too few
+        // emptied itself on an ordinary 100-column terminal.
+        while hints_width(&joined(&acts)) > room && acts.len() > 1 {
+            acts.remove(0);
+        }
+        let hints = if hints_width(&joined(&acts)) <= room {
+            joined(&acts)
+        } else {
+            Vec::new()
+        };
+        let width = hints_width(&hints);
+        let x0 = area.x
+            + area
+                .width
+                .saturating_sub(u16::try_from(width + 1).unwrap_or(u16::MAX));
+        (left, hints, x0)
+    }
+
+    /// Where the footer's keys are, for a click. The pills the draw needs
+    /// alongside them are of no interest to a hit test.
+    pub fn status_hints(&self, area: Rect) -> (Vec<Hint>, u16) {
+        let (_, hints, x0) = self.status_row(area);
+        (hints, x0)
+    }
+
+    /// The footer's left half: the pills, then the transient message. Its
+    /// width is what the keys on the right have to fit beside, so it is built
+    /// once per footer and measured there.
+    fn status_left(&self) -> Vec<Span<'static>> {
         let total: usize = self.groups().iter().map(|g| g.hunks.len()).sum();
         let done = self.session.reviewed_count().min(total);
         // Open and not yet on the request: what `y` copies and `P` sends. A
@@ -1379,10 +1433,13 @@ impl App {
             format!("{done}/{total} classes reviewed"),
         ));
         left.push(Span::styled(" ", bar));
+        // The pill carries the key that opens the list. A count with no way
+        // to reach what it counts is a reader asking "and where are they?",
+        // and `F` is not a key they can guess from a number.
         left.extend(tally(
             open > 0,
             self.theme.finding_fg,
-            format!("{open} finding{}", plural(open)),
+            format!("{open} finding{}(F)", plural(open)),
         ));
         // The forge's threads are a fact about the request, worn the same way
         // — and only on a review that is of a request, since a range has none.
@@ -1407,29 +1464,28 @@ impl App {
                 bar.fg(self.theme.context_fg),
             ));
         }
+        left
+    }
 
-        // Two keys, against the right edge. The rest moved to `?`, which is the
-        // one place a full list belongs — a footer naming ten keys is a wall
-        // the reader stops seeing, and it named them in a different order and a
-        // different wording from the modal that also named them.
-        let right = vec![
-            Span::styled("? ", bar.fg(self.theme.header_fg)),
-            Span::styled("help", bar.fg(self.theme.context_fg)),
-            Span::styled("  ·  ", bar.fg(self.theme.gutter_fg)),
-            Span::styled("q ", bar.fg(self.theme.header_fg)),
-            Span::styled("quit", bar.fg(self.theme.context_fg)),
-            Span::styled(" ", bar),
-        ];
-
+    pub(super) fn draw_status(&self, frame: &mut Frame, area: Rect) {
+        let bar = Style::default().bg(self.theme.status_bg);
+        // The acts of where the reader is standing, and `? help` behind them
+        // (issue 30). A fixed list of ten keys was a wall the reader stopped
+        // seeing; three keys that change with the place are three keys they
+        // read. The same table feeds `?`, so the two cannot drift.
         let used = |spans: &[Span]| -> usize {
             spans
                 .iter()
                 .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
                 .sum()
         };
-        let gap = (area.width as usize)
-            .saturating_sub(used(&left) + used(&right))
-            .max(1);
+        let (left, hints, x0) = self.status_row(area);
+        let right: Vec<Span> = footer_line(&self.theme, &hints)
+            .spans
+            .into_iter()
+            .map(|s| Span::styled(s.content, s.style.bg(self.theme.status_bg)))
+            .collect();
+        let gap = usize::from(x0.saturating_sub(area.x)).saturating_sub(used(&left));
         let mut spans = left;
         spans.push(Span::styled(" ".repeat(gap), bar));
         spans.extend(right);
@@ -2022,40 +2078,28 @@ pub fn composer_footer() -> Vec<Hint> {
     ]
 }
 
-/// The findings modal's keys — or, while `D` waits for its answer, the
-/// question, with `y` and `n` the two things a click can say.
-pub fn findings_footer(confirming: bool, local: usize, kept: usize) -> Vec<Hint> {
+/// While `D` waits for its answer, the findings modal's footer is the
+/// question, with `y` and `n` the two things a click can say. Its keys are
+/// the table's (`help.rs`), so only this one state lives here.
+pub fn findings_question(local: usize, kept: usize) -> Vec<Hint> {
     let press = |c: char| vec![Hint::press(KeyCode::Char(c))];
-    if confirming {
-        let question = match (local, kept) {
-            (1, 0) => "  delete this note?  ".to_string(),
-            (n, 0) => format!("  delete all {n} notes?  "),
-            (1, k) => format!("  delete this note? ({k} on the request stay)  "),
-            (n, k) => format!("  delete all {n} local notes? ({k} on the request stay)  "),
-        };
-        return vec![
-            Hint::note(&question, Ink::Warn),
-            Hint {
-                pieces: vec![("y".into(), Ink::Warn)],
-                presses: press('y'),
-            },
-            Hint::note(" / ", Ink::Warn),
-            Hint {
-                pieces: vec![("n".into(), Ink::Warn)],
-                presses: press('n'),
-            },
-        ];
-    }
+    let question = match (local, kept) {
+        (1, 0) => "  delete this note?  ".to_string(),
+        (n, 0) => format!("  delete all {n} notes?  "),
+        (1, k) => format!("  delete this note? ({k} on the request stay)  "),
+        (n, k) => format!("  delete all {n} local notes? ({k} on the request stay)  "),
+    };
     vec![
-        Hint::button("  enter ", "jump", vec![Hint::press(KeyCode::Enter)]),
-        Hint::button(
-            "  ·  dd ",
-            "delete",
-            vec![Hint::press(KeyCode::Char('d')); 2],
-        ),
-        Hint::button("  ·  D ", "clear local", press('D')),
-        Hint::button("  ·  P ", "publish", press('P')),
-        Hint::button("  ·  esc ", "close", vec![Hint::press(KeyCode::Esc)]),
+        Hint::note(&question, Ink::Warn),
+        Hint {
+            pieces: vec![("y".into(), Ink::Warn)],
+            presses: press('y'),
+        },
+        Hint::note(" / ", Ink::Warn),
+        Hint {
+            pieces: vec![("n".into(), Ink::Warn)],
+            presses: press('n'),
+        },
     ]
 }
 
@@ -2124,7 +2168,9 @@ pub fn file_list_modal_area(body: Rect, entries: &[FileListEntry]) -> Rect {
 /// and the key footer, centred on the body. Shared with the hit test.
 pub fn findings_modal_area(body: Rect, entries: usize, rules: usize) -> Rect {
     let height = (entries + rules + 4).min(body.height as usize) as u16;
-    centered_rect(body, 74, height)
+    // Wide enough for the whole key footer: six keys is 83 columns, and a
+    // list whose footer is cut is a list with keys nobody can read.
+    centered_rect(body, 86, height)
 }
 
 pub(super) fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
@@ -2138,67 +2184,37 @@ pub(super) fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
-pub(super) fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
-    // Nothing but keys. Five lines of prose about the plan pane and the diff's
-    // colours used to sit between `n/N` and `s`, splitting the table in half —
-    // and a legend is not what anyone opens `?` to find.
+pub(super) fn help_lines(theme: &Theme, sections: &[HelpSection]) -> Vec<Line<'static>> {
+    // The keys of where the reader is standing, and under a rule the keys
+    // that mean the same thing anywhere (issue 30). A list of everything is
+    // a list nobody reads to the end, and the reader who presses `?` is
+    // asking about the place they are in.
     let key = Style::default().fg(theme.header_fg);
     let text = Style::default().fg(theme.context_fg);
     let dim = Style::default().fg(theme.gutter_fg);
 
     let row = |k: &str, what: &str| {
         Line::from(vec![
-            Span::styled(format!("  {k:<11}"), key),
+            Span::styled(format!("  {k:<13}"), key),
             Span::styled(what.to_string(), text),
         ])
     };
-    // No title inside the box: the border already carries one, and a name the
-    // reader typed to get here is not what they opened `?` to read.
-    let mut lines = vec![
-        row("j/k", "move · in the plan pane, switch group"),
-        row("J/K  { }", "previous / next group"),
-        row("tab", "switch pane focus"),
-        row(
-            "mouse",
-            "wheel one row · alt+wheel sideways · click selects",
-        ),
-        row("n/N", "next / previous hunk"),
-        row("ctrl-d/u", "half page"),
-        row("g/G", "top / bottom"),
-        row("z", "boundary: show more, or cross into the hunk"),
-        row(
-            "",
-            "resolved thread: open / close it · elsewhere: unfold skim / noise",
-        ),
-        row("s", "unified / split diff"),
-        row("w", "soft wrap long lines"),
-        row(
-            "h/l  ·  0",
-            "shift the diff sideways · back to the left edge",
-        ),
-        row("f", "plan pane: reading plan / file tree"),
-        row("", "diff pane: file list (enter jumps)"),
-        row("space", "mark the hunk's class reviewed"),
-        row("v", "select lines · j/k extends · v or esc drops"),
-        row("c  ·  dd", "add finding · delete the one under the cursor"),
-        row(
-            "",
-            "your own comment: c edits, dd deletes · anyone's thread: r replies",
-        ),
-        row(
-            "x  ·  R",
-            "resolve / reopen the thread · refetch review threads",
-        ),
-        row(
-            "P",
-            "publish the open findings to the pull request (asks first)",
-        ),
-        row("F", "every finding, in one list"),
-        row("y  ·  q", "copy findings · quit (state is saved)"),
-        Line::from(""),
-        Line::from(Span::styled("  press any key to close", dim)),
-    ];
-    lines.insert(0, Line::from(""));
+    // No title inside the box: the border already carries one. The section
+    // titles are not that — they say WHERE each run of keys applies, which is
+    // the whole answer this modal gives.
+    let mut lines = vec![Line::from("")];
+    for (i, section) in sections.iter().enumerate() {
+        if i > 0 {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::from(Span::styled(
+            format!("  {}", section.title),
+            dim.add_modifier(Modifier::ITALIC),
+        )));
+        lines.extend(section.acts.iter().map(|a| row(&a.key, &a.help)));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("  press any key to close", dim)));
     lines
 }
 

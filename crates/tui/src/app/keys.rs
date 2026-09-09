@@ -11,7 +11,7 @@ use crate::rows::RowKind;
 
 use super::draw::{
     centered_x, composer_area, composer_footer, delete_comment_area, delete_comment_footer,
-    file_list_modal_area, findings_footer, findings_modal_area, footer_fits, footer_row,
+    file_list_modal_area, findings_modal_area, findings_question, footer_fits, footer_row,
     pane_inner, publish_area, publish_footer,
 };
 use super::text::{
@@ -169,7 +169,12 @@ impl App {
             return self.press_each(presses);
         }
         match &mut self.mode {
-            Mode::Help | Mode::Notice { .. } => {
+            Mode::Help(from) => {
+                if click {
+                    self.mode = *std::mem::replace(from, Box::new(Mode::Normal));
+                }
+            }
+            Mode::Notice { .. } => {
                 if click {
                     self.mode = Mode::Normal;
                 }
@@ -304,6 +309,14 @@ impl App {
     /// The keys a click at `at` presses on the open modal's footer, if it has
     /// one and the click is on a button of it.
     fn footer_presses_at(&self, panes: &Panes, at: Position) -> Option<Vec<KeyEvent>> {
+        // The window's own footer names the keys of where the reader is, and
+        // each is a button too — the same rule the modals already follow.
+        if panes.status.contains(at) {
+            let (hints, x0) = self.status_hints(panes.status);
+            return hint_at(&hints, x0, at.x)
+                .filter(|h| !h.presses.is_empty())
+                .map(|h| h.presses.clone());
+        }
         match &self.mode {
             Mode::Editing { editor, .. } => {
                 let row = footer_row(composer_area(panes.body, editor));
@@ -328,8 +341,13 @@ impl App {
             } => {
                 let rules = section_rules(entries).len();
                 let area = findings_modal_area(panes.body, entries.len(), rules);
-                let local = entries.iter().filter(|e| !e.thread && !e.published).count();
-                let hints = findings_footer(*confirming, local, self.published_count());
+                let hints = match *confirming {
+                    true => {
+                        let local = entries.iter().filter(|e| !e.thread && !e.published).count();
+                        findings_question(local, self.published_count())
+                    }
+                    false => self.modal_footer(),
+                };
                 footer_presses(&hints, footer_row(area), false, at)
             }
             _ => None,
@@ -350,13 +368,37 @@ impl App {
         // inside the normal-mode block, which a modal's early return never
         // reaches — so `dd` could only ever mean one thing in one place.
         let pending_d = std::mem::take(&mut self.pending_d);
+        // One key that quits from anywhere, the composer included. Every
+        // other way out is a key of the place the reader is standing in, and
+        // a reader who is lost is exactly the reader who cannot find one.
+        // A draft in the box is lost; a finding already saved is not, since
+        // the session writes on every change.
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.save_cursor();
+            return vec![Effect::Quit];
+        }
         // The footer's message answers "what did that key just do", so the
         // next key is exactly when the answer stops being wanted. Cleared
         // HERE, before any handler runs: 35 places write this field and one
         // used to clear it, which made every one-off message permanent.
         self.status.clear();
+        // `?` opens help from every place whose keys help can answer for,
+        // and the mode it was pressed in comes back when help closes. It is
+        // NOT a key in the composer, where it is a character, nor in a
+        // question, where every key but `y` is the no.
+        if key.code == KeyCode::Char('?') && self.help_opens() {
+            self.open_help();
+            return Vec::new();
+        }
         match &mut self.mode {
-            Mode::Help | Mode::Notice { .. } => {
+            // Help gives back the mode it was opened from: `?` in a modal
+            // used to be unpressable for exactly this reason — any key would
+            // have dropped the reader out of the list they were reading.
+            Mode::Help(from) => {
+                self.mode = *std::mem::replace(from, Box::new(Mode::Normal));
+                return Vec::new();
+            }
+            Mode::Notice { .. } => {
                 self.mode = Mode::Normal;
                 return Vec::new();
             }
@@ -401,6 +443,7 @@ impl App {
                 }
                 let rules = section_rules(entries).len();
                 let rows = findings_rows(entries.len(), rules, self.viewport.body_rows);
+                let mut copy = false;
                 match (key.code, key.modifiers) {
                     (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
                         step_list(selected, scroll, entries.len(), rows, true);
@@ -441,6 +484,11 @@ impl App {
                             self.pending_d = true;
                         }
                     }
+                    // Copy from here too, for the same reason `P` sends from
+                    // here: the list is where the reader sees what is not yet
+                    // on the request. The clipboard call is the caller's, so
+                    // this arm only says the summary is wanted.
+                    (KeyCode::Char('y'), _) => copy = true,
                     // Publish from here too: the list is where the reader sees
                     // what is not yet on the request, and it sends everything
                     // that is not, exactly as P in the diff does.
@@ -453,6 +501,9 @@ impl App {
                         self.mode = Mode::Normal;
                     }
                     _ => {}
+                }
+                if copy {
+                    return vec![Effect::CopySummary(self.findings_summary())];
                 }
                 return Vec::new();
             }
@@ -575,7 +626,6 @@ impl App {
                 self.save_cursor();
                 return vec![Effect::Quit];
             }
-            (KeyCode::Char('?'), _) => self.mode = Mode::Help,
             (KeyCode::Tab, _) => {
                 self.focus = match self.focus {
                     Focus::Groups => Focus::Detail,

@@ -17,6 +17,7 @@
 //! - [`text`] — measuring and cutting text to a column budget. A leaf: it
 //!   knows nothing about `App`, and both `keys` and `draw` read from it, which
 //!   is what keeps a list's scroll height equal to its drawn height.
+//! - [`help`] — one table of keys, read by the footer and by `?` (issue 30).
 //! - [`forge`] — the forge's side: fetching review threads on a worker
 //!   thread, resolving one, drafting a reply (ADR 0029).
 //!
@@ -199,7 +200,10 @@ pub enum Mode {
         own: Option<differential_engine::forge::OwnComment>,
         editor: Box<TextArea<'static>>,
     },
-    Help,
+    /// The keys of where the reader pressed `?`, carrying the mode they
+    /// pressed it in: help opened over a modal has to give that modal back,
+    /// not drop the reader into the review behind it.
+    Help(Box<Mode>),
     /// Something the footer cannot hold: a forge's whole answer to a call
     /// that failed. Any key closes it.
     Notice {
@@ -562,6 +566,7 @@ impl App {
 mod draw;
 mod findings;
 mod forge;
+mod help;
 mod keys;
 mod state;
 mod text;
@@ -571,9 +576,10 @@ mod text;
 // than at a number that was true of the box once.
 pub use draw::{
     FRAME_ROWS, centered_x, composer_area, composer_footer, delete_comment_area,
-    delete_comment_footer, file_list_modal_area, findings_footer, findings_modal_area, footer_row,
-    pane_inner, publish_area, publish_footer,
+    delete_comment_footer, file_list_modal_area, findings_modal_area, findings_question,
+    footer_row, pane_inner, publish_area, publish_footer,
 };
+pub use help::{Act, Area, HelpSection};
 pub use text::{Hint, Ink, hints_width};
 
 pub use forge::ForgeLink;

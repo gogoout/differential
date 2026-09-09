@@ -351,11 +351,15 @@ costs what is on screen rather than the size of the files the group touches (ADR
 How far each hunk is expanded is **transient**, like an open fold: a reading aid for this
 sitting, not a finding, so nothing about it reaches the sidecar store.
 
-**The footer is two pills and two keys.** What the review stands at goes on the left, as
-pills — `0/88 classes reviewed` and `3 findings` — because those are facts about the
+**The footer is the pills on the left, and the keys of this place on the right.** What
+the review stands at goes on the left, as
+pills — `0/88 classes reviewed` and `3 findings(F)` — because those are facts about the
 review, the same as a group's role and a hunk's class, and they wore a run of grey words
 that read as chrome. Each takes its own colour once it has something to say: green when
-every class is read, magenta when anything is filed. A transient message follows them.
+every class is read, magenta when anything is filed. The findings pill carries the key
+that opens the list, because a count with no way to reach what it counts leaves the reader
+asking where they are, and `F` is not a key a number can suggest. A transient message
+follows them.
 
 **So does a shifted pane**, ` +40 cols `, for exactly as long as the shift lasts. A reader
 who shifted right and then moved to a short file otherwise sees an empty pane and nothing
@@ -373,12 +377,49 @@ travelled. It replaced a passing message, which put a MODE in the same grey slot
 wanted. The clear happens once, on the way into key handling — not at the thirty-five
 places that write one.
 
-Against the right edge sit `? help` and `q quit`, and nothing else. The footer named ten
-keys, in a different order and a different wording from the modal that also named them —
-a wall the reader stops seeing, and two lists to keep in step. `?` is the one place a full
-list belongs; the footer's job is to point at it.
+**Against the right edge sit the keys of where the reader is standing**, and `? help`
+behind them. Three keys that change with the place are three keys a reader reads; ten
+fixed ones were a wall they stopped seeing. So the plan pane names `enter open · space
+reviewed · f tree`, the diff pane names `c note · space reviewed · v select`, an open
+selection names `j/k extend · c note · esc drop`, and a review thread names `r reply · x
+resolve` — with `c edit · dd delete` beside them on a comment of the reader's own. A
+label says what the key WILL do: `f tree` in the plan view, `f plan` in the file view,
+`x reopen` on a thread the forge has resolved.
+
+A modal names its keys in its own footer, so the window's footer names none of them: it
+keeps the pills and `? help`, and that is all. In the composer and the two `y` questions
+it drops `? help` too, because `?` is a character in one and the answer no in the others.
+
+**`q` is on none of them.** It is in `?`, beside `ctrl-c`, which quits from anywhere —
+the composer included, where a draft is the only thing lost and every saved finding is
+already on disk. A reader who is lost is exactly the reader who cannot find the key that
+gets them out, and one key that always works is worth more than a word on every screen.
+
+**When the row is too narrow, the keys go one at a time from the left**, and the pills
+and `? help` are what is left: the keys are the convenience, and `?` is the way to every
+one that did not fit.
+
+**`?` answers for where the reader is standing.** Three sections: the place's own keys
+under its name, then the keys that mean the same thing anywhere — `s`, `w`, `h/l  ·  0`,
+`F`, `y`, `P`, `R`, `?` and `q  ·  ctrl-c` — then **getting about, in one run at the
+bottom**: `j/k`, `J/K  { }`, `n/N`, `ctrl-d/u`, `g/G` and `tab`. Acting comes before
+moving because a reader opening `?` is asking what they can DO here, and the movement keys
+are the ones they already know; last is where a reference belongs. Movement is ONE run
+because "how do I move" is one question, and finding `j/k` under the place and `g/G` three
+sections later makes the reader ask it twice. `j/k` is the exception that proves it, and
+says what it does in THIS pane. Keys only: a wheel is not something a reader presses, so
+the mouse is in [the paragraph below](#keys) and not in the modal. Inside a modal the second
+section is absent, because those keys do not work there; the modal's own keys are the
+whole answer. `?` can be pressed inside the file list and the findings list, and the list
+comes back when help closes, on the entry it was on.
+
+**One table feeds both lists.** The footer's short words and the modal's long ones are
+rows of the same table, chosen by the same question about where the reader is, so the two
+cannot drift the way a footer and a modal that each held their own list did.
 
 ## Keys
+
+The full reference. `?` shows the subset that applies where the reader is standing.
 
 | key | action |
 |---|---|
@@ -398,15 +439,15 @@ list belongs; the footer's job is to point at it.
 | `c` | write a finding — on the line under the cursor, on the lines `v` selected, or on the whole hunk from a row that is not a line; on a line that already carries one, rewrite that one |
 | `dd` | delete the finding under the cursor |
 | `y` | copy the summary of open findings not yet on the request — a markdown list of `file:lines: note`, and nothing about groups: a group is how this reviewer chose to READ the branch, and the summary is pasted somewhere that has no idea what `g7` was. `dfr findings <range> --summary` prints the same text |
-| `F` | every finding and every review thread in one list — `enter` jumps to one, `dd` deletes a note, `D` clears the notes not on the request (published notes and threads stay), `P` publishes, `esc` closes |
+| `F` | every finding and every review thread in one list — `enter` jumps to one, `dd` deletes a note, `D` clears the notes not on the request (published notes and threads stay), `y` copies, `P` publishes, `esc` closes |
 | `r` on a review thread | draft a reply under it — the reader's own thread or anyone's — a finding carrying the thread's id until `P` publishes it ([forge.md](forge.md)) |
 | `c` on a comment of yours | rewrite it on the forge — yours by author, marker or address; on anyone else's, the footer says `not your comment` |
 | `dd` on a comment of yours | delete it on the forge and here — asks first, only `y` means yes; on anyone else's, the footer says `not your comment` |
 | `x` | resolve or reopen the review thread under the cursor, on the forge, at once |
 | `R` | fetch the request's review threads again |
 | `P` | publish the open findings to the request as one review — a float first says what goes and what stays and why; `y` sends, any other key keeps them local |
-| `?` | help — the keys, as one uninterrupted table |
-| `q` | quit — state is saved on every change, quitting never loses anything |
+| `?` | help — the keys of where the reader is standing, then the keys that work anywhere. Pressed in the file list or the findings list, it gives that list back |
+| `q`, `ctrl-c` | quit — state is saved on every change, quitting never loses anything. `ctrl-c` quits from every mode, the composer included, where it drops the draft in the box |
 
 **The mouse acts on the pane under the pointer, and that pane takes focus.** The wheel is
 `j`/`k` there — one row per notch in the diff, one entry per notch in the plan — and the
@@ -418,8 +459,9 @@ entry under it; a click on what is already selected is `enter`; a click on a row
 a blank — leaves the cursor where it was. The two floating overviews are maps, and a click
 on one does nothing. In the file-list and findings modals the wheel steps the list, a click
 selects an entry, a second click is `enter`, and a click outside the box closes it. Help and
-a notice close on a click. **A modal's footer names its keys, and each is a button**: a click
-on `enter save`, `esc close`, `dd delete` or the `y` of a question presses that key, through
+a notice close on a click. **A footer names its keys, and each is a button**: a click
+on `enter save`, `esc close`, `dd delete`, the `y` of a question, or any key on the
+window's own footer presses that key, through
 the same handler a hand reaches — so in the composer and the two `y`-only questions the
 footer is the one thing the mouse can touch.
 
@@ -683,7 +725,8 @@ marked `(resolved)` when the forge says so; a published note whose twin is fetch
 listed once, as the thread, and one whose twin is not fetched yet is marked
 `(published)`. `enter` on a thread lands on its rows; `dd` on one refuses as it does in
 the diff. `P` works from the list as it does from the diff, and sends everything not yet
-on the request.
+on the request. So does `y`, for the same reason: the list is where the reader sees what
+the request does not have yet.
 
 **`P` publishes, and asks first.** It is the one outward act in this reviewer, so the float
 reads its whole consequence back before the question: how many new comments and replies go
