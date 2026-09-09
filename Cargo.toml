@@ -13,8 +13,8 @@ members = [
 version = "0.7.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/gogoout/differential"
-homepage = "https://github.com/gogoout/differential"
+repository = "https://github.com/thepartly/differential"
+homepage = "https://github.com/thepartly/differential"
 
 [workspace.dependencies]
 # Version fields are required for publishing; bump them together with

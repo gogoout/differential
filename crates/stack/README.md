@@ -8,7 +8,7 @@ IDE, in `tig`, or with plain `git log`.
 foundation-first order. Skim exemplars are split from their skippable remainders. Generated
 noise is folded into one commit. The audit back-fill trails at the end.
 
-Project home: <https://github.com/gogoout/differential>
+Project home: <https://github.com/thepartly/differential>
 
 ## What you see
 

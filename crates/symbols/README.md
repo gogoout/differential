@@ -7,7 +7,7 @@ and the answer becomes the dependency graph that orders a review foundation-firs
 Three readers ship. Each ranks itself for a given path, and the best claimant answers. A
 file no reader claims contributes no symbols at all.
 
-Project home: <https://github.com/gogoout/differential>
+Project home: <https://github.com/thepartly/differential>
 
 ## Language coverage
 
