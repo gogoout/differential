@@ -26,7 +26,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::Context;
-use crossterm::event::{self, Event};
+use crossterm::event::{self, Event, MouseButton, MouseEventKind};
 use differential_engine::gitio::Repo;
 use differential_engine::grouping::Progress;
 use differential_engine::plan;
@@ -80,7 +80,11 @@ where
         original_hook(info);
     }));
     let mut terminal = vendor::terminal::TerminalFeatures::new()
-        .mouse_enabled(false)
+        // Capture means one wheel notch is one `ScrollDown` here, not the
+        // three arrow keys a terminal fakes for an alternate screen — three
+        // rows per notch was the complaint. It costs the terminal's own
+        // drag-select, which shift-drag or option-drag still gives.
+        .mouse_enabled(true)
         .keyboard_enhancements_supported(false)
         .enter(std::io::stdout())?;
 
@@ -172,6 +176,19 @@ where
     run_app(terminal, app, range.as_deref())
 }
 
+/// The mouse events the reviewer reads: the wheel, and a left press. Moves,
+/// drags and releases arrive too under capture and are dropped here.
+pub fn is_input(kind: MouseEventKind) -> bool {
+    matches!(
+        kind,
+        MouseEventKind::ScrollUp
+            | MouseEventKind::ScrollDown
+            | MouseEventKind::ScrollLeft
+            | MouseEventKind::ScrollRight
+            | MouseEventKind::Down(MouseButton::Left)
+    )
+}
+
 /// The terminal's current size, as the model wants it.
 fn measure() -> anyhow::Result<Viewport> {
     let (w, h) = crossterm::terminal::size()?;
@@ -223,6 +240,12 @@ fn run_app(terminal: &mut Session, mut app: App, range: Option<&str>) -> anyhow:
                 // nothing, which reads as the box being broken.
                 Event::Paste(text) => {
                     app.handle_paste(&text);
+                    dirty = true;
+                }
+                // Capture reports every motion of the pointer. Only the wheel
+                // and a press mean anything, so only they repaint.
+                Event::Mouse(m) if is_input(m.kind) => {
+                    effects.extend(app.handle_mouse(m));
                     dirty = true;
                 }
                 _ => {}

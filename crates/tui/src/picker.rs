@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::{self, Event, KeyCode, MouseButton, MouseEventKind};
 use differential_engine::gitio::Repo;
 use differential_engine::ports::{CommitHistory, CommitSummary};
 use differential_engine::worktree::is_clean;
@@ -85,12 +85,39 @@ pub fn pick_source(
         if !event::poll(Duration::from_millis(200))? {
             continue;
         }
-        let Event::Key(key) = event::read()? else {
-            continue;
+        let key = match event::read()? {
+            Event::Key(key) if key.is_press() => key,
+            // The wheel is `j`/`k`; a click selects the row under it, and a
+            // click on the selected row picks it. The checkbox toggles on a
+            // click, as it does on space.
+            Event::Mouse(m) if crate::is_input(m.kind) => {
+                match m.kind {
+                    MouseEventKind::ScrollDown => {
+                        state.selected = (state.selected + 1).min(commits.len().saturating_sub(1));
+                    }
+                    MouseEventKind::ScrollUp => state.selected = state.selected.saturating_sub(1),
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        match state.hit(m.row, commits.len()) {
+                            Some(Hit::Checkbox) => state.include_worktree = !state.include_worktree,
+                            Some(Hit::Commit(i)) if i == state.selected => {
+                                if let Some(c) = commits.get(i) {
+                                    picked = Some(PickedSource {
+                                        base: c.summary.sha.clone(),
+                                        include_worktree: state.include_worktree,
+                                    });
+                                }
+                                break Ok(());
+                            }
+                            Some(Hit::Commit(i)) => state.selected = i,
+                            None => {}
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+            _ => continue,
         };
-        if !key.is_press() {
-            continue;
-        }
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 state.selected = (state.selected + 1).min(commits.len().saturating_sub(1));
@@ -125,6 +152,33 @@ struct PickerState {
     scroll: usize,
 }
 
+/// What a click landed on.
+#[derive(Debug, PartialEq, Eq)]
+enum Hit {
+    Checkbox,
+    Commit(usize),
+}
+
+impl PickerState {
+    /// The rows above the commit list: the checkbox when it is drawn, and the
+    /// rule. `header` builds them and asserts this count against what it built.
+    fn header_rows(&self) -> usize {
+        usize::from(self.dirty) + 1
+    }
+
+    /// What screen row `y` holds. The list sits inside the block's top border,
+    /// so the first header row is `y == TOP_BORDER`; `scroll` is the one the
+    /// last draw settled on, which is the frame the click was aimed at.
+    fn hit(&self, y: u16, commits: usize) -> Option<Hit> {
+        let line = usize::from(y).checked_sub(TOP_BORDER)?;
+        if self.dirty && line == 0 {
+            return Some(Hit::Checkbox);
+        }
+        let i = self.scroll + line.checked_sub(self.header_rows())?;
+        (i < commits).then_some(Hit::Commit(i))
+    }
+}
+
 /// The bar marking rows inside the review. `base..head` EXCLUDES the base,
 /// so the bar stops above the selected row; the base itself is the boundary
 /// and gets a marker of its own.
@@ -132,8 +186,11 @@ const IN_RANGE: &str = "▌ ";
 const OUT_RANGE: &str = "  ";
 const AT_BASE: &str = "└ ";
 
+/// The block `draw` frames the list with: one row of border at the top, which
+/// is where the first header row is, and `BORDER_ROWS` in all.
+const TOP_BORDER: usize = 1;
 /// Block border, top and bottom.
-const BORDER_ROWS: usize = 2;
+const BORDER_ROWS: usize = 2 * TOP_BORDER;
 /// The blank line plus the key hints under the commit list.
 const FOOTER_ROWS: usize = 2;
 
@@ -188,6 +245,11 @@ fn header(theme: &Theme, state: &PickerState, bar: Style) -> Vec<Line<'static>> 
         ),
     ]));
 
+    debug_assert_eq!(
+        lines.len(),
+        state.header_rows(),
+        "the hit test counts the header rows this builds"
+    );
     lines
 }
 
@@ -313,12 +375,37 @@ mod tests {
         }
     }
 
+    /// A click names a screen row; the list is one border and the header
+    /// rows down, and `scroll` rows in.
+    #[test]
+    fn a_click_finds_the_checkbox_and_the_commit_under_it() {
+        use super::Hit;
+        let mut s = state(true);
+        assert_eq!(s.hit(0, 10), None, "the border");
+        assert_eq!(s.hit(1, 10), Some(Hit::Checkbox));
+        assert_eq!(s.hit(2, 10), None, "the rule");
+        assert_eq!(s.hit(3, 10), Some(Hit::Commit(0)));
+        s.scroll = 4;
+        assert_eq!(s.hit(3, 10), Some(Hit::Commit(4)));
+        assert_eq!(s.hit(8, 10), Some(Hit::Commit(9)));
+        assert_eq!(s.hit(9, 10), None, "past the last commit");
+
+        let clean = state(false);
+        assert_eq!(clean.hit(1, 10), None, "no checkbox: the rule");
+        assert_eq!(clean.hit(2, 10), Some(Hit::Commit(0)));
+    }
+
     /// The checkbox is only offered when it would change something.
     #[test]
     fn the_checkbox_row_appears_only_when_the_worktree_is_dirty() {
         let bar = ratatui::style::Style::default();
         assert_eq!(super::header(&theme(), &state(true), bar).len(), 2);
         assert_eq!(super::header(&theme(), &state(false), bar).len(), 1);
+        // The hit test counts the same rows without building them.
+        for dirty in [true, false] {
+            let s = state(dirty);
+            assert_eq!(super::header(&theme(), &s, bar).len(), s.header_rows());
+        }
     }
 
     /// The commit list's viewport is derived from the header, so hiding a row

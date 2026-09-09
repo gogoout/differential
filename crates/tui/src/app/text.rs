@@ -4,6 +4,7 @@
 //! from it, which is the point — a modal's scroll height and its drawn height
 //! come from one function, and they used to be two different numbers.
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -160,6 +161,38 @@ pub(super) fn findings_rows(entries: usize, rules: usize, body_rows: usize) -> u
     (entries + rules + 4).min(body_rows).saturating_sub(3)
 }
 
+/// The entry drawn on line `line` of the findings list, counting from the
+/// list's first line with every section rule counted as a line of its own —
+/// the same rows the list scrolls by. `None` on a rule, or past the end.
+pub(super) fn findings_entry_at_line(
+    entries: usize,
+    rules: &[usize],
+    line: usize,
+) -> Option<usize> {
+    let mut drawn = 0;
+    for i in 0..entries {
+        if rules.contains(&i) {
+            if drawn == line {
+                return None;
+            }
+            drawn += 1;
+        }
+        if drawn == line {
+            return Some(i);
+        }
+        drawn += 1;
+    }
+    None
+}
+
+/// Drawn rows the findings list skips to start at entry `scroll`: the entries
+/// above it, and every section rule drawn above or at it. The draw and the
+/// hit test both count from here, so a click lands on the entry it was drawn
+/// on.
+pub(super) fn findings_skip(scroll: usize, rules: &[usize]) -> usize {
+    scroll + rules.iter().filter(|r| **r <= scroll).count()
+}
+
 /// The same, for the file list — a plain bordered box with no footer row.
 pub(super) fn file_list_rows(entries: usize, body_rows: usize) -> usize {
     (entries + 2).min(body_rows).saturating_sub(2)
@@ -177,6 +210,78 @@ pub(super) fn follow(selected: usize, scroll: usize, height: usize) -> usize {
     } else {
         scroll
     }
+}
+
+/// How a piece of a footer hint is inked. Names, not colours: the footer is
+/// described here and painted in `draw`, and hit-tested in `keys` without a
+/// palette in hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ink {
+    Key,
+    Text,
+    Dim,
+    Warn,
+}
+
+/// One item of a modal's footer — `enter save`, `y publishes` — and the keys
+/// a click on it presses. No presses, and it only reads.
+///
+/// One description serves the draw and the hit test, so the button a reader
+/// sees is the button under their pointer: a footer laid out twice, once for
+/// each, is how the two drift apart.
+#[derive(Debug, Clone)]
+pub struct Hint {
+    pub pieces: Vec<(String, Ink)>,
+    pub presses: Vec<KeyEvent>,
+}
+
+impl Hint {
+    /// A key and what it does, as `  enter ` + `save`.
+    pub fn button(key: &str, what: &str, presses: Vec<KeyEvent>) -> Self {
+        Hint {
+            pieces: vec![(key.to_string(), Ink::Key), (what.to_string(), Ink::Text)],
+            presses,
+        }
+    }
+
+    /// Words that only read: a separator, a clause about the other keys.
+    pub fn note(text: &str, ink: Ink) -> Self {
+        Hint {
+            pieces: vec![(text.to_string(), ink)],
+            presses: Vec::new(),
+        }
+    }
+
+    /// One press of a bare key.
+    pub fn press(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    pub fn width(&self) -> usize {
+        self.pieces
+            .iter()
+            .map(|(t, _)| UnicodeWidthStr::width(t.as_str()))
+            .sum()
+    }
+}
+
+/// Columns the whole footer takes.
+pub fn hints_width(hints: &[Hint]) -> usize {
+    hints.iter().map(Hint::width).sum()
+}
+
+/// The hint under column `x` when the footer's first column is `x0`.
+pub(super) fn hint_at(hints: &[Hint], x0: u16, x: u16) -> Option<&Hint> {
+    let mut left = usize::from(x0);
+    let x = usize::from(x);
+    for h in hints {
+        let right = left + h.width();
+        if (left..right).contains(&x) {
+            return Some(h);
+        }
+        left = right;
+    }
+    None
 }
 
 #[cfg(test)]

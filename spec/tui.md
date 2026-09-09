@@ -408,6 +408,26 @@ list belongs; the footer's job is to point at it.
 | `?` | help — the keys, as one uninterrupted table |
 | `q` | quit — state is saved on every change, quitting never loses anything |
 
+**The mouse acts on the pane under the pointer, and that pane takes focus.** The wheel is
+`j`/`k` there — one row per notch in the diff, one entry per notch in the plan — and the
+horizontal wheel is `h`/`l`, and so is the ordinary wheel with shift, alt or ctrl held, since
+most mice have no sideways wheel — three keys because several terminals keep shift for
+themselves as the "select text anyway" key while a program has the mouse, and never send it
+on (Ghostty's `mouse-shift-capture`, off by default, is one). A click selects the row or
+entry under it; a click on what is already selected is `enter`; a click on a row the cursor cannot land on — the group header,
+a blank — leaves the cursor where it was. The two floating overviews are maps, and a click
+on one does nothing. In the file-list and findings modals the wheel steps the list, a click
+selects an entry, a second click is `enter`, and a click outside the box closes it. Help and
+a notice close on a click. **A modal's footer names its keys, and each is a button**: a click
+on `enter save`, `esc close`, `dd delete` or the `y` of a question presses that key, through
+the same handler a hand reaches — so in the composer and the two `y`-only questions the
+footer is the one thing the mouse can touch.
+
+One notch is one row because the reviewer **captures the mouse**. Without capture a terminal
+fakes the wheel as arrow keys on an alternate screen, usually three per notch, and one notch
+jumped three rows. Capture costs the terminal's own drag-select; shift-drag or option-drag
+still selects text in most terminals.
+
 **`y` must never trap the text.** The clipboard `arboard` reaches is the one on the
 machine the process runs on, and a remote session has none — so over SSH `y` reported
 `clipboard unavailable` and the summary was unreachable from inside the reviewer. Two
@@ -450,7 +470,9 @@ the only thing picking the newest commit can mean. Commits show the branch and t
 pointing at them (read with `for-each-ref`, plumbing, so no dependence on
 `log.decorate` config), and a leading bar marks every row inside the range as the cursor
 moves, so what is covered is visible while choosing. `HEAD` itself is a valid base: with
-the box ticked it means "just my uncommitted work".
+the box ticked it means "just my uncommitted work". The mouse works here as in the reviewer:
+the wheel moves the cursor a row, a click selects the row under it, a second click picks it,
+and a click on the checkbox ticks it.
 
 Uncommitted sources run the full grouped pipeline like any range (ADR 0017); their review
 identity keys on the base sha plus the stable literal `WORKTREE`, so marks and findings

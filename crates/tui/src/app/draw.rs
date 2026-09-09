@@ -18,10 +18,11 @@ use crate::theme::Theme;
 use crate::vendor::text_utils::{drop_columns, slice_pairs, truncate_or_pad_spans, wrap_pairs};
 
 use super::text::{
-    basename, counts_columns, elide_head, file_list_rows, findings_rows, pad_to_width,
-    truncate_width,
+    Hint, Ink, basename, counts_columns, elide_head, file_list_rows, findings_rows, findings_skip,
+    pad_to_width, truncate_width,
 };
 use super::*;
+use crossterm::event::KeyCode;
 
 impl App {
     // ------------------------------------------------------------- drawing
@@ -59,46 +60,21 @@ impl App {
             Mode::Editing {
                 editor: textarea, ..
             } => {
-                // A float over the diff, not a strip pinned to the bottom: a
-                // finding is about the lines you can still see around it. It
-                // grows with the text — borders, footer and a spare row on top
-                // of the lines — up to the body, and the text area scrolls
-                // beyond that.
-                let width = panes.body.width * 3 / 5;
-                // Rows as wrapped, not lines as typed; the text area scrolls
-                // beyond the body anyway.
-                let rows = wrapped_rows(
-                    textarea.lines().iter().map(String::as_str),
-                    usize::from(width.saturating_sub(2)),
-                );
-                let wanted = u16::try_from(rows).unwrap_or(u16::MAX).saturating_add(4);
-                let height = wanted.clamp(10, panes.body.height.max(10));
-                let area = centered_rect(panes.body, width, height);
+                let area = composer_area(panes.body, textarea);
                 clear_to_ground(frame, &self.theme, area);
                 frame.render_widget(&**textarea, area);
                 // The keys go INSIDE the box, on its last row, where a footer
                 // belongs — the title says what you are annotating.
-                let footer = Rect {
-                    x: area.x + 1,
-                    y: area.y + area.height.saturating_sub(2),
-                    width: area.width.saturating_sub(2),
-                    height: 1,
-                };
+                let hints = composer_footer();
+                let row = footer_row(area);
+                let x = centered_x(row, hints_width(&hints));
                 frame.render_widget(
-                    Paragraph::new(Line::from(vec![
-                        Span::styled("  enter ", Style::default().fg(self.theme.header_fg)),
-                        Span::styled("save", Style::default().fg(self.theme.context_fg)),
-                        Span::styled("  │  ", Style::default().fg(self.theme.gutter_fg)),
-                        Span::styled("shift+enter ", Style::default().fg(self.theme.header_fg)),
-                        Span::styled("or", Style::default().fg(self.theme.context_fg)),
-                        Span::styled(" \\↵ ", Style::default().fg(self.theme.header_fg)),
-                        Span::styled("newline", Style::default().fg(self.theme.context_fg)),
-                        Span::styled("  │  ", Style::default().fg(self.theme.gutter_fg)),
-                        Span::styled("esc ", Style::default().fg(self.theme.header_fg)),
-                        Span::styled("cancel", Style::default().fg(self.theme.context_fg)),
-                    ]))
-                    .alignment(ratatui::layout::Alignment::Center),
-                    footer,
+                    footer_line(&self.theme, &hints),
+                    Rect {
+                        x,
+                        width: row.width.saturating_sub(x - row.x),
+                        ..row
+                    },
                 );
             }
             Mode::Help => {
@@ -106,14 +82,8 @@ impl App {
                 // the first time the table grew a row.
                 let lines = help_lines(&self.theme);
                 let height = lines.len() as u16 + 2;
-                self.float(
-                    frame,
-                    panes.body,
-                    62,
-                    height,
-                    " help ",
-                    Paragraph::new(lines),
-                );
+                let area = centered_rect(panes.body, 62, height);
+                self.float(frame, area, " help ", Paragraph::new(lines));
             }
             Mode::Notice { title, text } => {
                 // Wrapped, and as tall as it needs: an error is read once and
@@ -138,104 +108,20 @@ impl App {
                 )));
                 self.float(
                     frame,
-                    panes.body,
-                    width,
-                    height,
+                    centered_rect(panes.body, width, height),
                     &format!(" {title} "),
                     Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
                 );
             }
             Mode::DeleteComment { own } => {
-                let key = Style::default().fg(self.theme.header_fg);
-                let text = Style::default().fg(self.theme.context_fg);
-                let at = &own.at;
-                let lines = vec![
-                    Line::from(""),
-                    Line::from(Span::styled(
-                        format!("  delete your comment at {at} on the pull request?"),
-                        text,
-                    )),
-                    Line::from(""),
-                    Line::from(vec![
-                        Span::styled("  y", key),
-                        Span::styled(
-                            " deletes it there and here  ·  any other key keeps it",
-                            Style::default().fg(self.theme.gutter_fg),
-                        ),
-                    ]),
-                ];
-                let width = panes.body.width.saturating_sub(6).min(80);
-                let height = lines.len() as u16 + 2;
-                self.float(
-                    frame,
-                    panes.body,
-                    width,
-                    height,
-                    " delete ",
-                    Paragraph::new(lines),
-                );
+                let lines = self.delete_comment_lines(own);
+                let area = delete_comment_area(panes.body, lines.len());
+                self.float(frame, area, " delete ", Paragraph::new(lines));
             }
             Mode::Publish { plan } => {
-                // What leaves, what stays, and why — before anything leaves.
-                // The one outward act in this reviewer, so it reads its whole
-                // consequence back before asking (ADR 0029).
-                let key = Style::default().fg(self.theme.header_fg);
-                let text = Style::default().fg(self.theme.context_fg);
-                let dim = Style::default().fg(self.theme.gutter_fg);
-                let (comments, replies) = (plan.batch.comments.len(), plan.batch.replies.len());
-                let mut lines = vec![Line::from("")];
-                let mut what = Vec::new();
-                if comments > 0 {
-                    what.push(format!("{comments} new comment{}", plural(comments)));
-                }
-                if replies > 0 {
-                    what.push(format!(
-                        "{replies} repl{}",
-                        if replies == 1 { "y" } else { "ies" }
-                    ));
-                }
-                lines.push(Line::from(Span::styled(
-                    format!(
-                        "  {} go to the pull request as one review",
-                        what.join(" and ")
-                    ),
-                    text,
-                )));
-                if !plan.excluded.is_empty() {
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(Span::styled(
-                        format!("  {} stay local:", plan.excluded.len()),
-                        text,
-                    )));
-                    // The reason on its own line under the place: side by side
-                    // they overran the box on any path of ordinary length, and
-                    // a float clips rather than wraps.
-                    for ex in &plan.excluded {
-                        lines.push(Line::from(Span::styled(
-                            format!("    {}:{}", ex.file, ex.lines),
-                            key,
-                        )));
-                        lines.push(Line::from(Span::styled(
-                            format!("      {}", ex.reason),
-                            dim,
-                        )));
-                    }
-                }
-                lines.push(Line::from(""));
-                lines.push(Line::from(vec![
-                    Span::styled("  y", key),
-                    Span::styled(" publishes  ·  any other key keeps them local", dim),
-                ]));
-                let width = panes.body.width.saturating_sub(6).min(90);
-                let height = lines.len() as u16 + 2;
-                self.float(
-                    frame,
-                    panes.body,
-                    width,
-                    height,
-                    " publish ",
-                    Paragraph::new(lines),
-                );
+                let lines = self.publish_lines(plan);
+                let area = publish_area(panes.body, lines.len());
+                self.float(frame, area, " publish ", Paragraph::new(lines));
             }
             Mode::Findings {
                 entries,
@@ -248,8 +134,7 @@ impl App {
                 let notes = entries.len() - threads;
                 let rules = section_rules(entries);
                 let body_rows = panes.body.height as usize;
-                let height = (entries.len() + rules.len() + 4).min(body_rows) as u16;
-                let area = centered_rect(panes.body, 74, height);
+                let area = findings_modal_area(panes.body, entries.len(), rules.len());
                 let inner_w = area.width.saturating_sub(2) as usize;
                 // The same number `j`/`k` scroll against, from the same
                 // function, so the window a list moves in is the window it is
@@ -332,50 +217,19 @@ impl App {
                     lines.push(line);
                 }
                 // A rule is a row too, so scrolling counts drawn rows.
-                let skip = *scroll + rules.iter().filter(|r| **r <= *scroll).count();
+                let skip = findings_skip(*scroll, &rules);
                 let shown: Vec<Line> = lines.into_iter().skip(skip).take(inner_h).collect();
 
                 // The keys go in a footer inside the box, as the composer's
                 // do: the confirmation needs that row anyway, and a title
                 // carrying four keys is longer than the box.
-                let key = Style::default().fg(self.theme.header_fg);
-                let text = Style::default().fg(self.theme.context_fg);
                 // Counts what `y` would take: the local notes. A published
                 // note and a thread are listed here but are not up for this.
                 let local = entries.iter().filter(|e| !e.thread && !e.published).count();
                 // The same number the status after `y` reports: every record on
                 // the request, whether it is listed as a note or as its thread.
                 let kept = self.published_count();
-                let footer = if *confirming {
-                    Line::from(Span::styled(
-                        match (local, kept) {
-                            (1, 0) => "  delete this note?  y / n".to_string(),
-                            (n, 0) => format!("  delete all {n} notes?  y / n"),
-                            (1, k) => {
-                                format!("  delete this note? ({k} on the request stay)  y / n")
-                            }
-                            (n, k) => format!(
-                                "  delete all {n} local notes? ({k} on the request stay)  y / n"
-                            ),
-                        },
-                        Style::default()
-                            .fg(self.theme.finding_fg)
-                            .add_modifier(Modifier::BOLD),
-                    ))
-                } else {
-                    Line::from(vec![
-                        Span::styled("  enter ", key),
-                        Span::styled("jump", text),
-                        Span::styled("  ·  dd ", key),
-                        Span::styled("delete", text),
-                        Span::styled("  ·  D ", key),
-                        Span::styled("clear local", text),
-                        Span::styled("  ·  P ", key),
-                        Span::styled("publish", text),
-                        Span::styled("  ·  esc ", key),
-                        Span::styled("close", text),
-                    ])
-                };
+                let footer = footer_line(&self.theme, &findings_footer(*confirming, local, kept));
                 let mut title = format!(" findings · {notes} ");
                 if threads > 0 {
                     title.push_str(&format!("· threads · {threads} "));
@@ -388,15 +242,7 @@ impl App {
                     Paragraph::new(shown).block(pane(&self.theme, title, true)),
                     area,
                 );
-                frame.render_widget(
-                    Paragraph::new(footer),
-                    Rect {
-                        x: area.x + 1,
-                        y: area.y + area.height.saturating_sub(2),
-                        width: area.width.saturating_sub(2),
-                        height: 1,
-                    },
-                );
+                frame.render_widget(Paragraph::new(footer), footer_row(area));
             }
             Mode::FileList {
                 entries,
@@ -404,24 +250,13 @@ impl App {
                 scroll,
             } => {
                 let body_rows = panes.body.height as usize;
-                let height = (entries.len() + 2).min(body_rows) as u16;
                 // Window before building, and by the same number `j`/`k`
                 // scroll against: the surplus lines used to be built and then
                 // silently dropped off the bottom of the box.
                 let inner_h = file_list_rows(entries.len(), body_rows);
 
                 let (add_w, del_w, lead) = counts_columns(entries);
-                let widest = entries
-                    .iter()
-                    .map(|e| UnicodeWidthStr::width(e.path.as_str()))
-                    .max()
-                    .unwrap_or(0);
-                // The box fits its content, exactly as its height already
-                // does — 70 columns is a floor, not the size. A fixed width
-                // cut deep paths against the border and took the file NAME
-                // with them, which is the one part of a path worth reading.
-                let width = (lead + widest + 2).max(70).min(panes.body.width as usize) as u16;
-                let area = centered_rect(panes.body, width, height);
+                let area = file_list_modal_area(panes.body, entries);
                 let inner_w = area.width.saturating_sub(2) as usize;
                 let path_col = inner_w.saturating_sub(lead);
 
@@ -822,19 +657,28 @@ impl App {
 
     /// The flat file list, floating over the foot of the plan pane: where you
     /// are, and how much is left.
-    pub(super) fn draw_file_list(&self, frame: &mut Frame, plan: Rect) {
+    /// Where the file list floats while the diff has focus: the foot of the
+    /// plan pane, or nowhere when there are no files. Shared with the hit
+    /// test, so a click on the float is known to be one.
+    pub fn file_list_area(&self, plan: Rect) -> Option<Rect> {
         let files_len = self.listed_files.len();
         if files_len == 0 {
-            return;
+            return None;
         }
         let h = (files_len as u16 + 2)
             .min(plan.height.saturating_sub(2))
             .max(3);
-        let area = Rect {
+        Some(Rect {
             x: plan.x,
             y: plan.y + plan.height.saturating_sub(h),
             width: plan.width,
             height: h,
+        })
+    }
+
+    pub(super) fn draw_file_list(&self, frame: &mut Frame, plan: Rect) {
+        let Some(area) = self.file_list_area(plan) else {
+            return;
         };
         clear_to_ground(frame, &self.theme, area);
         self.draw_file_list_in(frame, area);
@@ -910,7 +754,9 @@ impl App {
     ///
     /// Deliberately not interactive. It is a map; a second cursor in a second
     /// pane is a thing to explain and to get wrong.
-    pub(super) fn draw_group_map(&self, frame: &mut Frame, detail: Rect) {
+    /// Where the group map floats while the plan has focus, or nowhere when the
+    /// pane is too short to hold it. Shared with the hit test.
+    pub fn group_map_area(&self, detail: Rect) -> Option<Rect> {
         // The group's header block is what the height is capped against, so its
         // full label and description — which the 40-column plan pane truncates —
         // stay readable however many files the group touches.
@@ -920,25 +766,31 @@ impl App {
             .take_while(|r| matches!(r.kind, RowKind::GroupHeader | RowKind::Blank))
             .count()
             .min(6) as u16;
-        // Read, not recomputed. This walked the whole tree on every frame:
-        // an ancestor pass over every row above each live file, and a scan
-        // forward per folded directory. It depends on `tree` and `map_files`
-        // and nothing else, both of which `rebuild_overviews` already owns.
-        let rows = &self.map_rows;
         // A pane too short to hold the header block AND a box yields the BOX. A
         // floor that beat the cap would cover the very label the cap exists to
         // protect, which is the one thing the reader cannot do without.
         let cap = detail.height.saturating_sub(header + 2);
         if cap < 3 {
-            return;
+            return None;
         }
-        let h = (rows.len() as u16 + 2).max(3).min(cap);
-        let area = Rect {
+        let h = (self.map_rows.len() as u16 + 2).max(3).min(cap);
+        Some(Rect {
             x: detail.x,
             y: detail.y + detail.height.saturating_sub(h),
             width: detail.width,
             height: h,
+        })
+    }
+
+    pub(super) fn draw_group_map(&self, frame: &mut Frame, detail: Rect) {
+        let Some(area) = self.group_map_area(detail) else {
+            return;
         };
+        // Read, not recomputed. This walked the whole tree on every frame:
+        // an ancestor pass over every row above each live file, and a scan
+        // forward per folded directory. It depends on `tree` and `map_files`
+        // and nothing else, both of which `rebuild_overviews` already owns.
+        let rows = &self.map_rows;
         clear_to_ground(frame, &self.theme, area);
         let inner_h = area.height.saturating_sub(2) as usize;
         let dim = Style::default().fg(self.theme.gutter_fg);
@@ -1175,19 +1027,82 @@ impl App {
         out
     }
 
-    /// One float over the body: cleared to the theme's ground, framed as a
-    /// pane with `title`, sized as asked and clamped to the body. Every modal
-    /// but the composer and the two lists draws through here.
-    fn float(
+    /// The publish modal's text: what leaves, what stays, and why — before
+    /// anything leaves. The one outward act in this reviewer, so it reads its
+    /// whole consequence back before asking (ADR 0029).
+    pub(super) fn publish_lines(
         &self,
-        frame: &mut Frame,
-        body: Rect,
-        width: u16,
-        height: u16,
-        title: &str,
-        paragraph: Paragraph,
-    ) {
-        let area = centered_rect(body, width, height);
+        plan: &differential_engine::forge::PublishPlan,
+    ) -> Vec<Line<'static>> {
+        let key = Style::default().fg(self.theme.header_fg);
+        let text = Style::default().fg(self.theme.context_fg);
+        let dim = Style::default().fg(self.theme.gutter_fg);
+        let (comments, replies) = (plan.batch.comments.len(), plan.batch.replies.len());
+        let mut lines = vec![Line::from("")];
+        let mut what = Vec::new();
+        if comments > 0 {
+            what.push(format!("{comments} new comment{}", plural(comments)));
+        }
+        if replies > 0 {
+            what.push(format!(
+                "{replies} repl{}",
+                if replies == 1 { "y" } else { "ies" }
+            ));
+        }
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  {} go to the pull request as one review",
+                what.join(" and ")
+            ),
+            text,
+        )));
+        if !plan.excluded.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!("  {} stay local:", plan.excluded.len()),
+                text,
+            )));
+            // The reason on its own line under the place: side by side
+            // they overran the box on any path of ordinary length, and
+            // a float clips rather than wraps.
+            for ex in &plan.excluded {
+                lines.push(Line::from(Span::styled(
+                    format!("    {}:{}", ex.file, ex.lines),
+                    key,
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!("      {}", ex.reason),
+                    dim,
+                )));
+            }
+        }
+        lines.push(Line::from(""));
+        lines.push(footer_line(&self.theme, &publish_footer()));
+        lines
+    }
+
+    /// The delete-comment modal's text.
+    pub(super) fn delete_comment_lines(
+        &self,
+        own: &differential_engine::forge::OwnComment,
+    ) -> Vec<Line<'static>> {
+        let text = Style::default().fg(self.theme.context_fg);
+        let at = &own.at;
+        vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("  delete your comment at {at} on the pull request?"),
+                text,
+            )),
+            Line::from(""),
+            footer_line(&self.theme, &delete_comment_footer()),
+        ]
+    }
+
+    /// One float over the body: cleared to the theme's ground and framed as a
+    /// pane with `title`, in the `area` its caller measured. Every modal but
+    /// the composer and the two lists draws through here.
+    fn float(&self, frame: &mut Frame, area: Rect, title: &str, paragraph: Paragraph) {
         clear_to_ground(frame, &self.theme, area);
         frame.render_widget(
             paragraph.block(pane(&self.theme, title.to_string(), true)),
@@ -1980,14 +1895,32 @@ pub(super) fn clear_to_ground(frame: &mut Frame, theme: &Theme, area: Rect) {
     frame.render_widget(Block::default().style(theme.ground()), area);
 }
 
+/// The frame every pane and every box wears: one cell of border each side.
+/// `pane` paints it; `pane_inner` reads it. Nothing else names the border,
+/// so a change to the frame changes both.
+fn frame() -> Block<'static> {
+    Block::default().borders(Borders::ALL)
+}
+
+/// Rows the frame takes from a box's height: its top and bottom border. A box
+/// sized "around `n` lines" is `n + FRAME_ROWS` tall; a unit test holds this
+/// to what `frame` actually takes.
+pub const FRAME_ROWS: u16 = 2;
+
+/// The content `frame` leaves inside `area`. The rows a click is mapped onto
+/// and the footer row are read from here, so a hit test cannot disagree with
+/// the draw about where the border is.
+pub fn pane_inner(area: Rect) -> Rect {
+    frame().inner(area)
+}
+
 pub(super) fn pane(theme: &Theme, title: String, focused: bool) -> Block<'static> {
     let ink = if focused {
         theme.header_fg
     } else {
         theme.gutter_fg
     };
-    Block::default()
-        .borders(Borders::ALL)
+    frame()
         .border_style(Style::default().fg(theme.gutter_fg))
         .title(Span::styled(
             title,
@@ -2001,6 +1934,197 @@ pub(super) fn pane(theme: &Theme, title: String, focused: bool) -> Block<'static
 fn wrapped_rows<'a>(lines: impl Iterator<Item = &'a str>, inner: usize) -> usize {
     let inner = inner.max(1);
     lines.map(|l| textwrap::wrap(l, inner).len().max(1)).sum()
+}
+
+/// The composer's box: three fifths of the body wide, and as tall as its
+/// text — the frame, the footer and a spare row on top of the lines — up to
+/// the body, beyond which the text area scrolls. A float over the diff, not a
+/// strip pinned to the bottom: a finding is about the lines you can still see
+/// around it. Shared with the hit test.
+pub fn composer_area(body: Rect, textarea: &TextArea<'_>) -> Rect {
+    let width = body.width * 3 / 5;
+    // Rows as wrapped, not lines as typed; the text area scrolls beyond the
+    // body anyway.
+    let rows = wrapped_rows(
+        textarea.lines().iter().map(String::as_str),
+        usize::from(width.saturating_sub(FRAME_ROWS)),
+    );
+    // The frame, the footer and the spare row: that is the four.
+    let wanted = u16::try_from(rows)
+        .unwrap_or(u16::MAX)
+        .saturating_add(FRAME_ROWS + 2);
+    let height = wanted.clamp(10, body.height.max(10));
+    centered_rect(body, width, height)
+}
+
+/// A box centred on the body around `lines` of text, `width` wide at most.
+/// Clamped to the body, in which case the last lines are not drawn; see
+/// `footer_fits`.
+fn box_around(body: Rect, width: u16, lines: usize) -> Rect {
+    let height = u16::try_from(lines)
+        .unwrap_or(u16::MAX)
+        .saturating_add(FRAME_ROWS);
+    centered_rect(body, width, height)
+}
+
+/// Whether a box `box_around` sized for `lines` was tall enough to hold them
+/// all — so its last line, the footer, is on screen to be clicked.
+pub(super) fn footer_fits(area: Rect, lines: usize) -> bool {
+    usize::from(area.height) == lines + usize::from(FRAME_ROWS)
+}
+
+/// The publish modal's box, around `lines` of text.
+pub fn publish_area(body: Rect, lines: usize) -> Rect {
+    box_around(body, body.width.saturating_sub(6).min(90), lines)
+}
+
+/// The delete-comment modal's box, around `lines` of text.
+pub fn delete_comment_area(body: Rect, lines: usize) -> Rect {
+    box_around(body, body.width.saturating_sub(6).min(80), lines)
+}
+
+/// A box's footer: the last content row `frame` leaves inside it.
+pub fn footer_row(area: Rect) -> Rect {
+    let inner = pane_inner(area);
+    Rect {
+        x: inner.x,
+        y: inner.bottom().saturating_sub(1),
+        width: inner.width,
+        height: 1,
+    }
+}
+
+/// Where a line `width` columns wide starts when centred in `row` — the one
+/// arithmetic for the composer's footer, drawn and hit-tested, so the two
+/// cannot round differently.
+pub fn centered_x(row: Rect, width: usize) -> u16 {
+    let slack = usize::from(row.width).saturating_sub(width);
+    row.x + u16::try_from(slack / 2).unwrap_or(0)
+}
+
+/// The composer's keys. The newline hint reads and does nothing on a click:
+/// a caret is where a newline goes, and a click has none.
+pub fn composer_footer() -> Vec<Hint> {
+    vec![
+        Hint::button("  enter ", "save", vec![Hint::press(KeyCode::Enter)]),
+        Hint::note("  │  ", Ink::Dim),
+        Hint {
+            pieces: vec![
+                ("shift+enter ".into(), Ink::Key),
+                ("or".into(), Ink::Text),
+                (" \\↵ ".into(), Ink::Key),
+                ("newline".into(), Ink::Text),
+            ],
+            presses: Vec::new(),
+        },
+        Hint::note("  │  ", Ink::Dim),
+        Hint::button("esc ", "cancel", vec![Hint::press(KeyCode::Esc)]),
+    ]
+}
+
+/// The findings modal's keys — or, while `D` waits for its answer, the
+/// question, with `y` and `n` the two things a click can say.
+pub fn findings_footer(confirming: bool, local: usize, kept: usize) -> Vec<Hint> {
+    let press = |c: char| vec![Hint::press(KeyCode::Char(c))];
+    if confirming {
+        let question = match (local, kept) {
+            (1, 0) => "  delete this note?  ".to_string(),
+            (n, 0) => format!("  delete all {n} notes?  "),
+            (1, k) => format!("  delete this note? ({k} on the request stay)  "),
+            (n, k) => format!("  delete all {n} local notes? ({k} on the request stay)  "),
+        };
+        return vec![
+            Hint::note(&question, Ink::Warn),
+            Hint {
+                pieces: vec![("y".into(), Ink::Warn)],
+                presses: press('y'),
+            },
+            Hint::note(" / ", Ink::Warn),
+            Hint {
+                pieces: vec![("n".into(), Ink::Warn)],
+                presses: press('n'),
+            },
+        ];
+    }
+    vec![
+        Hint::button("  enter ", "jump", vec![Hint::press(KeyCode::Enter)]),
+        Hint::button(
+            "  ·  dd ",
+            "delete",
+            vec![Hint::press(KeyCode::Char('d')); 2],
+        ),
+        Hint::button("  ·  D ", "clear local", press('D')),
+        Hint::button("  ·  P ", "publish", press('P')),
+        Hint::button("  ·  esc ", "close", vec![Hint::press(KeyCode::Esc)]),
+    ]
+}
+
+/// A `y`-only question's footer: `y` does the thing, and a click on the
+/// clause about every other key is one of them.
+fn yes_or_keep_footer(does: &str, keeps: &str) -> Vec<Hint> {
+    vec![
+        Hint {
+            pieces: vec![("  y".into(), Ink::Key), (format!(" {does}"), Ink::Dim)],
+            presses: vec![Hint::press(KeyCode::Char('y'))],
+        },
+        Hint {
+            pieces: vec![(format!("  ·  any other key {keeps}"), Ink::Dim)],
+            presses: vec![Hint::press(KeyCode::Esc)],
+        },
+    ]
+}
+
+pub fn publish_footer() -> Vec<Hint> {
+    yes_or_keep_footer("publishes", "keeps them local")
+}
+
+pub fn delete_comment_footer() -> Vec<Hint> {
+    yes_or_keep_footer("deletes it there and here", "keeps it")
+}
+
+/// A footer as drawn: each piece in the palette's ink for it.
+pub(super) fn footer_line(theme: &Theme, hints: &[Hint]) -> Line<'static> {
+    let ink = |ink: Ink| match ink {
+        Ink::Key => Style::default().fg(theme.header_fg),
+        Ink::Text => Style::default().fg(theme.context_fg),
+        Ink::Dim => Style::default().fg(theme.gutter_fg),
+        Ink::Warn => Style::default()
+            .fg(theme.finding_fg)
+            .add_modifier(Modifier::BOLD),
+    };
+    Line::from(
+        hints
+            .iter()
+            .flat_map(|h| h.pieces.iter())
+            .map(|(text, i)| Span::styled(text.clone(), ink(*i)))
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// The file-list modal's box: as tall as its entries and as wide as its
+/// widest path, centred on the body. One function for the draw and the hit
+/// test, so a click is judged against the box that was drawn.
+pub fn file_list_modal_area(body: Rect, entries: &[FileListEntry]) -> Rect {
+    let height = (entries.len() + 2).min(body.height as usize) as u16;
+    let (_, _, lead) = counts_columns(entries);
+    let widest = entries
+        .iter()
+        .map(|e| UnicodeWidthStr::width(e.path.as_str()))
+        .max()
+        .unwrap_or(0);
+    // The box fits its content, exactly as its height already does — 70
+    // columns is a floor, not the size. A fixed width cut deep paths against
+    // the border and took the file NAME with them, which is the one part of
+    // a path worth reading.
+    let width = (lead + widest + 2).max(70).min(body.width as usize) as u16;
+    centered_rect(body, width, height)
+}
+
+/// The findings modal's box: the entries, their section rules, a title row
+/// and the key footer, centred on the body. Shared with the hit test.
+pub fn findings_modal_area(body: Rect, entries: usize, rules: usize) -> Rect {
+    let height = (entries + rules + 4).min(body.height as usize) as u16;
+    centered_rect(body, 74, height)
 }
 
 pub(super) fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
@@ -2034,6 +2158,10 @@ pub(super) fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         row("j/k", "move · in the plan pane, switch group"),
         row("J/K  { }", "previous / next group"),
         row("tab", "switch pane focus"),
+        row(
+            "mouse",
+            "wheel one row · alt+wheel sideways · click selects",
+        ),
         row("n/N", "next / previous hunk"),
         row("ctrl-d/u", "half page"),
         row("g/G", "top / bottom"),
@@ -2072,4 +2200,19 @@ pub(super) fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     ];
     lines.insert(0, Line::from(""));
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `FRAME_ROWS` is a number about `frame`, and this is what ties them.
+    #[test]
+    fn the_frame_takes_frame_rows() {
+        let area = Rect::new(0, 0, 20, 10);
+        let inner = pane_inner(area);
+        assert_eq!(area.height - inner.height, FRAME_ROWS);
+        assert_eq!(area.width - inner.width, FRAME_ROWS);
+        assert_eq!(footer_row(area).y, inner.bottom() - 1);
+    }
 }
