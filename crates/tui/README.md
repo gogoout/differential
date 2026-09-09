@@ -7,9 +7,9 @@ Two panes over the grouped, ordered reading plan: the plan on the left, the diff
 right. Hunks are marked reviewed and findings are written against lines. Every change is
 written to disk as it happens.
 
-Project home: <https://github.com/gogoout/differential>
+Project home: <https://github.com/thepartly/differential>
 
-![The dfr review reviewer, mid-review](https://raw.githubusercontent.com/gogoout/differential/main/assets/screenshot.png)
+![The dfr review reviewer, mid-review](https://raw.githubusercontent.com/thepartly/differential/main/assets/screenshot.png)
 
 ## The three screens
 
@@ -414,77 +414,77 @@ Every shot below is the same change in the same reviewer; only the palette diffe
 <details>
 <summary><code>dark</code> — the default</summary>
 
-![dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/dark.png)
+![dark](https://raw.githubusercontent.com/thepartly/differential/main/assets/themes/dark.png)
 
 </details>
 
 <details>
 <summary><code>one-dark</code></summary>
 
-![one-dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/one-dark.png)
+![one-dark](https://raw.githubusercontent.com/thepartly/differential/main/assets/themes/one-dark.png)
 
 </details>
 
 <details>
 <summary><code>one-light</code></summary>
 
-![one-light](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/one-light.png)
+![one-light](https://raw.githubusercontent.com/thepartly/differential/main/assets/themes/one-light.png)
 
 </details>
 
 <details>
 <summary><code>gruvbox-dark</code></summary>
 
-![gruvbox-dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/gruvbox-dark.png)
+![gruvbox-dark](https://raw.githubusercontent.com/thepartly/differential/main/assets/themes/gruvbox-dark.png)
 
 </details>
 
 <details>
 <summary><code>gruvbox-light</code></summary>
 
-![gruvbox-light](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/gruvbox-light.png)
+![gruvbox-light](https://raw.githubusercontent.com/thepartly/differential/main/assets/themes/gruvbox-light.png)
 
 </details>
 
 <details>
 <summary><code>solarized-dark</code></summary>
 
-![solarized-dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/solarized-dark.png)
+![solarized-dark](https://raw.githubusercontent.com/thepartly/differential/main/assets/themes/solarized-dark.png)
 
 </details>
 
 <details>
 <summary><code>solarized-light</code></summary>
 
-![solarized-light](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/solarized-light.png)
+![solarized-light](https://raw.githubusercontent.com/thepartly/differential/main/assets/themes/solarized-light.png)
 
 </details>
 
 <details>
 <summary><code>catppuccin-mocha</code></summary>
 
-![catppuccin-mocha](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/catppuccin-mocha.png)
+![catppuccin-mocha](https://raw.githubusercontent.com/thepartly/differential/main/assets/themes/catppuccin-mocha.png)
 
 </details>
 
 <details>
 <summary><code>catppuccin-latte</code></summary>
 
-![catppuccin-latte](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/catppuccin-latte.png)
+![catppuccin-latte](https://raw.githubusercontent.com/thepartly/differential/main/assets/themes/catppuccin-latte.png)
 
 </details>
 
 <details>
 <summary><code>dracula</code></summary>
 
-![dracula](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/dracula.png)
+![dracula](https://raw.githubusercontent.com/thepartly/differential/main/assets/themes/dracula.png)
 
 </details>
 
 <details>
 <summary><code>monokai</code></summary>
 
-![monokai](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/monokai.png)
+![monokai](https://raw.githubusercontent.com/thepartly/differential/main/assets/themes/monokai.png)
 
 </details>
 
@@ -532,4 +532,4 @@ what is on screen, not the size of the files the group touches.
 
 MIT or Apache-2.0, at your option. Parts of this crate are adapted from `agavra/tuicr` and
 `jnsahaj/lumen`, both MIT. See
-<https://github.com/gogoout/differential/blob/main/CREDITS.md>.
+<https://github.com/thepartly/differential/blob/main/CREDITS.md>.

@@ -7,7 +7,7 @@ groups, and the order to read them in.
 The engine is a library. Renderers link it and receive the document in-process. The
 JSON form is for export and for storage on disk, not for talking between processes.
 
-Project home: <https://github.com/gogoout/differential>
+Project home: <https://github.com/thepartly/differential>
 
 ## What it produces
 
@@ -285,7 +285,7 @@ let config = Config::load(&OsConfigSource, repo.root(), repo_path, user_path)?;
 Two files. The repo file (`.differential.toml`) holds classification hints. The user file
 (`~/.config/differential/config.toml`) holds the grouping backend and the reviewer's context
 settings. Full key tables:
-<https://github.com/gogoout/differential/blob/main/crates/cli/README.md#config>
+<https://github.com/thepartly/differential/blob/main/crates/cli/README.md#config>
 
 **Config can never remove a file or a hunk from enumeration.** Enumeration is total,
 always. Every invariant depends on that. Path filtering was the single worst coverage bug
@@ -302,9 +302,9 @@ That prints the grouped document as JSON.
 ## Learn more
 
 - The normative behaviour:
-  <https://github.com/gogoout/differential/tree/main/spec>
+  <https://github.com/thepartly/differential/tree/main/spec>
 - The decision records, with the measurements behind them:
-  <https://github.com/gogoout/differential/tree/main/adr>
+  <https://github.com/thepartly/differential/tree/main/adr>
 
 ## Licence
 

@@ -11,9 +11,9 @@ This crate is the application layer. It owns the `dfr` and `differential` binari
 parses arguments and dispatches. All the work happens in
 [`differential-engine`](https://crates.io/crates/differential-engine).
 
-Project home: <https://github.com/gogoout/differential>
+Project home: <https://github.com/thepartly/differential>
 
-![The dfr review reviewer, mid-review](https://raw.githubusercontent.com/gogoout/differential/main/assets/screenshot.png)
+![The dfr review reviewer, mid-review](https://raw.githubusercontent.com/thepartly/differential/main/assets/screenshot.png)
 
 ## Install
 
@@ -92,7 +92,7 @@ Use the same name to resume it, and pass it to `dfr findings` to read the same r
 named session neither adopts nor is adopted: naming it is you saying which review this is.
 
 Full key list and behaviour:
-<https://github.com/gogoout/differential/blob/main/crates/tui/README.md>
+<https://github.com/thepartly/differential/blob/main/crates/tui/README.md>
 
 ### `dfr stack <range>`
 
@@ -117,7 +117,7 @@ The stack never touches your worktree, your index, or your branches. It is built
 plumbing and lands one ref. Re-running moves the ref.
 
 Full detail:
-<https://github.com/gogoout/differential/blob/main/crates/stack/README.md>
+<https://github.com/thepartly/differential/blob/main/crates/stack/README.md>
 
 ### `dfr check <range>`
 
@@ -295,77 +295,77 @@ only the palette. Regenerate with `./assets/themes.sh`.
 <details>
 <summary><code>dark</code> — the default</summary>
 
-![dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/dark.png)
+![dark](https://raw.githubusercontent.com/thepartly/differential/main/assets/themes/dark.png)
 
 </details>
 
 <details>
 <summary><code>one-dark</code></summary>
 
-![one-dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/one-dark.png)
+![one-dark](https://raw.githubusercontent.com/thepartly/differential/main/assets/themes/one-dark.png)
 
 </details>
 
 <details>
 <summary><code>one-light</code></summary>
 
-![one-light](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/one-light.png)
+![one-light](https://raw.githubusercontent.com/thepartly/differential/main/assets/themes/one-light.png)
 
 </details>
 
 <details>
 <summary><code>gruvbox-dark</code></summary>
 
-![gruvbox-dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/gruvbox-dark.png)
+![gruvbox-dark](https://raw.githubusercontent.com/thepartly/differential/main/assets/themes/gruvbox-dark.png)
 
 </details>
 
 <details>
 <summary><code>gruvbox-light</code></summary>
 
-![gruvbox-light](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/gruvbox-light.png)
+![gruvbox-light](https://raw.githubusercontent.com/thepartly/differential/main/assets/themes/gruvbox-light.png)
 
 </details>
 
 <details>
 <summary><code>solarized-dark</code></summary>
 
-![solarized-dark](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/solarized-dark.png)
+![solarized-dark](https://raw.githubusercontent.com/thepartly/differential/main/assets/themes/solarized-dark.png)
 
 </details>
 
 <details>
 <summary><code>solarized-light</code></summary>
 
-![solarized-light](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/solarized-light.png)
+![solarized-light](https://raw.githubusercontent.com/thepartly/differential/main/assets/themes/solarized-light.png)
 
 </details>
 
 <details>
 <summary><code>catppuccin-mocha</code></summary>
 
-![catppuccin-mocha](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/catppuccin-mocha.png)
+![catppuccin-mocha](https://raw.githubusercontent.com/thepartly/differential/main/assets/themes/catppuccin-mocha.png)
 
 </details>
 
 <details>
 <summary><code>catppuccin-latte</code></summary>
 
-![catppuccin-latte](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/catppuccin-latte.png)
+![catppuccin-latte](https://raw.githubusercontent.com/thepartly/differential/main/assets/themes/catppuccin-latte.png)
 
 </details>
 
 <details>
 <summary><code>dracula</code></summary>
 
-![dracula](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/dracula.png)
+![dracula](https://raw.githubusercontent.com/thepartly/differential/main/assets/themes/dracula.png)
 
 </details>
 
 <details>
 <summary><code>monokai</code></summary>
 
-![monokai](https://raw.githubusercontent.com/gogoout/differential/main/assets/themes/monokai.png)
+![monokai](https://raw.githubusercontent.com/thepartly/differential/main/assets/themes/monokai.png)
 
 </details>
 
