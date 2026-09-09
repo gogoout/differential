@@ -7689,26 +7689,33 @@ fn the_horizontal_wheel_shifts_the_diff_pane_as_h_and_l_do() {
         "six notches left bring it back"
     );
 
-    // Shift and the ordinary wheel is the same sideways move: most mice have
-    // no sideways wheel, and a terminal reports the held shift as a modifier.
-    let shifted = |kind| MouseEvent {
-        modifiers: KeyModifiers::SHIFT,
-        ..mouse(kind, x, y)
-    };
-    for _ in 0..6 {
-        app.handle_mouse(shifted(MouseEventKind::ScrollDown));
+    // A held key and the ordinary wheel is the same sideways move: most mice
+    // have no sideways wheel, and a terminal reports the held key as a
+    // modifier. Any of the three, because some terminals never pass shift on.
+    for held in [
+        KeyModifiers::SHIFT,
+        KeyModifiers::ALT,
+        KeyModifiers::CONTROL,
+    ] {
+        let with = |kind| MouseEvent {
+            modifiers: held,
+            ..mouse(kind, x, y)
+        };
+        for _ in 0..6 {
+            app.handle_mouse(with(MouseEventKind::ScrollDown));
+        }
+        assert_eq!(
+            wrapped_pane(&mut app),
+            after,
+            "{held:?} and six notches down is six notches right"
+        );
+        for _ in 0..6 {
+            app.handle_mouse(with(MouseEventKind::ScrollUp));
+        }
+        assert_eq!(
+            wrapped_pane(&mut app),
+            before,
+            "{held:?} and six notches up brings it back"
+        );
     }
-    assert_eq!(
-        wrapped_pane(&mut app),
-        after,
-        "shift and six notches down is six notches right"
-    );
-    for _ in 0..6 {
-        app.handle_mouse(shifted(MouseEventKind::ScrollUp));
-    }
-    assert_eq!(
-        wrapped_pane(&mut app),
-        before,
-        "and shift up brings it back"
-    );
 }

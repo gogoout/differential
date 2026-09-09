@@ -2158,7 +2158,10 @@ pub(super) fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         row("j/k", "move · in the plan pane, switch group"),
         row("J/K  { }", "previous / next group"),
         row("tab", "switch pane focus"),
-        row("mouse", "wheel one row · click selects · twice enters"),
+        row(
+            "mouse",
+            "wheel one row · alt+wheel sideways · click selects",
+        ),
         row("n/N", "next / previous hunk"),
         row("ctrl-d/u", "half page"),
         row("g/G", "top / bottom"),

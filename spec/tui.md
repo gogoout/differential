@@ -410,9 +410,11 @@ list belongs; the footer's job is to point at it.
 
 **The mouse acts on the pane under the pointer, and that pane takes focus.** The wheel is
 `j`/`k` there — one row per notch in the diff, one entry per notch in the plan — and the
-horizontal wheel is `h`/`l`, and so is shift with the ordinary wheel, since most mice have no
-sideways wheel. A click selects the row or entry under it; a click on what is
-already selected is `enter`; a click on a row the cursor cannot land on — the group header,
+horizontal wheel is `h`/`l`, and so is the ordinary wheel with shift, alt or ctrl held, since
+most mice have no sideways wheel — three keys because several terminals keep shift for
+themselves as the "select text anyway" key while a program has the mouse, and never send it
+on (Ghostty's `mouse-shift-capture`, off by default, is one). A click selects the row or
+entry under it; a click on what is already selected is `enter`; a click on a row the cursor cannot land on — the group header,
 a blank — leaves the cursor where it was. The two floating overviews are maps, and a click
 on one does nothing. In the file-list and findings modals the wheel steps the list, a click
 selects an entry, a second click is `enter`, and a click outside the box closes it. Help and

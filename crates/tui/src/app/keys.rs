@@ -140,10 +140,14 @@ impl App {
     /// screen never reaches the model, let alone repaints it.
     pub fn handle_mouse(&mut self, m: MouseEvent) -> Vec<Effect> {
         let at = Position::new(m.column, m.row);
-        // Shift and the wheel is the sideways wheel. Most mice have no wheel
-        // of their own for it, and a terminal reports the held key as a
-        // modifier on an ordinary notch.
-        let kind = match (m.kind, m.modifiers.contains(KeyModifiers::SHIFT)) {
+        // A held key and the wheel is the sideways wheel. Most mice have no
+        // wheel of their own for it, and a terminal reports the held key as a
+        // modifier on an ordinary notch. Any of the three: several terminals
+        // keep shift for themselves — it is their "select text anyway" key
+        // while a program has the mouse — and never send it on, so a reader
+        // on one of those holds alt or ctrl instead.
+        let held = KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL;
+        let kind = match (m.kind, m.modifiers.intersects(held)) {
             (MouseEventKind::ScrollDown, true) => MouseEventKind::ScrollRight,
             (MouseEventKind::ScrollUp, true) => MouseEventKind::ScrollLeft,
             (kind, _) => kind,
