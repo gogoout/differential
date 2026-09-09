@@ -407,13 +407,16 @@ impl App {
             acts: self.acts_of(area),
         }];
         if !area.modal() {
-            sections.push(HelpSection {
-                title: "moving",
-                acts: moving(area),
-            });
+            // Acting, then moving: the reader who opens `?` is usually asking
+            // what they can DO here, and the movement keys are the ones they
+            // already know. Last is where a reference belongs.
             sections.push(HelpSection {
                 title: "anywhere",
                 acts: everywhere(),
+            });
+            sections.push(HelpSection {
+                title: "moving",
+                acts: moving(area),
             });
         }
         sections

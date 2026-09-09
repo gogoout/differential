@@ -4346,25 +4346,25 @@ fn the_help_modal_names_the_place_and_its_keys() {
             .position(|r| r.contains(needle))
             .unwrap_or_else(|| panic!("{needle:?} missing from help"))
     };
-    // The plan pane's own keys, then getting about, then the keys that work
-    // anywhere. Movement is one run of rows, not one row per section.
-    let moving = at("moving");
+    // The plan pane's own keys, then the keys that work anywhere, then
+    // getting about at the bottom. Movement is one run of rows.
     let anywhere = at("anywhere");
-    assert!(at("the plan pane") < moving);
-    assert!(moving < anywhere);
-    assert!(at("press any key") > anywhere);
+    let moving = at("moving");
+    assert!(at("the plan pane") < anywhere);
+    assert!(anywhere < moving, "acting reads before moving");
+    assert!(at("press any key") > moving);
     for k in [
         "switch group",
         "next / previous hunk",
         "top / bottom",
         "tab",
     ] {
-        assert!(
-            (moving..anywhere).contains(&at(k)),
-            "{k:?} is a movement key"
-        );
+        assert!(at(k) > moving, "{k:?} is a movement key");
     }
-    assert!(at("ctrl-c") > anywhere, "quitting works anywhere");
+    assert!(
+        (anywhere..moving).contains(&at("ctrl-c")),
+        "quitting works anywhere"
+    );
     // The diff pane's keys are not the plan pane's answer.
     for absent in ["start a line selection", "mark this hunk's class"] {
         assert!(

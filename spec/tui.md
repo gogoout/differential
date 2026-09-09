@@ -400,13 +400,15 @@ and `? help` are what is left: the keys are the convenience, and `?` is the way 
 one that did not fit.
 
 **`?` answers for where the reader is standing.** Three sections: the place's own keys
-under its name, then **getting about in one run** — `j/k`, `J/K  { }`, `n/N`, `ctrl-d/u`,
-`g/G` and `tab` — then the keys that mean the same thing anywhere: `s`, `w`, `h/l  ·  0`,
-`F`, `y`, `P`, `R`, `?` and `q  ·  ctrl-c`. Movement is one run of rows because "how do I
-move" is one question; a reader who finds `j/k` under their place and `g/G` three sections
-later has to ask it twice. `j/k` is the exception that proves it, and says what it does in
-THIS pane. Keys only: a wheel is not something a reader presses, so the mouse is in
-[the paragraph below](#keys) and not in the modal. Inside a modal the second
+under its name, then the keys that mean the same thing anywhere — `s`, `w`, `h/l  ·  0`,
+`F`, `y`, `P`, `R`, `?` and `q  ·  ctrl-c` — then **getting about, in one run at the
+bottom**: `j/k`, `J/K  { }`, `n/N`, `ctrl-d/u`, `g/G` and `tab`. Acting comes before
+moving because a reader opening `?` is asking what they can DO here, and the movement keys
+are the ones they already know; last is where a reference belongs. Movement is ONE run
+because "how do I move" is one question, and finding `j/k` under the place and `g/G` three
+sections later makes the reader ask it twice. `j/k` is the exception that proves it, and
+says what it does in THIS pane. Keys only: a wheel is not something a reader presses, so
+the mouse is in [the paragraph below](#keys) and not in the modal. Inside a modal the second
 section is absent, because those keys do not work there; the modal's own keys are the
 whole answer. `?` can be pressed inside the file list and the findings list, and the list
 comes back when help closes, on the entry it was on.
