@@ -265,6 +265,36 @@ impl Hint {
     }
 }
 
+/// The footer's keys with a separator between them. The separators are not
+/// buttons, so a click between two keys presses neither.
+pub fn joined(hints: &[Hint]) -> Vec<Hint> {
+    let mut out = Vec::new();
+    for h in hints {
+        if !out.is_empty() {
+            out.push(Hint::note("  ·  ", Ink::Dim));
+        }
+        out.push(h.clone());
+    }
+    out
+}
+
+/// A hint list as plain words, `enter jump · esc close`, for a box that
+/// names its keys in its title rather than on a footer row.
+pub fn plain(hints: &[Hint]) -> String {
+    hints
+        .iter()
+        .map(|h| {
+            h.pieces
+                .iter()
+                .map(|(t, _)| t.as_str())
+                .collect::<String>()
+                .trim()
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 /// Columns the whole footer takes.
 pub fn hints_width(hints: &[Hint]) -> usize {
     hints.iter().map(Hint::width).sum()

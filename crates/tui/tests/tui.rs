@@ -4332,31 +4332,37 @@ fn render_dump_findings() {
     println!("{}", ansi_dump(&mut app, 120, 16));
 }
 
-/// The help modal is keys and nothing else. Five lines of prose about the plan
-/// pane and the diff's colours used to sit between `n/N` and `s`.
+/// `?` answers for where the reader is standing, and nothing else. A list of
+/// every key was a list nobody read to the end (issue 30).
 #[test]
-fn the_help_modal_is_only_keys() {
+fn the_help_modal_names_the_place_and_its_keys() {
     let (_r, mut app) = make_app();
     app.handle_key(key('?'));
-    assert!(matches!(app.mode, Mode::Help));
+    assert!(matches!(app.mode, Mode::Help(_)));
 
-    let backend = ratatui::backend::TestBackend::new(100, 40);
-    let mut terminal = ratatui::Terminal::new(backend).unwrap();
-    terminal.draw(|f| app.draw(f)).unwrap();
-    let buf = terminal.backend().buffer().clone();
-    let rows: Vec<String> = (0..40u16)
-        .map(|y| (0..100u16).map(|x| buf[(x, y)].symbol()).collect())
-        .collect();
-
+    let rows = drawn_rows(&mut app);
     let at = |needle: &str| {
         rows.iter()
             .position(|r| r.contains(needle))
             .unwrap_or_else(|| panic!("{needle:?} missing from help"))
     };
-    // Every key row, then the footer. No legend in between, and none after.
-    let footer = at("press any key");
-    for k in ["j/k", "n/N", "z ", "s ", "f ", "space", "dd", "quit"] {
-        assert!(at(k) < footer, "{k:?} should be in the key table");
+    // The plan pane's own keys, then the keys that work anywhere.
+    let anywhere = at("anywhere");
+    assert!(at("the plan pane") < anywhere);
+    assert!(
+        at("switch group") < anywhere,
+        "j/k belongs to the plan pane"
+    );
+    assert!(at("press any key") > anywhere);
+    for k in ["tab", "ctrl-c"] {
+        assert!(at(k) > anywhere, "{k:?} works anywhere");
+    }
+    // The diff pane's keys are not the plan pane's answer.
+    for absent in ["next / previous hunk", "start a line selection"] {
+        assert!(
+            !rows.iter().any(|r| r.contains(absent)),
+            "{absent:?} is a diff-pane key: {rows:?}"
+        );
     }
     for prose in [
         "reading the panes",
@@ -4369,17 +4375,119 @@ fn the_help_modal_is_only_keys() {
             "{prose:?} is a legend line and should not be in the help modal"
         );
     }
-
-    // The key column is aligned: every description starts in one column.
-    let col = |needle: &str| rows[at(needle)].find(needle).unwrap();
-    assert_eq!(col("previous / next group"), col("half page"));
-    assert_eq!(col("half page"), col("unified / split diff"));
 }
 
-/// A float is drawn with `Clear`, which resets cells to the TERMINAL's default
-/// rather than the theme's — so before this every float punched a hole of the
-/// terminal's own background through a light palette, most visibly the group
-/// map floating over the detail pane.
+/// The diff pane gets the diff pane's keys.
+#[test]
+fn the_help_modal_follows_the_reader_into_the_diff() {
+    let (_r, mut app) = make_app();
+    app.focus = Focus::Detail;
+    app.handle_key(key('?'));
+    let rows = drawn_rows(&mut app);
+    let has = |needle: &str| rows.iter().any(|r| r.contains(needle));
+    assert!(has("the diff pane"));
+    assert!(has("next / previous hunk"));
+    assert!(!has("switch group"), "that is the plan pane's j/k");
+}
+
+/// A selection open is the place, not the pane it is in.
+#[test]
+fn the_help_modal_answers_for_an_open_selection() {
+    let (_r, mut app) = app_with_a_long_file();
+    app.focus = Focus::Detail;
+    while !matches!(app.rows[app.cursor].kind, RowKind::Diff(_)) {
+        app.handle_key(key('j'));
+    }
+    app.handle_key(key('v'));
+    app.handle_key(key('?'));
+    let rows = drawn_rows(&mut app);
+    assert!(rows.iter().any(|r| r.contains("a line selection")));
+    assert!(rows.iter().any(|r| r.contains("extend the selection")));
+}
+
+/// Inside a modal, the keys that work in the review behind it do not work —
+/// so help does not name them.
+#[test]
+fn help_inside_a_modal_names_that_modal_only() {
+    let (_r, mut app) = make_app();
+    app.focus = Focus::Detail;
+    app.handle_key(key('f'));
+    assert!(matches!(app.mode, Mode::FileList { .. }));
+    app.handle_key(key('?'));
+
+    let rows = drawn_rows(&mut app);
+    assert!(rows.iter().any(|r| r.contains("the file list")));
+    assert!(
+        !rows.iter().any(|r| r.contains("anywhere")),
+        "those keys do not work in a modal: {rows:?}"
+    );
+    // And the list is still there when help closes.
+    app.handle_key(key('x'));
+    assert!(matches!(app.mode, Mode::FileList { .. }));
+}
+
+/// `?` in the findings list comes back to the findings list, on the entry the
+/// reader had selected.
+#[test]
+fn help_over_the_findings_list_gives_the_list_back() {
+    let (_r, mut app) = make_app();
+    app.focus = Focus::Detail;
+    while !matches!(app.rows[app.cursor].kind, RowKind::Diff(_)) {
+        app.handle_key(key('j'));
+    }
+    app.handle_key(key('c'));
+    for ch in "one".chars() {
+        app.handle_key(key(ch));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(key('F'));
+    let Mode::Findings { selected, .. } = &app.mode else {
+        panic!("the list should be open");
+    };
+    let was = *selected;
+
+    app.handle_key(key('?'));
+    assert!(matches!(app.mode, Mode::Help(_)));
+    let rows = drawn_rows(&mut app);
+    assert!(rows.iter().any(|r| r.contains("the findings list")));
+
+    app.handle_key(key('j'));
+    let Mode::Findings { selected, .. } = &app.mode else {
+        panic!("the list should be back");
+    };
+    assert_eq!(
+        *selected, was,
+        "the key that closed help is not a key in it"
+    );
+}
+
+/// One key that quits from anywhere, the composer included.
+#[test]
+fn ctrl_c_quits_from_every_mode() {
+    let (_r, mut app) = make_app();
+    assert_eq!(app.handle_key(ctrl('c')), vec![Effect::Quit]);
+
+    app.focus = Focus::Detail;
+    app.handle_key(key('f'));
+    assert!(matches!(app.mode, Mode::FileList { .. }));
+    assert_eq!(app.handle_key(ctrl('c')), vec![Effect::Quit]);
+
+    let (_r, mut app) = app_with_a_long_file();
+    app.focus = Focus::Detail;
+    while !matches!(app.rows[app.cursor].kind, RowKind::Diff(_)) {
+        app.handle_key(key('j'));
+    }
+    app.handle_key(key('c'));
+    for ch in "half a thought".chars() {
+        app.handle_key(key(ch));
+    }
+    assert_eq!(
+        app.handle_key(ctrl('c')),
+        vec![Effect::Quit],
+        "a draft in the box is not a reason to be stuck"
+    );
+}
+
 #[test]
 fn a_float_keeps_the_themes_ground_rather_than_the_terminals() {
     use differential_engine::config::ThemeName;
@@ -4642,52 +4750,117 @@ fn the_cursor_bar_shows_on_rows_that_have_no_gutter() {
     );
 }
 
-/// The footer is two pills and two keys: what the review stands at, and the
-/// way to the full key list. Everything else it used to name lives in `?`.
+/// The footer is the tallies, then the keys of where the reader is standing,
+/// then `? help`. `q` is not among them: `?` is where it is written down
+/// (issue 30).
 #[test]
-fn the_footer_is_pills_on_the_left_and_two_keys_on_the_right() {
+fn the_footer_is_pills_then_the_keys_of_this_place() {
     let (_r, mut app) = make_app();
-    let rows = drawn_rows(&mut app);
-    let footer = rows.last().expect("no footer row").clone();
+    let footer = |app: &mut App| drawn_rows(app).last().expect("no footer").clone();
 
+    let plan = footer(&mut app);
     assert!(
-        footer.contains("classes reviewed") && footer.contains("finding"),
-        "the tallies must still be there: {footer:?}"
+        plan.contains("classes reviewed") && plan.contains("finding"),
+        "the tallies must still be there: {plan:?}"
     );
     assert!(
-        footer.trim_end().ends_with("q quit"),
-        "the keys belong against the right edge: {footer:?}"
+        plan.trim_end().ends_with("? help"),
+        "`? help` sits against the right edge: {plan:?}"
     );
-    for gone in [
-        "j/k",
-        "n/N",
-        "space reviewed",
-        "s split",
-        "v files",
-        "z fold",
-    ] {
-        assert!(
-            !footer.contains(gone),
-            "{gone} moved to the help modal: {footer:?}"
-        );
+    for k in ["enter open", "space reviewed", "f tree"] {
+        assert!(plan.contains(k), "the plan pane's keys: {plan:?}");
     }
-    // Whatever left the footer has to be reachable, so `?` has to name it.
-    app.handle_key(key('?'));
-    let help = drawn_as_is(&mut app);
-    for key_name in ["j/k", "n/N", "space", "s", "v", "z"] {
-        assert!(help.contains(key_name), "`?` must still list {key_name}");
+    assert!(
+        !plan.contains("q quit"),
+        "`q` lives in the help modal now: {plan:?}"
+    );
+
+    // The diff pane is a different place, and says so.
+    app.focus = Focus::Detail;
+    let diff = footer(&mut app);
+    for k in ["c note", "space reviewed", "v select"] {
+        assert!(diff.contains(k), "the diff pane's keys: {diff:?}");
     }
+    assert!(
+        !diff.contains("enter open"),
+        "that was the plan pane: {diff:?}"
+    );
 
     // A pill, not a run of grey words: the tally sits on the pill's fill.
     let backend = ratatui::backend::TestBackend::new(100, 40);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
-    app.mode = Mode::Normal;
     terminal.draw(|f| app.draw(f)).unwrap();
     let buf = terminal.backend().buffer().clone();
     let (_, fill) = theme().pill();
     assert!(
         (0..100u16).any(|x| buf[(x, 39)].bg == fill),
         "the tallies must wear the pill's fill"
+    );
+}
+
+/// A selection is what the next key acts on, so the footer names its keys
+/// rather than the pane's.
+#[test]
+fn the_footer_follows_a_selection_and_a_modal() {
+    let (_r, mut app) = app_with_a_long_file();
+    app.focus = Focus::Detail;
+    while !matches!(app.rows[app.cursor].kind, RowKind::Diff(_)) {
+        app.handle_key(key('j'));
+    }
+    app.handle_key(key('v'));
+    let selecting = screen(&app, 120, 30)[29].clone();
+    for k in ["selecting 1 line", "j/k extend", "c note", "esc drop"] {
+        assert!(selecting.contains(k), "{k:?} missing: {selecting:?}");
+    }
+
+    // A modal names its own keys, so the window footer only points at help.
+    app.handle_key(key('v'));
+    app.handle_key(key('f'));
+    let listing = drawn_rows(&mut app).last().expect("no footer").clone();
+    assert!(listing.trim_end().ends_with("? help"), "{listing:?}");
+    assert!(
+        !listing.contains("c note"),
+        "the diff's keys do not work here: {listing:?}"
+    );
+
+    // A box the caret owns has no key for `?` at all.
+    app.handle_key(KeyCode::Esc.into());
+    app.handle_key(key('c'));
+    let composing = drawn_rows(&mut app).last().expect("no footer").clone();
+    assert!(
+        !composing.contains("? help"),
+        "`?` is a character in the composer: {composing:?}"
+    );
+}
+
+/// A narrow terminal keeps the tallies and the way to the full list.
+#[test]
+fn a_narrow_footer_drops_the_keys_before_the_tallies() {
+    let (_r, app) = make_app();
+    let narrow = screen(&app, 46, 20)[19].clone();
+    assert!(narrow.contains("classes reviewed"), "{narrow:?}");
+    assert!(narrow.trim_end().ends_with("? help"), "{narrow:?}");
+    assert!(
+        !narrow.contains("enter open"),
+        "no room for them: {narrow:?}"
+    );
+}
+
+/// The window footer's keys are buttons too, as a modal's are.
+#[test]
+fn a_click_on_a_footer_key_presses_it() {
+    let (_r, mut app) = make_app();
+    sized(&mut app);
+    let panes = layout(SCREEN);
+    let (hints, x0) = app.status_hints(panes.status);
+    let help = hints.last().expect("`? help` is always there");
+    assert!(!help.presses.is_empty());
+    let x = x0 + u16::try_from(hints_width(&hints[..hints.len() - 1])).unwrap();
+
+    app.handle_mouse(click(x, panes.status.y));
+    assert!(
+        matches!(app.mode, Mode::Help(_)),
+        "a click on `? help` opens it"
     );
 }
 
@@ -6225,6 +6398,98 @@ mod forge_threads {
         assert!(!app.findings_summary().contains("why three?"));
     }
 
+    /// Standing on somebody else's thread, the footer names the keys that
+    /// work on a thread — and the help modal answers for it too (issue 30).
+    #[test]
+    fn the_footer_and_help_follow_the_cursor_onto_a_thread() {
+        let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        app.focus = Focus::Detail;
+        let row = *thread_rows(&app, "T1").first().expect("no thread rows");
+        app.cursor = row;
+
+        let footer = screen(&app, 120, 30)[29].clone();
+        for k in ["r reply", "x resolve"] {
+            assert!(footer.contains(k), "{k:?} missing: {footer:?}");
+        }
+        assert!(
+            !footer.contains("c note"),
+            "a thread is the forge's: {footer:?}"
+        );
+
+        app.handle_key(key('?'));
+        let rows = screen(&app, 120, 30);
+        assert!(rows.iter().any(|r| r.contains("a review thread")));
+        assert!(rows.iter().any(|r| r.contains("not yours")));
+    }
+
+    /// The footer, in every place that has keys of its own.
+    ///
+    /// `cargo test -p differential-tui --test tui render_dump_footers -- --ignored --nocapture`
+    #[test]
+    #[ignore = "prints the footer for a human to look at"]
+    fn render_dump_footers() {
+        let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        let show = |app: &App, what: &str| {
+            println!("{what:>22}  |{}|", screen(app, 120, 30)[29].trim_end());
+        };
+        app.focus = Focus::Groups;
+        show(&app, "the plan pane");
+        switch_left_pane(&mut app);
+        show(&app, "the file tree");
+        switch_left_pane(&mut app);
+
+        app.focus = Focus::Detail;
+        while !matches!(app.rows[app.cursor].kind, RowKind::Diff(_)) {
+            app.handle_key(key('j'));
+        }
+        show(&app, "the diff pane");
+        app.handle_key(key('v'));
+        app.handle_key(key('j'));
+        show(&app, "selecting");
+        app.handle_key(key('v'));
+
+        app.cursor = *thread_rows(&app, "T1").first().expect("no thread rows");
+        show(&app, "a review thread");
+
+        app.handle_key(key('f'));
+        show(&app, "the file list");
+        app.handle_key(KeyCode::Esc.into());
+        app.handle_key(key('F'));
+        show(&app, "the findings list");
+        app.handle_key(KeyCode::Esc.into());
+        while !matches!(app.rows[app.cursor].kind, RowKind::Diff(_)) {
+            app.handle_key(key('k'));
+        }
+        app.handle_key(key('c'));
+        show(&app, "the composer");
+    }
+
+    /// The help modal, in every place it can be opened from.
+    ///
+    /// `cargo test -p differential-tui --test tui render_dump_help -- --ignored --nocapture`
+    #[test]
+    #[ignore = "prints the modal for a human to look at"]
+    fn render_dump_help() {
+        let (_r, mut app, _fake) = app_with_threads(vec![thread("T1", "C1")]);
+        app.focus = Focus::Groups;
+        app.handle_key(key('?'));
+        println!("\n=== help, from the plan pane ===");
+        println!("{}", ansi_dump(&mut app, 120, 34));
+
+        app.handle_key(key('x'));
+        app.focus = Focus::Detail;
+        app.cursor = *thread_rows(&app, "T1").first().expect("no thread rows");
+        app.handle_key(key('?'));
+        println!("\n=== help, on a review thread ===");
+        println!("{}", ansi_dump(&mut app, 120, 34));
+
+        app.handle_key(key('x'));
+        app.handle_key(key('F'));
+        app.handle_key(key('?'));
+        println!("\n=== help, inside the findings list ===");
+        println!("{}", ansi_dump(&mut app, 120, 34));
+    }
+
     #[test]
     fn the_footer_counts_threads_only_on_a_request_review() {
         let footer = |app: &mut App| -> String { screen(app, 120, 30)[29].clone() };
@@ -7277,8 +7542,8 @@ mod forge_threads {
 
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use differential_tui::app::{
-    Hint, centered_x, composer_area, composer_footer, file_list_modal_area, findings_footer,
-    findings_modal_area, footer_row, hints_width, layout, pane_inner, publish_area, publish_footer,
+    Hint, centered_x, composer_area, composer_footer, file_list_modal_area, findings_modal_area,
+    findings_question, footer_row, hints_width, layout, pane_inner, publish_area, publish_footer,
 };
 use ratatui::layout::Rect;
 
@@ -7505,10 +7770,10 @@ fn help_ignores_the_wheel_and_closes_on_a_click() {
     sized(&mut app);
     let (x, y) = inside(layout(SCREEN).body);
     app.handle_key(key('?'));
-    assert!(matches!(app.mode, Mode::Help));
+    assert!(matches!(app.mode, Mode::Help(_)));
 
     app.handle_mouse(wheel_down(x, y));
-    assert!(matches!(app.mode, Mode::Help));
+    assert!(matches!(app.mode, Mode::Help(_)));
 
     app.handle_mouse(click(x, y));
     assert!(matches!(app.mode, Mode::Normal));
@@ -7582,15 +7847,15 @@ fn the_findings_footer_buttons_jump_and_close() {
     assert!(matches!(app.mode, Mode::Findings { .. }));
     // One local note, no section rules, nothing on a request.
     let row = footer_row(findings_modal_area(layout(SCREEN).body, 1, 0));
-    // `findings_footer`: enter jump, dd delete, D clear local, P publish,
-    // esc close.
-    let keys = findings_footer(false, 1, 0);
-    let (x, y) = on_hint(&keys, 4, row.x, row);
+    // The table's rows for the findings list: enter jump, dd delete, D clear
+    // local, P publish, esc close — with a separator hint between each.
+    let keys = app.modal_footer();
+    let (x, y) = on_hint(&keys, 9, row.x, row);
     app.handle_mouse(click(x, y));
     assert!(matches!(app.mode, Mode::Normal), "esc close closes");
 
     app.handle_key(key('F'));
-    let (x, y) = on_hint(&keys, 0, row.x, row);
+    let (x, y) = on_hint(&keys, 1, row.x, row);
     app.handle_mouse(click(x, y));
     assert!(matches!(app.mode, Mode::Normal), "enter jump closes");
     assert!(
@@ -7600,8 +7865,8 @@ fn the_findings_footer_buttons_jump_and_close() {
     assert_ne!(app.cursor, top_row);
 
     // `D` asks. The question's footer is the question, `y`, a slash, `n`.
-    let asks = findings_footer(true, 1, 0);
-    let clear = on_hint(&keys, 2, row.x, row);
+    let asks = findings_question(1, 0);
+    let clear = on_hint(&keys, 5, row.x, row);
     let yes = on_hint(&asks, 1, row.x, row);
     let no = on_hint(&asks, 3, row.x, row);
     app.handle_key(key('F'));
