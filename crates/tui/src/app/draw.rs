@@ -1423,10 +1423,13 @@ impl App {
             format!("{done}/{total} classes reviewed"),
         ));
         left.push(Span::styled(" ", bar));
+        // The pill carries the key that opens the list. A count with no way
+        // to reach what it counts is a reader asking "and where are they?",
+        // and `F` is not a key they can guess from a number.
         left.extend(tally(
             open > 0,
             self.theme.finding_fg,
-            format!("{open} finding{}", plural(open)),
+            format!("{open} finding{}(F)", plural(open)),
         ));
         // The forge's threads are a fact about the request, worn the same way
         // — and only on a review that is of a request, since a range has none.

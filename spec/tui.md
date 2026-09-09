@@ -353,10 +353,13 @@ sitting, not a finding, so nothing about it reaches the sidecar store.
 
 **The footer is the pills on the left, and the keys of this place on the right.** What
 the review stands at goes on the left, as
-pills — `0/88 classes reviewed` and `3 findings` — because those are facts about the
+pills — `0/88 classes reviewed` and `3 findings(F)` — because those are facts about the
 review, the same as a group's role and a hunk's class, and they wore a run of grey words
 that read as chrome. Each takes its own colour once it has something to say: green when
-every class is read, magenta when anything is filed. A transient message follows them.
+every class is read, magenta when anything is filed. The findings pill carries the key
+that opens the list, because a count with no way to reach what it counts leaves the reader
+asking where they are, and `F` is not a key a number can suggest. A transient message
+follows them.
 
 **So does a shifted pane**, ` +40 cols `, for exactly as long as the shift lasts. A reader
 who shifted right and then moved to a short file otherwise sees an empty pane and nothing

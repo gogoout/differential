@@ -4760,8 +4760,8 @@ fn the_footer_is_pills_then_the_keys_of_this_place() {
 
     let plan = footer(&mut app);
     assert!(
-        plan.contains("classes reviewed") && plan.contains("finding"),
-        "the tallies must still be there: {plan:?}"
+        plan.contains("classes reviewed") && plan.contains("0 findings(F)"),
+        "the tallies must still be there, and the findings pill names its key: {plan:?}"
     );
     assert!(
         plan.trim_end().ends_with("? help"),
