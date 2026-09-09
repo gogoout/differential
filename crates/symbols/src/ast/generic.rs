@@ -18,7 +18,7 @@
 //! and a string mention. The tenth was Kotlin, which is why Kotlin has a query
 //! instead.
 
-use differential_engine::artefact::symbols::{FileSymbols, SymbolSource};
+use differential_engine::artefact::symbols::{FileSymbols, Scope, Symbol, SymbolSource};
 use tree_sitter::{Language, Node, Tree};
 
 use super::{line_count, line_of, parse, text_of};
@@ -143,7 +143,7 @@ impl SymbolSource for AstTier2Symbols {
     }
 
     fn fingerprint(&self) -> String {
-        "ast-fields-v1".to_string()
+        "ast-fields-v2".to_string()
     }
 }
 
@@ -243,34 +243,60 @@ fn record(
         return;
     };
 
-    if is_definition(node, field, parent_kind) {
-        row.push(text.to_vec());
+    if let Some(scope) = definition_scope(node, field, parent_kind, inside_callee) {
+        row.push(Symbol {
+            name: text.to_vec(),
+            scope,
+        });
         return;
     }
     // A type position is a reference: `fn f(w: Widget)` consumes Widget.
     let is_type = kind.contains("type") || field == "type";
     if inside_callee || is_type {
-        out.references[line_of(node) - 1].push(text.to_vec());
+        out.references[line_of(node) - 1].push(Symbol::global(text.to_vec()));
     }
+    // And any identifier might be reading a binding declared in this file. It
+    // is compared only against this file's own definitions, so a common word
+    // costs at worst an ordering inside one file (ADR 0030).
+    out.references[line_of(node) - 1].push(Symbol::local(text.to_vec()));
 }
 
-/// Does this token name something other files can use?
+/// Does this token name something, and if so how far does the name reach?
 ///
-/// The rule the corpus wrote. A regex counted `mod template;` as defining
-/// `template`, and `impl From<X> for Y { fn from }` as defining `from` — both
-/// unique, so both became global symbols that every mention of a common word
-/// then linked to. Six such words produced 64% of one range's edges.
-fn is_definition(node: Node, field: &str, parent_kind: &str) -> bool {
-    if !NAME_FIELDS.contains(&field) {
-        return false;
+/// The `Global` rule is the one the corpus wrote. A regex counted
+/// `mod template;` as defining `template`, and `impl From<X> for Y { fn from }`
+/// as defining `from` — both unique, so both became global symbols that every
+/// mention of a common word then linked to. Six such words produced 64% of one
+/// range's edges.
+///
+/// Everything else a declaration names is `File`. A method, a local variable, a
+/// C declarator: real bindings, and the field rules cannot tell which of them
+/// sits at file scope — a JavaScript `export const Panel = …` looks like any
+/// other `variable_declarator` from here. Calling them all file-local is the
+/// conservative reading. It costs the cross-file edges those names never drew
+/// anyway, and it buys every edge inside the file (ADR 0030).
+fn definition_scope(
+    node: Node,
+    field: &str,
+    parent_kind: &str,
+    inside_callee: bool,
+) -> Option<Scope> {
+    // A callee is a use, never a declaration — and it reaches here because
+    // `name:` is both a declaration's field and the field Java puts a called
+    // method in. Without this, `plainCall()` would define `plainCall`.
+    if inside_callee || !NAME_FIELDS.contains(&field) {
+        return None;
     }
     if TYPE_LIKE.iter().any(|t| parent_kind.contains(t)) {
-        return true;
+        return Some(Scope::Global);
     }
-    // A function is a definition only at file scope. Inside a type's body it is
-    // a method: reachable through its type, not by name alone.
+    // A function is a global definition only at file scope. Inside a type's
+    // body it is a method: reachable through its type, not by name alone.
     let function_like = parent_kind.contains("function") || parent_kind.contains("method");
-    function_like && !inside_a_type_body(node)
+    if function_like && !inside_a_type_body(node) {
+        return Some(Scope::Global);
+    }
+    Some(Scope::File)
 }
 
 fn inside_a_type_body(node: Node) -> bool {

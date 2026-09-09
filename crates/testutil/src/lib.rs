@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use differential_engine::artefact::symbols::{FileSymbols, SymbolReaders, SymbolSource};
+use differential_engine::artefact::symbols::{FileSymbols, Symbol, SymbolReaders, SymbolSource};
 use differential_engine::config::Config;
 use differential_engine::gitio::Repo;
 use differential_engine::lang::LanguageRegistry;
@@ -171,13 +171,13 @@ impl SymbolSource for StubSymbols {
             let mut defines = Vec::new();
             for pair in words.windows(2) {
                 if KEYWORDS.contains(&pair[0]) && pair[1].len() >= 3 {
-                    defines.push(pair[1].as_bytes().to_vec());
+                    defines.push(Symbol::global(pair[1]));
                 }
             }
             let references = words
                 .iter()
                 .filter(|w| w.len() >= 4 && !w.chars().next().unwrap().is_ascii_digit())
-                .map(|w| w.as_bytes().to_vec())
+                .map(|w| Symbol::global(*w))
                 .collect();
             out.defines.push(defines);
             out.references.push(references);

@@ -31,12 +31,19 @@ Project home: <https://github.com/thepartly/differential>
 
 | reader | definitions | references | comments and strings |
 |---|---|---|---|
-| tuned query | from the tree, per language | calls and types, per language | dropped |
+| tuned query | from the tree, per language | calls, types and JSX names, per language | dropped |
 | field rules | from the tree | calls and types, by field name | dropped |
 | regex floor | declaration keywords | every identifier of four characters or more | **counted** |
 | none | — | — | — |
 
-Three consequences worth stating outright, because each one surprises.
+Both AST readers answer with a **scope** as well as a name (ADR 0030). A global name is one
+other files can use, and its edges may cross a file; a file-local name — a binding inside a
+function, a parameter, an import, a method — is keyed by `(file, name)` and draws edges only
+inside the file it was read from. The tuned readers take every identifier as a possible
+file-local reference, so a value declared in one hunk and read in the next is visible; the
+regex floor has no scope to offer and its answers stay global.
+
+Four consequences worth stating outright, because each one surprises.
 
 **A file no reader claims still exists.** Its hunks are counted, its classes are formed, it
 is read like anything else. It simply draws no dependency edges. Withholding symbols is
@@ -49,6 +56,11 @@ It can never hide a change.
 module, and `fn from` inside an `impl` is reached through its type — neither introduces a
 name other files can use. The regex floor cannot tell either from a real definition, and on
 one measured range six such words produced 64% of every dependency edge.
+
+**In a module language, `export` is the whole predicate.** `export const Panel = …` defines
+`Panel`; a bare top-level `const send = vi.fn()` in a test file does not, and counting it
+linked every production file calling `send` to that test. Unexported, it is still
+read as a file-local name, so it keeps every edge it can honestly draw.
 
 Comments and strings are dropped by both AST readers without any query, because every
 grammar names those nodes with those words. A token that reaches a string through an
@@ -71,14 +83,16 @@ rules found no calls there at all. Nine of the other ten grammars passed those r
 probe before any of this was written.
 
 Each query carries a version in the reader's fingerprint, which is part of the grouping
-cache key. Editing a query therefore colds the cache by itself, and a test pins each
-query's content hash against its version so the bump cannot be forgotten.
+cache key. Editing a query therefore colds the cache by itself, and
+`every_query_version_pins_its_text` pins each query's content hash against its version so
+the bump cannot be forgotten — change the `.scm`, bump the `-vN`, paste the hash the test
+prints.
 
 ## What is proven against what
 
 | reader | evidence |
 |---|---|
-| tuned query | Rust, Python and TypeScript run against a real multi-language corpus. Go and Kotlin are covered by per-language tests only. |
+| tuned query | Rust, Python and TypeScript run against a real multi-language corpus, TypeScript and TSX additionally against a React corpus. Go and Kotlin are covered by per-language tests only. |
 | field rules | Java runs against the corpus. C, C++, C# and JavaScript are covered by per-language tests only. |
 | regex floor | runs against the corpus wherever no grammar claims a file. |
 
@@ -91,6 +105,11 @@ to order — disappeared entirely.
 - `.pyi`, `.mts` and `.cts` are claimed by the tuned reader but are absent from the regex
   floor's list. Nothing fails today, so nothing falls through; if a parse ever did fail on
   one, it would get no symbols rather than crude ones.
+- Rust's `(source_file (const_item …)) @def` does not check `pub`, so a private constant is
+  global where an unexported TypeScript one is not. Predates the scope split, and moving it
+  belongs to its own measurement (ADR 0030).
+- `.jsx` goes to the field rules, which have no JSX rule — a rendered component draws no
+  edge there. `.tsx` does, by query.
 
 ## Using it
 

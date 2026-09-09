@@ -21,3 +21,15 @@
 
 ; Types used, including through a path.
 (type_identifier) @type
+
+; File-local names: everything the file-scope rule above deliberately drops —
+; a binding inside a function, a parameter, a method reached through its type.
+; Scoped to this file, they can only order classes within it (ADR 0030).
+(let_declaration pattern: (identifier) @local_def)
+(parameter pattern: (identifier) @local_def)
+(function_item name: (identifier) @local_def)
+(const_item name: (identifier) @local_def)
+(static_item name: (identifier) @local_def)
+
+(identifier) @local_ref
+(field_identifier) @local_ref

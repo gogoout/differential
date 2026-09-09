@@ -103,6 +103,12 @@ count was never the target; the cycle was.
   changes the fingerprint, which colds the cache by itself.
 - Engine tests use a stub reader rather than dev-depending on the adapter crate. The real
   readers are measured where they live, against the corpus.
+- **"A file-scope name others can use" was too narrow, and
+  [ADR 0030](0030-file-local-symbols-draw-edges-inside-their-file.md) widens it.** Everything
+  above stands: what that ADR adds is a second, file-scoped namespace for the names this one
+  drops, which cannot manufacture the global symbol the corpus indicted here. It also fixes
+  an outright omission — TypeScript's file-scope value declarations were missing from its
+  query, so `export const Panel = …` defined nothing.
 
 ## Alternatives rejected
 

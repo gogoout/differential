@@ -8,3 +8,13 @@
 (call_expression function: (selector_expression field: (field_identifier) @call))
 
 (type_identifier) @type
+
+; File-local names: short declarations, vars, and methods reached through
+; their receiver (ADR 0030).
+(short_var_declaration left: (expression_list (identifier) @local_def))
+(var_spec name: (identifier) @local_def)
+(const_spec name: (identifier) @local_def)
+(method_declaration name: (field_identifier) @local_def)
+
+(identifier) @local_ref
+(field_identifier) @local_ref

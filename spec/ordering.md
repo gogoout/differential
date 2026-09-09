@@ -29,7 +29,7 @@ Three readers ship. Which one answered is not a distinction this stage can see:
 
 | reader | reads | definitions | references |
 | --- | --- | --- | --- |
-| tuned | Rust, TypeScript (+TSX), Python, Go, Kotlin | from the tree, per query | calls and types, per query |
+| tuned | Rust, TypeScript (+TSX), Python, Go, Kotlin | from the tree, per query | calls, types and JSX names, per query |
 | field-rule | JavaScript, Java, C, C++, C# | from the tree | calls and types, from field names |
 | crude | any other source extension | declaration keywords | every identifier ≥ 4 chars |
 
@@ -39,7 +39,20 @@ Which language sits in which row, and every extension:
 **A definition is a file-scope name others can use.** `mod template;` is not one — it names
 a module. `fn from` inside an `impl` is not one — it is reached through its type. Counting
 those made a single common word into a globally unique symbol that every file mentioning it
-then linked to; six such words produced 64% of one corpus range's edges.
+then linked to; six such words produced 64% of one corpus range's edges. In a module
+language the keyword says it outright: `export const Panel = …` defines `Panel`, and a bare
+top-level `const` does not.
+
+**Every other name a declaration introduces is file-local, and draws edges only inside its
+own file** (ADR 0030). A `const` in a function body, a parameter, an import binding, a
+method: the graph keys these by `(file, name)`, so two files declaring `label` are two
+symbols and neither can reach the other's uses. The tuned readers also take every identifier
+as a possible file-local reference, which is what lets a value declared in one hunk and
+rendered in the next three be seen at all — the change that prompted this drew no edges
+whatever before it.
+
+Nothing here can manufacture the failure above: a file-local name is compared only against
+its own file's answers, so the worst a wrong one costs is an ordering inside one file.
 
 **Comments and strings contribute nothing**, which needs no query: every grammar names its
 comment and string nodes with those words. A token reaching a string through an

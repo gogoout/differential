@@ -11,7 +11,7 @@
 
 use std::sync::LazyLock;
 
-use differential_engine::artefact::symbols::{FileSymbols, SymbolSource};
+use differential_engine::artefact::symbols::{FileSymbols, Symbol, SymbolSource};
 use regex::bytes::Regex;
 
 // (?-u): byte-level ASCII classes, matching the validated prototype.
@@ -48,8 +48,8 @@ impl SymbolSource for NaiveSymbols {
     fn file_symbols(&self, _path: &[u8], content: &[u8]) -> Option<FileSymbols> {
         let lines: Vec<&[u8]> = content.split(|&b| b == b'\n').collect();
         Some(FileSymbols {
-            defines: lines.iter().map(|l| definitions(l)).collect(),
-            references: lines.iter().map(|l| references(l)).collect(),
+            defines: lines.iter().map(|l| global(definitions(l))).collect(),
+            references: lines.iter().map(|l| global(references(l))).collect(),
         })
     }
 
@@ -61,6 +61,13 @@ impl SymbolSource for NaiveSymbols {
 /// Symbol names introduced by common declaration keywords. Deliberately crude:
 /// ordering tolerates low precision — a wrong edge misorders, it can never hide
 /// content (ADR 0007).
+///
+/// **Global, and deliberately so.** A regex cannot tell a file-scope
+/// declaration from one inside a function, so scoping these to their file
+/// would silently delete every cross-file edge for the languages that reach
+/// this reader — Ruby, PHP, Swift, Elixir and the rest have no other. That is a
+/// precision question of its own, with its own corpus measurement; it is not
+/// this one.
 fn definitions(line: &[u8]) -> Vec<Vec<u8>> {
     DEF_RE.captures_iter(line).map(|c| c[1].to_vec()).collect()
 }
@@ -74,14 +81,20 @@ fn references(line: &[u8]) -> Vec<Vec<u8>> {
         .collect()
 }
 
+/// Every name this reader finds reaches beyond its file, as far as it can
+/// tell. See [`definitions`].
+fn global(names: Vec<Vec<u8>>) -> Vec<Symbol> {
+    names.into_iter().map(Symbol::global).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn text(rows: &[Vec<Vec<u8>>], line: usize) -> Vec<String> {
+    fn text(rows: &[Vec<Symbol>], line: usize) -> Vec<String> {
         rows[line - 1]
             .iter()
-            .map(|s| String::from_utf8_lossy(s).into_owned())
+            .map(|s| String::from_utf8_lossy(&s.name).into_owned())
             .collect()
     }
 

@@ -10,21 +10,36 @@
 //!   definition, and counting them is what made 64% of one corpus range's
 //!   dependency edges false.
 
-use differential_engine::artefact::symbols::{FileSymbols, SymbolSource};
+use differential_engine::artefact::symbols::{FileSymbols, Scope, Symbol, SymbolSource};
 use differential_symbols::{AstSymbols, AstTier2Symbols};
+use sha1::{Digest, Sha1};
 
-fn flatten(rows: &[Vec<Vec<u8>>]) -> Vec<String> {
+/// One reader's answer, split by how far each name reaches.
+///
+/// The two `local_` sets are the ones a name may only be compared against
+/// inside its own file (ADR 0030). Keeping them apart here is the point: a
+/// test that means "this is a name other files can use" must not pass because
+/// the identifier turned up in the file-local set.
+struct Read {
+    defines: Vec<String>,
+    references: Vec<String>,
+    local_defines: Vec<String>,
+    local_references: Vec<String>,
+}
+
+fn flatten(rows: &[Vec<Symbol>], want: Scope) -> Vec<String> {
     let mut out: Vec<String> = rows
         .iter()
         .flatten()
-        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .filter(|s| s.scope == want)
+        .map(|s| String::from_utf8_lossy(&s.name).into_owned())
         .collect();
     out.sort();
     out.dedup();
     out
 }
 
-fn read(reader: &dyn SymbolSource, path: &[u8], src: &str) -> (Vec<String>, Vec<String>) {
+fn read(reader: &dyn SymbolSource, path: &[u8], src: &str) -> Read {
     assert!(
         reader.priority(path).is_some(),
         "{} does not claim {}",
@@ -34,7 +49,12 @@ fn read(reader: &dyn SymbolSource, path: &[u8], src: &str) -> (Vec<String>, Vec<
     let s: FileSymbols = reader
         .file_symbols(path, src.as_bytes())
         .expect("the reader claimed this file");
-    (flatten(&s.defines), flatten(&s.references))
+    Read {
+        defines: flatten(&s.defines, Scope::Global),
+        references: flatten(&s.references, Scope::Global),
+        local_defines: flatten(&s.defines, Scope::File),
+        local_references: flatten(&s.references, Scope::File),
+    }
 }
 
 fn has(set: &[String], want: &[&str]) {
@@ -66,7 +86,7 @@ fn every_tuned_query_compiles_against_its_pinned_grammar() {
 
 #[test]
 fn rust_reads_calls_and_types_and_refuses_modules_and_methods() {
-    let (defines, references) = read(
+    let r = read(
         &AstSymbols::new(),
         b"src/lib.rs",
         r#"
@@ -77,18 +97,18 @@ impl From<u8> for Widget { fn from(v: u8) -> Self { Widget } }
 pub fn render(w: Widget) -> u8 { plain_call(); w.method_call(); let s = "NoiseB"; 0 }
 "#,
     );
-    has(&defines, &["Widget", "render"]);
+    has(&r.defines, &["Widget", "render"]);
     lacks(
-        &defines,
+        &r.defines,
         &["template", "from", "NoiseA", "NoiseB", "method_call"],
     );
-    has(&references, &["plain_call", "method_call", "Widget"]);
-    lacks(&references, &["NoiseA", "NoiseB", "template"]);
+    has(&r.references, &["plain_call", "method_call", "Widget"]);
+    lacks(&r.references, &["NoiseA", "NoiseB", "template"]);
 }
 
 #[test]
 fn python_reads_annotations_as_types() {
-    let (defines, references) = read(
+    let r = read(
         &AstSymbols::new(),
         b"app.py",
         r#"
@@ -101,14 +121,14 @@ def render(w: Widget) -> Widget:
     return w
 "#,
     );
-    has(&defines, &["Widget", "render"]);
-    has(&references, &["plain_call", "method_call", "Widget"]);
-    lacks(&references, &["NoiseA", "NoiseB"]);
+    has(&r.defines, &["Widget", "render"]);
+    has(&r.references, &["plain_call", "method_call", "Widget"]);
+    lacks(&r.references, &["NoiseA", "NoiseB"]);
 }
 
 #[test]
 fn go_reads_selectors_and_refuses_methods() {
-    let (defines, references) = read(
+    let r = read(
         &AstSymbols::new(),
         b"main.go",
         r#"
@@ -119,15 +139,15 @@ func (w Widget) MethodOnType() {}
 func Render(w Widget) string { plainCall(); w.MethodCall(); return "NoiseB" }
 "#,
     );
-    has(&defines, &["Widget", "Render"]);
-    lacks(&defines, &["MethodOnType", "NoiseA", "NoiseB"]);
-    has(&references, &["plainCall", "MethodCall", "Widget"]);
-    lacks(&references, &["NoiseA", "NoiseB"]);
+    has(&r.defines, &["Widget", "Render"]);
+    lacks(&r.defines, &["MethodOnType", "NoiseA", "NoiseB"]);
+    has(&r.references, &["plainCall", "MethodCall", "Widget"]);
+    lacks(&r.references, &["NoiseA", "NoiseB"]);
 }
 
 #[test]
 fn typescript_reads_members_and_exports() {
-    let (defines, references) = read(
+    let r = read(
         &AstSymbols::new(),
         b"app.ts",
         r#"
@@ -136,9 +156,9 @@ export interface Widget { n: number }
 export function render(w: Widget): string { plainCall(); w.methodCall(); return "NoiseB" }
 "#,
     );
-    has(&defines, &["Widget", "render"]);
-    has(&references, &["plainCall", "methodCall", "Widget"]);
-    lacks(&references, &["NoiseA", "NoiseB"]);
+    has(&r.defines, &["Widget", "render"]);
+    has(&r.references, &["plainCall", "methodCall", "Widget"]);
+    lacks(&r.references, &["NoiseA", "NoiseB"]);
 }
 
 #[test]
@@ -146,7 +166,7 @@ fn kotlin_needed_a_query_and_now_reads_both_call_shapes() {
     // The generic field rule found NO calls here: Kotlin's `call_expression`
     // has no `function:` field, and `navigation_expression` names none of its
     // children. That is why Kotlin earned a query.
-    let (defines, references) = read(
+    let r = read(
         &AstSymbols::new(),
         b"Main.kt",
         r#"
@@ -155,16 +175,16 @@ class Widget
 fun render(w: Widget): Int { plainCall(); w.methodCall(); val s = "NoiseB"; return 0 }
 "#,
     );
-    has(&defines, &["Widget", "render"]);
-    has(&references, &["plainCall", "methodCall", "Widget"]);
-    lacks(&references, &["NoiseA", "NoiseB"]);
+    has(&r.defines, &["Widget", "render"]);
+    has(&r.references, &["plainCall", "methodCall", "Widget"]);
+    lacks(&r.references, &["NoiseA", "NoiseB"]);
 }
 
 // ------------------------------------------------------ the field-rule reader
 
 #[test]
 fn java_reads_through_field_names_with_no_query() {
-    let (defines, references) = read(
+    let r = read(
         &AstTier2Symbols::new(),
         b"Main.java",
         r#"
@@ -175,10 +195,10 @@ class Widget {
 }
 "#,
     );
-    has(&defines, &["Widget"]);
-    lacks(&defines, &["render", "methodOnType"]);
-    has(&references, &["plainCall", "methodCall", "Widget"]);
-    lacks(&references, &["NoiseA", "NoiseB"]);
+    has(&r.defines, &["Widget"]);
+    lacks(&r.defines, &["render", "methodOnType"]);
+    has(&r.references, &["plainCall", "methodCall", "Widget"]);
+    lacks(&r.references, &["NoiseA", "NoiseB"]);
 }
 
 #[test]
@@ -281,6 +301,131 @@ fn deep_nesting_costs_neither_stack_nor_quadratic_time() {
 
     // The innermost call is still found, so the walk reached the bottom rather
     // than stopping part way.
-    let references = flatten(&symbols.references);
+    let references = flatten(&symbols.references, Scope::Global);
     has(&references, &["widgetMaker", "wrap"]);
+}
+
+// ------------------------------------------------------------ file-local names
+
+/// The change that made this whole distinction necessary, in miniature.
+///
+/// A React component is `export const Panel = …`, its dependencies are
+/// `<Child/>` and `{label}`, and none of those three shapes drew an edge before
+/// (ADR 0030). The label is declared INSIDE the component, so it is file-local:
+/// the reviewer still needs to read the declaration before the three lines that
+/// render it, and nothing else in the change can say so.
+#[test]
+fn tsx_reads_components_jsx_and_the_locals_a_render_consumes() {
+    let r = read(
+        &AstSymbols::new(),
+        b"panel.tsx",
+        r#"
+// mentions NoiseA
+import { Child } from './child';
+export const Panel = ({ fallback }: PanelProps) => {
+  const label = lookUpName() ?? fallback;
+  const unused = "NoiseB";
+  return <Child title={label}>{label}</Child>;
+};
+"#,
+    );
+    // A file-scope `const` is a definition, exactly as `function Panel()` is.
+    has(&r.defines, &["Panel"]);
+    // The component it renders is consumed, and the props type is used.
+    has(&r.references, &["Child", "PanelProps", "lookUpName"]);
+    // The binding inside the body reaches only this file — and the JSX that
+    // reads it says so.
+    has(&r.local_defines, &["label", "fallback", "unused"]);
+    has(&r.local_references, &["label"]);
+    // Neither set takes anything from a comment or a string.
+    lacks(&r.defines, &["NoiseA", "NoiseB", "label"]);
+    lacks(&r.references, &["NoiseA", "NoiseB"]);
+    lacks(&r.local_defines, &["NoiseA", "NoiseB"]);
+    lacks(&r.local_references, &["NoiseA", "NoiseB"]);
+}
+
+/// A `.ts` file is the tuned reader's, and it now captures every identifier.
+///
+/// The sibling test below covers the field-rule reader. This one exists because
+/// `(identifier) @local_ref` turned a handful of captures per file into one per
+/// token, and `is_prose` answers each of them by climbing to the root — which
+/// is a per-token ancestor walk, the exact shape that went quadratic once
+/// before. A minified `.ts` bundle is where it would show.
+#[test]
+fn the_tuned_reader_survives_deep_nesting_too() {
+    const DEPTH: usize = 20_000;
+    let mut src = String::with_capacity(DEPTH * 6 + 32);
+    src.push_str("const deep = ");
+    for _ in 0..DEPTH {
+        src.push_str("wrap(");
+    }
+    src.push_str("widgetMaker()");
+    for _ in 0..DEPTH {
+        src.push(')');
+    }
+    src.push_str(";\n");
+
+    let started = std::time::Instant::now();
+    let symbols = AstSymbols::new()
+        .file_symbols(b"bundle.ts", src.as_bytes())
+        .expect("the reader claimed this file and must answer");
+    let took = started.elapsed();
+    assert!(
+        took < std::time::Duration::from_secs(30),
+        "reading {DEPTH} levels took {took:?}: something walks from a token to \
+         the root once per capture, which is quadratic in the depth"
+    );
+    has(
+        &flatten(&symbols.references, Scope::Global),
+        &["widgetMaker", "wrap"],
+    );
+}
+
+/// A query's version reaches the grouping cache key, so editing a pattern
+/// without bumping the version serves a stale grouping for a graph that moved.
+///
+/// **Patterns, not prose.** The hash is taken over the `.scm` with its comment
+/// and blank lines removed, because those cannot change an answer and a bump
+/// costs every cached grouping in every checkout. That is also why the version
+/// is a hand-written string rather than the hash itself: hashing the file into
+/// the cache key would cold the cache to fix a typo in a comment.
+///
+/// Update both together: change a pattern, bump the `-vN` in `tuned.rs`, then
+/// paste the hash this test prints.
+///
+/// (A `;` inside a query string literal would be mistaken for a comment here.
+/// No query uses one; a predicate like `(#eq? @x ";")` would need this to
+/// strip comments with a real tokeniser instead.)
+#[test]
+fn every_query_version_pins_its_patterns() {
+    const PINNED: &[(&str, &str)] = &[
+        ("rust-v2", "3c50c16df002820454133bd6fc0e9e2c2f733778"),
+        ("python-v2", "6a60f8ec599cb0f16807d0e05119be49eab81b76"),
+        ("go-v2", "184be8fa5ba5e023445a5e788f7766577e5374e5"),
+        ("typescript-v2", "5c8ceebfdae94616d586450de48d2ac8c7d70f28"),
+        ("tsx-v2", "6bfee29d0e2fb60ad406e6b44a9a14e191a10500"),
+        ("kotlin-v2", "20e6aa65d7d4750b788920c2fee04aec11e2f349"),
+    ];
+    let actual: Vec<(String, String)> = AstSymbols::queries()
+        .into_iter()
+        .map(|(version, text)| {
+            let patterns: Vec<&str> = text
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with(';'))
+                .collect();
+            let mut hasher = Sha1::new();
+            hasher.update(patterns.join("\n").as_bytes());
+            (version.to_string(), hex::encode(hasher.finalize()))
+        })
+        .collect();
+    let pinned: Vec<(String, String)> = PINNED
+        .iter()
+        .map(|(v, h)| (v.to_string(), h.to_string()))
+        .collect();
+    assert_eq!(
+        actual, pinned,
+        "a query's patterns moved without its version: bump the `-vN` in \
+         tuned.rs and paste the hashes above"
+    );
 }

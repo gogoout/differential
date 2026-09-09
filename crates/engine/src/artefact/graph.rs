@@ -19,7 +19,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use super::symbols::{FileSymbols, SymbolReaders};
+use super::symbols::{FileSymbols, Scope, Symbol, SymbolReaders};
 use crate::EngineError;
 use crate::model::DiffView;
 use crate::ports::ObjectReader;
@@ -31,6 +31,22 @@ use crate::shape::Partition;
 pub struct ClassGraph {
     pub defines: Vec<Vec<String>>,
     pub depends_on: Vec<Vec<schema::ClassEdge>>,
+}
+
+/// A symbol as the graph compares it.
+///
+/// A global name stands alone: `Widget` read from one file is the same
+/// `Widget` read from another, which is what lets an edge cross a file. A
+/// file-local name carries the index of the file it was read from, so it is
+/// only ever equal to itself — `label` in one file and `label` in another are
+/// two symbols, and neither can draw an edge to the other's class.
+type Key = (Option<usize>, Vec<u8>);
+
+fn key(file: usize, symbol: &Symbol) -> Key {
+    match symbol.scope {
+        Scope::Global => (None, symbol.name.clone()),
+        Scope::File => (Some(file), symbol.name.clone()),
+    }
 }
 
 /// Build the graph over the **added** lines of every class: what the change
@@ -50,8 +66,8 @@ pub fn build<G: ObjectReader>(
     let parsed = parse_files(git, head, view, symbols)?;
 
     let n = partition.classes.len();
-    let mut defs: Vec<BTreeSet<Vec<u8>>> = vec![BTreeSet::new(); n];
-    let mut refs: Vec<BTreeSet<Vec<u8>>> = vec![BTreeSet::new(); n];
+    let mut defs: Vec<BTreeSet<Key>> = vec![BTreeSet::new(); n];
+    let mut refs: Vec<BTreeSet<Key>> = vec![BTreeSet::new(); n];
 
     for (ci, members) in partition.classes.iter().enumerate() {
         for &hi in members {
@@ -76,8 +92,8 @@ pub fn build<G: ObjectReader>(
             if let Some(fs) = parsed.get(&h.file) {
                 for i in 0..h.added.len() {
                     let line = h.new_start + i as u32;
-                    defs[ci].extend(fs.defines_at(line).iter().cloned());
-                    refs[ci].extend(fs.references_at(line).iter().cloned());
+                    defs[ci].extend(fs.defines_at(line).iter().map(|s| key(h.file, s)));
+                    refs[ci].extend(fs.references_at(line).iter().map(|s| key(h.file, s)));
                 }
             }
         }
@@ -87,11 +103,15 @@ pub fn build<G: ObjectReader>(
     // classes define is ambiguous, and this heuristic cannot say which one a
     // reference meant; a precise `Language` (ADR 0015) would resolve it
     // instead of dropping it.
-    let mut definer: HashMap<&[u8], Option<usize>> = HashMap::new();
+    //
+    // A file-local key carries its file, so the ambiguity is judged per file
+    // too: two files each declaring `label` are not a clash, and one file
+    // declaring it twice still is.
+    let mut definer: HashMap<&Key, Option<usize>> = HashMap::new();
     for (ci, d) in defs.iter().enumerate() {
         for sym in d {
             definer
-                .entry(sym.as_slice())
+                .entry(sym)
                 .and_modify(|e| *e = None)
                 .or_insert(Some(ci));
         }
@@ -101,12 +121,12 @@ pub fn build<G: ObjectReader>(
     for (ci, r) in refs.iter().enumerate() {
         // BTreeMap keyed by the defining class index: edges come out sorted by
         // class number, which is `C0`, `C1`, … in the ids too.
-        let mut by_target: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+        let mut by_target: BTreeMap<usize, BTreeSet<String>> = BTreeMap::new();
         for sym in r {
-            if let Some(&Some(def_ci)) = definer.get(sym.as_slice())
+            if let Some(&Some(def_ci)) = definer.get(sym)
                 && def_ci != ci
             {
-                by_target.entry(def_ci).or_default().push(text(sym));
+                by_target.entry(def_ci).or_default().insert(text(&sym.1));
             }
         }
         depends_on.push(
@@ -114,7 +134,7 @@ pub fn build<G: ObjectReader>(
                 .into_iter()
                 .map(|(target, via)| schema::ClassEdge {
                     on: format!("C{target}"),
-                    via,
+                    via: via.into_iter().collect(),
                 })
                 .collect(),
         );
@@ -123,7 +143,16 @@ pub fn build<G: ObjectReader>(
     Ok(ClassGraph {
         defines: defs
             .iter()
-            .map(|d| d.iter().map(|s| text(s)).collect())
+            // A class can define one name globally and another locally, and
+            // could in principle define the same spelling both ways. The set
+            // is over the printed name, so the list stays one entry per name.
+            .map(|d| {
+                d.iter()
+                    .map(|k| text(&k.1))
+                    .collect::<BTreeSet<String>>()
+                    .into_iter()
+                    .collect()
+            })
             .collect(),
         depends_on,
     })
