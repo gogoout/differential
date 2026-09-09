@@ -1324,21 +1324,24 @@ impl App {
         }
     }
 
-    /// The footer keys actually drawn, and the column they start at. One
+    /// The whole footer, in the order it is drawn: the pills and message, the
+    /// keys that fit beside them, and the column those keys start at. One
     /// function for the draw and the hit test, as `centered_x` is for the
     /// composer's footer: a footer laid out twice is how a button drifts off
     /// the key under the pointer.
     ///
     /// A narrow terminal keeps the pills and `? help` and drops the rest: the
     /// keys are the convenience, and the pills are the state of the review.
-    pub fn status_hints(&self, area: Rect) -> (Vec<Hint>, u16) {
+    pub(super) fn status_row(&self, area: Rect) -> (Vec<Span<'static>>, Vec<Hint>, u16) {
         let mut acts = self.footer_hints();
-        let left: usize = self
-            .status_left()
-            .iter()
-            .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
-            .sum();
-        let room = usize::from(area.width).saturating_sub(left + 1);
+        let left = self.status_left();
+        let width_of = |spans: &[Span]| -> usize {
+            spans
+                .iter()
+                .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                .sum()
+        };
+        let room = usize::from(area.width).saturating_sub(width_of(&left) + 1);
         // Dropped one at a time, from the left: the last of them is `? help`,
         // which is the way to every key that did not fit, so it goes last of
         // all. A footer that dropped the lot at the first column too few
@@ -1356,12 +1359,19 @@ impl App {
             + area
                 .width
                 .saturating_sub(u16::try_from(width + 1).unwrap_or(u16::MAX));
+        (left, hints, x0)
+    }
+
+    /// Where the footer's keys are, for a click. The pills the draw needs
+    /// alongside them are of no interest to a hit test.
+    pub fn status_hints(&self, area: Rect) -> (Vec<Hint>, u16) {
+        let (_, hints, x0) = self.status_row(area);
         (hints, x0)
     }
 
     /// The footer's left half: the pills, then the transient message. Its
-    /// width is what the keys on the right have to fit beside, so the draw
-    /// and the hit test both read it here.
+    /// width is what the keys on the right have to fit beside, so it is built
+    /// once per footer and measured there.
     fn status_left(&self) -> Vec<Span<'static>> {
         let total: usize = self.groups().iter().map(|g| g.hunks.len()).sum();
         let done = self.session.reviewed_count().min(total);
@@ -1459,8 +1469,6 @@ impl App {
 
     pub(super) fn draw_status(&self, frame: &mut Frame, area: Rect) {
         let bar = Style::default().bg(self.theme.status_bg);
-        let left = self.status_left();
-
         // The acts of where the reader is standing, and `? help` behind them
         // (issue 30). A fixed list of ten keys was a wall the reader stopped
         // seeing; three keys that change with the place are three keys they
@@ -1471,7 +1479,7 @@ impl App {
                 .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
                 .sum()
         };
-        let (hints, x0) = self.status_hints(area);
+        let (left, hints, x0) = self.status_row(area);
         let right: Vec<Span> = footer_line(&self.theme, &hints)
             .spans
             .into_iter()
