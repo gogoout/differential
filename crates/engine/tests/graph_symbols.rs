@@ -11,7 +11,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use differential_engine::artefact::symbols::{FileSymbols, SymbolReaders, SymbolSource};
+use differential_engine::artefact::symbols::{
+    FileSymbols, Scope, Symbol, SymbolReaders, SymbolSource,
+};
 use differential_engine::config::Config;
 use differential_engine::lang::LanguageRegistry;
 use differential_engine::pipeline::run_pipeline;
@@ -242,4 +244,145 @@ fn a_file_no_reader_claims_contributes_nothing() {
         defines.contains(&"widget_maker".to_string()),
         "the code is still read"
     );
+}
+
+// ---------------------------------------------------- file-local symbols
+
+/// `let name` defines, any word of four characters or more refers — and every
+/// answer carries the scope it was built with.
+///
+/// The point is the SCOPE, not the extraction: the readers are measured where
+/// they live. What the domain owns is what an answer may be compared against,
+/// and the two instances of this differ in nothing else, so the edges they
+/// produce differ for exactly one reason.
+struct Scoped(Scope);
+
+impl SymbolSource for Scoped {
+    fn priority(&self, _path: &[u8]) -> Option<u8> {
+        Some(9)
+    }
+    fn file_symbols(&self, _path: &[u8], content: &[u8]) -> Option<FileSymbols> {
+        let scope = self.0;
+        let sym = |name: &str| Symbol {
+            name: name.as_bytes().to_vec(),
+            scope,
+        };
+        let mut out = FileSymbols::default();
+        for line in content.split(|&b| b == b'\n') {
+            let words: Vec<&str> = std::str::from_utf8(line)
+                .unwrap_or("")
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .filter(|w| !w.is_empty())
+                .collect();
+            out.defines.push(
+                words
+                    .windows(2)
+                    .filter(|p| p[0] == "let")
+                    .map(|p| sym(p[1]))
+                    .collect(),
+            );
+            out.references.push(
+                words
+                    .iter()
+                    .filter(|w| w.len() >= 4)
+                    .map(|w| sym(w))
+                    .collect(),
+            );
+        }
+        Some(out)
+    }
+    fn fingerprint(&self) -> String {
+        format!("test-scoped-{:?}-v1", self.0)
+    }
+}
+
+fn scoped(scope: Scope) -> SymbolReaders {
+    let mut r = SymbolReaders::default();
+    r.register(Box::new(Scoped(scope)));
+    r
+}
+
+/// Two files declaring the same name, and a use of it in each.
+///
+/// Four classes are needed — a declaration and a use per file — and two things
+/// conspire against that. Adjacent added lines are ONE hunk, so an unchanged
+/// line has to sit between them; and identical lines normalise to one shape
+/// class across files, so the two files say the same thing in different shapes.
+fn two_files_one_name() -> (TestRepo, String, String) {
+    let r = TestRepo::new();
+    r.write("src/a.rs", b"// a\n// keep\n");
+    r.write("src/b.rs", b"// b\n// keep\n");
+    let base = r.commit_all("base");
+    r.write(
+        "src/a.rs",
+        b"// a\nlet sharedName = 1;\n// keep\ncallOne(sharedName);\n",
+    );
+    r.write(
+        "src/b.rs",
+        b"// b\nlet sharedName = 2 + 2;\n// keep\ncallTwo(sharedName, 3);\n",
+    );
+    let head = r.commit_all("head");
+    (r, base, head)
+}
+
+/// A file-local name draws edges inside its file, and cannot leave it.
+///
+/// This is the whole of ADR 0030's guard. `sharedName` is declared in both
+/// files, and a global symbol would therefore be ambiguous — the single-definer
+/// rule would drop it and the change would order with no edges at all. Scoped
+/// to its file, each declaration is unambiguous where it lives, and neither can
+/// reach the other file's use.
+#[test]
+fn a_file_local_name_links_only_inside_its_own_file() {
+    let (r, base, head) = two_files_one_name();
+    let out = run_pipeline(
+        &r.repo(),
+        &ReviewSource::range(base.clone(), head.clone(), head.clone()),
+        &Config::default(),
+        &LanguageRegistry::builtin(),
+        &scoped(Scope::File),
+    )
+    .unwrap();
+    let doc = out.document.expect("document");
+
+    // Which file each class lives in, via its exemplar hunk.
+    let file_of_hunk: std::collections::HashMap<&str, &str> = doc
+        .hunks
+        .iter()
+        .map(|h| (h.id.as_str(), h.file.as_str()))
+        .collect();
+    let file_of_class: std::collections::HashMap<&str, &str> = doc
+        .classes
+        .iter()
+        .map(|c| (c.id.as_str(), file_of_hunk[c.exemplar.as_str()]))
+        .collect();
+
+    let edges: Vec<(&str, &str)> = doc
+        .classes
+        .iter()
+        .flat_map(|c| {
+            c.depends_on
+                .iter()
+                .map(move |e| (c.id.as_str(), e.on.as_str()))
+        })
+        .collect();
+    assert_eq!(
+        edges.len(),
+        2,
+        "one edge per file: {edges:?} over {file_of_class:?}"
+    );
+    for (from, to) in &edges {
+        assert_eq!(
+            file_of_class[from], file_of_class[to],
+            "a file-local name reached out of its file: {from} -> {to}"
+        );
+    }
+
+    // The same reader, the same names, answering `Global`: two definers, so
+    // the single-definer rule drops the symbol and nothing is ordered at all.
+    // That is what a file-local name buys — not more edges from looser
+    // matching, but an unambiguous answer where the name actually means one
+    // thing.
+    let (global_edges, _) = graph(&scoped(Scope::Global), &r, &base, &head);
+    assert_eq!(global_edges, 0, "globally, `sharedName` has two definers");
 }

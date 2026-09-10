@@ -7,6 +7,14 @@
 //! | `@def` | a name this file introduces that others can use |
 //! | `@call` | a function being called |
 //! | `@type` | a type being used |
+//! | `@ref` | a name reached by path, without being called |
+//! | `@local_def` | a name that reaches only this file |
+//! | `@local_ref` | an identifier that might be reading one |
+//!
+//! The last two are why a `const` inside a function is not thrown away
+//! (ADR 0030). They are compared only against the same file's answers, so a
+//! common word cannot become a symbol the whole change links to — which is the
+//! failure the file-scope rule exists to prevent.
 //!
 //! Written here rather than vendored from nvim-treesitter: those files use
 //! predicates the Rust query engine does not support (`#lua-match?`,
@@ -19,10 +27,10 @@
 use std::collections::HashSet;
 use std::ops::Range;
 
-use differential_engine::artefact::symbols::{FileSymbols, SymbolSource};
+use differential_engine::artefact::symbols::{FileSymbols, Symbol, SymbolSource};
 use tree_sitter::{Language, Query, QueryCursor, StreamingIterator};
 
-use super::{is_prose, line_count, line_of, parse, text_of};
+use super::{is_prose, line_count, line_of, parse, prose_tokens, text_of};
 
 struct Tuned {
     /// Bump the `-vN` when the query changes. It reaches the grouping cache key,
@@ -30,45 +38,57 @@ struct Tuned {
     version: &'static str,
     extensions: &'static [&'static [u8]],
     language: fn() -> Language,
-    source: &'static str,
+    /// Query text, joined in order. TSX is TypeScript's query plus the JSX
+    /// patterns, and the plain TypeScript grammar has no nodes for those — a
+    /// single shared file would fail to compile against one of the two.
+    sources: &'static [&'static str],
+}
+
+impl Tuned {
+    fn query_text(&self) -> String {
+        self.sources.join("\n")
+    }
 }
 
 static TUNED: &[Tuned] = &[
     Tuned {
-        version: "rust-v1",
+        version: "rust-v3",
         extensions: &[b".rs"],
         language: rust,
-        source: include_str!("queries/rust.scm"),
+        sources: &[include_str!("queries/rust.scm")],
     },
     Tuned {
-        version: "python-v1",
+        version: "python-v3",
         extensions: &[b".py", b".pyi"],
         language: python,
-        source: include_str!("queries/python.scm"),
+        sources: &[include_str!("queries/python.scm")],
     },
     Tuned {
-        version: "go-v1",
+        version: "go-v3",
         extensions: &[b".go"],
         language: go,
-        source: include_str!("queries/go.scm"),
+        sources: &[include_str!("queries/go.scm")],
     },
     Tuned {
-        version: "typescript-v1",
+        version: "typescript-v3",
         extensions: &[b".ts", b".mts", b".cts"],
         language: typescript,
-        source: include_str!("queries/typescript.scm"),
+        sources: &[include_str!("queries/typescript.scm")],
     },
     Tuned {
-        version: "tsx-v1",
+        version: "tsx-v3",
         extensions: &[b".tsx"],
         language: tsx,
-        source: include_str!("queries/typescript.scm"),
+        sources: &[
+            include_str!("queries/typescript.scm"),
+            include_str!("queries/tsx.scm"),
+        ],
     },
     Tuned {
-        version: "kotlin-v1",
+        version: "kotlin-v3",
         extensions: &[b".kt", b".kts"],
         language: kotlin,
-        source: include_str!("queries/kotlin.scm"),
+        sources: &[include_str!("queries/kotlin.scm")],
     },
 ];
 
@@ -112,7 +132,7 @@ impl AstSymbols {
         let mut failures = Vec::new();
         for tuned in TUNED {
             let language = (tuned.language)();
-            match Query::new(&language, tuned.source) {
+            match Query::new(&language, &tuned.query_text()) {
                 Ok(query) => ready.push((tuned, language, query)),
                 Err(e) => failures.push((tuned.version, e.to_string())),
             }
@@ -123,6 +143,16 @@ impl AstSymbols {
     /// Every query that would not compile against its pinned grammar.
     pub fn failures(&self) -> &[(&'static str, String)] {
         &self.failures
+    }
+
+    /// Every query, as `(version, text)`.
+    ///
+    /// Exists for the pin test: the version reaches the grouping cache key, so
+    /// editing a query without bumping it serves a stale grouping for a graph
+    /// that moved. The test hashes the patterns against the version, which is
+    /// the only way the bump cannot be forgotten.
+    pub fn queries() -> Vec<(&'static str, String)> {
+        TUNED.iter().map(|t| (t.version, t.query_text())).collect()
     }
 
     fn entry(&self, path: &[u8]) -> Option<&(&'static Tuned, Language, Query)> {
@@ -143,6 +173,7 @@ impl SymbolSource for AstSymbols {
         let tree = parse(language, content)?;
         let lines = line_count(content);
         let mut out = FileSymbols {
+            namespace: crate::namespace::of(path),
             defines: vec![Vec::new(); lines],
             references: vec![Vec::new(); lines],
         };
@@ -151,6 +182,7 @@ impl SymbolSource for AstSymbols {
         // mention — `struct Widget` matches both `@def` and `@type` — and query
         // matches arrive in no particular order, so the veto needs every
         // capture in hand.
+        let prose = prose_tokens(&tree);
         let names = query.capture_names();
         let mut captured: Vec<(&str, usize, Range<usize>, Vec<u8>)> = Vec::new();
         let mut cursor = QueryCursor::new();
@@ -158,7 +190,14 @@ impl SymbolSource for AstSymbols {
         while let Some(m) = matches.next() {
             for capture in m.captures() {
                 let node = capture.node;
-                if is_prose(node) {
+                // A token answers from the set; anything else — no query here
+                // captures one — pays the ancestor walk.
+                let prosaic = if node.child_count() == 0 {
+                    prose.contains(&node.byte_range())
+                } else {
+                    is_prose(node)
+                };
+                if prosaic {
                     continue;
                 }
                 let (Some(text), Some(line)) =
@@ -178,18 +217,39 @@ impl SymbolSource for AstSymbols {
             }
         }
 
-        let defined: HashSet<Range<usize>> = captured
-            .iter()
-            .filter(|(name, ..)| *name == "def")
-            .map(|(_, _, range, _)| range.clone())
-            .collect();
+        let ranges = |wanted: &str| -> HashSet<Range<usize>> {
+            captured
+                .iter()
+                .filter(|(name, ..)| *name == wanted)
+                .map(|(_, _, range, _)| range.clone())
+                .collect()
+        };
+        let defined = ranges("def");
+        let locally_defined = ranges("local_def");
 
         for (name, line, range, text) in captured {
+            // Definitions win: a class must never appear to consume the thing
+            // it introduces. A file-scope definition also wins over the
+            // file-local capture of the same token, which is how
+            // `(variable_declarator …) @local_def` and its `(program …) @def`
+            // sibling both stay in the query without fighting.
+            let is_a_definition = defined.contains(&range) || locally_defined.contains(&range);
             match name {
-                "def" => out.defines[line].push(text),
-                // Definitions win: a class must never appear to consume the
-                // thing it introduces.
-                "call" | "type" if !defined.contains(&range) => out.references[line].push(text),
+                "def" => out.defines[line].push(Symbol::global(text)),
+                "local_def" if !defined.contains(&range) => {
+                    out.defines[line].push(Symbol::local(text));
+                }
+                // Three spellings of one thing: the file consumes a name
+                // that came from somewhere else. `@ref` is the one that is
+                // neither a call nor a type — a function handed to a router
+                // rather than invoked, an enum variant, a constant by path.
+                "call" | "type" | "ref" if !is_a_definition => {
+                    out.references[line].push(Symbol::global(text));
+                }
+                // A call may be resolving a file-local binding or a global
+                // one, and nothing here can say which. Both are recorded; the
+                // graph keeps whichever finds a definer.
+                "local_ref" if !is_a_definition => out.references[line].push(Symbol::local(text)),
                 _ => {}
             }
         }

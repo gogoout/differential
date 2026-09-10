@@ -31,12 +31,19 @@ Project home: <https://github.com/thepartly/differential>
 
 | reader | definitions | references | comments and strings |
 |---|---|---|---|
-| tuned query | from the tree, per language | calls and types, per language | dropped |
+| tuned query | from the tree, per language | calls, types, JSX names and paths, per language | dropped |
 | field rules | from the tree | calls and types, by field name | dropped |
 | regex floor | declaration keywords | every identifier of four characters or more | **counted** |
 | none | — | — | — |
 
-Three consequences worth stating outright, because each one surprises.
+Both AST readers answer with a **scope** as well as a name (ADR 0030). A global name is one
+other files can use, and its edges may cross a file; a file-local name — a binding inside a
+function, a parameter, an import, a method — is keyed by `(file, name)` and draws edges only
+inside the file it was read from. The tuned readers take every identifier as a possible
+file-local reference, so a value declared in one hunk and read in the next is visible; the
+regex floor has no scope to offer and its answers stay global.
+
+Four consequences worth stating outright, because each one surprises.
 
 **A file no reader claims still exists.** Its hunks are counted, its classes are formed, it
 is read like anything else. It simply draws no dependency edges. Withholding symbols is
@@ -46,9 +53,29 @@ classification, never enumeration — nothing here can add or remove a hunk (ADR
 It can never hide a change.
 
 **What a tuned query buys is knowing what a definition is not.** `mod template;` names a
-module, and `fn from` inside an `impl` is reached through its type — neither introduces a
-name other files can use. The regex floor cannot tell either from a real definition, and on
-one measured range six such words produced 64% of every dependency edge.
+module, and `fn from` inside `impl From<X> for Y` is reached through the trait — neither
+introduces a name other files can use. The regex floor cannot tell either from a real
+definition, and on one measured range six such words produced 64% of every dependency edge.
+A query can also tell that apart from `impl Service { fn load_batch }`, which is a
+definition: one type owns it, and callers elsewhere name it exactly (ADR 0030).
+
+**A name is consumed by being named, not only by being called.**
+`route(api::widgets::handler)` hands a function to a router. Capturing only the callee
+position meant every registration table — routers, dispatch maps — drew no edge at all.
+
+**In a module language, `export` is the whole predicate** — for a type as much as a value.
+`export const Panel = …` and `export interface PanelProps` define; a bare
+`const send = vi.fn()` or `type FormData = …` in a test file does not, and counting those
+linked production files to the test. Unexported, they are still read as file-local names, so
+they keep every edge they can honestly draw.
+
+**A global name is scoped to its language.** `FormData` read from a Rust file and
+`FormData` read from a TypeScript one are two symbols: nothing here parses a monorepo's
+build graph, so a shared word is never evidence that two packages are connected (ADR 0031).
+`namespace::of` is the table, and all three readers share it — the crude reader is the AST
+readers' fallback, so a namespace of its own would split a language in two the first time a
+parse failed. This *raises* the edge count on a mixed repository: a name declared once per
+language used to have two definers and be dropped for both.
 
 Comments and strings are dropped by both AST readers without any query, because every
 grammar names those nodes with those words. A token that reaches a string through an
@@ -71,14 +98,24 @@ rules found no calls there at all. Nine of the other ten grammars passed those r
 probe before any of this was written.
 
 Each query carries a version in the reader's fingerprint, which is part of the grouping
-cache key. Editing a query therefore colds the cache by itself, and a test pins each
-query's content hash against its version so the bump cannot be forgotten.
+cache key. Editing a query therefore colds the cache by itself, and
+`every_query_version_pins_its_patterns` pins each query's PATTERNS — its text with comment
+and blank lines removed — against its version, so the bump cannot be forgotten and a
+reworded comment does not cold every cached grouping for nothing. Change a pattern, bump
+the `-vN`, paste the hash the test prints.
+
+A query is not the only thing that can change an answer, so
+`every_reader_fingerprint_pins_its_answers` hashes what each reader actually extracts from a
+fixed set of samples and pins that beside its version too. It covers a change to the
+readers' Rust — the gap that let the crude reader gain a namespace and keep `naive-v1` — and
+it fails on a tree-sitter grammar upgrade, which it should: a new grammar can change
+extraction, and nothing else in the tree would notice.
 
 ## What is proven against what
 
 | reader | evidence |
 |---|---|
-| tuned query | Rust, Python and TypeScript run against a real multi-language corpus. Go and Kotlin are covered by per-language tests only. |
+| tuned query | Rust, Python and TypeScript run against a real multi-language corpus; TypeScript and TSX additionally against a React corpus, and Rust against a service-backend one. Go and Kotlin are covered by per-language tests only, and their method and path rules are unmeasured — see ADR 0030. |
 | field rules | Java runs against the corpus. C, C++, C# and JavaScript are covered by per-language tests only. |
 | regex floor | runs against the corpus wherever no grammar claims a file. |
 
@@ -91,6 +128,14 @@ to order — disappeared entirely.
 - `.pyi`, `.mts` and `.cts` are claimed by the tuned reader but are absent from the regex
   floor's list. Nothing fails today, so nothing falls through; if a parse ever did fail on
   one, it would get no symbols rather than crude ones.
+- Rust's `(source_file (const_item …)) @def` does not check `pub`, so a private constant is
+  global where an unexported TypeScript one is not. Predates the scope split, and moving it
+  belongs to its own measurement (ADR 0030).
+- `.jsx` goes to the field rules, which have no JSX rule — a rendered component draws no
+  edge there. `.tsx` does, by query.
+- Go's `@ref` and Python's take struct-field and attribute reads too: those languages spell
+  a qualified name and a member read the same way. Rust's `scoped_identifier` does not have
+  this problem.
 
 ## Using it
 

@@ -1,0 +1,185 @@
+# 0030 — What counts as a definition, and how far it reaches
+
+Status: accepted
+
+Extends [ADR 0023](0023-symbol-extraction-is-a-domain-port.md), which stands.
+
+## Context
+
+A reviewer met this range: one hunk introduces
+`const label = lookUpName() ?? fallbackName;` inside a React component, and three later
+hunks in the same file render it. The reading plan put the
+declaration in one group and the three uses in another, and said **nothing** connected them.
+The grouping model, which reads the class graph, wrote "defines the new value every display
+site below consumes" in prose — while the graph it had been handed said the class defined
+nothing at all.
+
+Three causes, and only the second is a decision:
+
+1. **TypeScript's file-scope value declarations were missing from its query.** No
+   `lexical_declaration` pattern, not even under `program`. Rust captures
+   `(source_file (const_item …))`, Go `(source_file (const_declaration …))`, Kotlin
+   `(source_file (property_declaration …))`. So `export const Panel = () => {}` — the
+   dominant declaration form in a TypeScript codebase — defined nothing.
+2. **The binding is declared inside a function.** ADR 0023's rule, "a definition is
+   a file-scope name others can use", excludes it on purpose.
+3. **A bare identifier read is not a reference.** The query captured `@call` and `@type`
+   only, and `{label}` is neither. Nor is `<Child …/>`: in the TSX grammar
+   a JSX element's name is `identifier`, never `type_identifier`, so **rendering a component
+   drew no edge at all** — the main consumption relation in a React codebase was invisible.
+
+Measured on a TypeScript corpus of five ranges: **four produced zero edges and zero
+definitions**. The fifth produced thirteen, every one of them from an `interface` or `type`
+name. The graph was a *type* graph.
+
+Two more, found the same way on a Rust range once the above was in hand:
+
+4. **An inherent `impl` method was never a definition.** A reviewer met a change that adds
+   `pub async fn load_batch` to `impl Service` and calls it from another crate, and the
+   plan drew no edge. Only `function_item` directly under `source_file` was a definition. In
+   the same range, `pub(crate) async fn load_config` at module top level *did* draw its
+   edge — the only difference between them was the `impl` block.
+5. **A function named without being called was not a reference.** `.route(api::widgets::handler, …)`
+   hands a function over; the query captured a `scoped_identifier` only in **callee**
+   position, so registration tables — routers, dispatch maps, anything built by naming
+   functions — drew nothing. The definition was there and global; the use side never
+   asked for it.
+
+## Decision
+
+**A symbol carries a scope, and a file-local name may only draw an edge between classes in
+the same file.**
+
+```rust
+pub enum Scope { Global, File }
+pub struct Symbol { pub name: Vec<u8>, pub scope: Scope }
+```
+
+`artefact::graph` keys a global name by the name alone and a file-local name by
+`(file, name)`. Everything else is unchanged — including the single-definer rule, which now
+judges ambiguity per file: two files each declaring `label` are not a clash, and one file
+declaring it twice still is.
+
+**This does not reopen what ADR 0023 closed.** That ADR's failure was `mod template;` and
+`fn from` becoming *globally* unique symbols that every file mentioning the word then linked
+to — six words, 64% of one range's edges. A file-local name cannot do that however common it
+is. It is compared only against its own file's answers, so the worst a wrong one costs is an
+ordering inside one file, and the candidate set it competes in is small enough that the
+single-definer rule usually resolves it.
+
+Three consequences for the readers:
+
+- **Tuned queries gain `@local_def` and `@local_ref`.** The locals are exactly the
+  declarations the file-scope rule deliberately drops — a binding inside a function, a
+  parameter, an import, a method — and `(identifier) @local_ref` is everything that might be
+  reading one.
+- **TypeScript gains its exported file-scope value declarations, and TSX its JSX names.**
+  Both are corrections, not extensions: the first is the convention every other query
+  already follows, and the second is a call by another spelling.
+- **The field-rule reader calls every other declaration file-local.** It cannot tell which
+  of them sits at file scope — a JavaScript `export const Panel = …` looks like any other
+  `variable_declarator` from there — so the conservative reading is the honest one. It costs
+  cross-file edges those names never drew anyway.
+
+**A type-owned method IS a definition; a trait-owned one is not.** This is the line
+ADR 0023 drew in the wrong place, and the corpus says where it belongs. `fn from` in
+`impl From<X> for Y` shares its name with every conversion in the tree — that is the
+ambiguity that ADR measured, and it stays excluded. `impl Service { fn load_batch }`
+shares its name with nothing: it is the one place that name is declared, and callers in
+other files reach it by exactly that name. In Rust the two are told apart by a negated
+field, `(impl_item !trait …)`; Go's `method_declaration` has a receiver and no trait-impl
+case to separate; Python and Kotlin take their class-body methods. Taking *every* `impl`
+method instead — trait ones included — was measured too: it bought one more edge and cost a
+**three-class cycle**.
+
+**A name reached by path is a reference, called or not.** A new `@ref` capture, sitting
+beside `@call` and `@type` and treated identically by the reader. `@call` had come to mean
+"consumed", which it does not say, and a value handed to a router is consumed exactly as a
+called function is.
+
+**Exported, and only exported — for a type exactly as for a value.** A definition is a
+name *others can use*, and in a module system `export` is exactly that predicate. Counting a
+bare top-level `const send = vi.fn()` in a test file linked every production file calling
+`send` to that test, and closed a two-class cycle with the true edge running the other way —
+ADR 0023's own failure, reappearing through the new rule.
+
+The gate has to apply to `class`, `interface`, `type` and `enum` too, which it did not at
+first: those were captured anywhere in the file and regardless of `export`. An unexported
+`type FormData = …` in an integration test was then the only thing in one change that
+"defined" that name, and two files in another language linked to the test because of it.
+Removing those two false edges cost nothing else anywhere — every real
+interface-name edge in the measured ranges is on an exported declaration.
+
+Unexported, the same name is still read as file-local, so it keeps every edge it can
+honestly draw.
+
+## Consequences
+
+Measured over five ranges of a TypeScript corpus. `sccs` is the number that matters: a
+topological sort works if and only if every strongly connected component has size one.
+
+| range | language | classes | edges before | edges after | sccs before | sccs after |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | TS/TSX | 9 | 0 | 3 | 0 | 0 |
+| 2 | TS/TSX | 30 | 13 | 33 | 0 | 0 |
+| 3 | TS/TSX | 27 | 0 | 6 | 0 | 0 |
+| 4 | TS/TSX | 11 | 0 | 2 | 0 | 0 |
+| 5 | TS/TSX | 17 | 0 | 6 | 0 | 0 |
+| 6 | Rust | 62 | 20 | 21 | 0 | 0 |
+
+Not one new cycle, and the edges that arrived are component composition, util calls,
+analytics builders, a service method and a route registration — the structure a reviewer of
+those changes actually needs. Ranges 3 and 5 gained edges from the scoping alone: names that
+were ambiguous as globals resolve as locals.
+
+**Rust and TypeScript are measured. Go, Python and Kotlin are not**, and they took the same
+widening on the argument alone — which is the move ADR 0023 was written against, so it is
+recorded here rather than left to be discovered. Two specific risks follow from that:
+
+- **Go and Python spell a qualified name and a field read identically.** `handlers.Listing`
+  and `s.Name` are both a `selector_expression`/`attribute`, so `@ref` takes struct field
+  and attribute reads as well. The single-definer rule has to absorb them. Rust does not
+  have this problem: `scoped_identifier` is a path and nothing else.
+- **Python and Kotlin are duck-typed**, so two classes may answer to one method name. Those
+  collide and the single-definer rule drops them, which is the safe direction — but it also
+  means the method rule buys less there than it does in Rust or Go.
+
+- **The readers' fingerprints all change, which colds every cached grouping** by design
+  (`grouping/key.rs`): the class graph is part of what the model reads (ADR 0022).
+- **`(identifier) @local_ref` turns a handful of captures per file into one per token**, and
+  `is_prose` answers each by climbing to the root. That is the quadratic shape
+  `deep_nesting_costs_neither_stack_nor_quadratic_time` exists to catch, and it fired: the
+  tuned reader now collects prose token ranges in one linear pass, the way the field-rule
+  reader already carried its flags down. `is_prose` survives as the rule's definition and as
+  the fallback for a capture that is not a token.
+- **A query's version is now pinned to its text by a test.** Six versions moved in this
+  change, and a version reaches the cache key — a forgotten bump serves a stale grouping for
+  a graph that moved.
+- **Rust's `(source_file (const_item …)) @def` does not check `pub`**, so it has the same
+  latent shape as the TypeScript rule above. Left alone: it was there before this change,
+  Rust constants are conventionally `SCREAMING_CASE` rather than common words, and moving it
+  belongs to its own measurement. The new inherent-`impl` rule does not check `pub` either,
+  for the same reason and with the same caveat.
+- **Every query version moves to `-v3`** on top of the `-v2` this change already made, so a
+  checkout that ran an intermediate build re-groups rather than being served a grouping for
+  a graph that has since moved.
+- **A global symbol still had no language when this was written**, so `FormData` in a Rust
+  type position and `FormData` in a TypeScript one were one symbol. The export gate above
+  removes the egregious half — a private test alias posing as the definition — but a genuine
+  exported name still matched across languages.
+  [ADR 0031](0031-a-global-name-is-scoped-to-its-language.md) closes it, and the measurement
+  it took is not the one expected here: separating the namespaces *added* edges, because a
+  name declared once per language had two definers and the single-definer rule was dropping
+  it for both.
+
+## Alternatives rejected
+
+**Scoping the crude reader's references too.** Its "every identifier of four characters or
+more" is the loosest thing in the system and the obvious next candidate. But it is the only
+reader Ruby, PHP, Swift and Elixir have, and file-scoping it would delete every cross-file
+edge those languages draw. That is a precision question with its own corpus measurement, and
+bundling it here would make one movement in the numbers impossible to attribute.
+
+**Splitting a group when the graph says it holds both a definition and its use.** The merge
+is the model's judgement (ADR 0001) and the graph that would undo it is heuristic. A wrong
+edge misorders; a wrong cut breaks a coherent group and mislabels both halves.

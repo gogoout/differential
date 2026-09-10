@@ -14,6 +14,51 @@
 //! with a tuned query, a Java file one with generic rules, a shell script the
 //! crude one. `lang::LanguageRegistry` already selects this way.
 
+/// How far a name reaches, and therefore what it may be compared against.
+///
+/// A `Global` name is one other files can use, and an edge on it may cross a
+/// file boundary. A `File` name reaches only its own file — a `const` inside a
+/// function body, a parameter, an import binding — and an edge on it may only
+/// join classes in that same file.
+///
+/// The distinction is the whole guard. ADR 0023 counted only global names
+/// because `mod template;` and `fn from` became globally unique symbols that
+/// every file mentioning the word then linked to: six such words made 64% of
+/// one range's edges. A name confined to its file cannot do that, however
+/// common it is — the worst it can cost is an ordering inside one file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Scope {
+    /// Usable from another file. Edges may cross files.
+    Global,
+    /// Usable only inside the file it was read from.
+    File,
+}
+
+/// One name a line introduces or consumes, and how far it reaches.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Symbol {
+    pub name: Vec<u8>,
+    pub scope: Scope,
+}
+
+impl Symbol {
+    /// A name other files can use.
+    pub fn global(name: impl Into<Vec<u8>>) -> Symbol {
+        Symbol {
+            name: name.into(),
+            scope: Scope::Global,
+        }
+    }
+
+    /// A name that reaches only the file it was read from.
+    pub fn local(name: impl Into<Vec<u8>>) -> Symbol {
+        Symbol {
+            name: name.into(),
+            scope: Scope::File,
+        }
+    }
+}
+
 /// A file's symbols, indexed by NEW-SIDE line number.
 ///
 /// Both vectors are parallel and one entry per line, so an entry is addressed
@@ -21,23 +66,32 @@
 /// empty `Vec`, which does not allocate — a 100k-line file costs pointers.
 #[derive(Debug, Default, Clone)]
 pub struct FileSymbols {
-    pub defines: Vec<Vec<Vec<u8>>>,
-    pub references: Vec<Vec<Vec<u8>>>,
+    /// What these names are written in, as the reader chooses to name it. Two
+    /// GLOBAL symbols are the same symbol only if their namespaces match as
+    /// well as their names (ADR 0031).
+    ///
+    /// **Opaque to the domain.** It is compared and never interpreted, so this
+    /// still does not tell the graph which reader answered — only whether two
+    /// answers are about the same body of names. An empty namespace is a
+    /// namespace like any other, and matches only other empty ones.
+    pub namespace: Vec<u8>,
+    pub defines: Vec<Vec<Symbol>>,
+    pub references: Vec<Vec<Symbol>>,
 }
 
 impl FileSymbols {
     /// Symbols defined on `line`, counting from 1. Empty when out of range.
-    pub fn defines_at(&self, line: u32) -> &[Vec<u8>] {
+    pub fn defines_at(&self, line: u32) -> &[Symbol] {
         at(&self.defines, line)
     }
 
     /// Symbols referenced on `line`, counting from 1.
-    pub fn references_at(&self, line: u32) -> &[Vec<u8>] {
+    pub fn references_at(&self, line: u32) -> &[Symbol] {
         at(&self.references, line)
     }
 }
 
-fn at(rows: &[Vec<Vec<u8>>], line: u32) -> &[Vec<u8>] {
+fn at(rows: &[Vec<Symbol>], line: u32) -> &[Symbol] {
     line.checked_sub(1)
         .and_then(|i| rows.get(i as usize))
         .map_or(&[], |v| v.as_slice())
@@ -135,7 +189,8 @@ mod tests {
         }
         fn file_symbols(&self, _path: &[u8], _content: &[u8]) -> Option<FileSymbols> {
             self.answer.map(|a| FileSymbols {
-                defines: vec![vec![a.as_bytes().to_vec()]],
+                namespace: b"test".to_vec(),
+                defines: vec![vec![Symbol::global(a)]],
                 references: vec![Vec::new()],
             })
         }
@@ -153,7 +208,7 @@ mod tests {
     }
 
     fn first_define(s: &FileSymbols) -> String {
-        String::from_utf8_lossy(&s.defines[0][0]).into_owned()
+        String::from_utf8_lossy(&s.defines[0][0].name).into_owned()
     }
 
     fn low() -> Fake {
@@ -175,12 +230,13 @@ mod tests {
     #[test]
     fn symbols_are_addressed_by_line_number_counting_from_one() {
         let fs = FileSymbols {
-            defines: vec![vec![b"a".to_vec()], Vec::new()],
-            references: vec![Vec::new(), vec![b"b".to_vec()]],
+            namespace: b"test".to_vec(),
+            defines: vec![vec![Symbol::global("a")], Vec::new()],
+            references: vec![Vec::new(), vec![Symbol::local("b")]],
         };
-        assert_eq!(fs.defines_at(1), [b"a".to_vec()]);
+        assert_eq!(fs.defines_at(1), [Symbol::global("a")]);
         assert!(fs.defines_at(2).is_empty());
-        assert_eq!(fs.references_at(2), [b"b".to_vec()]);
+        assert_eq!(fs.references_at(2), [Symbol::local("b")]);
         // Line 0 does not exist, and neither does line 3. Both answer empty
         // rather than panic: a reader that returns fewer lines than the diff
         // expects loses those lines' symbols, it does not crash the run.

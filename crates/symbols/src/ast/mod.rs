@@ -8,14 +8,20 @@
 //! What they share is here: parsing, line numbering, and [`is_prose`] — the
 //! rule for deciding that a token is comment or string rather than code.
 //!
-//! Only the tuned reader calls `is_prose`. It climbs from a token to the root,
-//! which is fine when a query hands you a few captures and ruinous when you are
-//! visiting every node, so the field-rule reader carries the same rule down its
-//! own stack instead. Two spellings of one rule, and the reason is measured:
-//! see `deep_nesting_costs_neither_stack_nor_quadratic_time`.
+//! [`is_prose`] is the rule stated once, climbing from a token to the root. It
+//! is only affordable per token when there are few of them, and since the
+//! queries began capturing every identifier (ADR 0030) there are not — so both
+//! readers carry the same two flags DOWN a cursor walk instead
+//! ([`prose_tokens`] here, `generic::walk`'s own stack there), and `is_prose`
+//! survives as the definition and as the tuned reader's fallback for a capture
+//! that is not a token. The reason is measured: see
+//! `deep_nesting_costs_neither_stack_nor_quadratic_time`.
 
 pub mod generic;
 pub mod tuned;
+
+use std::collections::HashSet;
+use std::ops::Range;
 
 use tree_sitter::{Node, Parser, Tree};
 
@@ -61,6 +67,67 @@ fn is_prose(node: Node) -> bool {
         current = parent;
     }
     false
+}
+
+/// The byte range of every prose TOKEN in the tree, in one linear pass.
+///
+/// [`is_prose`] answers the same question by climbing from a token to the root,
+/// which costs depth per token. That was fine when a query handed back a
+/// handful of captures. It stopped being fine when the queries gained
+/// `(identifier) @local_ref` (ADR 0030) and started capturing every token in
+/// the file: per-token × per-ancestor is the quadratic shape
+/// `deep_nesting_costs_neither_stack_nor_quadratic_time` was written to catch,
+/// and a minified bundle is where it shows.
+///
+/// Tokens only, because every capture in every query is one. A capture that
+/// somehow is not stays correct — the caller falls back to [`is_prose`] for it.
+fn prose_tokens(tree: &Tree) -> HashSet<Range<usize>> {
+    /// What a node inherits from the level above it — the same two flags
+    /// [`is_prose`] computes by climbing, carried down instead.
+    #[derive(Clone, Copy)]
+    struct Above {
+        in_comment: bool,
+        /// Inside a string, and no interpolation since: `"${resolve(id)}"`
+        /// holds a real call, so an interpolation clears this.
+        in_string: bool,
+    }
+
+    let mut out = HashSet::new();
+    let mut cursor = tree.walk();
+    let mut stack: Vec<Above> = vec![Above {
+        in_comment: false,
+        in_string: false,
+    }];
+
+    loop {
+        let node = cursor.node();
+        let kind = node.kind();
+        let above = *stack.last().expect("the root entry is never popped");
+
+        if node.child_count() == 0 {
+            if above.in_comment || above.in_string {
+                out.insert(node.byte_range());
+            }
+        } else if cursor.goto_first_child() {
+            let interpolates = kind.contains("interpolation") || kind.contains("substitution");
+            stack.push(Above {
+                in_comment: above.in_comment || kind.contains("comment"),
+                in_string: !interpolates && (above.in_string || kind.contains("string")),
+            });
+            continue;
+        }
+        // A sibling shares our depth, so it inherits the same entry; only
+        // climbing out of a level pops one.
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return out;
+            }
+            stack.pop();
+        }
+    }
 }
 
 /// The line a node starts on, counting from 1.

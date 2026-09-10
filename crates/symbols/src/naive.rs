@@ -11,7 +11,7 @@
 
 use std::sync::LazyLock;
 
-use differential_engine::artefact::symbols::{FileSymbols, SymbolSource};
+use differential_engine::artefact::symbols::{FileSymbols, Symbol, SymbolSource};
 use regex::bytes::Regex;
 
 // (?-u): byte-level ASCII classes, matching the validated prototype.
@@ -45,22 +45,40 @@ impl SymbolSource for NaiveSymbols {
     /// patterns cannot match it — exactly as it could not in a diff line.
     ///
     /// Never fails: a regex has nothing to choke on.
-    fn file_symbols(&self, _path: &[u8], content: &[u8]) -> Option<FileSymbols> {
+    fn file_symbols(&self, path: &[u8], content: &[u8]) -> Option<FileSymbols> {
         let lines: Vec<&[u8]> = content.split(|&b| b == b'\n').collect();
         Some(FileSymbols {
-            defines: lines.iter().map(|l| definitions(l)).collect(),
-            references: lines.iter().map(|l| references(l)).collect(),
+            // The SAME table the AST readers use. This reader is their
+            // fallback when a parse fails, so a namespace of its own would
+            // split one language in two the first time that happened.
+            namespace: crate::namespace::of(path),
+            defines: lines.iter().map(|l| global(definitions(l))).collect(),
+            references: lines.iter().map(|l| global(references(l))).collect(),
         })
     }
 
+    /// `-v2`: this reader now answers with a namespace, so which cross-file
+    /// symbols match has changed (ADR 0031). It is the ONLY reader for Ruby,
+    /// PHP, Swift, Elixir, shell and the rest, and the AST readers' fallback
+    /// when a parse fails — so leaving it at `-v1` would serve those languages
+    /// a grouping built from a graph that had moved, and nothing would catch
+    /// it. The aggregate key changed anyway this time, because two other
+    /// readers bumped; that is luck, not a guarantee.
     fn fingerprint(&self) -> String {
-        "naive-v1".to_string()
+        "naive-v2".to_string()
     }
 }
 
 /// Symbol names introduced by common declaration keywords. Deliberately crude:
 /// ordering tolerates low precision — a wrong edge misorders, it can never hide
 /// content (ADR 0007).
+///
+/// **Global, and deliberately so.** A regex cannot tell a file-scope
+/// declaration from one inside a function, so scoping these to their file
+/// would silently delete every cross-file edge for the languages that reach
+/// this reader — Ruby, PHP, Swift, Elixir and the rest have no other. That is a
+/// precision question of its own, with its own corpus measurement; it is not
+/// this one.
 fn definitions(line: &[u8]) -> Vec<Vec<u8>> {
     DEF_RE.captures_iter(line).map(|c| c[1].to_vec()).collect()
 }
@@ -74,14 +92,20 @@ fn references(line: &[u8]) -> Vec<Vec<u8>> {
         .collect()
 }
 
+/// Every name this reader finds reaches beyond its file, as far as it can
+/// tell. See [`definitions`].
+fn global(names: Vec<Vec<u8>>) -> Vec<Symbol> {
+    names.into_iter().map(Symbol::global).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn text(rows: &[Vec<Vec<u8>>], line: usize) -> Vec<String> {
+    fn text(rows: &[Vec<Symbol>], line: usize) -> Vec<String> {
         rows[line - 1]
             .iter()
-            .map(|s| String::from_utf8_lossy(s).into_owned())
+            .map(|s| String::from_utf8_lossy(&s.name).into_owned())
             .collect()
     }
 

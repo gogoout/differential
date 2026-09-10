@@ -566,9 +566,11 @@ name = "differential-symbols"
 version = "0.8.0"
 dependencies = [
  "differential-engine",
+ "hex",
  "petgraph",
  "regex",
  "serde",
+ "sha1",
  "toml",
  "tree-sitter",
  "tree-sitter-c",
