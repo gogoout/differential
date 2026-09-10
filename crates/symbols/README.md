@@ -69,9 +69,13 @@ position meant every registration table — routers, dispatch maps — drew no e
 linked production files to the test. Unexported, they are still read as file-local names, so
 they keep every edge they can honestly draw.
 
-**A global name has no language.** `FormData` read from a Rust file and `FormData` read from
-a TypeScript one are one symbol. Sometimes right — a generated client does follow its
-server's types — and sometimes a coincidence, and nothing here can tell which. See ADR 0030.
+**A global name is scoped to its language.** `FormData` read from a Rust file and
+`FormData` read from a TypeScript one are two symbols: nothing here parses a monorepo's
+build graph, so a shared word is never evidence that two packages are connected (ADR 0031).
+`namespace::of` is the table, and all three readers share it — the crude reader is the AST
+readers' fallback, so a namespace of its own would split a language in two the first time a
+parse failed. This *raises* the edge count on a mixed repository: a name declared once per
+language used to have two definers and be dropped for both.
 
 Comments and strings are dropped by both AST readers without any query, because every
 grammar names those nodes with those words. A token that reaches a string through an

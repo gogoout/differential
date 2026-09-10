@@ -45,9 +45,13 @@ impl SymbolSource for NaiveSymbols {
     /// patterns cannot match it — exactly as it could not in a diff line.
     ///
     /// Never fails: a regex has nothing to choke on.
-    fn file_symbols(&self, _path: &[u8], content: &[u8]) -> Option<FileSymbols> {
+    fn file_symbols(&self, path: &[u8], content: &[u8]) -> Option<FileSymbols> {
         let lines: Vec<&[u8]> = content.split(|&b| b == b'\n').collect();
         Some(FileSymbols {
+            // The SAME table the AST readers use. This reader is their
+            // fallback when a parse fails, so a namespace of its own would
+            // split one language in two the first time that happened.
+            namespace: crate::namespace::of(path),
             defines: lines.iter().map(|l| global(definitions(l))).collect(),
             references: lines.iter().map(|l| global(references(l))).collect(),
         })

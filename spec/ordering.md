@@ -44,8 +44,10 @@ produced 64% of one corpus range's edges. In a module language the keyword says 
 `export const Panel = …` and `export interface PanelProps` define, and a bare top-level
 `const` or `type` does not — an unexported alias in a test file is not a name others can use.
 
-Symbols are matched by name alone, so a global name means the same thing in every language.
-ADR 0030 records why that is left as it is.
+A global name is matched **within its language** and not across (ADR 0031): the readers
+hand the graph an opaque namespace token, and two global symbols are the same symbol only
+when their namespaces match. Nothing here parses a monorepo's build graph, so a word two
+languages share is never evidence that two packages are connected.
 
 A method owned by ONE type is one, though (ADR 0030): `impl Service { fn load_batch }`
 is the only place that name is declared, and other files reach it by that name. An inherent

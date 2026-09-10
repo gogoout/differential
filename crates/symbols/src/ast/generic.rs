@@ -135,6 +135,7 @@ impl SymbolSource for AstTier2Symbols {
         let tree = parse(&language, content)?;
         let lines = line_count(content);
         let mut out = FileSymbols {
+            namespace: crate::namespace::of(path),
             defines: vec![Vec::new(); lines],
             references: vec![Vec::new(); lines],
         };

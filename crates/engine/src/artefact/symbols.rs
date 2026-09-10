@@ -66,6 +66,15 @@ impl Symbol {
 /// empty `Vec`, which does not allocate — a 100k-line file costs pointers.
 #[derive(Debug, Default, Clone)]
 pub struct FileSymbols {
+    /// What these names are written in, as the reader chooses to name it. Two
+    /// GLOBAL symbols are the same symbol only if their namespaces match as
+    /// well as their names (ADR 0031).
+    ///
+    /// **Opaque to the domain.** It is compared and never interpreted, so this
+    /// still does not tell the graph which reader answered — only whether two
+    /// answers are about the same body of names. An empty namespace is a
+    /// namespace like any other, and matches only other empty ones.
+    pub namespace: Vec<u8>,
     pub defines: Vec<Vec<Symbol>>,
     pub references: Vec<Vec<Symbol>>,
 }
@@ -180,6 +189,7 @@ mod tests {
         }
         fn file_symbols(&self, _path: &[u8], _content: &[u8]) -> Option<FileSymbols> {
             self.answer.map(|a| FileSymbols {
+                namespace: b"test".to_vec(),
                 defines: vec![vec![Symbol::global(a)]],
                 references: vec![Vec::new()],
             })
@@ -220,6 +230,7 @@ mod tests {
     #[test]
     fn symbols_are_addressed_by_line_number_counting_from_one() {
         let fs = FileSymbols {
+            namespace: b"test".to_vec(),
             defines: vec![vec![Symbol::global("a")], Vec::new()],
             references: vec![Vec::new(), vec![Symbol::local("b")]],
         };

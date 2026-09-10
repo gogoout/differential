@@ -12,6 +12,7 @@
 
 mod ast;
 mod naive;
+pub mod namespace;
 
 pub use ast::generic::AstTier2Symbols;
 pub use ast::tuned::AstSymbols;

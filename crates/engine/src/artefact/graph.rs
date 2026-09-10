@@ -33,20 +33,31 @@ pub struct ClassGraph {
     pub depends_on: Vec<Vec<schema::ClassEdge>>,
 }
 
-/// A symbol as the graph compares it.
+/// What a name is compared within.
 ///
-/// A global name stands alone: `Widget` read from one file is the same
-/// `Widget` read from another, which is what lets an edge cross a file. A
-/// file-local name carries the index of the file it was read from, so it is
-/// only ever equal to itself — `label` in one file and `label` in another are
-/// two symbols, and neither can draw an edge to the other's class.
-type Key = (Option<usize>, Vec<u8>);
+/// A global name is compared within its namespace — the body of names the
+/// reader says it belongs to. `Widget` read from one Rust file is the same
+/// `Widget` read from another, and is NOT the `Widget` in a TypeScript file:
+/// nothing here parses a monorepo's build graph, so a name shared across two
+/// languages is a coincidence the tool cannot tell from a fact (ADR 0031).
+///
+/// A file-local name is compared within its file, which is narrower than any
+/// namespace — `label` in one file and `label` in another are two symbols, and
+/// neither can draw an edge to the other's class.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum Namespace {
+    Language(Vec<u8>),
+    File(usize),
+}
 
-fn key(file: usize, symbol: &Symbol) -> Key {
-    match symbol.scope {
-        Scope::Global => (None, symbol.name.clone()),
-        Scope::File => (Some(file), symbol.name.clone()),
-    }
+type Key = (Namespace, Vec<u8>);
+
+fn key(file: usize, namespace: &[u8], symbol: &Symbol) -> Key {
+    let within = match symbol.scope {
+        Scope::Global => Namespace::Language(namespace.to_vec()),
+        Scope::File => Namespace::File(file),
+    };
+    (within, symbol.name.clone())
 }
 
 /// Build the graph over the **added** lines of every class: what the change
@@ -92,8 +103,9 @@ pub fn build<G: ObjectReader>(
             if let Some(fs) = parsed.get(&h.file) {
                 for i in 0..h.added.len() {
                     let line = h.new_start + i as u32;
-                    defs[ci].extend(fs.defines_at(line).iter().map(|s| key(h.file, s)));
-                    refs[ci].extend(fs.references_at(line).iter().map(|s| key(h.file, s)));
+                    let at = |s: &Symbol| key(h.file, &fs.namespace, s);
+                    defs[ci].extend(fs.defines_at(line).iter().map(at));
+                    refs[ci].extend(fs.references_at(line).iter().map(at));
                 }
             }
         }
@@ -104,9 +116,10 @@ pub fn build<G: ObjectReader>(
     // reference meant; a precise `Language` (ADR 0015) would resolve it
     // instead of dropping it.
     //
-    // A file-local key carries its file, so the ambiguity is judged per file
-    // too: two files each declaring `label` are not a clash, and one file
-    // declaring it twice still is.
+    // A key carries the namespace it is compared within, so the ambiguity is
+    // judged there too: two files each declaring `label` locally are not a
+    // clash, one file declaring it twice is, and a Rust `Widget` and a
+    // TypeScript one never meet to clash at all.
     let mut definer: HashMap<&Key, Option<usize>> = HashMap::new();
     for (ci, d) in defs.iter().enumerate() {
         for sym in d {

@@ -163,16 +163,14 @@ recorded here rather than left to be discovered. Two specific risks follow from 
 - **Every query version moves to `-v3`** on top of the `-v2` this change already made, so a
   checkout that ran an intermediate build re-groups rather than being served a grouping for
   a graph that has since moved.
-- **A global symbol still has no language.** `FormData` in a Rust type position and
-  `FormData` in a TypeScript one are one symbol, because the global namespace is the bare
-  name. This predates the ADR and is not addressed by it: the export gate above removes the
-  egregious half — a private test alias posing as the definition — but a genuine exported
-  name still matches across languages. That is sometimes exactly right: in a repository whose
-  client is generated from its server, "the test changed because the response type did" is a
-  dependency the reviewer wants, and one measured range draws precisely that edge. It is also
-  sometimes a coincidence, and the mechanism cannot tell which. Giving the port a namespace
-  token the reader supplies would separate them and would throw the useful case away with the
-  accidental one, so it wants its own decision and its own measurement.
+- **A global symbol still had no language when this was written**, so `FormData` in a Rust
+  type position and `FormData` in a TypeScript one were one symbol. The export gate above
+  removes the egregious half — a private test alias posing as the definition — but a genuine
+  exported name still matched across languages.
+  [ADR 0031](0031-a-global-name-is-scoped-to-its-language.md) closes it, and the measurement
+  it took is not the one expected here: separating the namespaces *added* edges, because a
+  name declared once per language had two definers and the single-definer rule was dropping
+  it for both.
 
 ## Alternatives rejected
 
