@@ -1,4 +1,4 @@
-# 0030 — A file-local name draws edges inside its own file
+# 0030 — What counts as a definition, and how far it reaches
 
 Status: accepted
 
@@ -31,6 +31,19 @@ Three causes, and only the second is a decision:
 Measured on a TypeScript corpus of five ranges: **four produced zero edges and zero
 definitions**. The fifth produced thirteen, every one of them from an `interface` or `type`
 name. The graph was a *type* graph.
+
+Two more, found the same way on a Rust range once the above was in hand:
+
+4. **An inherent `impl` method was never a definition.** A reviewer met a change that adds
+   `pub async fn load_batch` to `impl Service` and calls it from another crate, and the
+   plan drew no edge. Only `function_item` directly under `source_file` was a definition. In
+   the same range, `pub(crate) async fn load_config` at module top level *did* draw its
+   edge — the only difference between them was the `impl` block.
+5. **A function named without being called was not a reference.** `.route(api::widgets::handler, …)`
+   hands a function over; the query captured a `scoped_identifier` only in **callee**
+   position, so registration tables — routers, dispatch maps, anything built by naming
+   functions — drew nothing. The definition was there and global; the use side never
+   asked for it.
 
 ## Decision
 
@@ -68,6 +81,22 @@ Three consequences for the readers:
   `variable_declarator` from there — so the conservative reading is the honest one. It costs
   cross-file edges those names never drew anyway.
 
+**A type-owned method IS a definition; a trait-owned one is not.** This is the line
+ADR 0023 drew in the wrong place, and the corpus says where it belongs. `fn from` in
+`impl From<X> for Y` shares its name with every conversion in the tree — that is the
+ambiguity that ADR measured, and it stays excluded. `impl Service { fn load_batch }`
+shares its name with nothing: it is the one place that name is declared, and callers in
+other files reach it by exactly that name. In Rust the two are told apart by a negated
+field, `(impl_item !trait …)`; Go's `method_declaration` has a receiver and no trait-impl
+case to separate; Python and Kotlin take their class-body methods. Taking *every* `impl`
+method instead — trait ones included — was measured too: it bought one more edge and cost a
+**three-class cycle**.
+
+**A name reached by path is a reference, called or not.** A new `@ref` capture, sitting
+beside `@call` and `@type` and treated identically by the reader. `@call` had come to mean
+"consumed", which it does not say, and a value handed to a router is consumed exactly as a
+called function is.
+
 **Exported, and only exported.** A definition is a file-scope name *others can use*, and in
 a module system `export` is exactly that predicate. Counting a bare top-level
 `const send = vi.fn()` in a test file linked every production file calling `send` to that
@@ -80,17 +109,31 @@ read as file-local, so it keeps every edge it can honestly draw.
 Measured over five ranges of a TypeScript corpus. `sccs` is the number that matters: a
 topological sort works if and only if every strongly connected component has size one.
 
-| range | classes | edges before | edges after | sccs before | sccs after |
-| --- | --- | --- | --- | --- | --- |
-| 1 | 9 | 0 | 3 | 0 | 0 |
-| 2 | 30 | 13 | 33 | 0 | 0 |
-| 3 | 27 | 0 | 6 | 0 | 0 |
-| 4 | 11 | 0 | 2 | 0 | 0 |
-| 5 | 17 | 0 | 6 | 0 | 0 |
+| range | language | classes | edges before | edges after | sccs before | sccs after |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | TS/TSX | 9 | 0 | 3 | 0 | 0 |
+| 2 | TS/TSX | 30 | 13 | 33 | 0 | 0 |
+| 3 | TS/TSX | 27 | 0 | 6 | 0 | 0 |
+| 4 | TS/TSX | 11 | 0 | 2 | 0 | 0 |
+| 5 | TS/TSX | 17 | 0 | 6 | 0 | 0 |
+| 6 | Rust | 62 | 20 | 23 | 0 | 0 |
 
-Not one new cycle, and the edges that arrived are component composition, util calls and
-analytics builders — the structure a reviewer of that change actually needs. Ranges 3 and 5
-gained edges from the scoping alone: names that were ambiguous as globals resolve as locals.
+Not one new cycle, and the edges that arrived are component composition, util calls,
+analytics builders, a service method and a route registration — the structure a reviewer of
+those changes actually needs. Ranges 3 and 5 gained edges from the scoping alone: names that
+were ambiguous as globals resolve as locals.
+
+**Rust and TypeScript are measured. Go, Python and Kotlin are not**, and they took the same
+widening on the argument alone — which is the move ADR 0023 was written against, so it is
+recorded here rather than left to be discovered. Two specific risks follow from that:
+
+- **Go and Python spell a qualified name and a field read identically.** `handlers.Listing`
+  and `s.Name` are both a `selector_expression`/`attribute`, so `@ref` takes struct field
+  and attribute reads as well. The single-definer rule has to absorb them. Rust does not
+  have this problem: `scoped_identifier` is a path and nothing else.
+- **Python and Kotlin are duck-typed**, so two classes may answer to one method name. Those
+  collide and the single-definer rule drops them, which is the safe direction — but it also
+  means the method rule buys less there than it does in Rust or Go.
 
 - **The readers' fingerprints all change, which colds every cached grouping** by design
   (`grouping/key.rs`): the class graph is part of what the model reads (ADR 0022).
@@ -106,7 +149,11 @@ gained edges from the scoping alone: names that were ambiguous as globals resolv
 - **Rust's `(source_file (const_item …)) @def` does not check `pub`**, so it has the same
   latent shape as the TypeScript rule above. Left alone: it was there before this change,
   Rust constants are conventionally `SCREAMING_CASE` rather than common words, and moving it
-  belongs to its own measurement.
+  belongs to its own measurement. The new inherent-`impl` rule does not check `pub` either,
+  for the same reason and with the same caveat.
+- **Four query versions move to `-v3`** on top of the `-v2` this change already made, so a
+  checkout that ran an intermediate build re-groups rather than being served a grouping for
+  a graph that has since moved.
 
 ## Alternatives rejected
 

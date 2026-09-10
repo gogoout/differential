@@ -31,7 +31,7 @@ Project home: <https://github.com/thepartly/differential>
 
 | reader | definitions | references | comments and strings |
 |---|---|---|---|
-| tuned query | from the tree, per language | calls, types and JSX names, per language | dropped |
+| tuned query | from the tree, per language | calls, types, JSX names and paths, per language | dropped |
 | field rules | from the tree | calls and types, by field name | dropped |
 | regex floor | declaration keywords | every identifier of four characters or more | **counted** |
 | none | — | — | — |
@@ -53,9 +53,15 @@ classification, never enumeration — nothing here can add or remove a hunk (ADR
 It can never hide a change.
 
 **What a tuned query buys is knowing what a definition is not.** `mod template;` names a
-module, and `fn from` inside an `impl` is reached through its type — neither introduces a
-name other files can use. The regex floor cannot tell either from a real definition, and on
-one measured range six such words produced 64% of every dependency edge.
+module, and `fn from` inside `impl From<X> for Y` is reached through the trait — neither
+introduces a name other files can use. The regex floor cannot tell either from a real
+definition, and on one measured range six such words produced 64% of every dependency edge.
+A query can also tell that apart from `impl Service { fn load_batch }`, which is a
+definition: one type owns it, and callers elsewhere name it exactly (ADR 0030).
+
+**A name is consumed by being named, not only by being called.**
+`route(api::widgets::handler)` hands a function to a router. Capturing only the callee
+position meant every registration table — routers, dispatch maps — drew no edge at all.
 
 **In a module language, `export` is the whole predicate.** `export const Panel = …` defines
 `Panel`; a bare top-level `const send = vi.fn()` in a test file does not, and counting it
@@ -92,7 +98,7 @@ prints.
 
 | reader | evidence |
 |---|---|
-| tuned query | Rust, Python and TypeScript run against a real multi-language corpus, TypeScript and TSX additionally against a React corpus. Go and Kotlin are covered by per-language tests only. |
+| tuned query | Rust, Python and TypeScript run against a real multi-language corpus; TypeScript and TSX additionally against a React corpus, and Rust against a service-backend one. Go and Kotlin are covered by per-language tests only, and their method and path rules are unmeasured — see ADR 0030. |
 | field rules | Java runs against the corpus. C, C++, C# and JavaScript are covered by per-language tests only. |
 | regex floor | runs against the corpus wherever no grammar claims a file. |
 
@@ -110,6 +116,9 @@ to order — disappeared entirely.
   belongs to its own measurement (ADR 0030).
 - `.jsx` goes to the field rules, which have no JSX rule — a rendered component draws no
   edge there. `.tsx` does, by query.
+- Go's `@ref` and Python's take struct-field and attribute reads too: those languages spell
+  a qualified name and a member read the same way. Rust's `scoped_identifier` does not have
+  this problem.
 
 ## Using it
 

@@ -84,8 +84,14 @@ fn every_tuned_query_compiles_against_its_pinned_grammar() {
     );
 }
 
+/// Rust: modules and TRAIT methods are not definitions, inherent ones are.
+///
+/// `fn from` in `impl From<u8> for Widget` shares its name with every other
+/// conversion in the tree — the ambiguity ADR 0023 measured. `fn serve` in
+/// `impl Widget` shares its name with nothing, and callers in other files
+/// reach it by that name (ADR 0030). `!trait` is the whole of the difference.
 #[test]
-fn rust_reads_calls_and_types_and_refuses_modules_and_methods() {
+fn rust_takes_inherent_methods_and_still_refuses_modules_and_trait_methods() {
     let r = read(
         &AstSymbols::new(),
         b"src/lib.rs",
@@ -93,16 +99,21 @@ fn rust_reads_calls_and_types_and_refuses_modules_and_methods() {
 mod template;
 pub struct Widget;
 impl From<u8> for Widget { fn from(v: u8) -> Self { Widget } }
+impl Widget { pub fn serve(&self) -> u8 { 0 } }
 // mentions NoiseA
 pub fn render(w: Widget) -> u8 { plain_call(); w.method_call(); let s = "NoiseB"; 0 }
+pub fn wire() { route(other::module::handler); }
 "#,
     );
-    has(&r.defines, &["Widget", "render"]);
+    has(&r.defines, &["Widget", "render", "serve"]);
     lacks(
         &r.defines,
         &["template", "from", "NoiseA", "NoiseB", "method_call"],
     );
     has(&r.references, &["plain_call", "method_call", "Widget"]);
+    // Handed to a router rather than invoked. Only the callee position was
+    // captured before, so a registration table drew no edge at all.
+    has(&r.references, &["handler"]);
     lacks(&r.references, &["NoiseA", "NoiseB", "template"]);
 }
 
@@ -112,7 +123,8 @@ fn python_reads_annotations_as_types() {
         &AstSymbols::new(),
         b"app.py",
         r#"
-class Widget: pass
+class Widget:
+    def method_on_class(self): pass
 # mentions NoiseA
 def render(w: Widget) -> Widget:
     plain_call()
@@ -121,13 +133,16 @@ def render(w: Widget) -> Widget:
     return w
 "#,
     );
-    has(&r.defines, &["Widget", "render"]);
+    has(&r.defines, &["Widget", "render", "method_on_class"]);
     has(&r.references, &["plain_call", "method_call", "Widget"]);
     lacks(&r.references, &["NoiseA", "NoiseB"]);
 }
 
+/// Go: a method's receiver names exactly one type, so the method is a
+/// definition (ADR 0030) — the analogue of Rust's inherent `impl`, and Go has
+/// no trait-impl case to separate out.
 #[test]
-fn go_reads_selectors_and_refuses_methods() {
+fn go_reads_selectors_and_takes_methods() {
     let r = read(
         &AstSymbols::new(),
         b"main.go",
@@ -137,11 +152,15 @@ package p
 type Widget struct{}
 func (w Widget) MethodOnType() {}
 func Render(w Widget) string { plainCall(); w.MethodCall(); return "NoiseB" }
+func Wire() { mux.Handle("/x", handlers.Listing) }
 "#,
     );
-    has(&r.defines, &["Widget", "Render"]);
-    lacks(&r.defines, &["MethodOnType", "NoiseA", "NoiseB"]);
+    has(&r.defines, &["Widget", "Render", "MethodOnType"]);
+    lacks(&r.defines, &["NoiseA", "NoiseB"]);
     has(&r.references, &["plainCall", "MethodCall", "Widget"]);
+    // Handed over rather than called. Go spells this the same way as a struct
+    // field read, so the capture takes both — ADR 0030 states the cost.
+    has(&r.references, &["Listing"]);
     lacks(&r.references, &["NoiseA", "NoiseB"]);
 }
 
@@ -171,11 +190,11 @@ fn kotlin_needed_a_query_and_now_reads_both_call_shapes() {
         b"Main.kt",
         r#"
 // mentions NoiseA
-class Widget
+class Widget { fun serve(): Int { return 0 } }
 fun render(w: Widget): Int { plainCall(); w.methodCall(); val s = "NoiseB"; return 0 }
 "#,
     );
-    has(&r.defines, &["Widget", "render"]);
+    has(&r.defines, &["Widget", "render", "serve"]);
     has(&r.references, &["plainCall", "methodCall", "Widget"]);
     lacks(&r.references, &["NoiseA", "NoiseB"]);
 }
@@ -399,12 +418,12 @@ fn the_tuned_reader_survives_deep_nesting_too() {
 #[test]
 fn every_query_version_pins_its_patterns() {
     const PINNED: &[(&str, &str)] = &[
-        ("rust-v2", "3c50c16df002820454133bd6fc0e9e2c2f733778"),
-        ("python-v2", "6a60f8ec599cb0f16807d0e05119be49eab81b76"),
-        ("go-v2", "184be8fa5ba5e023445a5e788f7766577e5374e5"),
+        ("rust-v3", "714cdaa7ba1c48f03fa5f7d5c8930b80cefd3753"),
+        ("python-v3", "b60630bca55fa7759a1bdc68512e98daef1c48d9"),
+        ("go-v3", "390fb0cf48f3bf526e585f9c8b091baad394aa8d"),
         ("typescript-v2", "5c8ceebfdae94616d586450de48d2ac8c7d70f28"),
         ("tsx-v2", "6bfee29d0e2fb60ad406e6b44a9a14e191a10500"),
-        ("kotlin-v2", "20e6aa65d7d4750b788920c2fee04aec11e2f349"),
+        ("kotlin-v3", "9fb6256cbccb80fcb82cfd4fb2b307219a34ee40"),
     ];
     let actual: Vec<(String, String)> = AstSymbols::queries()
         .into_iter()

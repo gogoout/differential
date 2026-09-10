@@ -29,19 +29,28 @@ Three readers ship. Which one answered is not a distinction this stage can see:
 
 | reader | reads | definitions | references |
 | --- | --- | --- | --- |
-| tuned | Rust, TypeScript (+TSX), Python, Go, Kotlin | from the tree, per query | calls, types and JSX names, per query |
+| tuned | Rust, TypeScript (+TSX), Python, Go, Kotlin | from the tree, per query | calls, types, JSX names, and names reached by path, per query |
 | field-rule | JavaScript, Java, C, C++, C# | from the tree | calls and types, from field names |
 | crude | any other source extension | declaration keywords | every identifier ≥ 4 chars |
 
 Which language sits in which row, and every extension:
 [`crates/symbols/README.md`](../crates/symbols/README.md).
 
-**A definition is a file-scope name others can use.** `mod template;` is not one — it names
-a module. `fn from` inside an `impl` is not one — it is reached through its type. Counting
-those made a single common word into a globally unique symbol that every file mentioning it
-then linked to; six such words produced 64% of one corpus range's edges. In a module
-language the keyword says it outright: `export const Panel = …` defines `Panel`, and a bare
-top-level `const` does not.
+**A definition is a name others can use.** `mod template;` is not one — it names a module.
+`fn from` inside `impl From<X> for Y` is not one — it is reached through the trait, and
+shares its name with every conversion in the tree. Counting those made a single common word
+into a globally unique symbol that every file mentioning it then linked to; six such words
+produced 64% of one corpus range's edges. In a module language the keyword says it outright:
+`export const Panel = …` defines `Panel`, and a bare top-level `const` does not.
+
+A method owned by ONE type is one, though (ADR 0030): `impl Service { fn load_batch }`
+is the only place that name is declared, and other files reach it by that name. An inherent
+`impl` and a trait `impl` are told apart by a negated field; Go's receiver methods and
+Python's and Kotlin's class-body methods count on the same argument.
+
+**A name reached by path is a reference whether or not it is called.**
+`route(api::widgets::handler)` hands a function over, and only the callee position used
+to be captured — so every registration table drew nothing.
 
 **Every other name a declaration introduces is file-local, and draws edges only inside its
 own file** (ADR 0030). A `const` in a function body, a parameter, an import binding, a

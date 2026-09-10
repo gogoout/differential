@@ -7,6 +7,7 @@
 //! | `@def` | a name this file introduces that others can use |
 //! | `@call` | a function being called |
 //! | `@type` | a type being used |
+//! | `@ref` | a name reached by path, without being called |
 //! | `@local_def` | a name that reaches only this file |
 //! | `@local_ref` | an identifier that might be reading one |
 //!
@@ -51,19 +52,19 @@ impl Tuned {
 
 static TUNED: &[Tuned] = &[
     Tuned {
-        version: "rust-v2",
+        version: "rust-v3",
         extensions: &[b".rs"],
         language: rust,
         sources: &[include_str!("queries/rust.scm")],
     },
     Tuned {
-        version: "python-v2",
+        version: "python-v3",
         extensions: &[b".py", b".pyi"],
         language: python,
         sources: &[include_str!("queries/python.scm")],
     },
     Tuned {
-        version: "go-v2",
+        version: "go-v3",
         extensions: &[b".go"],
         language: go,
         sources: &[include_str!("queries/go.scm")],
@@ -84,7 +85,7 @@ static TUNED: &[Tuned] = &[
         ],
     },
     Tuned {
-        version: "kotlin-v2",
+        version: "kotlin-v3",
         extensions: &[b".kt", b".kts"],
         language: kotlin,
         sources: &[include_str!("queries/kotlin.scm")],
@@ -237,7 +238,11 @@ impl SymbolSource for AstSymbols {
                 "local_def" if !defined.contains(&range) => {
                     out.defines[line].push(Symbol::local(text));
                 }
-                "call" | "type" if !is_a_definition => {
+                // Three spellings of one thing: the file consumes a name
+                // that came from somewhere else. `@ref` is the one that is
+                // neither a call nor a type — a function handed to a router
+                // rather than invoked, an enum variant, a constant by path.
+                "call" | "type" | "ref" if !is_a_definition => {
                     out.references[line].push(Symbol::global(text));
                 }
                 // A call may be resolving a file-local binding or a global

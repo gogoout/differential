@@ -104,11 +104,14 @@ count was never the target; the cycle was.
 - Engine tests use a stub reader rather than dev-depending on the adapter crate. The real
   readers are measured where they live, against the corpus.
 - **"A file-scope name others can use" was too narrow, and
-  [ADR 0030](0030-file-local-symbols-draw-edges-inside-their-file.md) widens it.** Everything
-  above stands: what that ADR adds is a second, file-scoped namespace for the names this one
-  drops, which cannot manufacture the global symbol the corpus indicted here. It also fixes
-  an outright omission — TypeScript's file-scope value declarations were missing from its
-  query, so `export const Panel = …` defined nothing.
+  [ADR 0030](0030-what-counts-as-a-definition-and-how-far-it-reaches.md) widens it.**
+  Everything above stands, including the failure that motivated it. What that ADR adds is a
+  second, file-scoped namespace for names this one drops, which cannot manufacture the
+  global symbol the corpus indicted here; a separation of TRAIT `impl` methods (`fn from` —
+  the case argued above) from INHERENT ones (`impl Service { fn load_batch }` — which
+  shares its name with nothing); and references to a name reached by path without being
+  called. It also fixes an outright omission: TypeScript's file-scope value declarations
+  were missing from its query, so `export const Panel = …` defined nothing.
 
 ## Alternatives rejected
 
