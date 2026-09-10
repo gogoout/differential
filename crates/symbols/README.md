@@ -63,10 +63,15 @@ definition: one type owns it, and callers elsewhere name it exactly (ADR 0030).
 `route(api::widgets::handler)` hands a function to a router. Capturing only the callee
 position meant every registration table — routers, dispatch maps — drew no edge at all.
 
-**In a module language, `export` is the whole predicate.** `export const Panel = …` defines
-`Panel`; a bare top-level `const send = vi.fn()` in a test file does not, and counting it
-linked every production file calling `send` to that test. Unexported, it is still
-read as a file-local name, so it keeps every edge it can honestly draw.
+**In a module language, `export` is the whole predicate** — for a type as much as a value.
+`export const Panel = …` and `export interface PanelProps` define; a bare
+`const send = vi.fn()` or `type FormData = …` in a test file does not, and counting those
+linked production files to the test. Unexported, they are still read as file-local names, so
+they keep every edge they can honestly draw.
+
+**A global name has no language.** `FormData` read from a Rust file and `FormData` read from
+a TypeScript one are one symbol. Sometimes right — a generated client does follow its
+server's types — and sometimes a coincidence, and nothing here can tell which. See ADR 0030.
 
 Comments and strings are dropped by both AST readers without any query, because every
 grammar names those nodes with those words. A token that reaches a string through an

@@ -70,13 +70,13 @@ static TUNED: &[Tuned] = &[
         sources: &[include_str!("queries/go.scm")],
     },
     Tuned {
-        version: "typescript-v2",
+        version: "typescript-v3",
         extensions: &[b".ts", b".mts", b".cts"],
         language: typescript,
         sources: &[include_str!("queries/typescript.scm")],
     },
     Tuned {
-        version: "tsx-v2",
+        version: "tsx-v3",
         extensions: &[b".tsx"],
         language: tsx,
         sources: &[

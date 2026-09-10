@@ -341,6 +341,8 @@ fn tsx_reads_components_jsx_and_the_locals_a_render_consumes() {
         r#"
 // mentions NoiseA
 import { Child } from './child';
+export interface PanelProps { fallback: string }
+type Local = { n: number };
 export const Panel = ({ fallback }: PanelProps) => {
   const label = lookUpName() ?? fallback;
   const unused = "NoiseB";
@@ -348,8 +350,14 @@ export const Panel = ({ fallback }: PanelProps) => {
 };
 "#,
     );
-    // A file-scope `const` is a definition, exactly as `function Panel()` is.
-    has(&r.defines, &["Panel"]);
+    // An exported file-scope `const` is a definition, exactly as an exported
+    // `function Panel()` is.
+    has(&r.defines, &["Panel", "PanelProps"]);
+    // An UNEXPORTED type is not, however file-scope it looks. `type FormData =
+    // …` in a test file was once the only "definition" of that name in a
+    // change, and every file mentioning it linked to the test.
+    lacks(&r.defines, &["Local"]);
+    has(&r.local_defines, &["Local"]);
     // The component it renders is consumed, and the props type is used.
     has(&r.references, &["Child", "PanelProps", "lookUpName"]);
     // The binding inside the body reaches only this file — and the JSX that
@@ -421,8 +429,8 @@ fn every_query_version_pins_its_patterns() {
         ("rust-v3", "714cdaa7ba1c48f03fa5f7d5c8930b80cefd3753"),
         ("python-v3", "b60630bca55fa7759a1bdc68512e98daef1c48d9"),
         ("go-v3", "390fb0cf48f3bf526e585f9c8b091baad394aa8d"),
-        ("typescript-v2", "5c8ceebfdae94616d586450de48d2ac8c7d70f28"),
-        ("tsx-v2", "6bfee29d0e2fb60ad406e6b44a9a14e191a10500"),
+        ("typescript-v3", "9940745968bfbae0ce51fa46ef992ccb1c5252f4"),
+        ("tsx-v3", "34b3fe8b79a4da32583d0391bc92a268f1ad4943"),
         ("kotlin-v3", "9fb6256cbccb80fcb82cfd4fb2b307219a34ee40"),
     ];
     let actual: Vec<(String, String)> = AstSymbols::queries()

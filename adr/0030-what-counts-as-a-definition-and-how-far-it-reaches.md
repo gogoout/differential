@@ -97,12 +97,21 @@ beside `@call` and `@type` and treated identically by the reader. `@call` had co
 "consumed", which it does not say, and a value handed to a router is consumed exactly as a
 called function is.
 
-**Exported, and only exported.** A definition is a file-scope name *others can use*, and in
-a module system `export` is exactly that predicate. Counting a bare top-level
-`const send = vi.fn()` in a test file linked every production file calling `send` to that
-test, and closed a two-class cycle with the true edge running the other way — ADR
-0023's own failure, reappearing through the new rule. Unexported, the same name is still
-read as file-local, so it keeps every edge it can honestly draw.
+**Exported, and only exported — for a type exactly as for a value.** A definition is a
+name *others can use*, and in a module system `export` is exactly that predicate. Counting a
+bare top-level `const send = vi.fn()` in a test file linked every production file calling
+`send` to that test, and closed a two-class cycle with the true edge running the other way —
+ADR 0023's own failure, reappearing through the new rule.
+
+The gate has to apply to `class`, `interface`, `type` and `enum` too, which it did not at
+first: those were captured anywhere in the file and regardless of `export`. An unexported
+`type FormData = …` in an integration test was then the only thing in one change that
+"defined" that name, and two files in another language linked to the test because of it.
+Removing those two false edges cost nothing else anywhere — every real
+interface-name edge in the measured ranges is on an exported declaration.
+
+Unexported, the same name is still read as file-local, so it keeps every edge it can
+honestly draw.
 
 ## Consequences
 
@@ -116,7 +125,7 @@ topological sort works if and only if every strongly connected component has siz
 | 3 | TS/TSX | 27 | 0 | 6 | 0 | 0 |
 | 4 | TS/TSX | 11 | 0 | 2 | 0 | 0 |
 | 5 | TS/TSX | 17 | 0 | 6 | 0 | 0 |
-| 6 | Rust | 62 | 20 | 23 | 0 | 0 |
+| 6 | Rust | 62 | 20 | 21 | 0 | 0 |
 
 Not one new cycle, and the edges that arrived are component composition, util calls,
 analytics builders, a service method and a route registration — the structure a reviewer of
@@ -151,9 +160,19 @@ recorded here rather than left to be discovered. Two specific risks follow from 
   Rust constants are conventionally `SCREAMING_CASE` rather than common words, and moving it
   belongs to its own measurement. The new inherent-`impl` rule does not check `pub` either,
   for the same reason and with the same caveat.
-- **Four query versions move to `-v3`** on top of the `-v2` this change already made, so a
+- **Every query version moves to `-v3`** on top of the `-v2` this change already made, so a
   checkout that ran an intermediate build re-groups rather than being served a grouping for
   a graph that has since moved.
+- **A global symbol still has no language.** `FormData` in a Rust type position and
+  `FormData` in a TypeScript one are one symbol, because the global namespace is the bare
+  name. This predates the ADR and is not addressed by it: the export gate above removes the
+  egregious half — a private test alias posing as the definition — but a genuine exported
+  name still matches across languages. That is sometimes exactly right: in a repository whose
+  client is generated from its server, "the test changed because the response type did" is a
+  dependency the reviewer wants, and one measured range draws precisely that edge. It is also
+  sometimes a coincidence, and the mechanism cannot tell which. Giving the port a namespace
+  token the reader supplies would separate them and would throw the useful case away with the
+  accidental one, so it wants its own decision and its own measurement.
 
 ## Alternatives rejected
 

@@ -41,7 +41,11 @@ Which language sits in which row, and every extension:
 shares its name with every conversion in the tree. Counting those made a single common word
 into a globally unique symbol that every file mentioning it then linked to; six such words
 produced 64% of one corpus range's edges. In a module language the keyword says it outright:
-`export const Panel = …` defines `Panel`, and a bare top-level `const` does not.
+`export const Panel = …` and `export interface PanelProps` define, and a bare top-level
+`const` or `type` does not — an unexported alias in a test file is not a name others can use.
+
+Symbols are matched by name alone, so a global name means the same thing in every language.
+ADR 0030 records why that is left as it is.
 
 A method owned by ONE type is one, though (ADR 0030): `impl Service { fn load_batch }`
 is the only place that name is declared, and other files reach it by that name. An inherent
