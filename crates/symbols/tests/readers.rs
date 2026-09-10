@@ -11,7 +11,7 @@
 //!   dependency edges false.
 
 use differential_engine::artefact::symbols::{FileSymbols, Scope, Symbol, SymbolSource};
-use differential_symbols::{AstSymbols, AstTier2Symbols};
+use differential_symbols::{AstSymbols, AstTier2Symbols, NaiveSymbols};
 use sha1::{Digest, Sha1};
 
 /// One reader's answer, split by how far each name reaches.
@@ -454,5 +454,125 @@ fn every_query_version_pins_its_patterns() {
         actual, pinned,
         "a query's patterns moved without its version: bump the `-vN` in \
          tuned.rs and paste the hashes above"
+    );
+}
+
+/// Every reader's fingerprint, pinned to what it actually ANSWERS.
+///
+/// `every_query_version_pins_its_patterns` covers a `.scm` edit. Nothing
+/// covered a change to the readers' Rust, and the gap was not theoretical: the
+/// crude reader began answering with a namespace (ADR 0031) — changing which
+/// cross-file symbols match, for the several languages it is the only reader
+/// for — and kept `naive-v1`. A reviewer caught it, which is not a mechanism.
+///
+/// The fingerprint reaches the grouping cache key, so a reader that answers
+/// differently and keeps its version serves a grouping built from a graph that
+/// has since moved. This makes that impossible: hash each reader's answer over
+/// fixed samples, and pin it beside the version.
+///
+/// **A tree-sitter grammar upgrade fails this too, and should.** A new grammar
+/// can change extraction, which changes the graph, which must cold the cache —
+/// and nothing else in the tree would have noticed.
+///
+/// To update: change the reader, bump its version, paste the hashes below.
+#[test]
+fn every_reader_fingerprint_pins_its_answers() {
+    // One sample per reader tier, kept deliberately small — this pins CHANGE,
+    // not coverage. What each reader extracts is tested above, by name.
+    const SAMPLES: &[(&str, &str)] = &[
+        (
+            "a.rs",
+            "pub struct W;\nimpl W { pub fn serve(&self) -> u8 { call(); 0 } }\n",
+        ),
+        (
+            "a.py",
+            "class W:\n    def m(self): pass\ndef r(w: W): plain(); w.meth()\n",
+        ),
+        (
+            "a.go",
+            "package p\ntype W struct{}\nfunc (w W) M() { plain(); w.Meth() }\n",
+        ),
+        (
+            "a.ts",
+            "export interface P { n: number }\nexport const f = (p: P) => call(p);\n",
+        ),
+        ("a.tsx", "export const C = () => <Child n={1} />;\n"),
+        (
+            "A.kt",
+            "class W { fun serve(): Int { plain(); return 0 } }\n",
+        ),
+        ("a.js", "export const f = (p) => call(p);\n"),
+        (
+            "A.java",
+            "class W { String r(W w) { plain(); return w.meth(); } }\n",
+        ),
+        ("a.c", "int r(struct W *w) { return plain(w); }\n"),
+        ("a.rb", "class W\n  def serve\n    plain_call\n  end\nend\n"),
+        ("q.sql", "select id from widgets where owner_id = $1\n"),
+    ];
+
+    /// One reader's answer for one sample, as bytes that change iff it does.
+    fn answer(reader: &dyn SymbolSource, path: &str, src: &str) -> String {
+        let Some(s) = reader.file_symbols(path.as_bytes(), src.as_bytes()) else {
+            return "declined\n".to_string();
+        };
+        let mut out = format!("ns={}\n", String::from_utf8_lossy(&s.namespace));
+        for (line, (defines, references)) in s.defines.iter().zip(&s.references).enumerate() {
+            let show = |kind: &str, syms: &[Symbol]| -> String {
+                syms.iter()
+                    .map(|y| {
+                        let scope = if y.scope == Scope::Global { "g" } else { "f" };
+                        format!("{kind}{scope}:{}", String::from_utf8_lossy(&y.name))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            if !defines.is_empty() || !references.is_empty() {
+                out.push_str(&format!(
+                    "{line} {} {}\n",
+                    show("d", defines),
+                    show("r", references)
+                ));
+            }
+        }
+        out
+    }
+
+    let readers: Vec<Box<dyn SymbolSource>> = vec![
+        Box::new(AstSymbols::new()),
+        Box::new(AstTier2Symbols::new()),
+        Box::new(NaiveSymbols),
+    ];
+    let actual: Vec<(String, String)> = readers
+        .iter()
+        .map(|reader| {
+            let mut hasher = Sha1::new();
+            for (path, src) in SAMPLES {
+                // Only what this reader claims: a reader must not be pinned to
+                // another's files, or every bump would cascade.
+                if reader.priority(path.as_bytes()).is_some() {
+                    hasher.update(path.as_bytes());
+                    hasher.update(answer(reader.as_ref(), path, src).as_bytes());
+                }
+            }
+            (reader.fingerprint(), hex::encode(hasher.finalize()))
+        })
+        .collect();
+
+    const PINNED: &[(&str, &str)] = &[
+        (
+            "ast-tuned[go-v3,kotlin-v3,python-v3,rust-v3,tsx-v3,typescript-v3]",
+            "c1faa8c611cd6dba6a4ca2ce2c7f8bf3c5e7798f",
+        ),
+        ("ast-fields-v2", "44ee5a83a707fcbd65b367c251f9da4fe59084b3"),
+        ("naive-v2", "b815826768b5ef91a88d4142195fccfd021382f2"),
+    ];
+    let pinned: Vec<(String, String)> = PINNED
+        .iter()
+        .map(|(v, h)| (v.to_string(), h.to_string()))
+        .collect();
+    assert_eq!(
+        actual, pinned,
+        "a reader answers differently: bump its version and paste the hashes above"
     );
 }

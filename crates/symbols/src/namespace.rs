@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn one_language_is_one_namespace_however_it_is_spelled() {
         // The case that motivated this: two `FormData`s, one per language.
-        assert_ne!(ns("src/model_form.rs"), ns("tests/api.test.ts"));
+        assert_ne!(ns("src/model.rs"), ns("tests/api.test.ts"));
         // And the case it must not break: a language reached by more than one
         // extension, or by more than one reader, stays one namespace. The
         // crude reader is the tuned reader's fallback, so a split here would

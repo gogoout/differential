@@ -57,8 +57,15 @@ impl SymbolSource for NaiveSymbols {
         })
     }
 
+    /// `-v2`: this reader now answers with a namespace, so which cross-file
+    /// symbols match has changed (ADR 0031). It is the ONLY reader for Ruby,
+    /// PHP, Swift, Elixir, shell and the rest, and the AST readers' fallback
+    /// when a parse fails — so leaving it at `-v1` would serve those languages
+    /// a grouping built from a graph that had moved, and nothing would catch
+    /// it. The aggregate key changed anyway this time, because two other
+    /// readers bumped; that is luck, not a guarantee.
     fn fingerprint(&self) -> String {
-        "naive-v1".to_string()
+        "naive-v2".to_string()
     }
 }
 

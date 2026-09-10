@@ -63,7 +63,7 @@ Measured over seven ranges — five TypeScript, two mixed Rust/TypeScript.
 No cycles anywhere, before or after.
 
 **Edges went up, not down, on the larger mixed range.** That is the result worth reading. A
-name declared once per language — `JobRuleSummary` as a Rust struct and as a TypeScript
+name declared once per language — `Widget` as a Rust struct and as a TypeScript
 type — had two definers, so the single-definer rule dropped it and *neither* language got
 its edges. Separated, each resolves within its own language and six real same-language edges
 appear. Scoping a namespace does not only remove false edges; it stops true ones being
@@ -78,10 +78,21 @@ Range 7 loses the two false edges that prompted this and keeps its four real one
   something reads the build graph. A generated client really does follow its server's
   types. Nothing here can see that relationship, and guessing it from a shared word was not
   seeing it either.
-- **No query version changes.** The namespace is not part of any query, and the reader
-  fingerprints are unchanged in shape — but a reader that answers differently must cold the
-  grouping cache, so the namespace does reach `SymbolReaders::fingerprint` through the
-  readers' own version strings, which moved in ADR 0030's change.
+- **No query version changes, but every reader's own version moves.** The namespace is not
+  part of any query, so no `.scm` changed here. Every reader still answers differently, and
+  the port's contract is that a reader which answers differently must cold the grouping
+  cache — so all three bump, the crude one to `naive-v2` included. That last one is easy to
+  miss and was: the tuned and field-rule readers had already moved for ADR 0030, so
+  `SymbolReaders::fingerprint` — a concatenation of all three — changed regardless. But the
+  crude reader is the sole reader for Ruby, PHP, Swift, Elixir and the rest, and the only
+  fallback when an AST reader fails to parse, so the next change that touches it alone would
+  have served those languages a stale grouping with nothing to catch it.
+- **A reviewer catching that is not a mechanism**, so there is one now:
+  `every_reader_fingerprint_pins_its_answers` hashes each reader's extraction over fixed
+  samples and pins it beside the version. The query pin test only ever covered a `.scm`
+  edit; this covers the readers' Rust, and it also fails on a tree-sitter grammar upgrade —
+  correctly, since a new grammar can move the graph and nothing else in the tree would say
+  so.
 
 ## Alternatives rejected
 

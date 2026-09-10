@@ -99,9 +99,17 @@ probe before any of this was written.
 
 Each query carries a version in the reader's fingerprint, which is part of the grouping
 cache key. Editing a query therefore colds the cache by itself, and
-`every_query_version_pins_its_text` pins each query's content hash against its version so
-the bump cannot be forgotten — change the `.scm`, bump the `-vN`, paste the hash the test
-prints.
+`every_query_version_pins_its_patterns` pins each query's PATTERNS — its text with comment
+and blank lines removed — against its version, so the bump cannot be forgotten and a
+reworded comment does not cold every cached grouping for nothing. Change a pattern, bump
+the `-vN`, paste the hash the test prints.
+
+A query is not the only thing that can change an answer, so
+`every_reader_fingerprint_pins_its_answers` hashes what each reader actually extracts from a
+fixed set of samples and pins that beside its version too. It covers a change to the
+readers' Rust — the gap that let the crude reader gain a namespace and keep `naive-v1` — and
+it fails on a tree-sitter grammar upgrade, which it should: a new grammar can change
+extraction, and nothing else in the tree would notice.
 
 ## What is proven against what
 
