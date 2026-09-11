@@ -563,6 +563,35 @@ is why the copy is capped and the cap is a test. `q` cancels, and
 cancelling kills the agent subprocess rather than merely stopping the screen from
 watching it: raw mode has already disabled `Ctrl-C`, so nothing else would reap it.
 
+### The terminal is told too
+
+The splash says everything, and the splash is the one thing a reviewer who started a
+review and switched windows is not looking at. Two escape sequences put the same state
+somewhere they can see without switching back. Both address the terminal emulator they
+are sitting AT, which is what makes them work over SSH where a library would not — the
+argument `osc::clipboard` settles for the clipboard, applied twice more.
+
+A **progress bar** on the tab, for the whole wait (OSC 9;4, the ConEmu extension). The
+four stages are equal quarters and a running stage is drawn at its own midpoint, so the
+bar advances once per stage: 12, 37, 62, 87. The exception is an uncached grouping call,
+which goes **indeterminate** — it is a subprocess with a long deadline and no progress of
+its own, and a bar frozen at 62% for a minute reads as the hang this is here to disprove.
+A cache hit keeps its quarter, because it does not wait.
+
+The bar comes down on every way out: finished, cancelled, failed, panicked. That is why
+it is an RAII guard and not a pair of calls.
+
+A **desktop notification** when the wait ends (OSC 9), saying the review is ready or that
+preparing it failed. It fires **only when an agent call ran**. A cache hit prepares in
+seconds, and a reviewer who is still watching does not need telling what is in front of
+them. The consequence to know: a run that fails before the grouping call sends nothing,
+and that run was short enough that nobody had looked away.
+
+Both sequences are write-only. A terminal that does not implement them is silent and
+indistinguishable from one that does, so neither is ever reported as having arrived, and
+neither is the only way the reviewer learns anything. There is no config key: the terminal
+already owns whether it draws a bar and whether it raises a notification.
+
 ## State
 
 Everything persists through the engine's `ReviewSession` — the TUI is a stateless

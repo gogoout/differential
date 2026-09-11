@@ -8,7 +8,7 @@
 
 pub mod app;
 pub mod markdown;
-pub mod osc52;
+pub mod osc;
 pub mod picker;
 pub mod rows;
 pub mod splash;
@@ -19,7 +19,7 @@ pub mod theme;
 mod vendor;
 pub mod window;
 
-use std::io::{Stdout, Write};
+use std::io::Stdout;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -129,23 +129,64 @@ where
         let cancel = Arc::clone(&cancel);
         std::thread::spawn(move || pipeline(picked, tx, cancel))
     };
-    let finished = splash::run(terminal, &theme, rx, &worker)?;
-    if !finished {
-        // Cancelling means the agent subprocess dies too, not just that we
-        // stop watching it: raise the flag, then wait for the worker to
-        // unwind so nothing outlives this process.
-        cancel.store(true, Ordering::Relaxed);
-        splash::draw_cancelling(terminal, &theme)?;
-        let _ = worker.join();
-        return Ok(());
-    }
-    let prepared = worker
+    // Read once, here rather than in `run_app`, because the splash needs it
+    // first: the multiplexer a session is inside cannot change under it.
+    let wrap = osc::Wrap::detect();
+    let called_agent = match splash::run(terminal, &theme, wrap, rx, &worker)? {
+        splash::Outcome::Finished { called_agent } => called_agent,
+        splash::Outcome::Cancelled => {
+            // Cancelling means the agent subprocess dies too, not just that we
+            // stop watching it: raise the flag, then wait for the worker to
+            // unwind so nothing outlives this process.
+            cancel.store(true, Ordering::Relaxed);
+            splash::draw_cancelling(terminal, &theme)?;
+            let _ = worker.join();
+            return Ok(());
+        }
+    };
+    // Read before `opts` moves into the app.
+    let range = opts.range.clone();
+    // EVERY fallible step between the worker and a drawable reviewer, in one
+    // binding, before any of it propagates. Two reasons, and the second is the
+    // one that shaped it: a notification sent only on the happy path leaves a
+    // reader in another window waiting on a run that died, and one sent before
+    // the store opens can say "ready" about a review that is about to fail.
+    // What is reported has to be the whole thing, or it is not a report.
+    let app = worker
         .join()
-        .map_err(|_| anyhow::anyhow!("pipeline thread panicked"))??;
+        .map_err(|_| anyhow::anyhow!("pipeline thread panicked"))
+        .and_then(|r| r)
+        .and_then(|prepared| open_app(repo, prepared, opts, theme));
+    // Only when an agent call ran. A cache hit prepares in seconds, and a
+    // reader who is still watching does not need telling what they can see.
+    if called_agent {
+        osc::emit(&osc::notify::sequence(
+            if app.is_ok() {
+                osc::notify::READY
+            } else {
+                osc::notify::FAILED
+            },
+            wrap,
+        ));
+    }
+    run_app(terminal, app?, range.as_deref(), wrap)
+}
 
+/// Everything between a finished pipeline and a reviewer ready to draw.
+///
+/// Its own function so that the whole of it is one `Result` the caller can look
+/// at before any of it propagates — which is what lets the notification above
+/// report the outcome rather than a prefix of it.
+fn open_app(
+    repo: &Repo,
+    mut prepared: Prepared,
+    opts: ReviewOptions,
+    theme: theme::Theme,
+) -> anyhow::Result<App> {
     let doc = prepared
         .out
         .document
+        .take()
         .context("invariants failed; nothing to review")?;
     // The renderer is an adapter: it composes the concrete store rather than
     // carrying a generic parameter for a choice it never makes.
@@ -164,7 +205,6 @@ where
         prepared.out.base.clone(),
         prepared.out.head.clone(),
     );
-    let range = opts.range.clone();
     let mut app = App::new(session, factory, opts, theme);
     if adopted {
         app.status = "resumed the review already open on this branch".into();
@@ -173,7 +213,7 @@ where
         app.link_forge(link);
         app.start_fetch();
     }
-    run_app(terminal, app, range.as_deref())
+    Ok(app)
 }
 
 /// The mouse events the reviewer reads: the wheel, and a left press. Moves,
@@ -200,10 +240,13 @@ fn measure() -> anyhow::Result<Viewport> {
 /// Geometry is measured and pushed into the model BEFORE any key reaches it,
 /// so scroll state is decided in update and `draw` is a pure function of the
 /// model.
-fn run_app(terminal: &mut Session, mut app: App, range: Option<&str>) -> anyhow::Result<()> {
+fn run_app(
+    terminal: &mut Session,
+    mut app: App,
+    range: Option<&str>,
+    wrap: osc::Wrap,
+) -> anyhow::Result<()> {
     let mut clipboard: Option<arboard::Clipboard> = arboard::Clipboard::new().ok();
-    // Read once: the multiplexer a session is inside cannot change under it.
-    let wrap = osc52::Wrap::detect();
     app.set_viewport(measure()?);
     let mut dirty = true;
     loop {
@@ -287,13 +330,8 @@ fn run_app(terminal: &mut Session, mut app: App, range: Option<&str>) -> anyhow:
 /// unacknowledged, so a terminal that ignored the sequence looks exactly like
 /// one that took it. Naming the command is what makes the feature honest:
 /// whatever the terminal did or did not do, the summary is one command away.
-fn summary_fallback(text: &str, wrap: osc52::Wrap, range: Option<&str>) -> String {
-    let sent = osc52::sequence(text, wrap).is_some_and(|seq| {
-        let mut out = std::io::stdout();
-        out.write_all(seq.as_bytes())
-            .and_then(|()| out.flush())
-            .is_ok()
-    });
+fn summary_fallback(text: &str, wrap: osc::Wrap, range: Option<&str>) -> String {
+    let sent = osc::clipboard::sequence(text, wrap).is_some_and(|seq| osc::emit(&seq));
     format!(
         "{} · {}",
         if sent {
