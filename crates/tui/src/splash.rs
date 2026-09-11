@@ -16,6 +16,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
+use super::osc::Wrap;
+use super::osc::progress::{Bar, State};
 use super::theme::Theme;
 use super::vendor;
 
@@ -102,15 +104,54 @@ fn stage_index(p: &Progress) -> usize {
     }
 }
 
-/// Draw the splash until the worker finishes. `true` means the pipeline is
-/// done (join it for the result); `false` means the user cancelled with
-/// `q`/Esc and the caller must stop the work.
+/// What the splash saw, for a caller that has to act on it.
+///
+/// `called_agent` is the whole reason this is not still a `bool`. It is what
+/// separates the wait worth interrupting someone for from the one that was over
+/// before they looked away — see `crate::review_in`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// The pipeline finished. Join the worker for the result.
+    Finished { called_agent: bool },
+    /// The reader pressed `q` or Esc. The caller must stop the work.
+    Cancelled,
+}
+
+/// Where the terminal's own progress bar stands (`osc::progress`).
+///
+/// The four stages are equal quarters, and a stage that is RUNNING is drawn at
+/// its own midpoint: something inside that quarter is done and nothing here
+/// knows how much of it. Ticked stages are whole quarters behind it either way,
+/// so the midpoint is the only part that is a guess.
+///
+/// The exception is the reason the bar has an indeterminate state at all. An
+/// uncached grouping call is a subprocess with a twenty-minute deadline and no
+/// progress of its own to report; a bar frozen at 62% for a minute reads as a
+/// hang, which is the exact impression this whole change exists to remove.
+fn bar_state(current: usize, agent: Option<&(String, bool)>) -> State {
+    if current >= STAGES.len() {
+        return State::Clear;
+    }
+    if current == 2
+        && let Some((_, false)) = agent
+    {
+        return State::Working;
+    }
+    State::At(((current * 2 + 1) * 100 / (STAGES.len() * 2)) as u8)
+}
+
+/// Draw the splash until the worker finishes, and drive the terminal's own
+/// progress bar alongside it.
 pub fn run<T>(
     terminal: &mut vendor::terminal::TerminalSession<Stdout>,
     theme: &Theme,
+    wrap: Wrap,
     rx: Receiver<Progress>,
     worker: &JoinHandle<T>,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Outcome> {
+    // Scoped to the wait, and it clears itself on every way out of this
+    // function — including the `?` and a panic. See `osc::progress::Bar`.
+    let bar = Bar::new(wrap);
     let started = Instant::now();
     let mut current = 0usize;
     // Set once the grouping stage reports which backend it is waiting on.
@@ -139,7 +180,9 @@ pub fn run<T>(
             }
         }
         if worker.is_finished() {
-            return Ok(true);
+            return Ok(Outcome::Finished {
+                called_agent: matches!(agent, Some((_, false))),
+            });
         }
 
         let waited = asking_since.map_or(Duration::ZERO, |t| t.elapsed());
@@ -154,6 +197,10 @@ pub fn run<T>(
                 tick,
             )
         })?;
+        // After the draw: the backend flushes there, so the sequence cannot
+        // land inside a frame. Idempotent, and the 120 ms poll below makes it
+        // the keep-alive the terminal wants.
+        bar.set(bar_state(current, agent.as_ref()));
         tick = tick.wrapping_add(1);
 
         if event::poll(Duration::from_millis(120))?
@@ -161,7 +208,7 @@ pub fn run<T>(
             && key.is_press()
             && matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
         {
-            return Ok(false);
+            return Ok(Outcome::Cancelled);
         }
     }
 }
@@ -560,6 +607,36 @@ mod tests {
         let need = LOGO.len() + STAGES.len() + 3;
         assert!(logo_lines(&theme(), 80, need - 1).is_empty());
         assert!(!logo_lines(&theme(), 80, need).is_empty());
+    }
+
+    /// The four stages are equal quarters and a running stage sits at its own
+    /// midpoint, so the bar advances once per stage and never sits at zero —
+    /// an empty bar and no bar look the same, and one of them is a lie.
+    #[test]
+    fn the_bar_walks_the_stages_in_equal_quarters() {
+        let at = |i| bar_state(i, None);
+        assert_eq!(at(0), State::At(12));
+        assert_eq!(at(1), State::At(37));
+        assert_eq!(at(2), State::At(62));
+        assert_eq!(at(3), State::At(87));
+        // Past the last stage the pipeline is done and the bar comes down.
+        assert_eq!(at(STAGES.len()), State::Clear);
+    }
+
+    /// A cache hit does not wait, so the grouping row keeps its quarter like
+    /// any other. A miss is a subprocess with nothing to report, and saying
+    /// "62%" about it for a minute is the hang this change exists to remove.
+    #[test]
+    fn only_an_uncached_agent_call_goes_indeterminate() {
+        let miss = ("Claude Code".to_string(), false);
+        let hit = ("Claude Code".to_string(), true);
+        assert_eq!(bar_state(2, Some(&miss)), State::Working);
+        assert_eq!(bar_state(2, Some(&hit)), State::At(62));
+        // And it is that stage only: the agent is still named on the later
+        // rows (`asking_since` is never cleared), which must not hold the bar
+        // indeterminate after the call is over.
+        assert_eq!(bar_state(3, Some(&miss)), State::At(87));
+        assert_eq!(bar_state(STAGES.len(), Some(&miss)), State::Clear);
     }
 
     /// Not an assertion — the grouping row at each point in the rotation, and

@@ -21,6 +21,12 @@ A session moves through them in order.
    enumerate, classify, group, order — with the active one spinning and an elapsed timer.
    The grouping line names the agent it is waiting on, or says the cache spared the call.
    That stage shells out to an LLM on a cache miss, and it dominates the wait.
+
+   The terminal is told as well: a progress bar on its tab for the whole wait, and a
+   desktop notification when the wait is over — so a reviewer who switched windows
+   does not have to keep switching back. Both are escape sequences, which is what
+   makes them work over SSH. The notification fires only when an agent call ran; see
+   `spec/tui.md`.
 3. **The reviewer.** Two panes, described below.
 
 ## The reading plan pane

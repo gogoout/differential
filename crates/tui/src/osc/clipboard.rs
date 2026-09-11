@@ -17,6 +17,8 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 
+use super::Wrap;
+
 /// What a terminal will carry. Several cap OSC 52 at about 8 KB, and the
 /// payload that matters is the BASE64, not the text.
 ///
@@ -26,33 +28,6 @@ use base64::engine::general_purpose::STANDARD;
 /// honest answer, and the file the caller writes is the way out.
 const MAX_PAYLOAD: usize = 8192;
 
-/// Which passthrough a multiplexer needs, if any.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Wrap {
-    /// Straight to the terminal.
-    None,
-    /// `ESC Ptmux; …` with every inner ESC doubled. tmux also needs
-    /// `set -g set-clipboard on`, which is its own default in current
-    /// versions; nothing here can check it.
-    Tmux,
-    /// GNU screen's device-control string.
-    Screen,
-}
-
-impl Wrap {
-    /// Read the environment once. `$TMUX` is set inside tmux even when `$TERM`
-    /// says something else, so it is checked first.
-    pub fn detect() -> Self {
-        if std::env::var_os("TMUX").is_some() {
-            return Wrap::Tmux;
-        }
-        match std::env::var("TERM") {
-            Ok(t) if t.starts_with("screen") => Wrap::Screen,
-            _ => Wrap::None,
-        }
-    }
-}
-
 /// The bytes to write to stdout, or `None` when the payload is over the cap.
 pub fn sequence(text: &str, wrap: Wrap) -> Option<String> {
     let payload = STANDARD.encode(text);
@@ -60,14 +35,7 @@ pub fn sequence(text: &str, wrap: Wrap) -> Option<String> {
         return None;
     }
     // `c` is the system clipboard, as opposed to the primary selection.
-    let inner = format!("\x1b]52;c;{payload}\x07");
-    Some(match wrap {
-        Wrap::None => inner,
-        // Inside tmux the sequence is data, so its own ESC has to be doubled
-        // or tmux ends the passthrough at the first one.
-        Wrap::Tmux => format!("\x1bPtmux;{}\x1b\\", inner.replace('\x1b', "\x1b\x1b")),
-        Wrap::Screen => format!("\x1bP{inner}\x1b\\"),
-    })
+    Some(wrap.apply(format!("\x1b]52;c;{payload}\x07")))
 }
 
 #[cfg(test)]
