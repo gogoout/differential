@@ -8028,3 +8028,226 @@ fn the_horizontal_wheel_shifts_the_diff_pane_as_h_and_l_do() {
         );
     }
 }
+
+// ------------------------------------------------- the symbol float (`z`)
+
+/// A change that declares something in one file and uses it twice on one line
+/// in another.
+///
+/// Two uses on ONE line is the point: stepping is what `z` does after the
+/// first press, and a line with a single symbol cannot show it. `helper_two`
+/// sits to the right of `helper_one`, so column order and press order must
+/// agree.
+fn app_with_symbols() -> (TestRepo, App) {
+    let r = TestRepo::new();
+    r.write("src/lib.rs", b"// lib\n");
+    r.write("src/call.rs", b"// call\n");
+    r.commit_all("base");
+    r.write(
+        "src/lib.rs",
+        b"// lib\nfn helper_one() {\n    let inner = 1;\n    inner\n}\nfn helper_two() {\n    2\n}\n",
+    );
+    r.write(
+        "src/call.rs",
+        b"// call\nfn caller() {\n    let total = helper_one() + helper_two();\n}\n",
+    );
+    r.commit_all("head");
+    // ONE group holding both files. Per-class groups would show the declaring
+    // file and the calling file in different groups, and the reader has to be
+    // standing on the call to press `z` at it.
+    let backend = FakeBackend::new("fake", |ids| {
+        let all: Vec<String> = ids
+            .iter()
+            .map(|i| format!("{i:?}").trim_matches('"').to_string())
+            .collect();
+        format!(
+            r#"{{"groups": [{}]}}"#,
+            json_group(
+                "Everything",
+                "focus",
+                &all.iter().map(String::as_str).collect::<Vec<_>>()
+            )
+        )
+    });
+    let app = open_app_with_opts(&r, &backend, ".dfr-symbol-store", laid_out(false));
+    (r, app)
+}
+
+/// Put the cursor on the row whose drawn text contains `needle`.
+fn cursor_on_text(app: &mut App, needle: &str) -> usize {
+    let pos = app
+        .rows
+        .iter()
+        .position(|r| r.line.as_ref().is_some_and(|l| l.text.contains(needle)))
+        .unwrap_or_else(|| panic!("no row containing {needle:?}"));
+    app.cursor = pos;
+    app.focus = Focus::Detail;
+    pos
+}
+
+#[test]
+fn z_steps_through_the_symbols_on_a_line_then_closes() {
+    let (_r, mut app) = app_with_symbols();
+    cursor_on_text(&mut app, "helper_one() + helper_two()");
+
+    app.handle_key(key('z'));
+    let first = app.peek.as_ref().expect("the first symbol opens the float");
+    assert_eq!(first.nth, 0);
+    assert!(
+        first.title.starts_with("helper_one ·"),
+        "leftmost first: {}",
+        first.title
+    );
+
+    app.handle_key(key('z'));
+    let second = app.peek.as_ref().expect("the second symbol");
+    assert_eq!(second.nth, 1);
+    assert!(
+        second.title.starts_with("helper_two ·"),
+        "then rightward: {}",
+        second.title
+    );
+
+    // Past the last one it closes rather than wrapping: stepping is how the
+    // reader asks what else is here, and a wrap gives them no way out through
+    // the key they are already pressing.
+    app.handle_key(key('z'));
+    assert!(app.peek.is_none(), "after the last symbol the float closes");
+}
+
+#[test]
+fn the_float_shows_the_declaration_body_with_its_own_line_numbers() {
+    let (_r, mut app) = app_with_symbols();
+    cursor_on_text(&mut app, "helper_one() + helper_two()");
+    app.handle_key(key('z'));
+
+    let peek = app.peek.as_ref().expect("open");
+    let numbers: Vec<u32> = peek.body.iter().map(|(n, _)| *n).collect();
+    // `fn helper_one` is lines 2..=5 of the head file, and the float shows all
+    // four — the whole declaration, not just the line it starts on.
+    assert_eq!(numbers, vec![2, 3, 4, 5], "the whole body");
+    let text: String = peek
+        .body
+        .iter()
+        .flat_map(|(_, pairs)| pairs.iter().map(|(_, t)| t.as_str()))
+        .collect();
+    assert!(text.contains("fn helper_one"), "got: {text:?}");
+    assert!(
+        text.contains("let inner"),
+        "the body, not only the signature"
+    );
+}
+
+#[test]
+fn esc_closes_the_float_and_leaves_a_selection_alone() {
+    let (_r, mut app) = app_with_symbols();
+    cursor_on_text(&mut app, "helper_one() + helper_two()");
+    app.handle_key(key('v'));
+    app.handle_key(key('z'));
+    assert!(app.peek.is_some() && app.visual.is_some());
+
+    // One press, one thing. The float came last, so it goes first.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.peek.is_none(), "the float closed");
+    assert!(app.visual.is_some(), "the selection is still open");
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.visual.is_none(), "a second esc drops the selection");
+}
+
+#[test]
+fn moving_the_cursor_closes_the_float() {
+    let (_r, mut app) = app_with_symbols();
+    cursor_on_text(&mut app, "helper_one() + helper_two()");
+    app.handle_key(key('z'));
+    assert!(app.peek.is_some());
+
+    app.handle_key(key('j'));
+    assert!(
+        app.peek.is_none(),
+        "a highlight pointing at a row the cursor left is worse than none"
+    );
+}
+
+#[test]
+fn z_on_a_row_with_no_symbol_still_folds_the_group() {
+    let (_r, mut app) = app_with_symbols();
+    // A row the index cannot resolve: the file header is not a diff line.
+    let before = app.folds_open.clone();
+    app.focus = Focus::Detail;
+    put_cursor_on(&mut app, |k| matches!(k, RowKind::HunkHeader { .. }));
+    app.handle_key(key('z'));
+    assert!(app.peek.is_none(), "nothing to peek at on a hunk header");
+    assert_ne!(
+        app.folds_open, before,
+        "z kept the meaning it already had on this row"
+    );
+}
+
+#[test]
+fn the_float_never_covers_the_cursors_row() {
+    let (_r, mut app) = app_with_symbols();
+    let row = cursor_on_text(&mut app, "helper_one() + helper_two()");
+    app.handle_key(key('z'));
+
+    let panes = differential_tui::app::layout(app.viewport().area);
+    let area = app.peek_area(panes.detail).expect("the float has a home");
+
+    // Where the cursor's row is drawn, in the same arithmetic the float used.
+    let mut top = panes.detail.y + 1;
+    for i in app.scroll()..row {
+        top += app.row_height(i) as u16;
+    }
+    let bottom = top + app.row_height(row) as u16;
+    let covers = area.y < bottom && top < area.y + area.height;
+    assert!(
+        !covers,
+        "float at {}..{} overlaps the row at {top}..{bottom}",
+        area.y,
+        area.y + area.height
+    );
+}
+
+#[test]
+fn a_pane_too_short_for_the_float_shows_none_of_it() {
+    let (_r, mut app) = app_with_symbols();
+    cursor_on_text(&mut app, "helper_one() + helper_two()");
+    app.handle_key(key('z'));
+    // Five rows of terminal: a bordered pane with almost nothing in it. The
+    // float yields entirely rather than land on the row it is about.
+    app.set_viewport(Viewport::measure(Rect::new(0, 0, 120, 5)));
+    let panes = differential_tui::app::layout(app.viewport().area);
+    assert!(app.peek_area(panes.detail).is_none());
+}
+
+#[test]
+#[ignore = "prints the pane for a human to look at"]
+/// `cargo test -p differential-tui --test tui -- --ignored --nocapture render_dump_symbol_float`
+fn render_dump_symbol_float() {
+    let (_r, mut app) = app_with_symbols();
+    cursor_on_text(&mut app, "helper_one() + helper_two()");
+
+    println!("\n=== before: the line, nothing open ===");
+    println!("{}", ansi_dump(&mut app, 110, 20));
+
+    app.handle_key(key('z'));
+    println!("\n=== z once: helper_one lit, its declaration below ===");
+    println!("{}", ansi_dump(&mut app, 110, 20));
+
+    app.handle_key(key('z'));
+    println!("\n=== z again: helper_two ===");
+    println!("{}", ansi_dump(&mut app, 110, 20));
+
+    app.handle_key(key('z'));
+    println!("\n=== z past the last one: closed ===");
+    println!("{}", ansi_dump(&mut app, 110, 20));
+
+    // Low in the pane, where below has less room than above: the float has to
+    // flip upwards and still leave the cursor's row showing.
+    app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT));
+    cursor_on_text(&mut app, "helper_one() + helper_two()");
+    app.set_viewport(Viewport::measure(Rect::new(0, 0, 110, 14)));
+    app.handle_key(key('z'));
+    println!("\n=== a short pane: the float flips above the row ===");
+    println!("{}", ansi_dump(&mut app, 110, 14));
+}

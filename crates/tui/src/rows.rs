@@ -33,7 +33,7 @@ use super::vendor::syntax::HighlightedSpans;
 use super::vendor::text_utils::split_pairs_at_ranges;
 use super::window::{self, Expansion, Segment, Side};
 
-const TAB_WIDTH: usize = 4;
+pub(crate) const TAB_WIDTH: usize = 4;
 
 /// A finding's quoting rail. Shared with the renderer, which repeats it down
 /// the continuation lines of a wrapped note.
@@ -398,6 +398,10 @@ impl Row {
     }
 }
 
+/// One line of a declaration the symbol float shows: its number, and its
+/// styled text.
+pub type SnippetLine = (u32, Vec<(Style, String)>);
+
 /// A file's two sides, as lines.
 ///
 /// Normalised ONCE, so the diff and the highlight can no longer disagree about
@@ -406,6 +410,13 @@ impl Row {
 struct FileSource {
     old: Vec<String>,
     new: Vec<String>,
+    /// The head side again, with its tabs INTACT.
+    ///
+    /// The engine reports a symbol's columns as byte offsets into the raw line
+    /// (ADR 0032), and `new` has had its tabs expanded — so translating one to
+    /// the other needs the bytes that expansion consumed. Nothing else reads
+    /// this, and nothing else should: it is not what the pane draws.
+    new_raw: Vec<String>,
     /// Highlighted lines kept between rebuilds, and which lines have been
     /// offered to syntect at all.
     ///
@@ -457,6 +468,20 @@ impl Highlights {
             .flat_map(|r| r.start..r.end)
             .filter_map(|i| self.spans.get(&i).map(|s| (i, s.clone())))
             .collect()
+    }
+}
+
+/// The blob's lines EXACTLY as stored — no tab expansion, no trimming.
+///
+/// Paired with [`source_lines`] rather than replacing it: what the pane draws
+/// is the expanded text, and what the engine's columns index is this.
+fn raw_lines(blob: &Option<Vec<u8>>) -> Vec<String> {
+    match blob {
+        Some(bytes) => String::from_utf8_lossy(bytes)
+            .lines()
+            .map(str::to_string)
+            .collect(),
+        None => Vec::new(),
     }
 }
 
@@ -536,6 +561,62 @@ impl RowFactory {
         (src.old_hl.take(old_want), src.new_hl.take(new_want))
     }
 
+    /// One declaration's head-side lines, syntax-highlighted, plus the raw
+    /// text of the line a symbol was found on.
+    ///
+    ///
+    /// **Resolved when `z` is pressed, never while drawing.** Reading a blob
+    /// and running syntect both need `&mut self`, and `draw` is a pure function
+    /// of the model (`spec/tui.md`) — so the float's CONTENT is model state,
+    /// exactly as its geometry is.
+    ///
+    /// `line` and `through` count from 1 and are inclusive, as the schema
+    /// records them. `cap` bounds what is read: a declaration longer than the
+    /// pane can hold is cut, and the caller says how many were left.
+    pub fn declaration(
+        &mut self,
+        theme: &Theme,
+        path: &str,
+        line: u32,
+        through: u32,
+        cap: usize,
+    ) -> (Vec<SnippetLine>, usize) {
+        let first = line.saturating_sub(1) as usize;
+        let last = through.max(line) as usize;
+        let available = self.source(path).new.len();
+        let end = last.min(available);
+        if first >= end {
+            return (Vec::new(), 0);
+        }
+        let shown = end.min(first + cap);
+        let want = first..shown;
+        let (_, new_hl) = self.highlight(theme, path, &[], std::slice::from_ref(&want));
+        let src = &self.cache[path];
+        let body = (first..shown)
+            .map(|i| {
+                let text = src.new.get(i).cloned().unwrap_or_default();
+                let pairs = new_hl
+                    .get(&i)
+                    .cloned()
+                    .unwrap_or_else(|| vec![(Style::default().fg(theme.context_fg), text.clone())]);
+                (i as u32 + 1, pairs)
+            })
+            .collect();
+        (body, end - shown)
+    }
+
+    /// The head-side line `line` (counting from 1) with its tabs intact.
+    ///
+    /// The caller needs it to turn the engine's raw byte columns into columns
+    /// in the expanded text the pane actually draws.
+    pub fn raw_head_line(&mut self, path: &str, line: u32) -> Option<String> {
+        self.source(path);
+        self.cache[path]
+            .new_raw
+            .get(line.checked_sub(1)? as usize)
+            .cloned()
+    }
+
     /// Read every file the rows are about to draw, in one `git` call.
     ///
     /// Reading a blob costs a process; doing it lazily per file meant two
@@ -575,6 +656,7 @@ impl RowFactory {
                 FileSource {
                     old: lines(&sides[0]),
                     new: lines(&sides[1]),
+                    new_raw: raw_lines(&sides[1]),
                     old_hl: Highlights::default(),
                     new_hl: Highlights::default(),
                 },
@@ -594,12 +676,24 @@ impl RowFactory {
                     .unwrap_or_default();
                 source_lines(&blob)
             };
-            let (old, new) = (read(&self.base), read(&self.head));
+            let raw = |rev: &str| -> Vec<String> {
+                self.repo
+                    .blob(rev, path.as_bytes())
+                    .ok()
+                    .flatten()
+                    .map(|b| String::from_utf8_lossy(&b).into_owned())
+                    .unwrap_or_default()
+                    .lines()
+                    .map(str::to_string)
+                    .collect()
+            };
+            let (old, new, new_raw) = (read(&self.base), read(&self.head), raw(&self.head));
             self.cache.insert(
                 path.to_string(),
                 FileSource {
                     old,
                     new,
+                    new_raw,
                     old_hl: Highlights::default(),
                     new_hl: Highlights::default(),
                 },

@@ -301,6 +301,29 @@ pub enum Effect {
     CopySummary(String),
 }
 
+/// An open symbol float: the token it lights, and the declaration it shows.
+///
+/// Everything here is resolved when `z` is pressed, because reading a blob and
+/// running syntect both need `&mut self` and drawing is a pure function of the
+/// model. Holding the CONTENT rather than the coordinates to fetch it is what
+/// keeps that true.
+pub struct Peek {
+    /// The diff row this belongs to. Moving the cursor drops the whole thing —
+    /// a highlight pointing at a row the cursor has left is worse than none.
+    pub row: usize,
+    /// Which resolvable symbol on that row, counting from 0, left to right.
+    pub nth: usize,
+    /// The token's byte range in the row's DRAWN text — the engine's raw-line
+    /// columns already translated through the same tab expansion the pane uses.
+    pub at: (usize, usize),
+    /// `name · file:line · C7 · g3`.
+    pub title: String,
+    /// The declaration, one entry per line: its number, and its styled text.
+    pub body: Vec<crate::rows::SnippetLine>,
+    /// Lines the cap cut, for the `… N more lines` row.
+    pub more: usize,
+}
+
 /// A plan row's relation to the selected group — what the gutter connector
 /// draws. The plan is a graph (a group can follow several others), not a tree, and not
 /// acyclic either.
@@ -404,6 +427,16 @@ pub struct App {
     /// selection is the span between the two ends, so `V` adds a state to
     /// the model without adding one to the key table.
     pub visual: Option<usize>,
+    /// The open symbol float, and which symbol on its row it is showing.
+    ///
+    /// One field, not a mode — the same reason `visual` is one. `j`/`k` must go
+    /// on moving the cursor, and a mode would add a state to the key table to
+    /// say something the cursor already says.
+    ///
+    /// Transient, like `folds_open` and `expanded`: looking something up is a
+    /// reading aid for this sitting, not a finding, so nothing here reaches the
+    /// sidecar store.
+    pub peek: Option<Peek>,
     scroll: usize,
     /// How far the diff pane's CONTENT is shifted left, in columns.
     ///
@@ -501,6 +534,7 @@ impl App {
             rows: Vec::new(),
             cursor: 0,
             visual: None,
+            peek: None,
             scroll: 0,
             hscroll: 0,
             group_scroll: 0,
@@ -568,6 +602,7 @@ mod findings;
 mod forge;
 mod help;
 mod keys;
+mod peek;
 mod state;
 mod text;
 

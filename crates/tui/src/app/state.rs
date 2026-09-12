@@ -288,6 +288,9 @@ impl App {
         if let Some(next) = self.next_selectable(start.max(0) as usize, dir) {
             self.cursor = next;
         }
+        // The symbol float belongs to the row it was opened on. A highlight
+        // pointing at a row the cursor has left is worse than no highlight.
+        self.peek = None;
         self.follow_cursor();
     }
 

@@ -179,8 +179,9 @@ impl SymbolSource for StubSymbols {
             for pair in words.windows(2) {
                 if KEYWORDS.contains(&pair[0]) && pair[1].len() >= 3 {
                     let (s, e) = at(text, pair[1], 0);
-                    // The stub has no tree, so it cannot see where a body ends.
-                    // It says so with zero, exactly as the crude reader does.
+                    // Extent filled in below, once the next declaration is
+                    // known: a stub reading one line at a time cannot see the
+                    // end of a body from inside it.
                     defines.push(Symbol::global(pair[1]).at(s, e));
                 }
             }
@@ -198,11 +199,32 @@ impl SymbolSource for StubSymbols {
             out.defines.push(defines);
             out.references.push(references);
         }
+
+        // A declaration runs to the line before the next one, or to the end of
+        // the file. Crude, like everything else here, and a rule a real reader
+        // without a parse tree could honestly apply — which is the bar for this
+        // double. A shipped reader that cannot see an extent reports zero
+        // instead (ADR 0032); the two cases both need exercising, and the crude
+        // reader's tests cover that one where it lives.
+        let starts: Vec<usize> = out
+            .defines
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| !d.is_empty())
+            .map(|(i, _)| i)
+            .collect();
+        let last = out.defines.len();
+        for (n, &i) in starts.iter().enumerate() {
+            let ends = starts.get(n + 1).copied().unwrap_or(last);
+            for sym in &mut out.defines[i] {
+                sym.site.through = ends as u32;
+            }
+        }
         Some(out)
     }
 
     fn fingerprint(&self) -> String {
-        "stub-symbols-v2".to_string()
+        "stub-symbols-v3".to_string()
     }
 }
 

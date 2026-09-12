@@ -15,7 +15,9 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::rows::{Border, Fill, Gutter, Half, RowKind};
 use crate::theme::Theme;
-use crate::vendor::text_utils::{drop_columns, slice_pairs, truncate_or_pad_spans, wrap_pairs};
+use crate::vendor::text_utils::{
+    drop_columns, slice_pairs, split_pairs_at_ranges, truncate_or_pad_spans, wrap_pairs,
+};
 
 use super::text::{
     Hint, Ink, basename, counts_columns, elide_head, file_list_rows, findings_rows, findings_skip,
@@ -788,6 +790,125 @@ impl App {
         })
     }
 
+    /// Where the symbol float sits, or nowhere when it will not fit.
+    ///
+    /// **It never covers the cursor's row.** That row is the question; the
+    /// float is the answer, and an answer that hides the question is worse than
+    /// no answer. So it takes the larger of the two gaps and stops one row
+    /// short of the cursor.
+    ///
+    /// **Below by preference.** Reading runs downwards, and a float that
+    /// appears below the line keeps the eye travelling the way it already was.
+    /// It goes above only when above has more room.
+    ///
+    /// One function for the draw and the hit test, the way `group_map_area` is:
+    /// two answers to "where is it" is how a click lands somewhere the float is
+    /// not.
+    pub fn peek_area(&self, detail: Rect) -> Option<Rect> {
+        let peek = self.peek.as_ref()?;
+        let inner_h = detail.height.saturating_sub(2) as usize;
+        // Where the cursor's row starts and ends, in screen lines from the top
+        // of the pane. Walked from `scroll` over the same heights the scroll
+        // budget uses, so the float lands where the row actually is.
+        let mut top = 0usize;
+        for i in self.scroll..peek.row {
+            top += self.row_height(i);
+            if top >= inner_h {
+                return None;
+            }
+        }
+        let bottom = top + self.row_height(peek.row);
+        if bottom > inner_h {
+            return None;
+        }
+
+        // The gaps either side, in rows, with the cursor's own row excluded
+        // from both.
+        let below = inner_h.saturating_sub(bottom);
+        let above = top;
+        let (room, downwards) = if below >= above {
+            (below, true)
+        } else {
+            (above, false)
+        };
+        // A frame plus one line of code is three rows. Less than that and the
+        // float would be a box with nothing in it, so it yields entirely —
+        // the same "too short, show nothing" rule the group map follows.
+        if room < 3 {
+            return None;
+        }
+        let wanted = peek.body.len() + usize::from(peek.more > 0) + 2;
+        let h = wanted.clamp(3, room) as u16;
+        let y = if downwards {
+            detail.y + 1 + bottom as u16
+        } else {
+            detail.y + 1 + top as u16 - h
+        };
+        Some(Rect {
+            x: detail.x,
+            y,
+            width: detail.width,
+            height: h,
+        })
+    }
+
+    /// The float: the declaration, with its own line numbers.
+    pub(super) fn draw_peek(&self, frame: &mut Frame, detail: Rect) {
+        let (Some(peek), Some(area)) = (self.peek.as_ref(), self.peek_area(detail)) else {
+            return;
+        };
+        let inner = area.width.saturating_sub(2) as usize;
+        let body_rows = area.height.saturating_sub(2) as usize;
+        // What the pane can hold may be less than what was read, and the tally
+        // has to count BOTH cuts or it would under-report after a resize.
+        let shown = body_rows
+            .saturating_sub(usize::from(peek.more > 0))
+            .min(peek.body.len());
+        let cut = peek.more + (peek.body.len() - shown);
+
+        // The number column is as wide as its widest number, so the code
+        // starts in one place.
+        let width = peek
+            .body
+            .iter()
+            .take(shown)
+            .map(|(n, _)| n.to_string().len())
+            .max()
+            .unwrap_or(1);
+        let mut lines: Vec<Line> = peek
+            .body
+            .iter()
+            .take(shown)
+            .map(|(n, pairs)| {
+                let mut spans = vec![Span::styled(
+                    format!("{n:>width$} ", n = n, width = width),
+                    Style::default().fg(self.theme.gutter_fg),
+                )];
+                spans.extend(
+                    slice_pairs(pairs, 0, inner.saturating_sub(width + 1))
+                        .into_iter()
+                        .map(|(st, t)| Span::styled(t, st)),
+                );
+                Line::from(spans)
+            })
+            .collect();
+        if cut > 0 {
+            lines.push(Line::from(Span::styled(
+                format!("{:>width$} … {cut} more lines", "", width = width),
+                Style::default().fg(self.theme.gutter_fg),
+            )));
+        }
+
+        clear_to_ground(frame, &self.theme, area);
+        frame.render_widget(
+            // Padded here, not in the model: a test asserting WHICH symbol is
+            // open reads the title, and it should not have to know how a
+            // border draws one. Every other float pads at this same point.
+            Paragraph::new(lines).block(pane(&self.theme, format!(" {} ", peek.title), true)),
+            area,
+        );
+    }
+
     pub(super) fn draw_group_map(&self, frame: &mut Frame, detail: Rect) {
         let Some(area) = self.group_map_area(detail) else {
             return;
@@ -1180,6 +1301,10 @@ impl App {
                     hint,
                     wrap: self.wraps(r),
                     hscroll: self.shift(r),
+                    // Only the row the float belongs to. The float closes when
+                    // the cursor moves, so this is always the cursor's row —
+                    // keyed on the row anyway, so the two can never disagree.
+                    peek: self.peek.as_ref().filter(|p| p.row == i).map(|p| p.at),
                 },
             )
             .into_iter()
@@ -1322,6 +1447,11 @@ impl App {
                 cell.modifier.insert(Modifier::BOLD);
             }
         }
+
+        // Last, over the content and the border both: the float is an answer
+        // laid on top of the pane, not a part of it. Its own area is measured
+        // from the model, so drawing it here costs nothing that `placed` knows.
+        self.draw_peek(frame, area);
     }
 
     /// The whole footer, in the order it is drawn: the pills and message, the
@@ -1526,6 +1656,12 @@ pub(super) struct Paint<'a> {
     /// shifting a row that already shows all of itself is a row with a hole at
     /// the front.
     pub hscroll: usize,
+    /// The symbol `z` is showing, as a byte range in the NEW half's drawn text.
+    ///
+    /// Here rather than on the row for the same reason `cursor` is: which
+    /// symbol is lit is a cursor question, and a row that had to be rebuilt to
+    /// answer it would rebuild on every press (ADR 0032).
+    pub peek: Option<(usize, usize)>,
 }
 
 impl Paint<'_> {
@@ -1541,6 +1677,7 @@ impl Paint<'_> {
             hint: None,
             wrap,
             hscroll: 0,
+            peek: None,
         }
     }
 }
@@ -1610,6 +1747,14 @@ pub(super) fn compose_row_lines(
             } else {
                 half
             };
+            let lit;
+            let half = match paint.peek {
+                Some(at) => {
+                    lit = lit_symbol(theme, half, at);
+                    &lit
+                }
+                None => half,
+            };
             compose_half_lines(theme, half, width, paint)
                 .into_iter()
                 .map(Line::from)
@@ -1620,6 +1765,17 @@ pub(super) fn compose_row_lines(
             // Both gutters light: a split row IS one row, and a cursor that
             // showed on one side only read as a cursor on that side's line.
             let mut left = compose_half_lines(theme, old, lw, paint);
+            // The NEW half only. The index is keyed by new-side line, so the
+            // old half is a different line and lighting the same columns there
+            // would point at whatever happens to sit under them.
+            let lit;
+            let new = match paint.peek {
+                Some(at) => {
+                    lit = lit_symbol(theme, new, at);
+                    &lit
+                }
+                None => new,
+            };
             let mut right = compose_half_lines(theme, new, rw, paint);
             // A row is as tall as its taller half, and the shorter one pads —
             // the rule the `╱` fill already follows across a row, applied down
@@ -1640,6 +1796,36 @@ pub(super) fn compose_row_lines(
                 })
                 .collect()
         }
+    }
+}
+
+/// Repaint one token of a half in the accent, leaving its syntax colours.
+///
+/// The same splitter word-level diff emphasis uses, so the two compose: a
+/// symbol inside a changed word keeps the word's tint and gains the underline.
+/// Applied BEFORE `compose_half`, which is where a horizontal shift is taken,
+/// so a shifted pane cuts the highlight exactly as it cuts the text.
+///
+/// **An accent and an underline, not a background.** A background here would
+/// have to be told apart from `added_bg`, `deleted_bg` and their word-level
+/// twins by `Theme::step_band`, which dispatches on colour VALUES — so a new
+/// one would need a palette test per theme to prove it never collides. The
+/// accent already exists, and an underline is a shape rather than a colour.
+fn lit_symbol(theme: &Theme, half: &Half, at: (usize, usize)) -> Half {
+    let (start, end) = at;
+    if start >= end {
+        return half.clone();
+    }
+    Half {
+        gutter: half.gutter.clone(),
+        pairs: split_pairs_at_ranges(
+            &half.pairs,
+            vec![(start, end)],
+            Style::default()
+                .fg(theme.header_fg)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        ),
+        fill: half.fill,
     }
 }
 
