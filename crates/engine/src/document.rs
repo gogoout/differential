@@ -196,6 +196,9 @@ pub fn assemble(
             read_hunks: None,
             skipped_hunks: None,
         },
+        // Moved in beside the class graph, from the same extraction. `classify`
+        // produced it, so it needs no stage of its own in `generator.stages`.
+        symbols: Some(std::mem::take(&mut graph.symbols)),
     })
 }
 

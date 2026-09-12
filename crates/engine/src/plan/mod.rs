@@ -126,6 +126,7 @@ pub(crate) mod test_support {
             groups: None,
             reading_plan: None,
             audit: audit(),
+            symbols: None,
         }
     }
 

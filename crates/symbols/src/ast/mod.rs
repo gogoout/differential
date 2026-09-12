@@ -135,6 +135,39 @@ fn line_of(node: Node) -> usize {
     node.start_position().row + 1
 }
 
+/// The token's byte range within its own line.
+///
+/// Tree-sitter's `Point::column` is already a BYTE offset into the row, so this
+/// is the raw-line range `Site` asks for with no line table to build. A token
+/// spanning rows — no query here captures one — reports its first row's tail
+/// rather than a range that runs past the end of a line.
+fn columns_of(node: Node) -> (u32, u32) {
+    let start = node.start_position();
+    let end = node.end_position();
+    let from = start.column as u32;
+    let to = if end.row == start.row {
+        end.column as u32
+    } else {
+        from + (node.end_byte() - node.start_byte()) as u32
+    };
+    (from, to)
+}
+
+/// The last line of the declaration this NAME belongs to, counting from 1.
+///
+/// Every `@def` pattern in every tuned query captures the name identifier, and
+/// its parent is the declaration that name introduces — `(function_item name:
+/// (identifier) @def)`, `(variable_declarator name: (identifier) @def)`. So the
+/// parent's end row is the body's end.
+///
+/// Where that is wrong it is wrong in the safe direction: a parent narrower
+/// than the reader expected stops SHORT, showing fewer lines. It can never run
+/// past the declaration into the next one, because a parent contains its child.
+fn extent_of(node: Node) -> u32 {
+    node.parent()
+        .map_or(line_of(node), |p| p.end_position().row + 1) as u32
+}
+
 /// A node's text, or `None` if it is not UTF-8.
 fn text_of<'a>(node: Node, content: &'a [u8]) -> Option<&'a [u8]> {
     content.get(node.byte_range())

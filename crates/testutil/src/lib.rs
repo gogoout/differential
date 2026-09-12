@@ -162,23 +162,39 @@ impl SymbolSource for StubSymbols {
             "protocol",
         ];
         let mut out = FileSymbols::default();
+        // Where each word starts, so a symbol can carry its columns (ADR
+        // 0032). Byte offsets into the RAW line, which is what the schema
+        // records and what a renderer translates from.
+        let at = |text: &str, word: &str, from: usize| -> (u32, u32) {
+            let start = text[from..].find(word).map_or(from, |i| from + i);
+            (start as u32, (start + word.len()) as u32)
+        };
         for line in content.split(|&b| b == b'\n') {
-            let words: Vec<&str> = std::str::from_utf8(line)
-                .unwrap_or("")
+            let text = std::str::from_utf8(line).unwrap_or("");
+            let words: Vec<&str> = text
                 .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
                 .filter(|w| !w.is_empty())
                 .collect();
             let mut defines = Vec::new();
             for pair in words.windows(2) {
                 if KEYWORDS.contains(&pair[0]) && pair[1].len() >= 3 {
-                    defines.push(Symbol::global(pair[1]));
+                    let (s, e) = at(text, pair[1], 0);
+                    // The stub has no tree, so it cannot see where a body ends.
+                    // It says so with zero, exactly as the crude reader does.
+                    defines.push(Symbol::global(pair[1]).at(s, e));
                 }
             }
-            let references = words
-                .iter()
-                .filter(|w| w.len() >= 4 && !w.chars().next().unwrap().is_ascii_digit())
-                .map(|w| Symbol::global(*w))
-                .collect();
+            // Scanned left to right, so two of the same word on one line get
+            // two different columns rather than both reporting the first.
+            let mut cursor = 0usize;
+            let mut references = Vec::new();
+            for w in &words {
+                let (s, e) = at(text, w, cursor);
+                cursor = e as usize;
+                if w.len() >= 4 && !w.chars().next().unwrap().is_ascii_digit() {
+                    references.push(Symbol::global(*w).at(s, e));
+                }
+            }
             out.defines.push(defines);
             out.references.push(references);
         }
@@ -186,7 +202,7 @@ impl SymbolSource for StubSymbols {
     }
 
     fn fingerprint(&self) -> String {
-        "stub-symbols-v1".to_string()
+        "stub-symbols-v2".to_string()
     }
 }
 

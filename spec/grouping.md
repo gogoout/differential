@@ -134,9 +134,17 @@ ran and there was nothing to group.
 
 Labels are non-deterministic across model calls; coverage is structural. Groupings are
 pinned under `<git-common-dir>/differential/cache/grouping/<key>.json`, keyed by sha1 over:
-`PROMPT_VERSION`, the backend identity, the language-registry fingerprint, and each offered
-class's sorted member hunk digests (content-exact, so keys survive positional-id shifts
-across regenerations). The cached value is the **raw model response**; parsing, audit, the
+`PROMPT_VERSION`, the backend identity, the language-registry fingerprint, **the symbol
+readers' fingerprint**, and each offered class's sorted member hunk digests (content-exact,
+so keys survive positional-id shifts across regenerations).
+
+The readers are in the key because the class graph is part of what the model reads
+(ADR 0022), so a reader that ANSWERS differently must cold every entry — whether or not the
+difference moves an edge. A reader whose behaviour changes therefore has to change its
+`fingerprint` string, and `every_reader_fingerprint_pins_its_answers` is the mechanism that
+catches a forgotten bump.
+
+The cached value is the **raw model response**; parsing, audit, the
 gate and assembly are pure functions replayed on every load — their fixes apply to cached
 runs, while prompt or payload changes must bump `PROMPT_VERSION`.
 
