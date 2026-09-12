@@ -35,6 +35,66 @@ pub struct PlanDocument {
     /// `None` until the grouping stage runs; ordered foundation-first once present.
     pub reading_plan: Option<Vec<ReadingStep>>,
     pub audit: Audit,
+    /// Symbol-level dependency sites: which token resolves to which
+    /// declaration. Produced by `classify`, beside the class graph.
+    ///
+    /// `None` on a document written before this field existed. It is additive,
+    /// so `schema_version` stays 3 — but a stored artefact does get re-read
+    /// (`dfr agent --doc`, the grouping cache), which is why this defaults
+    /// rather than requiring the key.
+    #[serde(default)]
+    pub symbols: Option<SymbolIndex>,
+}
+
+/// Where each resolvable name is declared, and every token that reads one.
+///
+/// Two flat lists rather than a map: ids are positional, a consumer indexes
+/// them directly, and JSON has no set type worth the ceremony.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SymbolIndex {
+    pub definitions: Vec<SymbolDef>,
+    pub uses: Vec<SymbolUse>,
+}
+
+/// One declaration the change makes, that something in the change reads.
+///
+/// Only names with exactly ONE definer appear, the same rule the class graph
+/// draws edges by — a name two classes declare is ambiguous, and this cannot
+/// say which one a reader meant.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SymbolDef {
+    /// Document-local and positional, `s0…sn`, like `h<N>` and `C<N>`. Does not
+    /// survive regeneration.
+    pub id: String,
+    pub name: String,
+    pub file: String,
+    /// New-side line of the declaring token, counting from 1.
+    pub line: u32,
+    /// Last line of what the name declares. Equal to `line` where the reader
+    /// could not see an extent — a regex has no tree to ask.
+    pub through: u32,
+    /// Byte offsets of the token within its RAW line, before any tab expansion.
+    /// A renderer that expands tabs must translate these against its own
+    /// expansion rather than index its display text with them.
+    pub start: u32,
+    pub end: u32,
+    /// The shape class that introduces it.
+    pub class: String,
+}
+
+/// One token that reads a [`SymbolDef`].
+///
+/// Recorded on ANY line of a parsed file, not only an added one: a reviewer can
+/// open context and land on an unchanged line, and the token resolves there too.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SymbolUse {
+    /// The `SymbolDef` id this use resolves to.
+    pub on: String,
+    pub file: String,
+    pub line: u32,
+    /// Raw-line byte offsets, as on [`SymbolDef`].
+    pub start: u32,
+    pub end: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -185,7 +245,7 @@ pub struct ClassEntry {
     /// True iff, after erasing identifiers and literals, the removed and added
     /// lines match — a structure-free substitution. Computed, never claimed.
     pub pure_substitution: bool,
-    /// Symbols this class introduces, from `Language::file_symbols`.
+    /// Symbols this class introduces, from `SymbolReaders::of_file`.
     /// Sorted and deduplicated.
     pub defines: Vec<String>,
     /// Classes this class consumes: it references a symbol they define. Sorted

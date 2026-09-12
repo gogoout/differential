@@ -20,6 +20,7 @@
 //! as text is `crates/cli`'s job, the same as for every other consumer.
 
 pub mod graph;
+pub mod sites;
 pub mod symbols;
 
 use std::collections::{HashMap, HashSet};

@@ -30,7 +30,24 @@ use std::ops::Range;
 use differential_engine::artefact::symbols::{FileSymbols, Symbol, SymbolSource};
 use tree_sitter::{Language, Query, QueryCursor, StreamingIterator};
 
-use super::{is_prose, line_count, line_of, parse, prose_tokens, text_of};
+use super::{columns_of, extent_of, is_prose, line_count, line_of, parse, prose_tokens, text_of};
+
+/// One query capture, with everything the decision below needs.
+///
+/// A struct rather than the tuple this was: six fields travelling together is
+/// what `clippy::type_complexity` exists to catch, and naming them is how the
+/// veto below stays readable.
+struct Capture<'a> {
+    name: &'a str,
+    /// Zero-based index into the parallel `FileSymbols` vectors.
+    line: usize,
+    /// Byte range in the FILE — the identity key the definition veto compares.
+    range: Range<usize>,
+    text: Vec<u8>,
+    /// Byte range within the token's own line.
+    columns: (u32, u32),
+    through: u32,
+}
 
 struct Tuned {
     /// Bump the `-vN` when the query changes. It reaches the grouping cache key,
@@ -184,7 +201,7 @@ impl SymbolSource for AstSymbols {
         // capture in hand.
         let prose = prose_tokens(&tree);
         let names = query.capture_names();
-        let mut captured: Vec<(&str, usize, Range<usize>, Vec<u8>)> = Vec::new();
+        let mut captured: Vec<Capture<'_>> = Vec::new();
         let mut cursor = QueryCursor::new();
         let mut matches = cursor.matches(query, tree.root_node(), content);
         while let Some(m) = matches.next() {
@@ -208,57 +225,93 @@ impl SymbolSource for AstSymbols {
                 if line >= lines {
                     continue;
                 }
-                captured.push((
-                    names[capture.index as usize],
+                let (from, to) = columns_of(node);
+                let name = names[capture.index as usize];
+                // **Only a definition pays for its extent.** `Node::parent`
+                // walks DOWN from the root, so calling it once per capture is
+                // an ancestor walk per token — the quadratic shape
+                // `the_tuned_reader_survives_deep_nesting_too` exists to catch,
+                // and it caught this: 20k levels went from seconds to 175.
+                //
+                // Since ADR 0030 there is one capture per token, and all but a
+                // handful are `@local_ref`. A reference has no body to show, so
+                // it has no reason to ask.
+                let declares = name == "def" || name == "local_def";
+                captured.push(Capture {
+                    name,
                     line,
-                    node.byte_range(),
-                    text.to_vec(),
-                ));
+                    range: node.byte_range(),
+                    text: text.to_vec(),
+                    columns: (from, to),
+                    through: if declares { extent_of(node) } else { 0 },
+                });
             }
         }
 
         let ranges = |wanted: &str| -> HashSet<Range<usize>> {
             captured
                 .iter()
-                .filter(|(name, ..)| *name == wanted)
-                .map(|(_, _, range, _)| range.clone())
+                .filter(|c| c.name == wanted)
+                .map(|c| c.range.clone())
                 .collect()
         };
         let defined = ranges("def");
         let locally_defined = ranges("local_def");
 
-        for (name, line, range, text) in captured {
+        for c in captured {
+            let Capture {
+                name,
+                line,
+                range,
+                text,
+                columns: (from, to),
+                through,
+            } = c;
             // Definitions win: a class must never appear to consume the thing
             // it introduces. A file-scope definition also wins over the
             // file-local capture of the same token, which is how
             // `(variable_declarator …) @local_def` and its `(program …) @def`
             // sibling both stay in the query without fighting.
             let is_a_definition = defined.contains(&range) || locally_defined.contains(&range);
+            // A definition carries its body's last line; a reference has no
+            // body of its own, so it carries only its columns.
             match name {
-                "def" => out.defines[line].push(Symbol::global(text)),
+                "def" => out.defines[line].push(Symbol::global(text).at(from, to).through(through)),
                 "local_def" if !defined.contains(&range) => {
-                    out.defines[line].push(Symbol::local(text));
+                    out.defines[line].push(Symbol::local(text).at(from, to).through(through));
                 }
                 // Three spellings of one thing: the file consumes a name
                 // that came from somewhere else. `@ref` is the one that is
                 // neither a call nor a type — a function handed to a router
                 // rather than invoked, an enum variant, a constant by path.
                 "call" | "type" | "ref" if !is_a_definition => {
-                    out.references[line].push(Symbol::global(text));
+                    out.references[line].push(Symbol::global(text).at(from, to));
                 }
                 // A call may be resolving a file-local binding or a global
                 // one, and nothing here can say which. Both are recorded; the
                 // graph keeps whichever finds a definer.
-                "local_ref" if !is_a_definition => out.references[line].push(Symbol::local(text)),
+                "local_ref" if !is_a_definition => {
+                    out.references[line].push(Symbol::local(text).at(from, to));
+                }
                 _ => {}
             }
         }
         Some(out)
     }
 
+    /// `ast-tuned-vN[<query versions>]` — the reader's OWN version, then the
+    /// queries'.
+    ///
+    /// The reader's version has to be here, and it was not. Every earlier
+    /// change to this reader happened to edit a `.scm` as well, so the query
+    /// versions carried the bump and nothing noticed that a Rust-only change
+    /// could not. [ADR 0031](../../../../adr/0031-a-global-name-is-scoped-to-its-language.md)
+    /// named exactly this hole for the crude reader and closed it there; this
+    /// is the same hole one rung up, and the change that added `Site` is the
+    /// first Rust-only change to walk into it.
     fn fingerprint(&self) -> String {
         let mut parts: Vec<&str> = self.ready.iter().map(|(t, _, _)| t.version).collect();
         parts.sort_unstable();
-        format!("ast-tuned[{}]", parts.join(","))
+        format!("ast-tuned-v2[{}]", parts.join(","))
     }
 }

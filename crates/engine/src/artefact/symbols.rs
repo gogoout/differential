@@ -34,11 +34,35 @@ pub enum Scope {
     File,
 }
 
+/// Where a symbol sits on its line, and how far what it declares reaches.
+///
+/// The graph does not read any of this — [`super::graph`] keys a symbol by its
+/// namespace and name alone, so nothing here can move an edge. It exists for
+/// the reader who has to LOOK at the dependency: a highlight needs the token's
+/// columns, and showing what a name was declared as needs the declaration's
+/// last line.
+///
+/// **`start`/`end` are byte offsets into the RAW line**, before any tab
+/// expansion. A renderer that expands tabs — the TUI does — must translate them
+/// against its own expansion rather than assume they index its display text.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Site {
+    pub start: u32,
+    pub end: u32,
+    /// The last line of what this name declares, counting from 1.
+    ///
+    /// Zero when the reader cannot see an extent — a regex has no tree to ask,
+    /// and saying so beats guessing. A consumer reads zero as "the line itself
+    /// is all I know".
+    pub through: u32,
+}
+
 /// One name a line introduces or consumes, and how far it reaches.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Symbol {
     pub name: Vec<u8>,
     pub scope: Scope,
+    pub site: Site,
 }
 
 impl Symbol {
@@ -47,6 +71,7 @@ impl Symbol {
         Symbol {
             name: name.into(),
             scope: Scope::Global,
+            site: Site::default(),
         }
     }
 
@@ -55,7 +80,25 @@ impl Symbol {
         Symbol {
             name: name.into(),
             scope: Scope::File,
+            site: Site::default(),
         }
+    }
+
+    /// The token's byte range within its own raw line.
+    ///
+    /// A builder rather than a constructor argument: a reader that cannot
+    /// answer leaves the default, and every caller that never cared — the stub
+    /// reader, the domain's own tests — stays as it was.
+    pub fn at(mut self, start: u32, end: u32) -> Symbol {
+        self.site.start = start;
+        self.site.end = end;
+        self
+    }
+
+    /// The last line of what this name declares.
+    pub fn through(mut self, line: u32) -> Symbol {
+        self.site.through = line;
+        self
     }
 }
 

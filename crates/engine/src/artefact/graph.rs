@@ -19,6 +19,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use super::sites;
 use super::symbols::{FileSymbols, Scope, Symbol, SymbolReaders};
 use crate::EngineError;
 use crate::model::DiffView;
@@ -31,6 +32,10 @@ use crate::shape::Partition;
 pub struct ClassGraph {
     pub defines: Vec<Vec<String>>,
     pub depends_on: Vec<Vec<schema::ClassEdge>>,
+    /// The same extraction, one class apart: which token resolves to which
+    /// declaration ([`super::sites`]). Read by consumers that SHOW a
+    /// dependency; never by the ordering stage.
+    pub symbols: schema::SymbolIndex,
 }
 
 /// What a name is compared within.
@@ -79,6 +84,9 @@ pub fn build<G: ObjectReader>(
     let n = partition.classes.len();
     let mut defs: Vec<BTreeSet<Key>> = vec![BTreeSet::new(); n];
     let mut refs: Vec<BTreeSet<Key>> = vec![BTreeSet::new(); n];
+    // Every definition site, ambiguous ones included. They are filtered below
+    // against the graph's own single-definer verdict rather than a second one.
+    let mut found: Vec<(Key, sites::Definition)> = Vec::new();
 
     for (ci, members) in partition.classes.iter().enumerate() {
         for &hi in members {
@@ -106,6 +114,21 @@ pub fn build<G: ObjectReader>(
                     let at = |s: &Symbol| key(h.file, &fs.namespace, s);
                     defs[ci].extend(fs.defines_at(line).iter().map(at));
                     refs[ci].extend(fs.references_at(line).iter().map(at));
+                    // The one place a symbol still knows where it is. The sets
+                    // above are about to lose the file, the line and the
+                    // columns; the index is what keeps them.
+                    found.extend(fs.defines_at(line).iter().map(|s| {
+                        (
+                            at(s),
+                            sites::Definition {
+                                name: s.name.clone(),
+                                file: h.file,
+                                line,
+                                site: s.site,
+                                class: ci,
+                            },
+                        )
+                    }));
                 }
             }
         }
@@ -153,7 +176,58 @@ pub fn build<G: ObjectReader>(
         );
     }
 
+    // The index, from the same parse and the same verdict. A definition whose
+    // key has no unique definer is dropped here, so it is absent from the index
+    // for exactly the reason it draws no edge.
+    let mut definitions: Vec<sites::Definition> = Vec::new();
+    let mut of_key: HashMap<&Key, usize> = HashMap::new();
+    for (k, d) in &found {
+        if !matches!(definer.get(k), Some(Some(_))) {
+            continue;
+        }
+        // One entry per NAME. A query can capture one declaration twice, and
+        // two ids for one declaration would step a reader through the same
+        // snippet twice.
+        if of_key.contains_key(k) {
+            continue;
+        }
+        of_key.insert(k, definitions.len());
+        definitions.push(sites::Definition {
+            name: d.name.clone(),
+            file: d.file,
+            line: d.line,
+            site: d.site,
+            class: d.class,
+        });
+    }
+
+    // Uses come from EVERY line of every parsed file, not only the added ones:
+    // a reader who opens context lands on unchanged lines, and a token that
+    // resolves there resolves for them too.
+    let mut uses: Vec<sites::Use> = Vec::new();
+    let mut parsed_files: Vec<&usize> = parsed.keys().collect();
+    parsed_files.sort();
+    for &fi in parsed_files {
+        let fs = &parsed[&fi];
+        for (i, row) in fs.references.iter().enumerate() {
+            for sym in row {
+                let k = key(fi, &fs.namespace, sym);
+                if let Some(&def) = of_key.get(&k) {
+                    uses.push(sites::Use {
+                        def,
+                        file: fi,
+                        line: i as u32 + 1,
+                        site: sym.site,
+                    });
+                }
+            }
+        }
+    }
+
+    let symbols = sites::build(view, definitions, uses);
+
     Ok(ClassGraph {
+        symbols,
         defines: defs
             .iter()
             // A class can define one name globally and another locally, and

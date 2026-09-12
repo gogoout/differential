@@ -57,15 +57,17 @@ impl SymbolSource for NaiveSymbols {
         })
     }
 
-    /// `-v2`: this reader now answers with a namespace, so which cross-file
-    /// symbols match has changed (ADR 0031). It is the ONLY reader for Ruby,
-    /// PHP, Swift, Elixir, shell and the rest, and the AST readers' fallback
-    /// when a parse fails — so leaving it at `-v1` would serve those languages
-    /// a grouping built from a graph that had moved, and nothing would catch
-    /// it. The aggregate key changed anyway this time, because two other
-    /// readers bumped; that is luck, not a guarantee.
+    /// `-v3`: every name now carries its columns, so this reader's answer
+    /// changed even though which symbols it finds did not.
+    ///
+    /// `-v2` was the namespace (ADR 0031). The reason to bump is the same
+    /// either way and does not depend on the change mattering to the graph:
+    /// the port's contract is that a reader which ANSWERS differently colds
+    /// the cache. This reader is the only one for Ruby, PHP, Swift, Elixir,
+    /// shell and the rest, and the AST readers' fallback when a parse fails,
+    /// so a forgotten bump here is a stale grouping nothing would catch.
     fn fingerprint(&self) -> String {
-        "naive-v2".to_string()
+        "naive-v3".to_string()
     }
 }
 
@@ -79,23 +81,39 @@ impl SymbolSource for NaiveSymbols {
 /// this reader — Ruby, PHP, Swift, Elixir and the rest have no other. That is a
 /// precision question of its own, with its own corpus measurement; it is not
 /// this one.
-fn definitions(line: &[u8]) -> Vec<Vec<u8>> {
-    DEF_RE.captures_iter(line).map(|c| c[1].to_vec()).collect()
+fn definitions(line: &[u8]) -> Vec<Found> {
+    DEF_RE
+        .captures_iter(line)
+        .filter_map(|c| c.get(1))
+        .map(|m| (m.as_bytes().to_vec(), m.start() as u32, m.end() as u32))
+        .collect()
 }
 
 /// Identifiers used in the line. A superset of definitions; the graph
 /// intersects against what other classes define, so most noise cancels out.
-fn references(line: &[u8]) -> Vec<Vec<u8>> {
+fn references(line: &[u8]) -> Vec<Found> {
     REF_RE
         .find_iter(line)
-        .map(|m| m.as_bytes().to_vec())
+        .map(|m| (m.as_bytes().to_vec(), m.start() as u32, m.end() as u32))
         .collect()
 }
 
+/// A name and its byte range within the line the regex was run over.
+///
+/// The regex matches a LINE, so its offsets are already the raw-line columns
+/// `Site` wants — there is no file-wide range to subtract.
+type Found = (Vec<u8>, u32, u32);
+
 /// Every name this reader finds reaches beyond its file, as far as it can
 /// tell. See [`definitions`].
-fn global(names: Vec<Vec<u8>>) -> Vec<Symbol> {
-    names.into_iter().map(Symbol::global).collect()
+///
+/// No `through`: a regex has no tree to ask how far a declaration runs, and
+/// zero says that honestly rather than guessing at the next blank line.
+fn global(names: Vec<Found>) -> Vec<Symbol> {
+    names
+        .into_iter()
+        .map(|(name, start, end)| Symbol::global(name).at(start, end))
+        .collect()
 }
 
 #[cfg(test)]

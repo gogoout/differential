@@ -408,6 +408,116 @@ fn the_tuned_reader_survives_deep_nesting_too() {
     );
 }
 
+/// Every definition names its own columns, and covers its own body (ADR 0032).
+///
+/// Both halves matter to a reader who wants to SEE the dependency rather than
+/// be told it exists: the columns are what a highlight lands on, and `through`
+/// is how much of the declaration there is to show.
+#[test]
+fn a_definition_carries_its_columns_and_its_body() {
+    struct Case {
+        path: &'static [u8],
+        src: &'static str,
+        name: &'static str,
+        /// Byte columns of the name, then the declaration's last line.
+        want: (u32, u32, u32),
+    }
+
+    let tuned = AstSymbols::new();
+    // Four languages, four declaration shapes, one rule: the captured name's
+    // parent is the declaration, so its end row is the body's end.
+    let cases = [
+        Case {
+            path: b"a.rs",
+            src: "pub fn serve(x: u8) -> u8 {\n    x + 1\n}\n",
+            name: "serve",
+            want: (7, 12, 3),
+        },
+        Case {
+            path: b"a.py",
+            src: "def handle(e):\n    log(e)\n    return 1\n",
+            name: "handle",
+            want: (4, 10, 3),
+        },
+        Case {
+            path: b"a.go",
+            src: "package p\nfunc Serve(x int) int {\n\treturn x\n}\n",
+            name: "Serve",
+            want: (5, 10, 4),
+        },
+        Case {
+            path: b"a.ts",
+            src: "export function lookUpName(): string {\n  return '';\n}\n",
+            name: "lookUpName",
+            want: (16, 26, 3),
+        },
+    ];
+    for c in cases {
+        let where_ = String::from_utf8_lossy(c.path).into_owned();
+        let s = tuned
+            .file_symbols(c.path, c.src.as_bytes())
+            .expect("the tuned reader claims these");
+        let found = s
+            .defines
+            .iter()
+            .flatten()
+            .find(|y| y.name == c.name.as_bytes())
+            .unwrap_or_else(|| panic!("{} was not defined in {where_}", c.name));
+        assert_eq!(
+            (found.site.start, found.site.end, found.site.through),
+            c.want,
+            "{} in {where_}",
+            c.name
+        );
+    }
+}
+
+/// A column is a RAW byte offset, not a display column.
+///
+/// The TUI expands tabs before drawing, so a reader that reported expanded
+/// columns would mis-highlight every tab-indented file — and the failure is
+/// silent, because the highlight still lands on SOMETHING. Go is the case that
+/// matters: gofmt indents with tabs.
+#[test]
+fn a_column_counts_raw_bytes_and_never_expands_a_tab() {
+    let tuned = AstSymbols::new();
+    let s = tuned
+        .file_symbols(b"a.go", b"package p\nfunc f() {\n\tplain()\n}\n")
+        .expect("the tuned reader claims .go");
+    let call = s
+        .references
+        .iter()
+        .flatten()
+        .find(|y| y.name == b"plain")
+        .expect("the call is a reference");
+    // One tab, then the name. Raw: column 1. Expanded at any tab width it
+    // would be 4 or 8, so this fails loudly if the offsets ever change base.
+    assert_eq!(
+        (call.site.start, call.site.end),
+        (1, 6),
+        "a tab is one byte, whatever it draws as"
+    );
+}
+
+/// The crude reader reports columns and refuses to invent an extent.
+///
+/// A regex has no tree to ask how far a declaration runs. Zero says so; a guess
+/// at the next blank line would be a snippet that is confidently wrong.
+#[test]
+fn the_crude_reader_places_a_name_but_claims_no_body() {
+    let s = NaiveSymbols
+        .file_symbols(b"a.rb", b"class Widget\n  def serve\n  end\nend\n")
+        .expect("the crude reader claims .rb");
+    let def = s
+        .defines
+        .iter()
+        .flatten()
+        .find(|y| y.name == b"Widget")
+        .expect("`class Widget` defines Widget");
+    assert_eq!((def.site.start, def.site.end), (6, 12));
+    assert_eq!(def.site.through, 0, "a regex cannot see an extent");
+}
+
 /// A query's version reaches the grouping cache key, so editing a pattern
 /// without bumping the version serves a stale grouping for a graph that moved.
 ///
@@ -518,11 +628,21 @@ fn every_reader_fingerprint_pins_its_answers() {
         };
         let mut out = format!("ns={}\n", String::from_utf8_lossy(&s.namespace));
         for (line, (defines, references)) in s.defines.iter().zip(&s.references).enumerate() {
+            // The SITE is hashed too. It is not part of any query, and the
+            // graph never reads it — so a change that moved only a column or
+            // an extent would otherwise pass this test while serving a stale
+            // grouping for a reader that answers differently (ADR 0032).
             let show = |kind: &str, syms: &[Symbol]| -> String {
                 syms.iter()
                     .map(|y| {
                         let scope = if y.scope == Scope::Global { "g" } else { "f" };
-                        format!("{kind}{scope}:{}", String::from_utf8_lossy(&y.name))
+                        format!(
+                            "{kind}{scope}:{}@{}-{}+{}",
+                            String::from_utf8_lossy(&y.name),
+                            y.site.start,
+                            y.site.end,
+                            y.site.through
+                        )
                     })
                     .collect::<Vec<_>>()
                     .join(",")
@@ -561,11 +681,11 @@ fn every_reader_fingerprint_pins_its_answers() {
 
     const PINNED: &[(&str, &str)] = &[
         (
-            "ast-tuned[go-v3,kotlin-v3,python-v3,rust-v3,tsx-v3,typescript-v3]",
-            "c1faa8c611cd6dba6a4ca2ce2c7f8bf3c5e7798f",
+            "ast-tuned-v2[go-v3,kotlin-v3,python-v3,rust-v3,tsx-v3,typescript-v3]",
+            "eebeb73419f0e35f3573f3aa781ec21614f8f6c9",
         ),
-        ("ast-fields-v2", "44ee5a83a707fcbd65b367c251f9da4fe59084b3"),
-        ("naive-v2", "b815826768b5ef91a88d4142195fccfd021382f2"),
+        ("ast-fields-v3", "7d1eb9f41d9cb7aff66aa240710a0337c62ba2c6"),
+        ("naive-v3", "3b6a6cfece0afc2ea5d6172739e6e6d8747305bc"),
     ];
     let pinned: Vec<(String, String)> = PINNED
         .iter()

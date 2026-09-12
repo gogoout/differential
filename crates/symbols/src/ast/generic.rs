@@ -21,7 +21,7 @@
 use differential_engine::artefact::symbols::{FileSymbols, Scope, Symbol, SymbolSource};
 use tree_sitter::{Language, Node, Tree};
 
-use super::{line_count, line_of, parse, text_of};
+use super::{columns_of, extent_of, line_count, line_of, parse, text_of};
 
 /// Grammars this reader handles. One entry per extension.
 struct Grammar {
@@ -144,7 +144,7 @@ impl SymbolSource for AstTier2Symbols {
     }
 
     fn fingerprint(&self) -> String {
-        "ast-fields-v2".to_string()
+        "ast-fields-v3".to_string()
     }
 }
 
@@ -243,23 +243,29 @@ fn record(
     let Some(row) = out.defines.get_mut(line_of(node) - 1) else {
         return;
     };
+    let (from, to) = columns_of(node);
 
     if let Some(scope) = definition_scope(node, field, parent_kind, inside_callee) {
-        row.push(Symbol {
+        // The declaration this name belongs to is the node's parent, exactly as
+        // it is for the tuned reader — the walk reaches a name through the
+        // declaration that owns it, so the parent's end row is the body's end.
+        let symbol = Symbol {
             name: text.to_vec(),
             scope,
-        });
+            site: Default::default(),
+        };
+        row.push(symbol.at(from, to).through(extent_of(node)));
         return;
     }
     // A type position is a reference: `fn f(w: Widget)` consumes Widget.
     let is_type = kind.contains("type") || field == "type";
     if inside_callee || is_type {
-        out.references[line_of(node) - 1].push(Symbol::global(text.to_vec()));
+        out.references[line_of(node) - 1].push(Symbol::global(text.to_vec()).at(from, to));
     }
     // And any identifier might be reading a binding declared in this file. It
     // is compared only against this file's own definitions, so a common word
     // costs at worst an ordering inside one file (ADR 0030).
-    out.references[line_of(node) - 1].push(Symbol::local(text.to_vec()));
+    out.references[line_of(node) - 1].push(Symbol::local(text.to_vec()).at(from, to));
 }
 
 /// Does this token name something, and if so how far does the name reach?
