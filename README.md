@@ -20,9 +20,14 @@ https://github.com/user-attachments/assets/afa7a1e6-47db-43a9-932f-f9d2b5cee321
 ## Requirements
 
 - `git` on your PATH. All repository access shells out to real git.
-- An LLM CLI for the grouping stage. The default is
-  [`claude`](https://claude.com/claude-code), run headless with tools denied. Any command
-  that takes a prompt on stdin and writes text on stdout works. See [Config](#config).
+- An agent CLI for the grouping stage. Five are supported, picked by name:
+  [`claude-code`](https://claude.com/claude-code) (the default),
+  [`codex`](https://developers.openai.com/codex/cli),
+  [`droid`](https://docs.factory.ai/droid-exec/overview),
+  [`copilot`](https://docs.github.com/en/copilot/how-tos/copilot-cli) and
+  [`pi`](https://pi.dev). Each runs headless and allowed to read, never to write —
+  **except `pi`, which can write**. Run `dfr agents` to see what you have installed.
+  See [Config](#config).
 - Rust stable to build from source. The version is pinned in `rust-toolchain.toml`.
 
 ## Install
@@ -226,7 +231,7 @@ allowlist and a prompt written for what that agent can do.
 
 ```toml
 [grouping]
-agent = "claude-code"   # the only one so far, and the default
+agent = "claude-code"   # the default; see the table below for the other four
 timeout_secs = 1200
 
 [review]
@@ -242,7 +247,7 @@ diff = "split"
 
 | key | default | meaning |
 |---|---|---|
-| `grouping.agent` | `claude-code` | Which agent runs the grouping call, by name. |
+| `grouping.agent` | `claude-code` | Which agent runs the grouping call, by name. Five names; see below. |
 | `grouping.timeout_secs` | `1200` | How long to wait for the backend. |
 | `review.context` | `3` | Context lines around a hunk before any expansion. |
 | `review.context_step` | `10` | Lines one `z` pulls in at a boundary row. |
@@ -257,6 +262,36 @@ repository's.
 
 A missing file means defaults. A malformed file is a hard error. An unknown key is a hard
 error too.
+
+### Agents
+
+Five, by name. `dfr agents` lists them and says which are on your PATH.
+
+| `agent` | CLI | what keeps it read-only |
+|---|---|---|
+| `claude-code` | `claude` | a tool allowlist |
+| `codex` | `codex` | an OS sandbox — Seatbelt on macOS, bubblewrap on Linux |
+| `droid` | `droid` | its own default; we pass no flag that lifts it |
+| `copilot` | `copilot` | a tool allowlist, plus an explicit `--deny-tool write` |
+| `pi` | `pi` | **nothing. Pi can write, commit and push.** |
+
+**Read that last row before choosing it.** Pi ships no sandbox and no per-command
+allowlist, and its tool switch is all-or-nothing: the shell tool the model needs to read
+your diff is the same one that lets it write. Only the prompt asks it not to. Every other
+agent is stopped by something. ADR 0032 records why Pi is offered anyway.
+
+Each agent's command line is written from that agent's documentation, and this repository
+cannot test one against a CLI it does not have. On a machine that has one:
+
+```sh
+dfr agents                 # free: what is installed, and what is configured
+dfr agents --probe codex   # one real model call, four facts
+```
+
+The probe reports whether the agent started, read its prompt from stdin, could run the
+fetch command, and was refused a write. The third is the one worth having: an agent that
+cannot fetch does not fail, it groups worse and says nothing.
+
 
 Which agent you run is part of the grouping cache key, so two agents never share an entry —
 a different model may group differently. Where its binary happens to live is not, so a

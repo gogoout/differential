@@ -1,6 +1,11 @@
 # 0022 — The model fetches its own context
 
 Status: accepted. Supersedes [0010](0010-llm-invocation-tools-denied.md).
+Extended by [0032](0032-what-makes-an-agent-supportable.md), which adds four more
+agents and corrects one claim below: the allowlist did not bind. `--allowed-tools`
+adds permissions rather than capping them, so a user's own `defaultMode` outranked it
+and "nothing here can write" was false wherever that setting was not `default`.
+`--permission-mode default` is now in the argv.
 
 ## Context
 
@@ -74,7 +79,8 @@ the finer graph onto groups manufactured cycles the change did not contain.
 - **The dependency graph moves to `artefact::graph`, built from classes before the model
   runs.** It lands on `ClassEntry.defines` and `ClassEntry.depends_on`; the ordering stage
   contracts it onto groups. Every edge carries the symbols that produced it.
-- The default backend gains a read-only allowlist:
+- The default backend gains a read-only allowlist (which ADR 0032 later found needed
+  `--permission-mode default` beside it to bind at all):
   `Bash(dfr agent:*),Bash(git diff:*),Read,Grep,Glob,Bash(git log:*),Bash(git show:*)`.
   **`git diff` is advertised; the rest are not.** `git diff` is named in the prompt because
   it is the only way to see what a hunk says, and a tool the model must use and is not told
