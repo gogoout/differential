@@ -472,7 +472,10 @@ fn a_name_two_classes_define_is_in_no_index() {
     let base = r.commit_all("base");
     // Two files, each declaring the same global name, in two shape classes.
     r.write("src/a.rs", b"// a\nfn shared_name() {}\n");
-    r.write("src/b.rs", b"// b\nfn shared_name() {}\nfn only_here() {}\n");
+    r.write(
+        "src/b.rs",
+        b"// b\nfn shared_name() {}\nfn only_here() {}\n",
+    );
     let head = r.commit_all("head");
 
     let index = symbol_index(&readers(None), &r, &base, &head);
@@ -519,5 +522,8 @@ fn a_document_without_the_index_still_deserialises() {
     let without = serde_json::to_string(&value).unwrap();
 
     let doc = PlanDocument::from_json(&without).expect("an older document must still load");
-    assert!(doc.symbols.is_none(), "absent reads as None, never an error");
+    assert!(
+        doc.symbols.is_none(),
+        "absent reads as None, never an error"
+    );
 }
