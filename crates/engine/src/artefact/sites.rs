@@ -13,17 +13,20 @@
 //! snippet, which they can see is wrong; it cannot move a group. That is why
 //! this could be looser than the graph, and is not:
 //!
-//! - **A definition must be unambiguous.** [`super::graph`] resolves against
-//!   its own single-definer map before calling here, so a name two classes
-//!   define is absent from the index exactly as it draws no edge. Two answers
-//!   to "who defines this" would be a bug waiting for a corpus to find it.
-//! - **A use is recorded wherever it appears in a parsed file**, not only on an
-//!   added line. A reader can open context with `z` and land on an unchanged
-//!   line; a token that resolves there resolves for them too.
+//! - **A definition can sit on any line of a parsed file**, not only one the
+//!   change wrote. The commonest shape of the reviewer's question is a NEW call
+//!   to a helper that was already there, and answering it needs the declaration
+//!   wherever it sits. It must still be unambiguous — a name declared twice is
+//!   absent, the same rule the graph draws edges by, judged over this wider
+//!   population.
+//! - **A use is recorded only on a line the change WROTE.** Those are the lines
+//!   the reviewer is reading, and they are what bounds this: with any
+//!   declaration resolvable, recording every mention in every parsed file would
+//!   make the index grow with the size of the FILES rather than of the change.
 //!
-//! What it cannot answer is a name the change never declares. Only files with
-//! hunks are parsed ([`super::graph::parse_files`]), so a call into an
-//! untouched helper resolves to nothing. That is the honest limit of a tool
+//! What it cannot answer is a name declared in a file the change never touches.
+//! Only files with hunks are parsed ([`super::graph`]), so a call into a helper
+//! in an untouched file resolves to nothing. That is the honest limit of a tool
 //! that reads a diff rather than a repository.
 
 use super::symbols::Site;
@@ -38,8 +41,10 @@ pub(super) struct Definition {
     /// New-side line, counting from 1.
     pub line: u32,
     pub site: Site,
-    /// Index into `Partition::classes`.
-    pub class: usize,
+    /// Index into `Partition::classes`, or `None` where the change did not
+    /// write this line — the declaration is real, it is simply not part of the
+    /// change, and claiming a class for it would be a lie.
+    pub class: Option<usize>,
 }
 
 /// One token that resolves to a [`Definition`].
@@ -61,13 +66,22 @@ pub(super) fn build(
     mut definitions: Vec<Definition>,
     mut uses: Vec<Use>,
 ) -> schema::SymbolIndex {
-    let mut order: Vec<usize> = (0..definitions.len()).collect();
+    // **A definition nothing points at is dropped.** The index exists to answer
+    // "what is this token", so a declaration no recorded use reaches can never
+    // be shown — and once ANY declaration in a touched file is a candidate,
+    // most of them are never reached. On the validation corpus this is the
+    // difference between 1184 definitions and the handful actually referenced.
+    let reached: std::collections::HashSet<usize> = uses.iter().map(|u| u.def).collect();
+    let mut order: Vec<usize> = (0..definitions.len())
+        .filter(|i| reached.contains(i))
+        .collect();
     order.sort_by_key(|&i| {
         let d = &definitions[i];
         (d.file, d.line, d.site.start, d.name.clone())
     });
     // `rank[old index] = new index`, so the uses can be renumbered without
-    // searching for their definition again.
+    // searching for their definition again. A dropped definition keeps a slot
+    // it never uses: nothing indexes it, because nothing reached it.
     let mut rank = vec![0usize; definitions.len()];
     for (new, &old) in order.iter().enumerate() {
         rank[old] = new;
@@ -92,7 +106,7 @@ pub(super) fn build(
                 },
                 start: d.site.start,
                 end: d.site.end,
-                class: format!("C{}", d.class),
+                class: d.class.map(|c| format!("C{c}")),
             }
         })
         .collect();

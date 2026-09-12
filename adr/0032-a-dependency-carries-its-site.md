@@ -74,15 +74,35 @@ direction.** A parent contains its child, so the extent can stop SHORT and show 
 it can never run past the declaration into the next one. A cheap rule whose failure mode is
 "showed less" did not justify moving every query version.
 
-**A use is recorded on any line of a parsed file, not only an added one.** The graph reads
-added lines because it is asking what the CHANGE introduces and consumes. A reviewer opens
-context with `z` and lands on unchanged lines, and a token that resolves there resolves for
-them too. The cost is bounded by dependencies rather than by file size: an occurrence is
-recorded only when its name resolves to a definition the change makes.
+**A declaration may sit on any line of a parsed file; a use may not.** The two halves face
+opposite ways, and both directions were measured.
 
-**The index reuses the graph's own single-definer verdict.** A name two classes declare is
-absent from the index for exactly the reason it draws no edge. Computing a second opinion
-would be a bug waiting for a corpus to find it.
+The graph reads added lines on both sides because it asks what the CHANGE introduces and
+consumes. That is the wrong rule for the index's question, and the first cut inherited it:
+a new call to a helper that was already there — the single commonest thing a reviewer wants
+resolved — lit nothing, because the helper's declaration was not on a line the change wrote.
+So a declaration now counts wherever it sits in a file the change touches.
+
+Uses go the other way and are recorded **only on lines the change wrote**. Those are the
+lines being reviewed, and they are what bounds the result: once any declaration is a
+candidate, recording every mention in every parsed file grows the index with the size of the
+FILES rather than of the change. The cost is that a reader who opens context and lands on an
+older call site gets nothing there — the author's call, and the right way round, because the
+change is the thing being read.
+
+**A definition nothing points at is dropped.** The index exists to answer "what is this
+token", so a declaration no recorded use reaches can never be shown. Once any declaration is
+a candidate most of them are never reached, and on the corpus this is the difference between
+1184 definitions and 304.
+
+**The index judges ambiguity for itself.** It cannot reuse the graph's single-definer map
+any more, because the two now range over different populations: a name the change declares
+once but the touched files declare twice is unambiguous to the graph and ambiguous to a
+reader. Same rule, computed over the wider set.
+
+**A declaration the change did not write has no class**, and `class` is `null` there rather
+than borrowing one. The absence is the useful fact: there is no group to go and read first,
+because the declaration is not part of the change.
 
 **A declaration is not a use of itself.** The crude reader has no veto — its reference regex
 takes every identifier on a line, the name just declared included — so `fn helper()` reports
@@ -100,6 +120,13 @@ class graph that is already listed there.
 
 ## Consequences
 
+- **The document roughly doubles on a large change.** Measured on the validation corpus:
+  199 classes, 304 definitions and 1119 uses, taking the document from 146KB to 325KB
+  (+123%); a second range goes 180KB to 236KB (+31%). The index is the reading aid's whole
+  payload and nothing else grew, so this is what the feature costs. `dfr agent` does not
+  print it, so the model never reads it and the prompt is unchanged. The parity harness
+  prints the figure on every run rather than pinning it — it is a size to watch, and a frozen
+  number would fail for reasons that have nothing to do with the graph that test guards.
 - **Every grouping cache entry in every checkout goes cold, once.** All three readers answer
   differently now, and the port's contract is that a reader which answers differently colds
   the cache (`artefact::symbols`). ADR 0031 paid this knowingly and so does this.

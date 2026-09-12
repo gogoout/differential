@@ -56,10 +56,14 @@ pub struct SymbolIndex {
     pub uses: Vec<SymbolUse>,
 }
 
-/// One declaration the change makes, that something in the change reads.
+/// One declaration something in the change reads.
+///
+/// It may sit on ANY line of a file the change touches, not only one the change
+/// wrote: the commonest question a reviewer has is what a newly added call
+/// resolves to, and that is usually a helper which was already there.
 ///
 /// Only names with exactly ONE definer appear, the same rule the class graph
-/// draws edges by — a name two classes declare is ambiguous, and this cannot
+/// draws edges by — a name declared twice is ambiguous, and nothing here can
 /// say which one a reader meant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SymbolDef {
@@ -78,14 +82,17 @@ pub struct SymbolDef {
     /// expansion rather than index its display text with them.
     pub start: u32,
     pub end: u32,
-    /// The shape class that introduces it.
-    pub class: String,
+    /// The shape class that introduces it, or `null` where the change did not
+    /// write this line — the declaration is real, it is simply not part of the
+    /// change.
+    pub class: Option<String>,
 }
 
 /// One token that reads a [`SymbolDef`].
 ///
-/// Recorded on ANY line of a parsed file, not only an added one: a reviewer can
-/// open context and land on an unchanged line, and the token resolves there too.
+/// Recorded only on a line the change WROTE. Those are the lines the reviewer is
+/// reading, and they bound the index: with any declaration resolvable, every
+/// mention in every parsed file would grow this with the size of the files.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SymbolUse {
     /// The `SymbolDef` id this use resolves to.

@@ -8413,6 +8413,118 @@ fn render_dump_symbol_float() {
     app.handle_key(key('z'));
     println!("\n=== added signature, unchanged body ===");
     println!("{}", ansi_dump(&mut app, 110, 20));
+
+    // The commonest case: a NEW call to a helper that was already there. The
+    // declaration is wholly unchanged, and the title names no group because
+    // there is none to go and read first.
+    let (_r3, mut app) = app_with_an_existing_helper();
+    cursor_on_text(&mut app, "sum_xy(1, 2)");
+    app.handle_key(key('z'));
+    println!("\n=== a new call to an existing helper ===");
+    println!("{}", ansi_dump(&mut app, 110, 20));
+}
+
+/// A change that adds a call to a helper it never touches.
+fn app_with_an_existing_helper() -> (TestRepo, App) {
+    let r = TestRepo::new();
+    r.write(
+        "src/lib.rs",
+        b"// lib\nfn sum_xy(a: u8, b: u8) -> u8 {\n    a + b\n}\nfn other() {}\n",
+    );
+    r.write("src/call.rs", b"// call\nfn caller() {\n}\n");
+    r.commit_all("base");
+    r.write(
+        "src/lib.rs",
+        b"// lib\nfn sum_xy(a: u8, b: u8) -> u8 {\n    a + b\n}\nfn other() { changed() }\n",
+    );
+    r.write(
+        "src/call.rs",
+        b"// call\nfn caller() {\n    let n = sum_xy(1, 2);\n}\n",
+    );
+    r.commit_all("head");
+    let backend = FakeBackend::new("fake", |ids| {
+        let all: Vec<String> = ids
+            .iter()
+            .map(|i| format!("{i:?}").trim_matches('"').to_string())
+            .collect();
+        format!(
+            r#"{{"groups": [{}]}}"#,
+            json_group(
+                "Everything",
+                "focus",
+                &all.iter().map(String::as_str).collect::<Vec<_>>()
+            )
+        )
+    });
+    let app = open_app_with_opts(&r, &backend, ".dfr-sumxy-dump-store", laid_out(false));
+    (r, app)
+}
+
+/// A NEW call to a helper that was already there resolves.
+///
+/// The shape the author asked for: `sum_xy` exists, this change adds a call to
+/// it, and the call site has to light up. Nothing about `sum_xy` itself moves.
+#[test]
+fn a_new_call_to_an_existing_helper_lights_up() {
+    let r = TestRepo::new();
+    let lib_base = b"// lib\nfn sum_xy(a: u8, b: u8) -> u8 {\n    a + b\n}\nfn other() {}\n";
+    r.write("src/lib.rs", lib_base);
+    r.write("src/call.rs", b"// call\nfn caller() {\n}\n");
+    r.commit_all("base");
+    // `sum_xy` is untouched. Only `other` changes, which is what keeps the
+    // file in the diff at all.
+    r.write(
+        "src/lib.rs",
+        b"// lib\nfn sum_xy(a: u8, b: u8) -> u8 {\n    a + b\n}\nfn other() { changed() }\n",
+    );
+    r.write(
+        "src/call.rs",
+        b"// call\nfn caller() {\n    let n = sum_xy(1, 2);\n}\n",
+    );
+    r.commit_all("head");
+    let backend = FakeBackend::new("fake", |ids| {
+        let all: Vec<String> = ids
+            .iter()
+            .map(|i| format!("{i:?}").trim_matches('"').to_string())
+            .collect();
+        format!(
+            r#"{{"groups": [{}]}}"#,
+            json_group(
+                "Everything",
+                "focus",
+                &all.iter().map(String::as_str).collect::<Vec<_>>()
+            )
+        )
+    });
+    let mut app = open_app_with_opts(&r, &backend, ".dfr-sumxy-store", laid_out(false));
+    let row = cursor_on_text(&mut app, "sum_xy(1, 2)");
+
+    // Marked before any key is pressed.
+    let marks = app.symbols_on(row);
+    let text = app.rows[row].line.as_ref().unwrap().text.clone();
+    assert!(
+        marks.iter().any(|(s, e)| &text[*s..*e] == "sum_xy"),
+        "the new call site marks the helper: {marks:?} in {text:?}"
+    );
+
+    app.handle_key(key('z'));
+    let peek = app.peek.as_ref().expect("the call resolves");
+    assert!(
+        peek.title.starts_with("sum_xy · src/lib.rs:2"),
+        "got: {}",
+        peek.title
+    );
+    // No class and no group: the change did not write this declaration, and
+    // the title says so by leaving them off.
+    assert_eq!(
+        peek.title, "sum_xy · src/lib.rs:2",
+        "a declaration outside the change names no group to read first"
+    );
+    // And the body is wholly unchanged, which is the other half of saying it.
+    assert!(
+        peek.body.iter().all(|l| l.origin == LineOrigin::Context),
+        "the change never wrote this declaration"
+    );
 }
 
 /// A change that edits a declaration's signature and leaves its body alone.

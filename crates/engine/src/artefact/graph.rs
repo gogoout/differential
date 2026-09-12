@@ -84,9 +84,9 @@ pub fn build<G: ObjectReader>(
     let n = partition.classes.len();
     let mut defs: Vec<BTreeSet<Key>> = vec![BTreeSet::new(); n];
     let mut refs: Vec<BTreeSet<Key>> = vec![BTreeSet::new(); n];
-    // Every definition site, ambiguous ones included. They are filtered below
-    // against the graph's own single-definer verdict rather than a second one.
-    let mut found: Vec<(Key, sites::Definition)> = Vec::new();
+    // Which class wrote each added line, so a declaration ON one can name it.
+    // A declaration the change did not write has no class, and says so.
+    let mut line_class: HashMap<(usize, u32), usize> = HashMap::new();
 
     for (ci, members) in partition.classes.iter().enumerate() {
         for &hi in members {
@@ -114,21 +114,7 @@ pub fn build<G: ObjectReader>(
                     let at = |s: &Symbol| key(h.file, &fs.namespace, s);
                     defs[ci].extend(fs.defines_at(line).iter().map(at));
                     refs[ci].extend(fs.references_at(line).iter().map(at));
-                    // The one place a symbol still knows where it is. The sets
-                    // above are about to lose the file, the line and the
-                    // columns; the index is what keeps them.
-                    found.extend(fs.defines_at(line).iter().map(|s| {
-                        (
-                            at(s),
-                            sites::Definition {
-                                name: s.name.clone(),
-                                file: h.file,
-                                line,
-                                site: s.site,
-                                class: ci,
-                            },
-                        )
-                    }));
+                    line_class.insert((h.file, line), ci);
                 }
             }
         }
@@ -179,10 +165,57 @@ pub fn build<G: ObjectReader>(
     // The index, from the same parse and the same verdict. A definition whose
     // key has no unique definer is dropped here, so it is absent from the index
     // for exactly the reason it draws no edge.
+    // **Every declaration in a parsed file, not only the ones the change wrote.**
+    //
+    // The graph above reads added lines because it asks what the CHANGE
+    // introduces. The index is asked a different question — "what is this name
+    // on the line in front of me" — and the commonest shape of that question is
+    // a new call to a helper that was already there. Answering it needs the
+    // declaration wherever it sits.
+    //
+    // It costs nothing the graph can see: `defs` is untouched above, so edges,
+    // the single-definer rule and the corpus figures are exactly as they were.
+    let mut parsed_files: Vec<&usize> = parsed.keys().collect();
+    parsed_files.sort();
+    let mut declared: Vec<(Key, sites::Definition)> = Vec::new();
+    for &fi in &parsed_files {
+        let fs = &parsed[fi];
+        for (i, row) in fs.defines.iter().enumerate() {
+            let line = i as u32 + 1;
+            for sym in row {
+                declared.push((
+                    key(*fi, &fs.namespace, sym),
+                    sites::Definition {
+                        name: sym.name.clone(),
+                        file: *fi,
+                        line,
+                        site: sym.site,
+                        // `None` where the change did not write this line: the
+                        // declaration is real, it is simply not part of the
+                        // change, and claiming a class for it would be a lie.
+                        class: line_class.get(&(*fi, line)).copied(),
+                    },
+                ));
+            }
+        }
+    }
+
+    // The index's OWN single-definer rule, over that wider set. Same rule as
+    // the graph's and a different population, so it has to be computed here:
+    // a name the change declares once but the file declares twice is ambiguous
+    // to a reader even though it is unambiguous to the graph.
+    let mut index_definer: HashMap<&Key, Option<usize>> = HashMap::new();
+    for (n, (k, _)) in declared.iter().enumerate() {
+        index_definer
+            .entry(k)
+            .and_modify(|e| *e = None)
+            .or_insert(Some(n));
+    }
+
     let mut definitions: Vec<sites::Definition> = Vec::new();
     let mut of_key: HashMap<&Key, usize> = HashMap::new();
-    for (k, d) in &found {
-        if !matches!(definer.get(k), Some(Some(_))) {
+    for (k, d) in &declared {
+        if !matches!(index_definer.get(k), Some(Some(_))) {
             continue;
         }
         // One entry per NAME. A query can capture one declaration twice, and
@@ -201,39 +234,53 @@ pub fn build<G: ObjectReader>(
         });
     }
 
-    // Uses come from EVERY line of every parsed file, not only the added ones:
-    // a reader who opens context lands on unchanged lines, and a token that
-    // resolves there resolves for them too.
+    // **Uses come from the lines the change WROTE, and only those.**
+    //
+    // Those are the lines the reviewer is reading, and they are what bounds
+    // this: recording every mention in every parsed file would make the index
+    // grow with the SIZE OF THE FILES rather than with the size of the change,
+    // now that any declaration can be resolved against.
+    //
+    // The cost is that a reader who opens context and lands on an older call
+    // site gets nothing there. That was the author's call, and it is the right
+    // way round: the change is the thing being read.
     let mut uses: Vec<sites::Use> = Vec::new();
-    let mut parsed_files: Vec<&usize> = parsed.keys().collect();
-    parsed_files.sort();
-    for &fi in parsed_files {
-        let fs = &parsed[&fi];
-        for (i, row) in fs.references.iter().enumerate() {
-            let line = i as u32 + 1;
-            for sym in row {
-                let k = key(fi, &fs.namespace, sym);
-                let Some(&def) = of_key.get(&k) else { continue };
-                // A declaration is not a use of itself. The crude reader has no
-                // veto — its reference regex takes every identifier on a line,
-                // the name it just declared included — so `fn helper()` reports
-                // `helper` as reading `helper`. Pointing a reader at the very
-                // line they are standing on is the one answer that is never
-                // worth giving.
-                //
-                // Position, not name: the SAME name genuinely used later on its
-                // own declaring line (a default argument, a recursive call in a
-                // one-liner) is a real use and stays.
-                let d = &definitions[def];
-                if d.file == fi && d.line == line && d.site.start == sym.site.start {
-                    continue;
+    for members in &partition.classes {
+        for &hi in members {
+            let h = &view.hunks[hi];
+            let file = view.file_of(h);
+            if file.generated.is_some() || file.submodule.is_some() {
+                continue;
+            }
+            let Some(fs) = parsed.get(&h.file) else {
+                continue;
+            };
+            for i in 0..h.added.len() {
+                let line = h.new_start + i as u32;
+                for sym in fs.references_at(line) {
+                    let k = key(h.file, &fs.namespace, sym);
+                    let Some(&def) = of_key.get(&k) else { continue };
+                    // A declaration is not a use of itself. The crude reader
+                    // has no veto — its reference regex takes every identifier
+                    // on a line, the name it just declared included — so
+                    // `fn helper()` reports `helper` as reading `helper`.
+                    // Pointing a reader at the line they are standing on is the
+                    // one answer never worth giving.
+                    //
+                    // Position, not name: the same name genuinely used again on
+                    // its own declaring line — a default argument, a one-line
+                    // recursive call — is a real use and stays.
+                    let d = &definitions[def];
+                    if d.file == h.file && d.line == line && d.site.start == sym.site.start {
+                        continue;
+                    }
+                    uses.push(sites::Use {
+                        def,
+                        file: h.file,
+                        line,
+                        site: sym.site,
+                    });
                 }
-                uses.push(sites::Use {
-                    def,
-                    file: fi,
-                    line,
-                    site: sym.site,
-                });
             }
         }
     }

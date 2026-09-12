@@ -33,4 +33,5 @@ hex = { workspace = true }
 petgraph = { workspace = true }
 sha1 = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 toml = { workspace = true }

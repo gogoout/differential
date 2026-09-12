@@ -103,23 +103,30 @@ stays 3, and a consumer must tolerate its absence. Stored documents are re-read
   document-local and positional like `h<N>` and `C<N>`, and do not survive regeneration.
   `line` is the new-side line of the declaring token; `through` is the last line of what the
   name declares, and **equals `line` where the reader could not see an extent** — a regex
-  has no tree to ask. Only names with exactly ONE definer appear, the same rule that draws
-  an edge: a name two classes declare is ambiguous, and nothing here can say which one a
-  reader meant.
-- `uses[]` — `{on, file, line, start, end}`, where `on` is a `definitions[].id`. Recorded on
-  **any** line of a parsed file, not only an added one: a reviewer can open context and land
-  on an unchanged line, and the token resolves there too. **A declaration is never a use of
-  itself** — matched on position, so the same name genuinely used again on its own declaring
-  line still counts.
+  has no tree to ask. A declaration may sit on **any** line of a file the change touches, not
+  only one the change wrote — a new call to an existing helper is the commonest thing a
+  reviewer wants resolved. `class` is the shape class that wrote the declaring line, and
+  **`null` where the change did not write it**: the declaration is real and simply not part
+  of the change. Only names with exactly ONE definer appear, the same rule that draws an
+  edge. A definition **nothing in `uses` points at is absent** — it could never be shown.
+- `uses[]` — `{on, file, line, start, end}`, where `on` is a `definitions[].id`. Recorded
+  **only on a line the change wrote**. Those are the lines being reviewed, and they bound the
+  index: with any declaration resolvable, every mention in every parsed file would grow this
+  with the size of the files. An older call site therefore has no entry. **A declaration is
+  never a use of itself** — matched on position, so the same name genuinely used again on its
+  own declaring line still counts.
 
 **`start` and `end` are byte offsets into the RAW line**, before any tab expansion. A
 renderer that expands tabs — the TUI does — must translate them against its own expansion
 rather than index its display text with them. This is the one place the two coordinate
 systems meet, and getting it wrong mis-highlights every tab-indented file without erroring.
 
-Only files the change touches are parsed, so a name the change never declares resolves to
-nothing. A call into an untouched helper has no entry here, and that is the honest limit of
-reading a diff rather than a repository.
+Only files the change touches are parsed, so a name declared in an untouched file resolves
+to nothing — the honest limit of reading a diff rather than a repository.
+
+The index is the largest thing this document carries on a change of any size. Measured on
+the validation corpus it takes a 199-class document from 146KB to 325KB. `dfr agent` does
+not print it, so the grouping prompt is unaffected.
 
 ## `groups[]` and `reading_plan[]` (grouping stage)
 

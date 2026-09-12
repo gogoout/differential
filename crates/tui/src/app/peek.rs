@@ -107,17 +107,26 @@ impl App {
         // The group the declaring class ended up in. The reader's next move is
         // often "go and read that group first", and the id is what the plan
         // pane's rows and their `after:` lines are keyed by.
-        let group = self
-            .session
-            .doc()
-            .groups
-            .as_ref()
-            .and_then(|gs| gs.iter().find(|g| g.class_ids.contains(&class)))
-            .map(|g| g.id.clone());
-        let title = match group {
-            Some(g) => format!("{name} · {file}:{line} · {class} · {g}"),
-            None => format!("{name} · {file}:{line} · {class}"),
-        };
+        //
+        // A declaration the change did not write has no class and so no group,
+        // and the title says only where it is. That absence is the useful fact:
+        // there is no group to go and read first, because this is not part of
+        // the change — which the body's tint says in colour at the same time.
+        let group = class.as_ref().and_then(|c| {
+            self.session
+                .doc()
+                .groups
+                .as_ref()
+                .and_then(|gs| gs.iter().find(|g| g.class_ids.contains(c)))
+                .map(|g| g.id.clone())
+        });
+        let mut title = format!("{name} · {file}:{line}");
+        if let Some(c) = &class {
+            title.push_str(&format!(" · {c}"));
+        }
+        if let Some(g) = &group {
+            title.push_str(&format!(" · {g}"));
+        }
 
         let added = self.added_ranges(&file);
         let (body, more) =

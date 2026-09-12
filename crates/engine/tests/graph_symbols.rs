@@ -414,16 +414,61 @@ fn symbol_index(
         .expect("classify produced an index")
 }
 
-/// A use is recorded on an UNCHANGED line, and that is the point.
+/// A NEW call to a helper that was already there resolves.
 ///
-/// The graph reads added lines only, because it asks what the change
-/// introduces and consumes. A reviewer opens context and lands on lines the
-/// change never touched — so the index reads every line of every parsed file.
-/// `src/b.rs` gains one line here; its other two are context.
+/// This is the commonest shape of the reviewer's question and the one the first
+/// cut could not answer: definitions came from added lines only, so a helper the
+/// change never touched was invisible and the call site lit nothing.
 #[test]
-fn a_use_on_an_unchanged_line_is_still_indexed() {
+fn a_new_call_to_an_existing_helper_resolves() {
     let r = TestRepo::new();
-    // Two of the three lines of `b` exist at base, so they are context.
+    // `sum_xy` exists at base and is never edited. Its file is still in the
+    // diff, because a later line of it changes.
+    let base_lib = b"// lib\nfn sum_xy(a: u8, b: u8) {\n    a + b\n}\nfn other() {}\n";
+    r.write("src/lib.rs", base_lib);
+    r.write("src/call.rs", b"// call\nfn caller() {\n}\n");
+    let base = r.commit_all("base");
+    r.write(
+        "src/lib.rs",
+        b"// lib\nfn sum_xy(a: u8, b: u8) {\n    a + b\n}\nfn other() { changed() }\n",
+    );
+    r.write(
+        "src/call.rs",
+        b"// call\nfn caller() {\n    let n = sum_xy(1, 2);\n}\n",
+    );
+    let head = r.commit_all("head");
+
+    let index = symbol_index(&readers(None), &r, &base, &head);
+    let def = index
+        .definitions
+        .iter()
+        .find(|d| d.name == "sum_xy")
+        .expect("an untouched declaration in a touched file is still indexed");
+    assert_eq!((def.file.as_str(), def.line), ("src/lib.rs", 2));
+    assert_eq!(
+        def.class, None,
+        "the change did not write this line, so it belongs to no class"
+    );
+
+    let sites: Vec<(&str, u32)> = index
+        .uses
+        .iter()
+        .filter(|u| u.on == def.id)
+        .map(|u| (u.file.as_str(), u.line))
+        .collect();
+    assert_eq!(sites, vec![("src/call.rs", 3)], "the new call site");
+}
+
+/// A use is recorded only on a line the change WROTE.
+///
+/// The other half of the rule above, and what bounds the index: with any
+/// declaration resolvable, recording every mention in every parsed file would
+/// grow this with the size of the FILES rather than of the change. The cost is
+/// that an older call site lights nothing, which is the right way round — the
+/// change is the thing being read.
+#[test]
+fn an_older_call_site_is_not_a_use() {
+    let r = TestRepo::new();
     r.write("src/a.rs", b"// a\n");
     r.write(
         "src/b.rs",
@@ -442,10 +487,7 @@ fn a_use_on_an_unchanged_line_is_still_indexed() {
         .definitions
         .iter()
         .find(|d| d.name == "widget_maker")
-        .expect("`fn widget_maker` is the one definer");
-    assert_eq!(def.file, "src/a.rs");
-    assert_eq!(def.line, 2, "the added line");
-
+        .expect("one definer");
     let uses: Vec<u32> = index
         .uses
         .iter()
@@ -454,8 +496,8 @@ fn a_use_on_an_unchanged_line_is_still_indexed() {
         .collect();
     assert_eq!(
         uses,
-        vec![1, 2, 3],
-        "lines 1 and 2 are context; only line 3 was added"
+        vec![3],
+        "lines 1 and 2 were already there; only line 3 was written"
     );
 }
 
@@ -471,10 +513,13 @@ fn a_name_two_classes_define_is_in_no_index() {
     r.write("src/b.rs", b"// b\n");
     let base = r.commit_all("base");
     // Two files, each declaring the same global name, in two shape classes.
+    // `only_here` is the control: unambiguous, and CALLED — an uncalled
+    // declaration is dropped whether it is ambiguous or not, so a control
+    // nothing reaches would pass for the wrong reason.
     r.write("src/a.rs", b"// a\nfn shared_name() {}\n");
     r.write(
         "src/b.rs",
-        b"// b\nfn shared_name() {}\nfn only_here() {}\n",
+        b"// b\nfn shared_name() {}\nfn only_here() {}\nfn go() { only_here(); shared_name() }\n",
     );
     let head = r.commit_all("head");
 
