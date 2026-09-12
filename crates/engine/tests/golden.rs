@@ -107,7 +107,12 @@ fn grouping_cache_key_and_entry_shape_are_frozen() {
 
     assert_eq!(
         entries[0].file_name().to_string_lossy(),
-        "f8ff14d6ecd8d6c6d912790bc85a671ef7e6042b.json",
+        // Moved once for ADR 0032: the stub reader now carries each symbol's
+        // columns, so it answers differently and its fingerprint bumped with
+        // it. The stub is a double, so no real checkout's cache was touched —
+        // but the rule is the rule, and exempting the double would be the one
+        // way this test stops meaning anything.
+        "809e28a39bf52a65872aa49c07de1543e8448cbc.json",
         "the grouping cache key changed; every existing cache entry in every \
          checkout just became unreachable, and the only symptom is a silent \
          re-run of the model"

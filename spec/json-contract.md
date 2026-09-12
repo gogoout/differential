@@ -108,7 +108,9 @@ stays 3, and a consumer must tolerate its absence. Stored documents are re-read
   reader meant.
 - `uses[]` — `{on, file, line, start, end}`, where `on` is a `definitions[].id`. Recorded on
   **any** line of a parsed file, not only an added one: a reviewer can open context and land
-  on an unchanged line, and the token resolves there too.
+  on an unchanged line, and the token resolves there too. **A declaration is never a use of
+  itself** — matched on position, so the same name genuinely used again on its own declaring
+  line still counts.
 
 **`start` and `end` are byte offsets into the RAW line**, before any tab expansion. A
 renderer that expands tabs — the TUI does — must translate them against its own expansion

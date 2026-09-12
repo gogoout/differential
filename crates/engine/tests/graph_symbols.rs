@@ -527,3 +527,39 @@ fn a_document_without_the_index_still_deserialises() {
         "absent reads as None, never an error"
     );
 }
+
+/// A declaration is not a use of itself.
+///
+/// The crude reader has no veto: its reference regex takes every identifier on
+/// a line, the name just declared included, so `fn helper()` reports `helper`
+/// as reading `helper`. The stub here behaves the same way on purpose. Pointing
+/// a reader at the line they are already standing on is the one answer never
+/// worth giving.
+#[test]
+fn a_declaration_does_not_read_itself() {
+    let r = TestRepo::new();
+    r.write("src/a.rs", b"// a\n");
+    r.write("src/b.rs", b"// b\n");
+    let base = r.commit_all("base");
+    r.write("src/a.rs", b"// a\nfn widget_maker() {}\n");
+    r.write("src/b.rs", b"// b\nfn caller() { widget_maker() }\n");
+    let head = r.commit_all("head");
+
+    let index = symbol_index(&readers(None), &r, &base, &head);
+    let def = index
+        .definitions
+        .iter()
+        .find(|d| d.name == "widget_maker")
+        .expect("one definer");
+    let sites: Vec<(&str, u32)> = index
+        .uses
+        .iter()
+        .filter(|u| u.on == def.id)
+        .map(|u| (u.file.as_str(), u.line))
+        .collect();
+    assert_eq!(
+        sites,
+        vec![("src/b.rs", 2)],
+        "the call site only — not the declaring line itself"
+    );
+}

@@ -84,6 +84,12 @@ recorded only when its name resolves to a definition the change makes.
 absent from the index for exactly the reason it draws no edge. Computing a second opinion
 would be a bug waiting for a corpus to find it.
 
+**A declaration is not a use of itself.** The crude reader has no veto — its reference regex
+takes every identifier on a line, the name just declared included — so `fn helper()` reports
+`helper` as reading `helper`, and a reader following it would be sent to the line they are
+already standing on. The test is POSITION, not name, so the same name genuinely used again on
+its own declaring line — a default argument, a one-line recursive call — is still a use.
+
 **It reaches the document as an additive field, and the schema stays at 3.** `symbols` is
 `Option<SymbolIndex>` with `#[serde(default)]`, so every artefact written before this
 deserialises unchanged — which matters, because stored documents are re-read by

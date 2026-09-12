@@ -210,16 +210,30 @@ pub fn build<G: ObjectReader>(
     for &fi in parsed_files {
         let fs = &parsed[&fi];
         for (i, row) in fs.references.iter().enumerate() {
+            let line = i as u32 + 1;
             for sym in row {
                 let k = key(fi, &fs.namespace, sym);
-                if let Some(&def) = of_key.get(&k) {
-                    uses.push(sites::Use {
-                        def,
-                        file: fi,
-                        line: i as u32 + 1,
-                        site: sym.site,
-                    });
+                let Some(&def) = of_key.get(&k) else { continue };
+                // A declaration is not a use of itself. The crude reader has no
+                // veto — its reference regex takes every identifier on a line,
+                // the name it just declared included — so `fn helper()` reports
+                // `helper` as reading `helper`. Pointing a reader at the very
+                // line they are standing on is the one answer that is never
+                // worth giving.
+                //
+                // Position, not name: the SAME name genuinely used later on its
+                // own declaring line (a default argument, a recursive call in a
+                // one-liner) is a real use and stays.
+                let d = &definitions[def];
+                if d.file == fi && d.line == line && d.site.start == sym.site.start {
+                    continue;
                 }
+                uses.push(sites::Use {
+                    def,
+                    file: fi,
+                    line,
+                    site: sym.site,
+                });
             }
         }
     }
