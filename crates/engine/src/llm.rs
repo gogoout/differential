@@ -10,6 +10,25 @@
 //! It stays that narrow now that the model reads for itself (ADR 0022). Tools
 //! run inside the CLI this spawns, so what crosses this seam is still a prompt
 //! and a string. What changed is a flag in the argv below, not the trait.
+//!
+//! There are five agents, one constructor each, and the trait did not move to
+//! make room for them (ADR 0032). What differs between them is the argv, and
+//! the part of the argv that matters is how each one is stopped from writing:
+//!
+//! - **An allowlist** — `claude_cli`, `copilot_cli`. The agent may run the
+//!   named tools and nothing else, and the fetch command is one of them.
+//! - **An OS sandbox** — `codex_cli`, `droid_cli`. The agent may run anything
+//!   and the kernel refuses the writes, so there is no allowlist to derive and
+//!   `fetch` does not appear in the argv.
+//! - **Nothing** — `pi_cli`. Pi ships no sandbox and no per-command allowlist,
+//!   and the shell tool it needs to fetch is the one that also lets it write.
+//!   That is a decision with a reason, recorded in ADR 0032 and in the
+//!   constructor, and `config::Agent::read_only` is how a caller
+//!   tells a user about it.
+//!
+//! Adding a sixth means a constructor here, a variant in `config::Agent`, and
+//! an arm in the application layer's `backend_from`. The compiler asks for the
+//! last two; this comment is the only thing that asks for the boundary.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -209,6 +228,18 @@ impl CommandBackend {
     /// says nothing about what the model will do. The cache identity stands a
     /// placeholder in its place: change the allowlist and every cached grouping
     /// is rightly invalidated, move the binary and none of them are.
+    ///
+    /// **`--permission-mode default` is what makes the allowlist mean anything,
+    /// and it was missing for two releases** (ADR 0032). `--allowed-tools` ADDS
+    /// permissions; it does not cap them. A user whose own settings set
+    /// `defaultMode` to `auto`, `acceptEdits` or `bypassPermissions` was
+    /// handing this call an agent that could write, commit and push, and
+    /// nothing anywhere said so. `default` means ask, and a headless call has
+    /// nobody to ask, so the answer is no.
+    ///
+    /// It was found by `dfr agents --probe`, on the first run, against the
+    /// agent that had shipped as the only option. That is the whole argument
+    /// for the probe existing.
     pub fn claude_cli(fetch: &str) -> Self {
         let mut b = Self::new(Self::claude_argv(fetch), Duration::from_secs(1200));
         b.name = "Claude Code".to_string();
@@ -222,12 +253,203 @@ impl CommandBackend {
             "-p".to_string(),
             "--output-format".to_string(),
             "text".to_string(),
+            "--permission-mode".to_string(),
+            "default".to_string(),
             "--allowed-tools".to_string(),
             format!(
                 "Bash({fetch} agent:*),Bash(git diff:*),Read,Grep,Glob,\
                  Bash(git log:*),Bash(git show:*)"
             ),
         ]
+    }
+
+    /// Headless `codex exec`, read-only by OS sandbox (ADR 0032).
+    ///
+    /// Codex has no tool allowlist and needs none: `--sandbox read-only` is
+    /// enforced by the kernel — Seatbelt on macOS, bubblewrap on Linux — so the
+    /// model may run any command it likes and the writes are refused beneath
+    /// it. That is a different boundary from Claude Code's and an equally real
+    /// one, which is why `fetch` does not appear in this argv at all. The
+    /// prompt still names the fetch command; nothing has to permit it.
+    ///
+    /// `--ask-for-approval never` is the headless half. Without it a command
+    /// the sandbox refuses escalates to a human who is not there, and the call
+    /// sits until the deadline kills it. With it the refusal returns to the
+    /// model as a tool failure, which is what we want it to see.
+    ///
+    /// `--color never` keeps stdout clean. The response parser takes the text
+    /// between the first `{` and the last `}`, and an escape sequence inside
+    /// that span is a parse error with a sample nobody can read.
+    ///
+    /// The trailing `-` makes stdin the whole prompt. Codex will otherwise
+    /// treat stdin as context for an argv instruction, and there is no argv
+    /// instruction here.
+    ///
+    /// Never pass `--full-auto`, `--yolo` or
+    /// `--dangerously-bypass-approvals-and-sandbox`: each removes the boundary.
+    ///
+    /// `--ignore-user-config` and `--ignore-rules` are the same lesson Claude
+    /// Code taught (ADR 0032): the sandbox a flag asks for is not the sandbox
+    /// that runs if the user's own `config.toml` or execpolicy rules say
+    /// otherwise. An argv that can be widened by a file this crate never reads
+    /// is not a boundary, it is a request.
+    pub fn codex_cli() -> Self {
+        let mut b = Self::new(Self::codex_argv(), Duration::from_secs(1200));
+        b.name = "Codex".to_string();
+        b.identity = Self::codex_argv().join(" ");
+        b
+    }
+
+    fn codex_argv() -> Vec<String> {
+        vec![
+            "codex".to_string(),
+            "exec".to_string(),
+            "--ignore-user-config".to_string(),
+            "--ignore-rules".to_string(),
+            "--sandbox".to_string(),
+            "read-only".to_string(),
+            "--ask-for-approval".to_string(),
+            "never".to_string(),
+            "--color".to_string(),
+            "never".to_string(),
+            "-".to_string(),
+        ]
+    }
+
+    /// Headless `droid exec`, read-only by default (ADR 0032).
+    ///
+    /// Droid is the one agent whose boundary is what this function does NOT
+    /// pass. Its documented default is read-only file inspection plus git read
+    /// operations, with file edits, package installs and git writes blocked,
+    /// and a blocked action fails rather than asking — so a bare `droid exec`
+    /// neither writes nor stalls.
+    ///
+    /// Never pass `--auto` at any level, and never
+    /// `--skip-permissions-unsafe`. Each is the whole boundary, given away.
+    ///
+    /// `-o text` prints the final message only. `-` makes stdin the prompt.
+    pub fn droid_cli() -> Self {
+        let mut b = Self::new(Self::droid_argv(), Duration::from_secs(1200));
+        b.name = "Droid".to_string();
+        b.identity = Self::droid_argv().join(" ");
+        b
+    }
+
+    fn droid_argv() -> Vec<String> {
+        vec![
+            "droid".to_string(),
+            "exec".to_string(),
+            "-o".to_string(),
+            "text".to_string(),
+            "-".to_string(),
+        ]
+    }
+
+    /// Headless `copilot`, read-only by allowlist and an explicit deny
+    /// (ADR 0032).
+    ///
+    /// The closest of the five to Claude Code: an allowlist derived from
+    /// `fetch`, so the prompt can never name a command the model may not run.
+    ///
+    /// **There is deliberately no `-p`.** Copilot reads the prompt from stdin,
+    /// and its own documentation says piped input is ignored when `-p` is
+    /// given. Passing both would send an empty prompt and waste a call.
+    ///
+    /// `-s` suppresses the session decoration around the reply, for the same
+    /// reason Codex gets `--color never`. `--no-ask-user` stops the agent
+    /// pausing for a human who is not there.
+    ///
+    /// `--deny-tool write` is belt and braces: `write` is already absent from
+    /// the allowlist, and a deny takes precedence over any allow, so the two
+    /// cannot be talked out of agreeing.
+    ///
+    /// Never pass `--allow-all-tools` or `--allow-all-paths`.
+    pub fn copilot_cli(fetch: &str) -> Self {
+        let mut b = Self::new(Self::copilot_argv(fetch), Duration::from_secs(1200));
+        b.name = "GitHub Copilot".to_string();
+        b.identity = Self::copilot_argv("<fetch>").join(" ");
+        b
+    }
+
+    fn copilot_argv(fetch: &str) -> Vec<String> {
+        vec![
+            "copilot".to_string(),
+            "-s".to_string(),
+            "--no-ask-user".to_string(),
+            "--deny-tool".to_string(),
+            "write".to_string(),
+            "--allow-tool".to_string(),
+            format!("read,shell(git:*),shell({fetch}:*)"),
+        ]
+    }
+
+    /// Headless `pi`. **Read-only is NOT enforced here** (ADR 0032).
+    ///
+    /// Every other constructor in this file hands the model a boundary. This
+    /// one cannot, and the reason is Pi's design rather than an oversight in
+    /// this argv.
+    ///
+    /// Pi ships no sandbox, no per-command allowlist and no approval prompts.
+    /// Its `-t` flag toggles whole tools, and `bash` is one tool: the model
+    /// needs it to run the fetch command and `git diff`, and the same tool lets
+    /// it write a file, commit or push. Nothing but the prompt asks it not to.
+    ///
+    /// Dropping `bash` would restore the boundary and take the change with it.
+    /// The model would be back to grouping from class ids alone, which is the
+    /// truncated payload ADR 0022 was written to end — a worse grouping, every
+    /// time, in exchange for a risk the prompt never asks anyone to take.
+    ///
+    /// So the author chose this knowingly, and the duty that comes with it is
+    /// disclosure: `Agent::read_only` answers `NotEnforced` for Pi, and
+    /// every place that offers the name says so.
+    ///
+    /// The rest of the argv is hermetic sealing, and it is not decoration.
+    /// `-nc` drops `AGENTS.md` and `CLAUDE.md`, `-na` drops the repository's
+    /// own `.pi/` config, and `--no-extensions --no-skills` drop the user's.
+    /// Each is a file outside the cache key that could otherwise change a
+    /// grouping, which is the hole ADR 0022 names and cannot close.
+    /// `--no-session` stops Pi writing a session file for a call nobody
+    /// resumes.
+    pub fn pi_cli() -> Self {
+        let mut b = Self::new(Self::pi_argv(), Duration::from_secs(1200));
+        b.name = "Pi".to_string();
+        b.identity = Self::pi_argv().join(" ");
+        b
+    }
+
+    fn pi_argv() -> Vec<String> {
+        vec![
+            "pi".to_string(),
+            "-p".to_string(),
+            "--mode".to_string(),
+            "text".to_string(),
+            "--no-session".to_string(),
+            "-nc".to_string(),
+            "-na".to_string(),
+            "--no-extensions".to_string(),
+            "--no-skills".to_string(),
+            "-t".to_string(),
+            "read,grep,find,ls,bash".to_string(),
+        ]
+    }
+
+    /// The program this backend spawns, for a caller checking `PATH`.
+    ///
+    /// `dfr agents` says whether each agent is installed, and the answer has to
+    /// come from the argv that will actually run rather than from a second list
+    /// of executable names that could disagree with it.
+    pub fn program(&self) -> &str {
+        &self.argv[0]
+    }
+
+    /// The whole command line, for a caller showing what will run.
+    ///
+    /// Not [`LlmBackend::name`], which is a product name, and not
+    /// [`LlmBackend::identity`], which stands a placeholder where the binary
+    /// path is. This is the argv itself, and the two callers that want it are a
+    /// spawn failure and `dfr agents`.
+    pub fn command(&self) -> &str {
+        &self.command
     }
 }
 
@@ -466,6 +688,14 @@ mod tests {
             ),
             "{argv}"
         );
+        // Without this the allowlist is advisory: `--allowed-tools` adds
+        // permissions and does not cap them, so a user whose settings set
+        // `defaultMode` to `auto` got an agent that could write. `dfr agents
+        // --probe` caught it; this line is what stops it coming back.
+        assert!(
+            argv.contains("--permission-mode default"),
+            "the allowlist only binds under the default permission mode: {argv}"
+        );
         // The allowlist is the security boundary, so the test states what must
         // stay OUT of it, not merely what is in it.
         for forbidden in [
@@ -476,6 +706,200 @@ mod tests {
             "WebFetch",
         ] {
             assert!(!argv.contains(forbidden), "{forbidden} must not be allowed");
+        }
+    }
+
+    /// Every backend this crate builds, for the tests that must hold across all
+    /// of them. A new agent belongs here, and two of the tests below fail until
+    /// it is.
+    fn every_backend() -> Vec<(&'static str, CommandBackend)> {
+        vec![
+            ("claude-code", CommandBackend::claude_cli("/opt/bin/dfr")),
+            ("codex", CommandBackend::codex_cli()),
+            ("droid", CommandBackend::droid_cli()),
+            ("copilot", CommandBackend::copilot_cli("/opt/bin/dfr")),
+            ("pi", CommandBackend::pi_cli()),
+        ]
+    }
+
+    #[test]
+    fn codex_runs_sandboxed_and_never_stops_to_ask() {
+        let b = CommandBackend::codex_cli();
+        assert_eq!(b.name(), "Codex");
+        assert_eq!(b.program(), "codex");
+        // The whole argv, exactly. Codex has no allowlist to get wrong, so the
+        // boundary IS these two flag pairs and nothing else says so.
+        assert_eq!(
+            b.command(),
+            "codex exec --ignore-user-config --ignore-rules --sandbox read-only \
+             --ask-for-approval never --color never -"
+        );
+        // A sandbox the user's own config can widen is not a sandbox. Same
+        // lesson as `--permission-mode default` on Claude Code (ADR 0032).
+        assert!(
+            b.command().contains("--ignore-user-config"),
+            "{}",
+            b.command()
+        );
+        // `-` is what makes stdin the whole prompt rather than context for an
+        // argv instruction that does not exist here. Without it Codex waits for
+        // an instruction and the call is wasted.
+        assert!(b.command().ends_with(" -"), "{}", b.command());
+    }
+
+    #[test]
+    fn droid_is_read_only_because_of_what_it_does_not_pass() {
+        let b = CommandBackend::droid_cli();
+        assert_eq!(b.name(), "Droid");
+        assert_eq!(b.program(), "droid");
+        assert_eq!(b.command(), "droid exec -o text -");
+        // Droid's default is read-only, so its boundary is an absence. A test
+        // on presence would pass while the boundary was being given away, which
+        // is why this one is written the other way round.
+        assert!(!b.command().contains("--auto"), "{}", b.command());
+    }
+
+    #[test]
+    fn copilot_allows_reading_and_the_fetch_command_and_nothing_else() {
+        let b = CommandBackend::copilot_cli("/opt/bin/dfr");
+        assert_eq!(b.name(), "GitHub Copilot");
+        assert_eq!(b.program(), "copilot");
+        assert!(
+            b.command().contains("shell(/opt/bin/dfr:*)"),
+            "the allowlist names the same executable the prompt does: {}",
+            b.command()
+        );
+        assert!(
+            b.command().contains("shell(git:*)"),
+            "the prompt tells the model to run git diff, so it must be permitted"
+        );
+        // The whole list, exactly, for the reason the Claude one is pinned: a
+        // stray character inside it produces an allowlist that parses as
+        // something else, and it fails here loudly rather than there silently.
+        assert!(
+            b.command().ends_with(
+                "--deny-tool write --allow-tool read,shell(git:*),shell(/opt/bin/dfr:*)"
+            ),
+            "{}",
+            b.command()
+        );
+        // Copilot ignores piped input when `-p` is given, and the prompt only
+        // ever arrives on stdin. A `-p` here would send an empty prompt.
+        assert!(
+            !b.command().contains(" -p"),
+            "the prompt comes from stdin: {}",
+            b.command()
+        );
+        assert!(b.command().contains("--no-ask-user"), "{}", b.command());
+    }
+
+    #[test]
+    fn pi_is_the_one_agent_that_can_write_and_says_so() {
+        // This test states an exception, not a requirement. Pi ships no sandbox
+        // and no per-command allowlist, so the shell tool it needs to run the
+        // fetch command is the same tool that lets it write (ADR 0032).
+        //
+        // `bash` being present is therefore the decision, and pinning it here is
+        // what stops a later reader "fixing" it and silently taking the fetch
+        // command away — which does not fail, it just groups worse.
+        let b = CommandBackend::pi_cli();
+        assert_eq!(b.name(), "Pi");
+        assert_eq!(b.program(), "pi");
+        assert!(
+            b.command().contains("-t read,grep,find,ls,bash"),
+            "pi needs bash to fetch; removing it removes the change, not the risk: {}",
+            b.command()
+        );
+        assert!(
+            !b.command().contains("edit") && !b.command().contains("write"),
+            "the write tools stay off even though bash makes that a courtesy: {}",
+            b.command()
+        );
+        // The hermetic flags are not decoration. Each one is a file outside the
+        // cache key that could otherwise change a grouping.
+        for flag in [
+            "-nc",
+            "-na",
+            "--no-extensions",
+            "--no-skills",
+            "--no-session",
+        ] {
+            assert!(
+                b.command().contains(flag),
+                "{flag} missing: {}",
+                b.command()
+            );
+        }
+    }
+
+    #[test]
+    fn no_agent_is_given_a_flag_that_removes_its_boundary() {
+        // One list, every agent. These are the flags each CLI offers for
+        // turning its own protection off, and none of them may ever appear in
+        // an argv this crate writes. A new agent is covered the moment it joins
+        // `every_backend`.
+        const FORBIDDEN: [&str; 8] = [
+            "--yolo",
+            "--full-auto",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--dangerously-allow-all",
+            "--skip-permissions-unsafe",
+            "--allow-all-tools",
+            "--allow-all-paths",
+            "--auto",
+        ];
+        for (key, b) in every_backend() {
+            for flag in FORBIDDEN {
+                assert!(
+                    !b.command().contains(flag),
+                    "{key} must never be given {flag}: {}",
+                    b.command()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_agent_takes_its_prompt_or_its_working_directory_in_the_argv() {
+        // Two rules that hold across all five.
+        //
+        // The prompt goes on stdin, always: `complete` writes it there and
+        // passes no argument. An agent given an argv prompt would read an empty
+        // one.
+        //
+        // The working directory comes from `with_working_dir`, never from a
+        // flag. A path in the argv lands in the cache identity, and then a
+        // debug build, a release build and a second checkout each re-run a
+        // four-hundred-second call over an identical class partition.
+        for (key, b) in every_backend() {
+            for flag in ["--cwd", "--workspace", "--dir", "-C "] {
+                assert!(
+                    !b.command().contains(flag),
+                    "{key} must take its directory from with_working_dir, not {flag}"
+                );
+            }
+            assert!(
+                !b.identity().contains("/opt/bin"),
+                "{key} put a binary path in its cache identity: {}",
+                b.identity()
+            );
+        }
+    }
+
+    #[test]
+    fn no_two_agents_share_a_cache_identity() {
+        // Two agents sharing an identity share a cache entry, so one would
+        // serve the other's grouping under a name it never ran.
+        let all = every_backend();
+        for (i, (key_a, a)) in all.iter().enumerate() {
+            for (key_b, b) in all.iter().skip(i + 1) {
+                assert_ne!(
+                    a.identity(),
+                    b.identity(),
+                    "{key_a} and {key_b} share a cache identity"
+                );
+                assert_ne!(a.name(), b.name(), "{key_a} and {key_b} share a name");
+            }
         }
     }
 }

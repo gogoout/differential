@@ -35,7 +35,8 @@ dfr clean [--repo <path>] [--dry-run]
   and it never touches findings, which live in a sibling tree.
 - `stack` builds and lands the review commit stack ([stack.md](stack.md)), printing the
   commit list and the `git log` line to review with. The grouping backend comes from
-  `[grouping].agent` (default: `claude-code`, a headless invocation with read-only tools); the pinning cache
+  `[grouping].agent` (default: `claude-code`; five names, four with read-only tools and
+  `pi` without — ADR 0032); the pinning cache
   lives under `<git-common-dir>/differential/cache/grouping` unless `--no-cache`. The
   document the model reads sits beside it, under `…/cache/document`.
 - `check` runs the core pipeline and reports invariants 1–4 — the self-test and CI entry
@@ -99,7 +100,8 @@ let out = run_pipeline(&repo, &src, &config,
 - Language plugins (ADR 0015), symbol readers (`engine::artefact::symbols`, ADR 0023) and
   LLM backends (`engine::llm`, ADR 0016/0018) are injected by the consumer;
   `LanguageRegistry::builtin()`, `differential_symbols::readers()` and
-  `CommandBackend::claude_cli()` are the defaults. A consumer that wires no readers gets a
+  `CommandBackend::claude_cli()` are the defaults (`codex_cli`, `droid_cli`, `copilot_cli`
+  and `pi_cli` are the other four). A consumer that wires no readers gets a
   document with no dependency edges, so nothing is ordered foundation-first.
 
 ## Dev entry point
@@ -135,10 +137,12 @@ A `[grouping]` table in the REPO file is a hard error with a migration hint.
 
 ```toml
 [grouping]
-# Which agent runs the grouping call. Supported: "claude-code" (the default) —
-# a headless Claude Code invocation allowed to read the change and the
-# repository and nothing else. A name nobody implements is a hard error that
-# says which ones exist.
+# Which agent runs the grouping call. Five names: "claude-code" (the default),
+# "codex", "droid", "copilot", "pi" — each a headless invocation this crate
+# builds whole (ADR 0032). Four are allowed to read the change and the
+# repository and nothing else; "pi" can also write, because it ships no
+# sandbox and no per-command allowlist. A name nobody implements is a hard
+# error that says which ones exist.
 agent = "claude-code"
 # How long to wait for it. Default 1200s. This one is a number because it tunes
 # the agent rather than replacing it.

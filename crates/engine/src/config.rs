@@ -75,12 +75,100 @@ pub struct UserConfig {
 ///
 /// The name also answers what a reviewer is shown while they wait — the argv
 /// never could, at four times the width of the line it had.
+///
+/// **Four of the five keep the model read-only; `Pi` does not** (ADR 0032).
+/// Read [`Agent::read_only_is_enforced`] before choosing one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Agent {
-    /// Headless `claude`, read-only tools (ADR 0022).
+    /// Headless `claude`, read-only by tool allowlist (ADR 0022).
     #[default]
     ClaudeCode,
+    /// Headless `codex exec`, read-only by OS sandbox (Seatbelt, bubblewrap).
+    Codex,
+    /// Headless `droid exec`, read-only by default — the tier is what we do
+    /// not pass.
+    Droid,
+    /// Headless `copilot`, read-only by tool allowlist and an explicit deny.
+    Copilot,
+    /// Headless `pi`, **read-only is NOT enforced** (ADR 0032).
+    ///
+    /// Pi ships no sandbox and no per-command allowlist, and its `-t` flag
+    /// toggles whole tools. The model needs `bash` to run the fetch command
+    /// and `git diff`, and `bash` also lets it write, commit and push. Nothing
+    /// but the prompt stops it. Choose this agent only knowing that.
+    Pi,
+}
+
+impl Agent {
+    /// Every agent, so a lister does not keep its own copy of the list.
+    ///
+    /// The array is exhaustive by hand, which a `match` would enforce and an
+    /// array cannot. `all_agents_are_listed` in this module is that check.
+    pub const ALL: [Agent; 5] = [
+        Agent::ClaudeCode,
+        Agent::Codex,
+        Agent::Droid,
+        Agent::Copilot,
+        Agent::Pi,
+    ];
+
+    /// The name this agent answers to in `[grouping].agent`.
+    ///
+    /// Hand-written rather than derived, because serde renames on the way IN
+    /// and there is no way to ask it for the string on the way out without a
+    /// second derive. The `match` is the guard: a new variant does not compile
+    /// until it has a name here.
+    pub fn key(self) -> &'static str {
+        match self {
+            Agent::ClaudeCode => "claude-code",
+            Agent::Codex => "codex",
+            Agent::Droid => "droid",
+            Agent::Copilot => "copilot",
+            Agent::Pi => "pi",
+        }
+    }
+
+    /// What stops this agent writing, if anything.
+    ///
+    /// A caller that shows a user the list of agents MUST show this too. The
+    /// person picking a name is the person who needs to know, and exactly one
+    /// answer here is [`ReadOnly::NotEnforced`].
+    pub fn read_only(self) -> ReadOnly {
+        match self {
+            Agent::ClaudeCode | Agent::Copilot => ReadOnly::ToolAllowlist,
+            Agent::Codex => ReadOnly::OsSandbox,
+            Agent::Droid => ReadOnly::AgentDefault,
+            Agent::Pi => ReadOnly::NotEnforced,
+        }
+    }
+}
+
+/// What keeps an agent from writing.
+///
+/// An enum rather than a `bool` plus a sentence, because the three enforcing
+/// answers are not interchangeable and a reader deciding whether to trust one
+/// needs to know which they have. An OS sandbox holds against a model that
+/// tries; an allowlist holds against a model that asks; a default holds only
+/// until someone adds a flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadOnly {
+    /// The agent may run only the tools it was given, and writing is not one.
+    ToolAllowlist,
+    /// The agent may run anything and the kernel refuses the writes.
+    OsSandbox,
+    /// The agent is read-only until told otherwise, and it is not told.
+    AgentDefault,
+    /// **Nothing stops it.** The agent can write, commit and push, and only the
+    /// prompt asks it not to. See [`Agent::Pi`] and ADR 0032 for why one agent
+    /// is here and why that was a choice rather than an oversight.
+    NotEnforced,
+}
+
+impl ReadOnly {
+    pub fn is_enforced(self) -> bool {
+        !matches!(self, ReadOnly::NotEnforced)
+    }
 }
 
 /// `[grouping]` — pure data; the application layer turns it into an LLM
@@ -282,13 +370,30 @@ impl Config {
             Some((text, origin)) => Self::parse(&text, &origin)?,
             None => Config::default(),
         };
-        let user_default = user_config_path(src);
-        if let Some((text, origin)) = resolve(src, user_override, user_default)? {
-            let user = Self::parse_user(&text, &origin)?;
-            config.grouping = user.grouping;
-            config.review = user.review;
-        }
+        let user = Self::load_user(src, user_override)?;
+        config.grouping = user.grouping;
+        config.review = user.review;
         Ok(config)
+    }
+
+    /// The USER file alone: `[grouping]` and `[review]`, and no repository.
+    ///
+    /// [`load`](Self::load) needs a repository root to find the repo file.
+    /// `dfr agents` has none — which agent you would run is a per-user choice
+    /// and the question is answerable from anywhere. Rather than hand it a
+    /// directory it has no use for, the user half is its own call, and `load`
+    /// goes through it so there is one answer to "where does the user file
+    /// live".
+    ///
+    /// A missing file means defaults; a malformed one is a hard error.
+    pub fn load_user<S: crate::ports::ConfigSource>(
+        src: &S,
+        user_override: Option<&Path>,
+    ) -> Result<UserConfig, EngineError> {
+        match resolve(src, user_override, user_config_path(src))? {
+            Some((text, origin)) => Self::parse_user(&text, &origin),
+            None => Ok(UserConfig::default()),
+        }
     }
 
     /// Parse the REPO file: classification hints only. A `[grouping]` table
@@ -468,17 +573,83 @@ attributes = ["linguist-generated", "custom-generated"]
         // Unknown keys and unknown sections stay hard errors.
         assert!(Config::parse_user("[grouping]\nmodel = \"x\"", "test").is_err());
 
-        // An agent nobody implements is a hard error that says which ones
-        // exist. A silent fall back to the default would run a different agent
+        // An agent nobody implements is a hard error that names every one that
+        // exists. A silent fall back to the default would run a different agent
         // than the one asked for, and the cache key would agree with neither.
         let err = Config::parse_user("[grouping]\nagent = \"gpt\"", "test").unwrap_err();
-        assert!(err.to_string().contains("claude-code"), "{err}");
+        let text = err.to_string();
+        for agent in Agent::ALL {
+            assert!(
+                text.contains(agent.key()),
+                "the error must name {}: {text}",
+                agent.key()
+            );
+        }
 
         // And the argv this key used to take is now one of those errors, not a
         // command that gets spawned without its allowlist.
         assert!(Config::parse_user("[grouping]\nagent = [\"my-llm\"]", "test").is_err());
         assert!(Config::parse_user("[review]\nlines = 5", "test").is_err());
         assert!(Config::parse_user("[classify]\ngenerated = []", "test").is_err());
+    }
+
+    #[test]
+    fn every_agent_name_round_trips() {
+        // `key` is hand-written and serde renames on the way in, so the two
+        // can drift. They may not: `key` is what the docs print, what
+        // `dfr agents` lists and what an error message offers, and a name a
+        // user copies from any of those must parse.
+        for agent in Agent::ALL {
+            let toml = format!("[grouping]\nagent = \"{}\"", agent.key());
+            let u = Config::parse_user(&toml, "test")
+                .unwrap_or_else(|e| panic!("{} must parse: {e}", agent.key()));
+            assert_eq!(u.grouping.agent, Some(agent), "{}", agent.key());
+        }
+    }
+
+    #[test]
+    fn all_agents_are_listed() {
+        // `Agent::ALL` is an array, so nothing makes it exhaustive but this.
+        // A variant missing from it is an agent nobody can find: it would not
+        // appear in `dfr agents`, and the "valid names" error would not offer
+        // it.
+        fn covered(agent: Agent) -> bool {
+            Agent::ALL.contains(&agent)
+        }
+        // The `match` is the point. Adding a variant breaks this line, and the
+        // fix is to add it to `ALL` as well.
+        for agent in Agent::ALL {
+            match agent {
+                Agent::ClaudeCode | Agent::Codex | Agent::Droid | Agent::Copilot | Agent::Pi => {
+                    assert!(covered(agent))
+                }
+            }
+        }
+        assert_eq!(Agent::ALL.len(), 5, "a new agent belongs in ALL");
+
+        // No two agents share a name.
+        let mut keys: Vec<&str> = Agent::ALL.iter().map(|a| a.key()).collect();
+        keys.sort_unstable();
+        let before = keys.len();
+        keys.dedup();
+        assert_eq!(keys.len(), before, "two agents share a name: {keys:?}");
+    }
+
+    #[test]
+    fn exactly_one_agent_does_not_enforce_read_only() {
+        // The tier is a fact a user must be shown, so it is pinned here rather
+        // than left to a doc comment. Pi ships no sandbox and no per-command
+        // allowlist (ADR 0032); the other four refuse a write.
+        let unenforced: Vec<&str> = Agent::ALL
+            .iter()
+            .filter(|a| !a.read_only().is_enforced())
+            .map(|a| a.key())
+            .collect();
+        assert_eq!(unenforced, vec!["pi"], "{unenforced:?}");
+        assert!(
+            Agent::default().read_only().is_enforced(),
+            "the default must be enforced"
+        );
     }
 
     /// A theme is a per-user choice like the agent, named for the same reason:

@@ -250,9 +250,15 @@ repository and nothing else. `agent` picks by name between the agents we support
 command line: the grouping call hands its agent a tool allowlist and a prompt written for
 what that agent can do.
 
+Five names: `claude-code` (the default), `codex`, `droid`, `copilot` and `pi`. Four of them
+are stopped from writing by an allowlist, an OS sandbox or their own default. **`pi` is
+not** — it ships no sandbox and no per-command allowlist, and the shell tool it needs to
+read your diff is the one that lets it write (ADR 0032). `dfr agents` prints the list with
+that on it, and `dfr agents --probe <name>` tests one for real.
+
 ```toml
 [grouping]
-agent = "claude-code"   # the only one so far, and the default
+agent = "claude-code"   # or codex, droid, copilot, pi
 timeout_secs = 1200
 
 [review]
@@ -265,7 +271,7 @@ diff = "split"
 
 | key | default | meaning |
 |---|---|---|
-| `grouping.agent` | `claude-code` | Which agent runs the grouping call, by name. |
+| `grouping.agent` | `claude-code` | Which agent runs the grouping call, by name. One of `claude-code`, `codex`, `droid`, `copilot`, `pi`. |
 | `grouping.timeout_secs` | `1200` | How long to wait for the backend. |
 | `review.context` | `3` | Context lines shown around a hunk before any expansion. |
 | `review.context_step` | `10` | Lines one `z` pulls in at a context boundary row. |

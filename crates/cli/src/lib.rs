@@ -3,6 +3,7 @@
 //! single producer; this crate is argument parsing and presentation only.
 
 mod agent;
+mod agents;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -107,6 +108,27 @@ enum Command {
         #[arg(long)]
         doc: PathBuf,
     },
+    /// List the agents that can run the grouping call, and test one.
+    ///
+    /// Every agent's command line is written from that agent's documentation,
+    /// and no test in this repository can check one against a CLI it does not
+    /// have. `--probe` is where that gets checked instead: one real model call,
+    /// four facts — it spawned, it read the prompt from stdin, it could run the
+    /// fetch command, and it was refused a write (ADR 0032).
+    ///
+    /// Takes no range and no repository. Which agent you run is a per-user
+    /// choice, answerable from anywhere.
+    Agents {
+        /// Run one real model call against this agent, or the configured one.
+        #[arg(long, num_args = 0..=1, default_missing_value = "")]
+        probe: Option<String>,
+        /// User config to read `[grouping].agent` from.
+        #[arg(long)]
+        user_config: Option<PathBuf>,
+        /// How long to wait for a probe. Default: 300 seconds.
+        #[arg(long, default_value_t = 300)]
+        timeout_secs: u64,
+    },
     /// Delete the regenerable cache: grouping responses and pre-group
     /// documents.
     ///
@@ -134,7 +156,7 @@ impl Command {
             | Command::Check { common, .. }
             | Command::Review { common, .. }
             | Command::Findings { common, .. } => Some(common),
-            Command::Agent { .. } | Command::Clean { .. } => None,
+            Command::Agent { .. } | Command::Agents { .. } | Command::Clean { .. } => None,
         }
     }
 }
@@ -187,13 +209,27 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
+    // `agents` needs the user config and nothing else: no repository, no range,
+    // no languages. Which agent you would run is answerable from anywhere.
+    if let Command::Agents {
+        probe,
+        user_config,
+        timeout_secs,
+    } = &cli.command
+    {
+        return agents_command(probe.as_deref(), user_config.as_deref(), *timeout_secs);
+    }
+
     // `clean` needs a repository but no range, no config and no languages, so
     // it answers before those are set up too.
     if let Command::Clean { repo, dry_run } = &cli.command {
         return clean(repo.as_deref(), *dry_run);
     }
 
-    let common = cli.command.common().expect("agent and clean handled above");
+    let common = cli
+        .command
+        .common()
+        .expect("agent, agents and clean handled above");
     // Read here because `common` borrows the command that the dispatch below
     // moves. A name is the whole review identity when one is given (ADR 0027).
     let session_name = match &cli.command {
@@ -256,7 +292,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let symbols = differential_symbols::readers();
 
     match cli.command {
-        Command::Agent { .. } | Command::Clean { .. } => {
+        Command::Agent { .. } | Command::Agents { .. } | Command::Clean { .. } => {
             unreachable!("handled before the pipeline is built")
         }
         Command::Stack {
@@ -581,6 +617,67 @@ fn print_range(base: &str, head: &str) {
 ///
 /// The count is taken before the delete either way, so the two modes report the
 /// same thing about the same state.
+/// `dfr agents` — list them, or probe one.
+///
+/// The listing is free. The probe makes one real model call, which is why it is
+/// a flag rather than the default: a command that costs money when you ask it a
+/// free question is a command people stop running.
+///
+/// A failed probe exits non-zero. That is for the person who wires this into a
+/// setup script and wants to be told, rather than reading four lines and
+/// deciding.
+fn agents_command(
+    probe: Option<&str>,
+    user_config: Option<&Path>,
+    timeout_secs: u64,
+) -> anyhow::Result<ExitCode> {
+    let user = match Config::load_user(&OsConfigSource, user_config) {
+        Ok(u) => u,
+        Err(e) => return usage_error(&e.to_string()),
+    };
+    let configured = user.grouping.agent.unwrap_or_default();
+
+    let Some(name) = probe else {
+        print!("{}", agents::list(&agents::rows(configured, backend_for)));
+        return Ok(ExitCode::SUCCESS);
+    };
+
+    // `--probe` with no value means the configured agent: the common case is
+    // "does MY setup work", and making someone type their own agent's name back
+    // is a question the config already answered.
+    let agent = if name.is_empty() {
+        configured
+    } else {
+        match Agent::ALL.iter().find(|a| a.key() == name) {
+            Some(&a) => a,
+            None => {
+                let names: Vec<&str> = Agent::ALL.iter().map(|a| a.key()).collect();
+                return usage_error(&format!(
+                    "unknown agent {name:?}; try one of: {}",
+                    names.join(", ")
+                ));
+            }
+        }
+    };
+
+    // The probe builds its backend with the same function the pipeline uses. A
+    // probe against a command the pipeline would not run proves nothing about
+    // the pipeline.
+    eprintln!("Probing {}.\n", agent.key());
+    let report = agents::probe(
+        agent,
+        backend_for(agent),
+        &fetch_command(),
+        Duration::from_secs(timeout_secs),
+    )?;
+    print!("{}", agents::render(&report));
+    Ok(if report.passed() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
 fn clean(repo_dir: Option<&Path>, dry_run: bool) -> anyhow::Result<ExitCode> {
     let repo = match open_repo(repo_dir) {
         Ok(r) => r,
@@ -673,15 +770,33 @@ fn fetch_command() -> String {
         .unwrap_or_else(|| "dfr".to_string())
 }
 
+/// The invocation for one agent, with nothing situational attached.
+///
+/// Separate from [`backend_from`] because two callers want different things
+/// from it. The pipeline wants a backend wired to a repository root, a timeout
+/// and a cancel flag; `dfr agents` wants to know what an agent WOULD run,
+/// without a repository to run it in.
+///
+/// The `match` is what makes `Agent` worth being an enum: adding an agent adds
+/// a variant there and an arm here, and the compiler names this line as the
+/// second half of the job.
+fn backend_for(agent: Agent) -> CommandBackend {
+    match agent {
+        Agent::ClaudeCode => CommandBackend::claude_cli(&fetch_command()),
+        Agent::Codex => CommandBackend::codex_cli(),
+        Agent::Droid => CommandBackend::droid_cli(),
+        Agent::Copilot => CommandBackend::copilot_cli(&fetch_command()),
+        Agent::Pi => CommandBackend::pi_cli(),
+    }
+}
+
 /// Turn `[grouping]` config into a backend.
 ///
 /// Composition, so it belongs to the application layer rather than the engine
 /// (ADR 0018, 0020). Cancellation rides along here because killing an
 /// in-flight subprocess is a property of the backend, not of the pipeline.
 ///
-/// The `match` is what makes `Agent` worth being an enum: adding an agent adds
-/// a variant there and an arm here, and the compiler names this line as the
-/// second half of the job.
+/// Which agent to run is [`backend_for`]; this adds what the run needs.
 ///
 /// The agent runs **in the repository root**, because the prompt hands it
 /// `git diff <base> <head> -- <path>` with paths as the document records them,
@@ -693,10 +808,7 @@ fn backend_from(
     root: &std::path::Path,
     cancel: Option<Arc<AtomicBool>>,
 ) -> CommandBackend {
-    let backend = match cfg.agent.unwrap_or_default() {
-        Agent::ClaudeCode => CommandBackend::claude_cli(&fetch_command()),
-    }
-    .with_working_dir(root);
+    let backend = backend_for(cfg.agent.unwrap_or_default()).with_working_dir(root);
     let backend = match cfg.timeout_secs {
         Some(s) => backend.with_timeout(Duration::from_secs(s)),
         None => backend,

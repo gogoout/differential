@@ -157,7 +157,7 @@ use differential_engine::{GroupingOptions, run_grouped_pipeline};
 use differential_engine::llm::CommandBackend;
 use differential_engine::store::{FsArtefactStore, FsGroupingCache};
 
-let backend = CommandBackend::claude_cli();
+let backend = CommandBackend::claude_cli(&fetch);   // or codex_cli(), droid_cli(), …
 let cache = FsGroupingCache::for_repo(&repo)?;       // or FsGroupingCache::disabled()
 let artefacts = FsArtefactStore::for_repo(&repo)?;   // where the model reads from
 let opts = GroupingOptions { backend: &backend, cache: &cache,
