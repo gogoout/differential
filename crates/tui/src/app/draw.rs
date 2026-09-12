@@ -872,23 +872,49 @@ impl App {
             .body
             .iter()
             .take(shown)
-            .map(|(n, _)| n.to_string().len())
+            .map(|l| l.number.to_string().len())
             .max()
             .unwrap_or(1);
         let mut lines: Vec<Line> = peek
             .body
             .iter()
             .take(shown)
-            .map(|(n, pairs)| {
+            .map(|l| {
+                // The pane's own language, not a second one: a line the change
+                // wrote wears `added_bg` and its number wears `added_gutter_bg`,
+                // exactly as it does in the diff behind this float. Colour
+                // carries the change here too, so there is no `+` column.
+                let code_bg = self.theme.line_bg(l.origin);
+                let num_bg = self.theme.gutter_bg(l.origin);
+                let mut num = Style::default().fg(self.theme.gutter_fg);
+                if let Some(bg) = num_bg {
+                    num = num.bg(bg);
+                }
                 let mut spans = vec![Span::styled(
-                    format!("{n:>width$} ", n = n, width = width),
-                    Style::default().fg(self.theme.gutter_fg),
+                    format!("{n:>width$} ", n = l.number, width = width),
+                    num,
                 )];
-                spans.extend(
-                    slice_pairs(pairs, 0, inner.saturating_sub(width + 1))
-                        .into_iter()
-                        .map(|(st, t)| Span::styled(t, st)),
-                );
+                // The tint runs to the pane's edge, so a changed line reads as
+                // a band rather than stopping where its text happens to end —
+                // the rule the diff rows' own fill already follows.
+                let room = inner.saturating_sub(width + 1);
+                let mut drawn = 0usize;
+                for (st, t) in slice_pairs(&l.pairs, 0, room) {
+                    drawn += t.chars().count();
+                    let st = match code_bg {
+                        Some(bg) if st.bg.is_none() => st.bg(bg),
+                        _ => st,
+                    };
+                    spans.push(Span::styled(t, st));
+                }
+                if let Some(bg) = code_bg
+                    && drawn < room
+                {
+                    spans.push(Span::styled(
+                        " ".repeat(room - drawn),
+                        Style::default().bg(bg),
+                    ));
+                }
                 Line::from(spans)
             })
             .collect();
@@ -1264,6 +1290,13 @@ impl App {
         // each row was, and cloning the whole visible pane — every `Line` a
         // vector of `Cow` spans — to answer that was the most expensive thing
         // a repaint did.
+        // The cursor's row only, computed once: every other row passes an empty
+        // slice, so a marked symbol can never outlive the cursor being on it.
+        let symbols = if self.focus == Focus::Detail {
+            self.symbols_on(self.cursor)
+        } else {
+            Vec::new()
+        };
         let mut placed: Vec<(usize, u16, usize)> = Vec::new();
         let mut lines: Vec<Line> = Vec::new();
         let mut y = 0usize;
@@ -1301,10 +1334,11 @@ impl App {
                     hint,
                     wrap: self.wraps(r),
                     hscroll: self.shift(r),
-                    // Only the row the float belongs to. The float closes when
-                    // the cursor moves, so this is always the cursor's row —
-                    // keyed on the row anyway, so the two can never disagree.
-                    peek: self.peek.as_ref().filter(|p| p.row == i).map(|p| p.at),
+                    // Marked on the cursor's row whether or not the float is
+                    // open. `lit` is what the float is answering, and it is
+                    // keyed on the row as well, so the two cannot disagree.
+                    symbols: if on { &symbols } else { &[] },
+                    lit: self.peek.as_ref().filter(|p| p.row == i).map(|p| p.nth),
                 },
             )
             .into_iter()
@@ -1656,12 +1690,19 @@ pub(super) struct Paint<'a> {
     /// shifting a row that already shows all of itself is a row with a hole at
     /// the front.
     pub hscroll: usize,
-    /// The symbol `z` is showing, as a byte range in the NEW half's drawn text.
+    /// Resolvable symbols on this row, as byte ranges in the NEW half's drawn
+    /// text. Empty on every row but the cursor's.
+    ///
+    /// They are marked whether or not the float is open: a reader should not
+    /// have to press `z` on every line to learn which ones have anything to
+    /// say, so standing on a line shows what it could show.
     ///
     /// Here rather than on the row for the same reason `cursor` is: which
-    /// symbol is lit is a cursor question, and a row that had to be rebuilt to
-    /// answer it would rebuild on every press (ADR 0032).
-    pub peek: Option<(usize, usize)>,
+    /// symbols are marked is a cursor question, and a row that had to be
+    /// rebuilt to answer it would rebuild on every keypress (ADR 0032).
+    pub symbols: &'a [(usize, usize)],
+    /// Which of `symbols` the open float is showing.
+    pub lit: Option<usize>,
 }
 
 impl Paint<'_> {
@@ -1677,7 +1718,8 @@ impl Paint<'_> {
             hint: None,
             wrap,
             hscroll: 0,
-            peek: None,
+            symbols: &[],
+            lit: None,
         }
     }
 }
@@ -1747,13 +1789,12 @@ pub(super) fn compose_row_lines(
             } else {
                 half
             };
-            let lit;
-            let half = match paint.peek {
-                Some(at) => {
-                    lit = lit_symbol(theme, half, at);
-                    &lit
-                }
-                None => half,
+            let marked;
+            let half = if paint.symbols.is_empty() {
+                half
+            } else {
+                marked = mark_symbols(theme, half, paint.symbols, paint.lit);
+                &marked
             };
             compose_half_lines(theme, half, width, paint)
                 .into_iter()
@@ -1768,13 +1809,12 @@ pub(super) fn compose_row_lines(
             // The NEW half only. The index is keyed by new-side line, so the
             // old half is a different line and lighting the same columns there
             // would point at whatever happens to sit under them.
-            let lit;
-            let new = match paint.peek {
-                Some(at) => {
-                    lit = lit_symbol(theme, new, at);
-                    &lit
-                }
-                None => new,
+            let marked;
+            let new = if paint.symbols.is_empty() {
+                new
+            } else {
+                marked = mark_symbols(theme, new, paint.symbols, paint.lit);
+                &marked
             };
             let mut right = compose_half_lines(theme, new, rw, paint);
             // A row is as tall as its taller half, and the shorter one pads —
@@ -1811,20 +1851,51 @@ pub(super) fn compose_row_lines(
 /// twins by `Theme::step_band`, which dispatches on colour VALUES — so a new
 /// one would need a palette test per theme to prove it never collides. The
 /// accent already exists, and an underline is a shape rather than a colour.
-fn lit_symbol(theme: &Theme, half: &Half, at: (usize, usize)) -> Half {
-    let (start, end) = at;
-    if start >= end {
+fn mark_symbols(
+    theme: &Theme,
+    half: &Half,
+    symbols: &[(usize, usize)],
+    lit: Option<usize>,
+) -> Half {
+    let quiet: Vec<(usize, usize)> = symbols
+        .iter()
+        .enumerate()
+        .filter(|(i, (s, e))| s < e && Some(*i) != lit)
+        .map(|(_, r)| *r)
+        .collect();
+    let chosen = lit
+        .and_then(|i| symbols.get(i))
+        .copied()
+        .filter(|(s, e)| s < e);
+    if quiet.is_empty() && chosen.is_none() {
         return half.clone();
     }
-    Half {
-        gutter: half.gutter.clone(),
-        pairs: split_pairs_at_ranges(
-            &half.pairs,
-            vec![(start, end)],
+    // The quiet mark is an UNDERLINE and nothing else — a shape, not a colour,
+    // so a name keeps whatever the syntax highlighter gave it and the row gains
+    // no ink competing with its change tint. It says "there is something here",
+    // which is all it has to say.
+    let mut pairs = half.pairs.clone();
+    if !quiet.is_empty() {
+        pairs = split_pairs_at_ranges(
+            &pairs,
+            quiet,
+            Style::default().add_modifier(Modifier::UNDERLINED),
+        );
+    }
+    // The one the float is showing takes the accent as well, so it is plainly
+    // the one being answered rather than one of several that could be.
+    if let Some(at) = chosen {
+        pairs = split_pairs_at_ranges(
+            &pairs,
+            vec![at],
             Style::default()
                 .fg(theme.header_fg)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-        ),
+        );
+    }
+    Half {
+        gutter: half.gutter.clone(),
+        pairs,
         fill: half.fill,
     }
 }

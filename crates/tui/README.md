@@ -145,7 +145,7 @@ the diff cursor, whichever pane you are in.
 | key | pane | action |
 |---|---|---|
 | `z` | diff, on a `──` boundary row | Show more of the file, or cross into the hunk the row names. |
-| `z` | diff, on a line that uses a symbol the change declares | Light the symbol and float its declaration. Again for the next symbol on the line, once more to close; `esc` closes too. |
+| `z` | diff, on a line that uses a symbol the change declares | Float its declaration, tinted to show which of its lines the change wrote. Such names are underlined as soon as the cursor reaches the line. Again for the next symbol, once more to close; `esc` closes too. |
 | `z` | left, file view | Fold or unfold the directory. |
 | `z` | anywhere else | Unfold the skim remainder, or the noise group. |
 | `s` | either | Toggle side-by-side and unified layout. Saved per review; `review.diff` sets what a review opens as. |

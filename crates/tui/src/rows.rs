@@ -26,7 +26,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::theme::Theme;
-use super::vendor::LineOrigin;
+// Re-exported: `SnippetLine` carries one in a public field, and the vendored
+// module it comes from is private.
+pub use super::vendor::LineOrigin;
 use super::vendor::diff_algo::compute_side_by_side;
 use super::vendor::diff_types::{ChangeType, DiffLine, InlineSegment, expand_tabs};
 use super::vendor::syntax::HighlightedSpans;
@@ -398,9 +400,21 @@ impl Row {
     }
 }
 
-/// One line of a declaration the symbol float shows: its number, and its
-/// styled text.
-pub type SnippetLine = (u32, Vec<(Style, String)>);
+/// One line of a declaration the symbol float shows.
+///
+/// Carries its ORIGIN, not just its text. A reader looking at a declaration
+/// needs to know which of its lines the change wrote and which were already
+/// there — and the pane already has a language for saying so, which this
+/// borrows rather than inventing a second one.
+pub struct SnippetLine {
+    /// New-side line number, counting from 1.
+    pub number: u32,
+    /// `Addition` where the change added this line, `Context` where it did not.
+    /// Never `Deletion`: the float reads the HEAD blob, and a line the change
+    /// removed is not in it.
+    pub origin: LineOrigin,
+    pub pairs: Vec<(Style, String)>,
+}
 
 /// A file's two sides, as lines.
 ///
@@ -580,6 +594,10 @@ impl RowFactory {
         line: u32,
         through: u32,
         cap: usize,
+        // `added` is the new-side line ranges this change wrote in `path`, so
+        // each line can say whether it is one of them. Passed in because the
+        // hunks belong to the document and this function reads blobs.
+        added: &[std::ops::Range<u32>],
     ) -> (Vec<SnippetLine>, usize) {
         let first = line.saturating_sub(1) as usize;
         let last = through.max(line) as usize;
@@ -594,15 +612,39 @@ impl RowFactory {
         let src = &self.cache[path];
         let body = (first..shown)
             .map(|i| {
+                let number = i as u32 + 1;
                 let text = src.new.get(i).cloned().unwrap_or_default();
                 let pairs = new_hl
                     .get(&i)
                     .cloned()
                     .unwrap_or_else(|| vec![(Style::default().fg(theme.context_fg), text.clone())]);
-                (i as u32 + 1, pairs)
+                let origin = if added.iter().any(|r| r.contains(&number)) {
+                    LineOrigin::Addition
+                } else {
+                    LineOrigin::Context
+                };
+                SnippetLine {
+                    number,
+                    origin,
+                    pairs,
+                }
             })
             .collect();
         (body, end - shown)
+    }
+
+    /// The head-side line `line`, tabs intact, ONLY if the file is already read.
+    ///
+    /// `None` rather than a blob read, because the caller is `draw`, which is a
+    /// pure function of the model. Every file the pane draws was prefetched
+    /// when the rows were built, so the answer is there in practice — and a
+    /// miss degrades to untranslated columns rather than to a stall.
+    pub fn cached_raw_head_line(&self, path: &str, line: u32) -> Option<String> {
+        self.cache
+            .get(path)?
+            .new_raw
+            .get(line.checked_sub(1)? as usize)
+            .cloned()
     }
 
     /// The head-side line `line` (counting from 1) with its tabs intact.

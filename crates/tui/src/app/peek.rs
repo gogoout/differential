@@ -47,6 +47,8 @@ impl App {
             .iter()
             .filter(|u| u.line == line && u.file == path)
             .collect();
+        // Column order, so stepping reads left to right the way the line does —
+        // and so `symbols_on` and this agree on what `Peek::nth` means.
         found.sort_by_key(|u| u.start);
         found
     }
@@ -92,7 +94,7 @@ impl App {
     fn build_peek(&mut self, nth: usize) -> Option<Peek> {
         let index = self.session.doc().symbols.as_ref()?;
         let use_at = self.peekable().get(nth).copied()?;
-        let (on, start, end) = (use_at.on.clone(), use_at.start, use_at.end);
+        let on = use_at.on.clone();
         let def = index.definitions.iter().find(|d| d.id == on)?;
         let (name, file, line, through, class) = (
             def.name.clone(),
@@ -117,25 +119,79 @@ impl App {
             None => format!("{name} · {file}:{line} · {class}"),
         };
 
-        let (body, more) = self
-            .factory
-            .declaration(&self.theme, &file, line, through, MOST_LINES);
+        let added = self.added_ranges(&file);
+        let (body, more) =
+            self.factory
+                .declaration(&self.theme, &file, line, through, MOST_LINES, &added);
         if body.is_empty() {
             return None;
         }
 
+        // The file has to be read before `symbols_on` can translate this
+        // symbol's columns, and `declaration` above has just read it — but only
+        // when the declaration lives in the SAME file as the use.
         let (row_path, row_line) = self.new_side_of(self.cursor)?;
-        let raw = self.factory.raw_head_line(&row_path, row_line);
-        let at = drawn_columns(raw.as_deref(), start, end);
+        let _ = self.factory.raw_head_line(&row_path, row_line);
 
         Some(Peek {
             row: self.cursor,
             nth,
-            at,
             title,
             body,
             more,
         })
+    }
+}
+
+impl App {
+    /// Every resolvable symbol on `row`, as columns in the text the pane draws.
+    ///
+    /// **Read-only, so `draw` can call it.** The row's file was read when the
+    /// rows were built, so the raw line is in the cache; a miss leaves the
+    /// columns untranslated rather than stalling a frame to fetch a blob.
+    ///
+    /// This is what makes the key discoverable. A reader should not have to
+    /// press `z` on every line to find out which ones have anything to say, so
+    /// standing on a line marks what it could show.
+    pub fn symbols_on(&self, row: usize) -> Vec<(usize, usize)> {
+        let Some(index) = self.session.doc().symbols.as_ref() else {
+            return Vec::new();
+        };
+        let Some((path, line)) = self.new_side_of(row) else {
+            return Vec::new();
+        };
+        let mut found: Vec<&schema::SymbolUse> = index
+            .uses
+            .iter()
+            .filter(|u| u.line == line && u.file == path)
+            .collect();
+        // The same order `peekable` steps in, so `Peek::nth` indexes this list.
+        found.sort_by_key(|u| u.start);
+        let raw = self.factory.cached_raw_head_line(&path, line);
+        found
+            .iter()
+            .map(|u| drawn_columns(raw.as_deref(), u.start, u.end))
+            .collect()
+    }
+
+    /// The new-side line ranges this change ADDED in `path`.
+    ///
+    /// A canonical `-U0` hunk states exactly which lines it wrote on each side,
+    /// so this is arithmetic over the document and needs no blob: `new_count`
+    /// lines from `new_start`. A deletion-only hunk writes none, and its empty
+    /// range is skipped rather than left to be a range that contains nothing.
+    ///
+    /// Local to the float for now. The stack renderer has never needed it, and
+    /// a second consumer is what would earn this a place in `engine::plan`
+    /// beside the rest of the shared arithmetic.
+    fn added_ranges(&self, path: &str) -> Vec<std::ops::Range<u32>> {
+        self.session
+            .doc()
+            .hunks
+            .iter()
+            .filter(|h| h.file == path && h.new_count > 0)
+            .map(|h| h.new_start..h.new_start + h.new_count)
+            .collect()
     }
 }
 

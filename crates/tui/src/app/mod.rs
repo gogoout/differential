@@ -313,9 +313,6 @@ pub struct Peek {
     pub row: usize,
     /// Which resolvable symbol on that row, counting from 0, left to right.
     pub nth: usize,
-    /// The token's byte range in the row's DRAWN text — the engine's raw-line
-    /// columns already translated through the same tab expansion the pane uses.
-    pub at: (usize, usize),
     /// `name · file:line · C7 · g3`.
     pub title: String,
     /// The declaration, one entry per line: its number, and its styled text.

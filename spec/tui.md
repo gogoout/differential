@@ -329,6 +329,20 @@ title of `name · file:line · class · group`. The group id is there because th
 next move is often to go and read that group first, and the id is what the plan pane's rows
 and their `after:` lines are keyed by.
 
+**The line says so before the key is pressed.** Standing on a row **underlines** every name
+on it the change can resolve, and the one the float is answering takes the accent as well.
+Without that a reader would have to press `z` on every line to learn which ones have
+anything to say, and the key would be one nobody found. The mark is an underline — a shape,
+not a colour — so a name keeps its syntax ink and the row gains nothing competing with its
+change tint.
+
+**The float says what the change did to what it shows.** Its lines wear the same tint the
+diff behind them does: a line the change wrote takes the addition colour, in the code and in
+its number cell, and a line that was already there takes none. Colour carries the change
+here exactly as it does in the pane, so there is no `+` column. Without it a declaration the
+change merely touched would read as one it introduced. A line the change REMOVED is never
+shown — the float reads the head blob, and a removed line is not in it.
+
 **It never covers the row it is about.** That row is the question and the float is the
 answer; an answer laid over the question is worse than none. So it takes the larger of the
 two gaps and stops one row short — below by preference, because reading runs downwards and a

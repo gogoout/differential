@@ -14,7 +14,8 @@ use differential_engine::ports::ReviewStore;
 use differential_engine::store::{FsArtefactStore, FsGroupingCache, FsReviewStore};
 use differential_testutil::{FakeBackend, TestRepo, github_request, json_group, remote_comment};
 use differential_tui::app::{App, Effect, Focus, Mode, ReviewOptions, ViewMode, Viewport};
-use differential_tui::rows::{BoxStyle, RowFactory, RowKind};
+use differential_tui::rows::{BoxStyle, LineOrigin, RowFactory, RowKind};
+
 use differential_tui::theme::Theme;
 use differential_tui::window::Side;
 
@@ -4691,6 +4692,12 @@ fn ansi_dump(app: &mut App, w: u16, h: u16) -> String {
             if cell.modifier.contains(Modifier::BOLD) {
                 parts.push("1".to_string());
             }
+            // Underline too, since a symbol the reader could look up is marked
+            // with a shape rather than a colour — a dump that dropped it would
+            // show none of that mark at all.
+            if cell.modifier.contains(Modifier::UNDERLINED) {
+                parts.push("4".to_string());
+            }
             let style = parts.join(";");
             if style != worn {
                 out.push_str(&format!("\x1b[0;{style}m"));
@@ -8085,6 +8092,71 @@ fn cursor_on_text(app: &mut App, needle: &str) -> usize {
     pos
 }
 
+/// Standing on a line marks what it could show, before any key is pressed.
+///
+/// Without this a reader has to press `z` on every line to find out which ones
+/// have anything to say. The mark is what makes the key findable at all.
+#[test]
+fn a_line_marks_its_symbols_before_z_is_pressed() {
+    let (_r, mut app) = app_with_symbols();
+    let row = cursor_on_text(&mut app, "helper_one() + helper_two()");
+
+    assert!(app.peek.is_none(), "nothing is open yet");
+    let marks = app.symbols_on(row);
+    assert_eq!(marks.len(), 2, "both calls are marked: {marks:?}");
+    // In column order, and on the names rather than anywhere on the line.
+    let text = app.rows[row].line.as_ref().unwrap().text.clone();
+    assert_eq!(&text[marks[0].0..marks[0].1], "helper_one");
+    assert_eq!(&text[marks[1].0..marks[1].1], "helper_two");
+
+    // A row with nothing to resolve marks nothing.
+    let header = app
+        .rows
+        .iter()
+        .position(|r| matches!(r.kind, RowKind::HunkHeader { .. }))
+        .expect("a hunk header");
+    assert!(app.symbols_on(header).is_empty());
+}
+
+/// The mark reaches the screen, not just the model.
+///
+/// `symbols_on` returning the right columns proves nothing about what is drawn;
+/// this reads the cells back. Underline on every resolvable name, and the
+/// accent as well on the one the float is answering.
+#[test]
+fn the_marked_symbol_is_underlined_on_screen() {
+    let (_r, mut app) = app_with_symbols();
+    cursor_on_text(&mut app, "helper_one() + helper_two()");
+
+    let underlined = |app: &mut App| -> String {
+        let backend = ratatui::backend::TestBackend::new(110, 20);
+        let mut t = ratatui::Terminal::new(backend).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let buf = t.backend().buffer().clone();
+        let mut out = String::new();
+        for y in 0..20 {
+            for x in 0..110 {
+                let cell = &buf[(x, y)];
+                if cell.modifier.contains(ratatui::style::Modifier::UNDERLINED) {
+                    out.push_str(cell.symbol());
+                }
+            }
+        }
+        out
+    };
+
+    // Nothing open: both names are marked, and nothing else is.
+    assert_eq!(
+        underlined(&mut app),
+        "helper_onehelper_two",
+        "standing on the line marks what it could show"
+    );
+
+    // Open on the first: still both, and the lit one is bold as well.
+    app.handle_key(key('z'));
+    assert_eq!(underlined(&mut app), "helper_onehelper_two");
+}
+
 #[test]
 fn z_steps_through_the_symbols_on_a_line_then_closes() {
     let (_r, mut app) = app_with_symbols();
@@ -8122,19 +8194,101 @@ fn the_float_shows_the_declaration_body_with_its_own_line_numbers() {
     app.handle_key(key('z'));
 
     let peek = app.peek.as_ref().expect("open");
-    let numbers: Vec<u32> = peek.body.iter().map(|(n, _)| *n).collect();
+    let numbers: Vec<u32> = peek.body.iter().map(|l| l.number).collect();
     // `fn helper_one` is lines 2..=5 of the head file, and the float shows all
     // four — the whole declaration, not just the line it starts on.
     assert_eq!(numbers, vec![2, 3, 4, 5], "the whole body");
     let text: String = peek
         .body
         .iter()
-        .flat_map(|(_, pairs)| pairs.iter().map(|(_, t)| t.as_str()))
+        .flat_map(|l| l.pairs.iter().map(|(_, t)| t.as_str()))
         .collect();
     assert!(text.contains("fn helper_one"), "got: {text:?}");
     assert!(
         text.contains("let inner"),
         "the body, not only the signature"
+    );
+}
+
+/// The float says which of the declaration's lines the change wrote.
+///
+/// Head-side code with no origin leaves the reader unable to tell a declaration
+/// the change INTRODUCED from one it merely touched. It says so the way the
+/// pane behind it does — colour, no `+` column — so `origin` is what this
+/// asserts.
+#[test]
+fn the_float_marks_which_lines_the_change_added() {
+    let (_r, mut app) = app_with_symbols();
+    cursor_on_text(&mut app, "helper_one() + helper_two()");
+    app.handle_key(key('z'));
+
+    let peek = app.peek.as_ref().expect("open");
+    let origins: Vec<LineOrigin> = peek.body.iter().map(|l| l.origin).collect();
+    // `src/lib.rs` gains the whole declaration here, so every line is an
+    // addition.
+    assert!(
+        origins.iter().all(|o| *o == LineOrigin::Addition),
+        "a wholly new declaration is wholly added: {origins:?}"
+    );
+}
+
+/// A declaration the change only PARTLY wrote shows both origins.
+///
+/// This is the case that matters, and the common one: a signature edited while
+/// the body stays put. Painting the whole float green there would tell the
+/// reader the change introduced a function it merely touched.
+///
+/// Note what it takes to reach: a definition reaches the index from an ADDED
+/// line, so a declaration the change never touched at all resolves to nothing
+/// and `z` does what it always did. The mixed case is the reachable one.
+#[test]
+fn a_declaration_the_change_only_touched_shows_context_too() {
+    let r = TestRepo::new();
+    r.write(
+        "src/lib.rs",
+        b"// lib\nfn helper_one(a: u8) {\n    let inner = 1;\n    inner\n}\n",
+    );
+    r.write("src/call.rs", b"// call\nfn caller() {\n}\n");
+    r.commit_all("base");
+    // ONLY the signature moves. Lines 3, 4 and 5 are untouched.
+    r.write(
+        "src/lib.rs",
+        b"// lib\nfn helper_one(a: u8, b: u8) {\n    let inner = 1;\n    inner\n}\n",
+    );
+    r.write(
+        "src/call.rs",
+        b"// call\nfn caller() {\n    let total = helper_one(1, 2);\n}\n",
+    );
+    r.commit_all("head");
+    let backend = FakeBackend::new("fake", |ids| {
+        let all: Vec<String> = ids
+            .iter()
+            .map(|i| format!("{i:?}").trim_matches('"').to_string())
+            .collect();
+        format!(
+            r#"{{"groups": [{}]}}"#,
+            json_group(
+                "Everything",
+                "focus",
+                &all.iter().map(String::as_str).collect::<Vec<_>>()
+            )
+        )
+    });
+    let mut app = open_app_with_opts(&r, &backend, ".dfr-context-store", laid_out(false));
+    cursor_on_text(&mut app, "helper_one(1, 2)");
+    app.handle_key(key('z'));
+
+    let peek = app.peek.as_ref().expect("the call resolves");
+    let origins: Vec<(u32, LineOrigin)> = peek.body.iter().map(|l| (l.number, l.origin)).collect();
+    assert_eq!(
+        origins,
+        vec![
+            (2, LineOrigin::Addition),
+            (3, LineOrigin::Context),
+            (4, LineOrigin::Context),
+            (5, LineOrigin::Context),
+        ],
+        "the signature changed; the body did not"
     );
 }
 
@@ -8227,7 +8381,7 @@ fn render_dump_symbol_float() {
     let (_r, mut app) = app_with_symbols();
     cursor_on_text(&mut app, "helper_one() + helper_two()");
 
-    println!("\n=== before: the line, nothing open ===");
+    println!("\n=== before: both names underlined, nothing open ===");
     println!("{}", ansi_dump(&mut app, 110, 20));
 
     app.handle_key(key('z'));
@@ -8250,4 +8404,49 @@ fn render_dump_symbol_float() {
     app.handle_key(key('z'));
     println!("\n=== a short pane: the float flips above the row ===");
     println!("{}", ansi_dump(&mut app, 110, 14));
+
+    // The mixed case: a signature the change wrote, over a body it did not.
+    // Painting the whole float green here would claim the change introduced a
+    // function it merely touched.
+    let (_r2, mut app) = app_with_a_touched_declaration();
+    cursor_on_text(&mut app, "helper_one(1, 2)");
+    app.handle_key(key('z'));
+    println!("\n=== added signature, unchanged body ===");
+    println!("{}", ansi_dump(&mut app, 110, 20));
+}
+
+/// A change that edits a declaration's signature and leaves its body alone.
+fn app_with_a_touched_declaration() -> (TestRepo, App) {
+    let r = TestRepo::new();
+    r.write(
+        "src/lib.rs",
+        b"// lib\nfn helper_one(a: u8) {\n    let inner = 1;\n    inner\n}\n",
+    );
+    r.write("src/call.rs", b"// call\nfn caller() {\n}\n");
+    r.commit_all("base");
+    r.write(
+        "src/lib.rs",
+        b"// lib\nfn helper_one(a: u8, b: u8) {\n    let inner = 1;\n    inner\n}\n",
+    );
+    r.write(
+        "src/call.rs",
+        b"// call\nfn caller() {\n    let total = helper_one(1, 2);\n}\n",
+    );
+    r.commit_all("head");
+    let backend = FakeBackend::new("fake", |ids| {
+        let all: Vec<String> = ids
+            .iter()
+            .map(|i| format!("{i:?}").trim_matches('"').to_string())
+            .collect();
+        format!(
+            r#"{{"groups": [{}]}}"#,
+            json_group(
+                "Everything",
+                "focus",
+                &all.iter().map(String::as_str).collect::<Vec<_>>()
+            )
+        )
+    });
+    let app = open_app_with_opts(&r, &backend, ".dfr-touched-store", laid_out(false));
+    (r, app)
 }
