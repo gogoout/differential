@@ -122,6 +122,10 @@ fn real_corpus_graph() {
                 d.symbols = None;
                 d.to_json().map(|j| j.len()).unwrap_or(0)
             };
+            // How much of the index is the repeated path string, and how
+            // much of the whole document is.
+            let ix_bytes = serde_json::to_string(ix).map(|j| j.len()).unwrap_or(0);
+            eprintln!("fixture {i}: index {ix_bytes} bytes");
             eprintln!(
                 "fixture {i}: symbol index — {} definitions, {} uses; document \
                  {whole} bytes against {without} without it (+{:.0}%)",

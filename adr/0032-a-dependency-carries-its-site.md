@@ -104,6 +104,13 @@ reader. Same rule, computed over the wider set.
 than borrowing one. The absence is the useful fact: there is no group to go and read first,
 because the declaration is not part of the change.
 
+**A row names its file by INDEX into `files[]`, not by path.** The index holds thousands of
+rows on a change of any size, and the repeated path was **56%** of its bytes — the document
+already lists every file exactly once, so pointing at that list costs nothing and duplicates
+nothing. It is inconsistent with `hunks[].file`, which is a path string and frozen that way;
+that inconsistency cannot be removed from either side, and this is the side where the
+repetition is large enough to pay for it.
+
 **A declaration is not a use of itself.** The crude reader has no veto — its reference regex
 takes every identifier on a line, the name just declared included — so `fn helper()` reports
 `helper` as reading `helper`, and a reader following it would be sent to the line they are
@@ -120,11 +127,12 @@ class graph that is already listed there.
 
 ## Consequences
 
-- **The document roughly doubles on a large change.** Measured on the validation corpus:
-  199 classes, 304 definitions and 1119 uses, taking the document from 146KB to 325KB
-  (+123%); a second range goes 180KB to 236KB (+31%). The index is the reading aid's whole
-  payload and nothing else grew, so this is what the feature costs. `dfr agent` does not
-  print it, so the model never reads it and the prompt is unchanged. The parity harness
+- **The document grows by about two thirds on a large change.** Measured on the validation
+  corpus: 199 classes, 304 definitions and 1119 uses, taking the document from 146KB to
+  238KB (+63%); a second range goes 180KB to 210KB (+17%). Before the file index it was
+  +123% and +31% — normalising the path halved the section. The index is the reading aid's
+  whole payload and nothing else grew, so this is what the feature costs. `dfr agent` does
+  not print it, so the model never reads it and the prompt is unchanged. The parity harness
   prints the figure on every run rather than pinning it — it is a size to watch, and a frozen
   number would fail for reasons that have nothing to do with the graph that test guards.
 - **Every grouping cache entry in every checkout goes cold, once.** All three readers answer
@@ -156,6 +164,17 @@ engine change at all, and it is wrong whenever a name appears twice on a line or
 substring of a longer identifier — which is most lines that are worth asking about. The
 mechanism already knows the exact range; searching for it again is discarding information
 and then approximating it (design rule 3).
+
+**A `files` table on `SymbolIndex` instead of pointing at `files[]`.** It would save the
+same bytes and keep the section self-contained, at the cost of a second list of paths in a
+document that already has one. The guarantee that made the simpler shape safe is structural:
+only files in `view.files` are parsed, and `document::assemble` builds `files[]` from
+`view.files` in the same order, so the index a symbol carries IS the document's.
+
+**Leaving the path repeated, and normalising later.** The field is new and unreleased in this
+change, so its shape is free to set now and would cost a `schema_version` bump afterwards.
+Measuring first and then deciding was the right order; deferring would have made a 56%
+saving into a breaking change.
 
 **Widening `ClassEdge.via` to carry sites.** `via` is a frozen field and its element type
 is `String`; changing that breaks the schema. An additive sibling would work, but the edge

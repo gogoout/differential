@@ -285,7 +285,7 @@ pub fn build<G: ObjectReader>(
         }
     }
 
-    let symbols = sites::build(view, definitions, uses);
+    let symbols = sites::build(definitions, uses);
 
     Ok(ClassGraph {
         symbols,

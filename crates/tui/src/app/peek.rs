@@ -42,10 +42,13 @@ impl App {
         let Some((path, line)) = self.new_side_of(self.cursor) else {
             return Vec::new();
         };
+        let Some(fi) = self.file_index.get(&path).copied() else {
+            return Vec::new();
+        };
         let mut found: Vec<&schema::SymbolUse> = index
             .uses
             .iter()
-            .filter(|u| u.line == line && u.file == path)
+            .filter(|u| u.line == line && u.file as usize == fi)
             .collect();
         // Column order, so stepping reads left to right the way the line does —
         // and so `symbols_on` and this agree on what `Peek::nth` means.
@@ -96,13 +99,15 @@ impl App {
         let use_at = self.peekable().get(nth).copied()?;
         let on = use_at.on.clone();
         let def = index.definitions.iter().find(|d| d.id == on)?;
-        let (name, file, line, through, class) = (
-            def.name.clone(),
-            def.file.clone(),
-            def.line,
-            def.through,
-            def.class.clone(),
-        );
+        let (name, line, through, class) =
+            (def.name.clone(), def.line, def.through, def.class.clone());
+        let file = self
+            .session
+            .doc()
+            .files
+            .get(def.file as usize)?
+            .path
+            .clone();
 
         // The group the declaring class ended up in. The reader's next move is
         // often "go and read that group first", and the id is what the plan
@@ -169,17 +174,29 @@ impl App {
         let Some((path, line)) = self.new_side_of(row) else {
             return Vec::new();
         };
+        let Some(fi) = self.file_index.get(&path).copied() else {
+            return Vec::new();
+        };
         let mut found: Vec<&schema::SymbolUse> = index
             .uses
             .iter()
-            .filter(|u| u.line == line && u.file == path)
+            .filter(|u| u.line == line && u.file as usize == fi)
             .collect();
         // The same order `peekable` steps in, so `Peek::nth` indexes this list.
         found.sort_by_key(|u| u.start);
-        let raw = self.factory.cached_raw_head_line(&path, line);
+        // **No raw line, no marks.** The columns are raw-line bytes and the
+        // pane draws with tabs expanded, so without the raw line there is
+        // nothing to translate against. A mark in the wrong place still reads
+        // as an assertion — "the tool believes this token is the one" — where
+        // no mark only says there is nothing here. Unreachable today, because
+        // every file the pane draws was prefetched when the rows were built;
+        // this is which failure the contract states if that ever loosens.
+        let Some(raw) = self.factory.cached_raw_head_line(&path, line) else {
+            return Vec::new();
+        };
         found
             .iter()
-            .map(|u| drawn_columns(raw.as_deref(), u.start, u.end))
+            .map(|u| drawn_columns(&raw, u.start, u.end))
             .collect()
     }
 
@@ -211,12 +228,11 @@ impl App {
 /// exact and needs no table: whatever `expand_tabs` did to the bytes before the
 /// token is exactly how far the token moved.
 ///
-/// Without the raw line there is nothing to translate against, so the offsets
-/// pass through — right for a line with no tabs, which is nearly all of them,
-/// and the only answer available for the rest.
-fn drawn_columns(raw: Option<&str>, start: u32, end: u32) -> (usize, usize) {
+/// The caller must have the raw line: [`App::symbols_on`] marks nothing without
+/// one rather than guess, because a mark in the wrong place still reads as an
+/// assertion where no mark only says there is nothing here.
+fn drawn_columns(raw: &str, start: u32, end: u32) -> (usize, usize) {
     let (s, e) = (start as usize, end as usize);
-    let Some(raw) = raw else { return (s, e) };
     let at = |byte: usize| match raw.get(..byte) {
         Some(prefix) => expand_tabs(prefix, TAB_WIDTH).len(),
         // A byte offset that is not a character boundary, or runs past the
@@ -234,7 +250,7 @@ mod tests {
     #[test]
     fn a_line_without_tabs_needs_no_translation() {
         let raw = "export function lookUpName() {";
-        assert_eq!(drawn_columns(Some(raw), 16, 26), (16, 26));
+        assert_eq!(drawn_columns(raw, 16, 26), (16, 26));
     }
 
     #[test]
@@ -242,19 +258,31 @@ mod tests {
         // One tab, then `plain()`. Raw byte 1; drawn at column 4, because
         // `TAB_WIDTH` is 4 and the tab stands at column 0.
         let raw = "\tplain()";
-        assert_eq!(drawn_columns(Some(raw), 1, 6), (4, 9));
+        assert_eq!(drawn_columns(raw, 1, 6), (4, 9));
     }
 
     #[test]
     fn two_tabs_and_a_word_still_land_on_the_word() {
         let raw = "\t\tw.Meth()";
-        let (start, end) = drawn_columns(Some(raw), 4, 8);
+        let (start, end) = drawn_columns(raw, 4, 8);
         let drawn = crate::vendor::diff_types::expand_tabs(raw, crate::rows::TAB_WIDTH);
         assert_eq!(&drawn[start..end], "Meth");
     }
 
+    /// A multi-byte character next to a tab still lands on the token.
+    ///
+    /// `expand_tabs` substitutes tab bytes with ASCII spaces and pushes every
+    /// other character through unchanged, so the BYTE length of its output is
+    /// exact however many multi-byte characters sit either side. This is not a
+    /// display width and must never become one.
     #[test]
-    fn no_raw_line_passes_the_offsets_through() {
-        assert_eq!(drawn_columns(None, 3, 9), (3, 9));
+    fn a_multi_byte_character_beside_a_tab_still_lands_on_the_token() {
+        // Tab, then a three-byte-per-character name, then the call.
+        let raw = "\tユニコード(total)";
+        let want = "total";
+        let start = raw.find(want).unwrap() as u32;
+        let (s, e) = drawn_columns(raw, start, start + want.len() as u32);
+        let drawn = crate::vendor::diff_types::expand_tabs(raw, crate::rows::TAB_WIDTH);
+        assert_eq!(&drawn[s..e], want);
     }
 }

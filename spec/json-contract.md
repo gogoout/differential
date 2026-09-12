@@ -99,6 +99,12 @@ It never feeds the ordering.
 stays 3, and a consumer must tolerate its absence. Stored documents are re-read
 (`dfr agent --doc`, the grouping cache), so this is a real case and not a theoretical one.
 
+**`file` is an INDEX into `files[]`, not a path.** On a change of any size this section
+holds thousands of rows, and repeating the path was 56% of its bytes on the validation
+corpus; the document already lists every file exactly once. It therefore differs from
+`hunks[].file`, which is a path string and frozen that way — the inconsistency is
+unavoidable, and this is the side where the repetition is large enough to matter.
+
 - `definitions[]` — `{id, name, file, line, through, start, end, class}`. Ids are `s0…sn`,
   document-local and positional like `h<N>` and `C<N>`, and do not survive regeneration.
   `line` is the new-side line of the declaring token; `through` is the last line of what the
@@ -125,8 +131,9 @@ Only files the change touches are parsed, so a name declared in an untouched fil
 to nothing — the honest limit of reading a diff rather than a repository.
 
 The index is the largest thing this document carries on a change of any size. Measured on
-the validation corpus it takes a 199-class document from 146KB to 325KB. `dfr agent` does
-not print it, so the grouping prompt is unaffected.
+the validation corpus it takes a 199-class document from 146KB to 238KB (+63%), and a second
+range from 180KB to 210KB (+17%). `dfr agent` does not print it, so the grouping prompt is
+unaffected.
 
 ## `groups[]` and `reading_plan[]` (grouping stage)
 

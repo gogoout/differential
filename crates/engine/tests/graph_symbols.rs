@@ -393,6 +393,26 @@ fn a_file_local_name_links_only_inside_its_own_file() {
 
 // ------------------------------------------------------- the symbol index
 
+/// The document, so a test can resolve a symbol's `file` index to its path the
+/// way every consumer must.
+fn document(
+    symbols: &SymbolReaders,
+    r: &TestRepo,
+    base: &str,
+    head: &str,
+) -> differential_engine::schema::PlanDocument {
+    run_pipeline(
+        &r.repo(),
+        &ReviewSource::range(base.to_string(), head.to_string(), head.to_string()),
+        &Config::default(),
+        &LanguageRegistry::builtin(),
+        symbols,
+    )
+    .unwrap()
+    .document
+    .expect("document")
+}
+
 /// Run the pipeline and hand back the index (ADR 0032).
 fn symbol_index(
     symbols: &SymbolReaders,
@@ -438,13 +458,15 @@ fn a_new_call_to_an_existing_helper_resolves() {
     );
     let head = r.commit_all("head");
 
-    let index = symbol_index(&readers(None), &r, &base, &head);
+    let doc = document(&readers(None), &r, &base, &head);
+    let path = |i: u32| doc.files[i as usize].path.as_str();
+    let index = doc.symbols.as_ref().expect("classify produced an index");
     let def = index
         .definitions
         .iter()
         .find(|d| d.name == "sum_xy")
         .expect("an untouched declaration in a touched file is still indexed");
-    assert_eq!((def.file.as_str(), def.line), ("src/lib.rs", 2));
+    assert_eq!((path(def.file), def.line), ("src/lib.rs", 2));
     assert_eq!(
         def.class, None,
         "the change did not write this line, so it belongs to no class"
@@ -454,7 +476,7 @@ fn a_new_call_to_an_existing_helper_resolves() {
         .uses
         .iter()
         .filter(|u| u.on == def.id)
-        .map(|u| (u.file.as_str(), u.line))
+        .map(|u| (path(u.file), u.line))
         .collect();
     assert_eq!(sites, vec![("src/call.rs", 3)], "the new call site");
 }
@@ -482,7 +504,8 @@ fn an_older_call_site_is_not_a_use() {
     );
     let head = r.commit_all("head");
 
-    let index = symbol_index(&readers(None), &r, &base, &head);
+    let doc = document(&readers(None), &r, &base, &head);
+    let index = doc.symbols.as_ref().expect("classify produced an index");
     let def = index
         .definitions
         .iter()
@@ -491,7 +514,7 @@ fn an_older_call_site_is_not_a_use() {
     let uses: Vec<u32> = index
         .uses
         .iter()
-        .filter(|u| u.on == def.id && u.file == "src/b.rs")
+        .filter(|u| u.on == def.id && doc.files[u.file as usize].path == "src/b.rs")
         .map(|u| u.line)
         .collect();
     assert_eq!(
@@ -590,7 +613,9 @@ fn a_declaration_does_not_read_itself() {
     r.write("src/b.rs", b"// b\nfn caller() { widget_maker() }\n");
     let head = r.commit_all("head");
 
-    let index = symbol_index(&readers(None), &r, &base, &head);
+    let doc = document(&readers(None), &r, &base, &head);
+    let path = |i: u32| doc.files[i as usize].path.as_str();
+    let index = doc.symbols.as_ref().expect("classify produced an index");
     let def = index
         .definitions
         .iter()
@@ -600,7 +625,7 @@ fn a_declaration_does_not_read_itself() {
         .uses
         .iter()
         .filter(|u| u.on == def.id)
-        .map(|u| (u.file.as_str(), u.line))
+        .map(|u| (path(u.file), u.line))
         .collect();
     assert_eq!(
         sites,

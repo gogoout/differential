@@ -30,7 +30,6 @@
 //! that reads a diff rather than a repository.
 
 use super::symbols::Site;
-use crate::model::DiffView;
 use crate::schema;
 
 /// One unambiguous declaration, before it is given an id.
@@ -61,11 +60,7 @@ pub(super) struct Use {
 /// Ids are positional and document-local, like `h<N>` and `C<N>`, and they are
 /// assigned here in location order. The caller walks hash maps, whose order is
 /// not stable across runs, and these rows reach a document that is hashed.
-pub(super) fn build(
-    view: &DiffView,
-    mut definitions: Vec<Definition>,
-    mut uses: Vec<Use>,
-) -> schema::SymbolIndex {
+pub(super) fn build(mut definitions: Vec<Definition>, mut uses: Vec<Use>) -> schema::SymbolIndex {
     // **A definition nothing points at is dropped.** The index exists to answer
     // "what is this token", so a declaration no recorded use reaches can never
     // be shown — and once ANY declaration in a touched file is a candidate,
@@ -95,7 +90,9 @@ pub(super) fn build(
             schema::SymbolDef {
                 id: format!("s{new}"),
                 name: text(&d.name),
-                file: text(&view.files[d.file].path),
+                // The document's `files[]` is built from `view.files` in the
+                // same order, so the view's index IS the document's.
+                file: d.file as u32,
                 line: d.line,
                 // Zero means the reader could not see an extent — a regex has
                 // no tree to ask. The declaring line is then all there is.
@@ -119,7 +116,7 @@ pub(super) fn build(
         .into_iter()
         .map(|u| schema::SymbolUse {
             on: out[u.def].id.clone(),
-            file: text(&view.files[u.file].path),
+            file: u.file as u32,
             line: u.line,
             start: u.site.start,
             end: u.site.end,
@@ -132,8 +129,8 @@ pub(super) fn build(
     }
 }
 
-/// Paths and names reach the schema as text — the same display boundary
-/// `graph::text` is. An identifier is one by construction; a path may not be.
+/// Names reach the schema as text — the same display boundary `graph::text` is.
+/// An identifier is one by construction.
 fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }

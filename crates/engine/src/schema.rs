@@ -71,7 +71,17 @@ pub struct SymbolDef {
     /// survive regeneration.
     pub id: String,
     pub name: String,
-    pub file: String,
+    /// Index into the document's `files[]`.
+    ///
+    /// **Not a path.** On a change of any size this index holds thousands of
+    /// rows, and a repeated path was 56% of its bytes on the validation corpus.
+    /// The document already lists every file exactly once, so pointing at that
+    /// list costs nothing and duplicates nothing.
+    ///
+    /// It differs from `hunks[].file`, which is a path string and frozen that
+    /// way — the inconsistency is unavoidable, and this is the side of it where
+    /// the repetition is large enough to matter.
+    pub file: u32,
     /// New-side line of the declaring token, counting from 1.
     pub line: u32,
     /// Last line of what the name declares. Equal to `line` where the reader
@@ -97,7 +107,8 @@ pub struct SymbolDef {
 pub struct SymbolUse {
     /// The `SymbolDef` id this use resolves to.
     pub on: String,
-    pub file: String,
+    /// Index into the document's `files[]`, as on [`SymbolDef`].
+    pub file: u32,
     pub line: u32,
     /// Raw-line byte offsets, as on [`SymbolDef`].
     pub start: u32,
