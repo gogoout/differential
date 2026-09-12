@@ -1,0 +1,288 @@
+//! `z` on a code row: light the symbol, and show what declares it.
+//!
+//! The engine records which token on which line resolves to which declaration
+//! (ADR 0032). This is the half that reads it.
+//!
+//! Three things decide what a press does, and all three are model state:
+//!
+//! - **Which symbols the row has.** Only the ones the change can resolve, in
+//!   column order, so stepping reads left to right the way the line does.
+//! - **Where the token is.** The engine's columns are byte offsets into the RAW
+//!   line; the pane draws the line with its tabs expanded. Translating between
+//!   the two is this module's job and nobody else's.
+//! - **What the declaration says.** Read and highlighted HERE, when the key is
+//!   pressed, because drawing is a pure function of the model and reading a
+//!   blob is not.
+//!
+//! A row with nothing to resolve is not this feature's row: the key falls
+//! through to what `z` already did there.
+
+use differential_engine::schema;
+
+use super::{App, Peek};
+use crate::rows::TAB_WIDTH;
+use crate::vendor::diff_types::expand_tabs;
+
+/// How many lines of a declaration are worth reading before the pane is asked
+/// to hold them. The float caps again against the space it actually has; this
+/// only bounds what is read and kept.
+const MOST_LINES: usize = 60;
+
+impl App {
+    /// The uses on the cursor's row that resolve to a declaration, left to
+    /// right.
+    ///
+    /// Empty when the row has no new-side line — a pure deletion, a hunk
+    /// header, a boundary — because the index is keyed by new-side line and a
+    /// row without one cannot be asked.
+    pub(super) fn peekable(&self) -> Vec<&schema::SymbolUse> {
+        let Some(index) = self.session.doc().symbols.as_ref() else {
+            return Vec::new();
+        };
+        let Some((path, line)) = self.new_side_of(self.cursor) else {
+            return Vec::new();
+        };
+        let Some(fi) = self.file_index.get(&path).copied() else {
+            return Vec::new();
+        };
+        let mut found: Vec<&schema::SymbolUse> = index
+            .uses
+            .iter()
+            .filter(|u| u.line == line && u.file as usize == fi)
+            .collect();
+        // Column order, so stepping reads left to right the way the line does —
+        // and so `symbols_on` and this agree on what `Peek::nth` means.
+        found.sort_by_key(|u| u.start);
+        found
+    }
+
+    /// The row's path and new-side line, where it has one.
+    ///
+    /// A split row shows both sides at once, so the new-side number may be the
+    /// row's `other` rather than its own.
+    fn new_side_of(&self, row: usize) -> Option<(String, u32)> {
+        let r = self.rows.get(row)?;
+        let l = r.line.as_ref()?;
+        let line = if l.side == "new" {
+            l.line
+        } else {
+            l.other.filter(|(s, _)| *s == "new").map(|(_, n)| n)?
+        };
+        Some((self.file_path_above(row)?.to_string(), line))
+    }
+
+    /// Advance the float: open it, step to the next symbol, or close it.
+    ///
+    /// **After the last symbol it closes**, rather than wrapping to the first.
+    /// Stepping is how the reader asks "and what else is on this line"; a wrap
+    /// answers a question they have already had answered and gives them no way
+    /// out through the key they are already pressing.
+    pub(super) fn step_peek(&mut self) {
+        let next = match &self.peek {
+            Some(p) if p.row == self.cursor => p.nth + 1,
+            _ => 0,
+        };
+        let count = self.peekable().len();
+        if next >= count {
+            self.peek = None;
+            return;
+        }
+        self.peek = self.build_peek(next);
+        if self.peek.is_none() {
+            self.status = "nothing to show for that symbol".to_string();
+        }
+    }
+
+    /// Resolve symbol `nth` on the cursor's row into a drawable float.
+    fn build_peek(&mut self, nth: usize) -> Option<Peek> {
+        let index = self.session.doc().symbols.as_ref()?;
+        let use_at = self.peekable().get(nth).copied()?;
+        let on = use_at.on.clone();
+        let def = index.definitions.iter().find(|d| d.id == on)?;
+        let (name, line, through, class) =
+            (def.name.clone(), def.line, def.through, def.class.clone());
+        let file = self
+            .session
+            .doc()
+            .files
+            .get(def.file as usize)?
+            .path
+            .clone();
+
+        // The group the declaring class ended up in. The reader's next move is
+        // often "go and read that group first", and the id is what the plan
+        // pane's rows and their `after:` lines are keyed by.
+        //
+        // A declaration the change did not write has no class and so no group,
+        // and the title says only where it is. That absence is the useful fact:
+        // there is no group to go and read first, because this is not part of
+        // the change — which the body's tint says in colour at the same time.
+        let group = class.as_ref().and_then(|c| {
+            self.session
+                .doc()
+                .groups
+                .as_ref()
+                .and_then(|gs| gs.iter().find(|g| g.class_ids.contains(c)))
+                .map(|g| g.id.clone())
+        });
+        let mut title = format!("{name} · {file}:{line}");
+        if let Some(c) = &class {
+            title.push_str(&format!(" · {c}"));
+        }
+        if let Some(g) = &group {
+            title.push_str(&format!(" · {g}"));
+        }
+
+        let added = self.added_ranges(&file);
+        let (body, more) =
+            self.factory
+                .declaration(&self.theme, &file, line, through, MOST_LINES, &added);
+        if body.is_empty() {
+            return None;
+        }
+
+        // The file has to be read before `symbols_on` can translate this
+        // symbol's columns, and `declaration` above has just read it — but only
+        // when the declaration lives in the SAME file as the use.
+        let (row_path, row_line) = self.new_side_of(self.cursor)?;
+        let _ = self.factory.raw_head_line(&row_path, row_line);
+
+        Some(Peek {
+            row: self.cursor,
+            nth,
+            title,
+            body,
+            more,
+        })
+    }
+}
+
+impl App {
+    /// Every resolvable symbol on `row`, as columns in the text the pane draws.
+    ///
+    /// **Read-only, so `draw` can call it.** The row's file was read when the
+    /// rows were built, so the raw line is in the cache; a miss leaves the
+    /// columns untranslated rather than stalling a frame to fetch a blob.
+    ///
+    /// This is what makes the key discoverable. A reader should not have to
+    /// press `z` on every line to find out which ones have anything to say, so
+    /// standing on a line marks what it could show.
+    pub fn symbols_on(&self, row: usize) -> Vec<(usize, usize)> {
+        let Some(index) = self.session.doc().symbols.as_ref() else {
+            return Vec::new();
+        };
+        let Some((path, line)) = self.new_side_of(row) else {
+            return Vec::new();
+        };
+        let Some(fi) = self.file_index.get(&path).copied() else {
+            return Vec::new();
+        };
+        let mut found: Vec<&schema::SymbolUse> = index
+            .uses
+            .iter()
+            .filter(|u| u.line == line && u.file as usize == fi)
+            .collect();
+        // The same order `peekable` steps in, so `Peek::nth` indexes this list.
+        found.sort_by_key(|u| u.start);
+        // **No raw line, no marks.** The columns are raw-line bytes and the
+        // pane draws with tabs expanded, so without the raw line there is
+        // nothing to translate against. A mark in the wrong place still reads
+        // as an assertion — "the tool believes this token is the one" — where
+        // no mark only says there is nothing here. Unreachable today, because
+        // every file the pane draws was prefetched when the rows were built;
+        // this is which failure the contract states if that ever loosens.
+        let Some(raw) = self.factory.cached_raw_head_line(&path, line) else {
+            return Vec::new();
+        };
+        found
+            .iter()
+            .map(|u| drawn_columns(&raw, u.start, u.end))
+            .collect()
+    }
+
+    /// The new-side line ranges this change ADDED in `path`.
+    ///
+    /// A canonical `-U0` hunk states exactly which lines it wrote on each side,
+    /// so this is arithmetic over the document and needs no blob: `new_count`
+    /// lines from `new_start`. A deletion-only hunk writes none, and its empty
+    /// range is skipped rather than left to be a range that contains nothing.
+    ///
+    /// Local to the float for now. The stack renderer has never needed it, and
+    /// a second consumer is what would earn this a place in `engine::plan`
+    /// beside the rest of the shared arithmetic.
+    fn added_ranges(&self, path: &str) -> Vec<std::ops::Range<u32>> {
+        self.session
+            .doc()
+            .hunks
+            .iter()
+            .filter(|h| h.file == path && h.new_count > 0)
+            .map(|h| h.new_start..h.new_start + h.new_count)
+            .collect()
+    }
+}
+
+/// Turn raw-line byte offsets into offsets in the text the pane draws.
+///
+/// The pane expands tabs before drawing (`rows::source_lines`), so a raw offset
+/// indexes a different string from the one on screen. Expanding the PREFIX is
+/// exact and needs no table: whatever `expand_tabs` did to the bytes before the
+/// token is exactly how far the token moved.
+///
+/// The caller must have the raw line: [`App::symbols_on`] marks nothing without
+/// one rather than guess, because a mark in the wrong place still reads as an
+/// assertion where no mark only says there is nothing here.
+fn drawn_columns(raw: &str, start: u32, end: u32) -> (usize, usize) {
+    let (s, e) = (start as usize, end as usize);
+    let at = |byte: usize| match raw.get(..byte) {
+        Some(prefix) => expand_tabs(prefix, TAB_WIDTH).len(),
+        // A byte offset that is not a character boundary, or runs past the
+        // line. The reader moved on or the blob did; a highlight nobody asked
+        // for is worse than one that lands where the engine said.
+        None => byte,
+    };
+    (at(s), at(e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::drawn_columns;
+
+    #[test]
+    fn a_line_without_tabs_needs_no_translation() {
+        let raw = "export function lookUpName() {";
+        assert_eq!(drawn_columns(raw, 16, 26), (16, 26));
+    }
+
+    #[test]
+    fn a_tab_moves_the_token_by_what_it_draws_as() {
+        // One tab, then `plain()`. Raw byte 1; drawn at column 4, because
+        // `TAB_WIDTH` is 4 and the tab stands at column 0.
+        let raw = "\tplain()";
+        assert_eq!(drawn_columns(raw, 1, 6), (4, 9));
+    }
+
+    #[test]
+    fn two_tabs_and_a_word_still_land_on_the_word() {
+        let raw = "\t\tw.Meth()";
+        let (start, end) = drawn_columns(raw, 4, 8);
+        let drawn = crate::vendor::diff_types::expand_tabs(raw, crate::rows::TAB_WIDTH);
+        assert_eq!(&drawn[start..end], "Meth");
+    }
+
+    /// A multi-byte character next to a tab still lands on the token.
+    ///
+    /// `expand_tabs` substitutes tab bytes with ASCII spaces and pushes every
+    /// other character through unchanged, so the BYTE length of its output is
+    /// exact however many multi-byte characters sit either side. This is not a
+    /// display width and must never become one.
+    #[test]
+    fn a_multi_byte_character_beside_a_tab_still_lands_on_the_token() {
+        // Tab, then a three-byte-per-character name, then the call.
+        let raw = "\tユニコード(total)";
+        let want = "total";
+        let start = raw.find(want).unwrap() as u32;
+        let (s, e) = drawn_columns(raw, start, start + want.len() as u32);
+        let drawn = crate::vendor::diff_types::expand_tabs(raw, crate::rows::TAB_WIDTH);
+        assert_eq!(&drawn[s..e], want);
+    }
+}

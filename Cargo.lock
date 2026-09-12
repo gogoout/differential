@@ -570,6 +570,7 @@ dependencies = [
  "petgraph",
  "regex",
  "serde",
+ "serde_json",
  "sha1",
  "toml",
  "tree-sitter",

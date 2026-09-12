@@ -321,6 +321,45 @@ findings still work. A gap between two blocks keeps a boundary at each end rathe
 collapsing to one — a step only reveals part of it, so both ends stay live. A boundary row is deliberately **not** a hunk — `space` and `c` ask
 for one rather than acting on a row that is only about how much of the file is visible.
 
+**A symbol says what declares it.** A declaration the reader cannot see is being
+withheld like anything else `z` opens, which is why it is the same key rather than one
+more. On a code row whose line uses a name the change declares, `z` lights that name and
+floats the declaration — its own lines, syntax-highlighted, with their own numbers, under a
+title of `name · file:line · class · group`. The group id is there because the reader's
+next move is often to go and read that group first, and the id is what the plan pane's rows
+and their `after:` lines are keyed by.
+
+**The line says so before the key is pressed.** Standing on a row **underlines** every name
+on it the change can resolve, and the one the float is answering takes the accent as well.
+Without that a reader would have to press `z` on every line to learn which ones have
+anything to say, and the key would be one nobody found. The mark is an underline — a shape,
+not a colour — so a name keeps its syntax ink and the row gains nothing competing with its
+change tint.
+
+**The float says what the change did to what it shows.** Its lines wear the same tint the
+diff behind them does: a line the change wrote takes the addition colour, in the code and in
+its number cell, and a line that was already there takes none. Colour carries the change
+here exactly as it does in the pane, so there is no `+` column. Without it a declaration the
+change merely touched would read as one it introduced. A line the change REMOVED is never
+shown — the float reads the head blob, and a removed line is not in it.
+
+**It never covers the row it is about.** That row is the question and the float is the
+answer; an answer laid over the question is worse than none. So it takes the larger of the
+two gaps and stops one row short — below by preference, because reading runs downwards and a
+float below keeps the eye travelling the way it already was. A pane with fewer than three
+rows either side yields the float entirely, the same rule the group map follows.
+
+**One press, one symbol, left to right.** A line can use several names, so `z` steps through
+them in column order; past the last one it closes rather than wrapping, since a wrap answers
+a question already answered and offers no way out through the key being pressed. `esc`
+closes it, and so does moving the cursor — a highlight pointing at a row the cursor has left
+is worse than no highlight.
+
+**Only what the change itself declares.** The tool parses the files a diff touches and no
+others, so a call into an untouched helper lights nothing and `z` keeps the meaning it
+already had on that row. What it can resolve, it resolves on **any** line it draws, context
+included: a reader who opened a window with `z` can ask about what they find there.
+
 **A window stops at a neighbouring hunk, and says so.** Grouping is by shape class, so one
 file routinely holds hunks belonging to several groups. When a window reaches one this view
 does not list, the boundary row does not vanish — it **names** it
@@ -429,7 +468,7 @@ The full reference. `?` shows the subset that applies where the reader is standi
 | `ctrl-d`/`ctrl-u` | half page |
 | `g`/`G` | top / bottom |
 | `n`/`N` | next / previous hunk (skipping hunks crossed in from other groups) |
-| `z` | show what is being withheld, in the pane you are in — diff pane: on a `──` context boundary row, more of the file, or the hunk it names · on a resolved review thread, open or close it · elsewhere, the skim remainder or noise group · plan pane, file view: a directory |
+| `z` | show what is being withheld, in the pane you are in — diff pane: on a `──` context boundary row, more of the file, or the hunk it names · on a resolved review thread, open or close it · **on a code row whose line uses a symbol the change declares, what declares it** (again for the next symbol on the line, once more to close; `esc` closes too) · elsewhere, the skim remainder or noise group · plan pane, file view: a directory |
 | `s` | toggle side-by-side / unified diff layout (persisted) |
 | `w` | soft wrap long lines (persisted) |
 | `h`/`l`, `0` | shift the diff pane eight columns sideways · back to the left edge. Diff pane only; refused while `w` is on |

@@ -252,6 +252,12 @@ impl App {
                 }
             }
             Mode::Normal => {
+                // The symbol float is a map too, and unlike the other two it
+                // appears in every view — so its guard is not inside the
+                // `Groups` check below.
+                if self.peek_area(panes.detail).is_some_and(|a| a.contains(at)) {
+                    return Vec::new();
+                }
                 // The floats are maps, deliberately not interactive: a click
                 // on one must not fall through to the pane beneath.
                 if self.view_mode == ViewMode::Groups {
@@ -696,6 +702,22 @@ impl App {
             {
                 self.toggle_dir();
             }
+            // A declaration the reader cannot see is being withheld too, which
+            // is why this is `z` and not a key of its own. The row decides:
+            // only a code row whose line resolves a symbol gets here, so a row
+            // with nothing to show falls through to the fold below, exactly as
+            // it did before (ADR 0032).
+            //
+            // Below the boundary and thread arms deliberately. Those rows have
+            // no new-side line, so they resolve nothing and could not reach
+            // here anyway — but the order is what says which meaning wins,
+            // and leaving that to chance is how a key starts meaning two
+            // things on one row.
+            (KeyCode::Char('z'), _)
+                if self.focus == Focus::Detail && !self.peekable().is_empty() =>
+            {
+                self.step_peek();
+            }
             (KeyCode::Char('z'), _) => self.toggle_group_fold(),
             (KeyCode::Char('n'), KeyModifiers::NONE) => self.jump_hunk(1),
             (KeyCode::Char('N'), _) => self.jump_hunk(-1),
@@ -757,6 +779,12 @@ impl App {
                     // screen says why unless the footer does.
                     self.status = "move onto a line first".into();
                 }
+            }
+            // Before the selection's `esc`, so one press closes one thing:
+            // the float came last, so it goes first, and a second `esc` still
+            // drops the selection underneath it.
+            (KeyCode::Esc, _) if self.peek.is_some() => {
+                self.peek = None;
             }
             (KeyCode::Esc, _) if self.visual.is_some() => {
                 self.visual = None;

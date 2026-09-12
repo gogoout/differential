@@ -42,6 +42,9 @@ pub enum Area {
     Diff,
     /// The diff pane, with a line selection open.
     Selecting,
+    /// The diff pane, with the symbol float open. Not modal: `j`/`k` still
+    /// move the cursor, and moving it is one of the ways out.
+    Peeking,
     /// The diff pane, on a review thread the forge holds.
     Thread {
         own: bool,
@@ -64,7 +67,7 @@ impl Area {
     fn modal(self) -> bool {
         !matches!(
             self,
-            Area::Plan | Area::Diff | Area::Selecting | Area::Thread { .. }
+            Area::Plan | Area::Diff | Area::Selecting | Area::Peeking | Area::Thread { .. }
         )
     }
 
@@ -74,6 +77,7 @@ impl Area {
             Area::Plan => "the plan pane",
             Area::Diff => "the diff pane",
             Area::Selecting => "a line selection",
+            Area::Peeking => "a symbol's declaration",
             Area::Thread { own: false, .. } => "a review thread",
             Area::Thread { own: true, .. } => "your own comment",
             Area::FileList => "the file list",
@@ -222,6 +226,7 @@ impl App {
                 // A selection is what the next key acts on, so it outranks
                 // the row under the cursor.
                 Focus::Detail if self.visual.is_some() => Area::Selecting,
+                Focus::Detail if self.peek.is_some() => Area::Peeking,
                 Focus::Detail => match self.thread_at_cursor() {
                     Some(t) => Area::Thread {
                         own: self.own_comment_at_cursor().is_some(),
@@ -280,9 +285,15 @@ impl App {
                 Act::quiet("dd", "delete the finding under the cursor"),
                 Act::quiet(
                     "z",
-                    "boundary: show more of the file, or cross into the hunk",
+                    "on a symbol: what declares it · on a boundary: more of the \
+                     file, or the hunk it names",
                 ),
                 Act::quiet("f", "the file list (enter jumps)"),
+            ],
+            Area::Peeking => vec![
+                Act::footer("z", "next", "the next symbol on this line"),
+                Act::footer("esc", "close", "close the float"),
+                Act::quiet("j/k", "move on — the float closes with the cursor"),
             ],
             Area::Selecting => vec![
                 Act::footer(

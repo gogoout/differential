@@ -56,10 +56,14 @@ pub struct SymbolIndex {
     pub uses: Vec<SymbolUse>,
 }
 
-/// One declaration the change makes, that something in the change reads.
+/// One declaration something in the change reads.
+///
+/// It may sit on ANY line of a file the change touches, not only one the change
+/// wrote: the commonest question a reviewer has is what a newly added call
+/// resolves to, and that is usually a helper which was already there.
 ///
 /// Only names with exactly ONE definer appear, the same rule the class graph
-/// draws edges by — a name two classes declare is ambiguous, and this cannot
+/// draws edges by — a name declared twice is ambiguous, and nothing here can
 /// say which one a reader meant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SymbolDef {
@@ -67,7 +71,17 @@ pub struct SymbolDef {
     /// survive regeneration.
     pub id: String,
     pub name: String,
-    pub file: String,
+    /// Index into the document's `files[]`.
+    ///
+    /// **Not a path.** On a change of any size this index holds thousands of
+    /// rows, and a repeated path was 56% of its bytes on the validation corpus.
+    /// The document already lists every file exactly once, so pointing at that
+    /// list costs nothing and duplicates nothing.
+    ///
+    /// It differs from `hunks[].file`, which is a path string and frozen that
+    /// way — the inconsistency is unavoidable, and this is the side of it where
+    /// the repetition is large enough to matter.
+    pub file: u32,
     /// New-side line of the declaring token, counting from 1.
     pub line: u32,
     /// Last line of what the name declares. Equal to `line` where the reader
@@ -78,19 +92,23 @@ pub struct SymbolDef {
     /// expansion rather than index its display text with them.
     pub start: u32,
     pub end: u32,
-    /// The shape class that introduces it.
-    pub class: String,
+    /// The shape class that introduces it, or `null` where the change did not
+    /// write this line — the declaration is real, it is simply not part of the
+    /// change.
+    pub class: Option<String>,
 }
 
 /// One token that reads a [`SymbolDef`].
 ///
-/// Recorded on ANY line of a parsed file, not only an added one: a reviewer can
-/// open context and land on an unchanged line, and the token resolves there too.
+/// Recorded only on a line the change WROTE. Those are the lines the reviewer is
+/// reading, and they bound the index: with any declaration resolvable, every
+/// mention in every parsed file would grow this with the size of the files.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SymbolUse {
     /// The `SymbolDef` id this use resolves to.
     pub on: String,
-    pub file: String,
+    /// Index into the document's `files[]`, as on [`SymbolDef`].
+    pub file: u32,
     pub line: u32,
     /// Raw-line byte offsets, as on [`SymbolDef`].
     pub start: u32,
